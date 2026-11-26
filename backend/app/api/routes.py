@@ -9194,11 +9194,16 @@ async def scan_notifications(
 async def standup(
     window_hours: int | None = None, state: AppState = Depends(get_state),
     _=Depends(require_permission("metrics", "view")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Daily standup summary. ALWAYS returns HTTP 200 with a renderable payload:
     a clear ``{enabled: false}`` shape when disabled, the full happy-path result
     when data is present, or a graceful ``degraded: true`` + ``error`` + a short
-    summary note when the aggregation/summary step is unavailable (never a 500)."""
+    summary note when the aggregation/summary step is unavailable (never a 500).
+
+    The summary's AI spend, ``cost``, follows the one spend rule, ``cost:view``
+    (Round 16 cross-cutting review): without it the key stays and its value is
+    ``null``, the withheld-spend shape of ``_withhold_case_spend``."""
     prefs = state.execution_prefs
     if not prefs.standup.enabled:
         return {
@@ -9224,6 +9229,8 @@ async def standup(
         }
     result["enabled"] = True
     result.setdefault("degraded", False)
+    if "cost" in result and not await _case_spend_visible(request):
+        result["cost"] = None
     return result
 
 

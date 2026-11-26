@@ -380,6 +380,15 @@ async def test_a_policy_close_keeps_the_automation_record(app_state) -> None:
     case = await app_state.pipeline.register_candidate(_cluster(), SourceSurface.AUTOMATED_SCAN, prefs)
     assert case.status == CaseStatus.CLOSED and case.decision_by == DecisionBy.ANALYST_POLICY
     assert case.automation_actions == [_AUTOMATION_RECORD]
+    # Round 16 cross-cutting review: the close keeps the cross-source links and the
+    # sent-notification record too, so a linked candidate never leaves the link one-sided.
+    stored = await app_state.cases.get(existing.case_id)
+    assert existing.notifications_sent  # the record the close must keep is not empty
+    for closed in (case, stored):
+        _assert_links_carried(closed)
+        assert closed.notifications_sent == existing.notifications_sent
+        assert closed.status_history[-1].to_status == "closed"
+        assert closed.status_history[-1].by == DecisionBy.ANALYST_POLICY.value
 
 
 async def test_a_later_automation_run_appends_after_the_carried_record(app_state) -> None:

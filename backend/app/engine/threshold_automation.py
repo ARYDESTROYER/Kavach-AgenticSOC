@@ -35,10 +35,11 @@ FAIL-ISOLATED: ``run(...)`` never raises into the case path — any error degrad
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable, Mapping
 
 from ..audit.changes import redact_text
 from ..config import AutomationRule, Preferences
@@ -227,6 +228,18 @@ def _merge_automation_changes(
     return fresh
 
 
+def _write_lock(case_lock: Callable[[str], AsyncContextManager[Any]] | None, case_id: str):
+    """The case's write lock from ``case_lock`` for automation's re-read and save, or a
+    no-op context without one (a direct call, a test) or when the lookup fails."""
+    if case_lock is None or not case_id:
+        return contextlib.nullcontext()
+    try:
+        return case_lock(case_id)
+    except Exception as exc:  # noqa: BLE001 - a lock lookup never breaks the case path
+        logger.warning("automation case lock unavailable for %s: %s", case_id, exc)
+        return contextlib.nullcontext()
+
+
 class ThresholdAutomation:
     """Executes matched automation actions for a saved case — #3-safe.
 
@@ -265,6 +278,7 @@ class ThresholdAutomation:
         *,
         save: Callable[[Case], Any],
         fetch: Callable[[str], Awaitable[Case | None]] | None = None,
+        case_lock: Callable[[str], AsyncContextManager[Any]] | None = None,
     ) -> Case:
         """Evaluate + execute automation for ``case`` AFTER apply()+save. Records each
         action on ``Case.automation_actions`` + audits it. Persists the case via
@@ -278,7 +292,15 @@ class ThresholdAutomation:
         and a person may acknowledge, assign or comment on the case meanwhile; saving
         the copy read before the send would silently undo their work. When the read
         fails or finds no case, the copy in hand is saved, as before. Returns the case
-        that was saved."""
+        that was saved.
+
+        With ``case_lock`` (the pipeline's per-case write lock), the re-read, the merge
+        and the save happen under that lock, and only they do: the actions (a notify
+        send awaits network I/O) run before it is taken. A person's action holds the
+        same lock across its own read and save, so neither save erases the other
+        (Round 16 cross-cutting review). The pipeline calls this inside the cluster's
+        signature lock and after it released its own hold on the case lock, so the
+        lock order (a signature lock, then a case lock) is kept."""
         try:
             actions = evaluate(case, prefs)
             if not actions:
@@ -313,26 +335,27 @@ class ThresholdAutomation:
             )
 
         if dirty:
-            target = case
-            if fetch is not None:
+            async with _write_lock(case_lock, case.case_id):
+                target = case
+                if fetch is not None:
+                    try:
+                        fresh = await fetch(case.case_id)
+                    except Exception as exc:  # noqa: BLE001 - fall back to the copy in hand
+                        logger.warning("automation re-read failed for %s: %s", case.case_id, exc)
+                        fresh = None
+                    if isinstance(fresh, Case):
+                        target = _merge_automation_changes(
+                            fresh, case,
+                            tags_before=tags_before,
+                            comments_before=comments_before,
+                            actions_before=actions_before,
+                        )
                 try:
-                    fresh = await fetch(case.case_id)
-                except Exception as exc:  # noqa: BLE001 - fall back to the copy in hand
-                    logger.warning("automation re-read failed for %s: %s", case.case_id, exc)
-                    fresh = None
-                if isinstance(fresh, Case):
-                    target = _merge_automation_changes(
-                        fresh, case,
-                        tags_before=tags_before,
-                        comments_before=comments_before,
-                        actions_before=actions_before,
-                    )
-            try:
-                result = save(target)
-                if hasattr(result, "__await__"):
-                    await result
-            except Exception as exc:  # noqa: BLE001 — a save failure never breaks the case path
-                logger.warning("automation save failed for %s: %s", case.case_id, exc)
+                    result = save(target)
+                    if hasattr(result, "__await__"):
+                        await result
+                except Exception as exc:  # noqa: BLE001 - a save failure never breaks the case path
+                    logger.warning("automation save failed for %s: %s", case.case_id, exc)
             return target
         return case
 

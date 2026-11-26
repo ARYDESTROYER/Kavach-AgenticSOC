@@ -250,9 +250,11 @@ class CaseLocks:
     from erasing the other's work. A ``WeakValueDictionary`` bounds it, as the signature
     locks are bounded: a lock exists only while someone holds a reference to it.
 
-    Lock order: the pipeline (and ``engine.ingest.attach_cluster``) takes a case lock
-    only INSIDE the cluster's signature lock; a person's action takes the case lock
-    alone. No path holds a case lock while it waits for a signature lock."""
+    Lock order: the pipeline (and ``engine.ingest.attach_cluster`` and a run's
+    post-decision threshold automation) takes a case lock only INSIDE the cluster's
+    signature lock; a person's action, a cross-source link write, the detached notifier
+    and the Demo seed's automation take the case lock alone. No path holds a case lock while it waits for a signature lock, and no
+    path holds one case lock while it waits for another."""
 
     def __init__(self) -> None:
         self._locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
@@ -271,6 +273,15 @@ class CaseLocks:
 
     def __len__(self) -> int:
         return len(self._locks)
+
+
+#: The run triggers whose caller names the candidate the run is for (``known_case_id``):
+#: the deferred drain (SPEC D10) and the event-detection re-entry, which registers the
+#: candidate just before the run. Such a run re-reads that case after the gate and
+#: returns it unchanged when a person closed or moved it meanwhile, never minting a
+#: second case for its events (#4). ``handle_clusters`` names no case, so new events
+#: after a close still open a new case.
+_KNOWN_CANDIDATE_TRIGGERS = frozenset({"drain", "detection"})
 
 
 def _gate_would_wait(gate: Any, cap: int, priority: str) -> bool:
@@ -722,8 +733,13 @@ class InvestigationPipeline:
             import asyncio
 
             # Pass fetch=get so the detached task merges notifications_sent onto the
-            # FRESH case, never clobbering a concurrent analyst edit (audit #28).
-            coro = notifier.notify(case, save=self._cases.save, fetch=self._cases.get)
+            # FRESH case, never clobbering a concurrent analyst edit (audit #28), and
+            # the case write lock, held from that re-read to the save only, after the
+            # sends (Round 16 cross-cutting review). The detached task holds no other
+            # lock, so it takes the case lock alone, as a person's action does.
+            coro = notifier.notify(
+                case, save=self._cases.save, fetch=self._cases.get, case_lock=self.case_lock,
+            )
             if self._mutation_task_spawner is not None:
                 self._mutation_task_spawner(
                     coro, name=f"case-notify:{case.case_id}"
@@ -745,7 +761,13 @@ class InvestigationPipeline:
         try:
             # fetch=get: automation merges its own changes onto the case as stored
             # when it saves, never a copy read before a notify send (Round 16 B08).
-            await automation.run(case, prefs, save=self._cases.save, fetch=self._cases.get)
+            # case_lock: that re-read, the merge and the save hold the case write lock
+            # (Round 16 cross-cutting review). This runs inside the signature lock and
+            # after the run released its own hold on the case lock, the lock order.
+            await automation.run(
+                case, prefs, save=self._cases.save, fetch=self._cases.get,
+                case_lock=self.case_lock,
+            )
         except Exception as exc:  # noqa: BLE001 — automation must never affect the case flow
             logger.warning("threshold automation skipped for %s: %s", case.case_id, exc)
 
@@ -1133,13 +1155,14 @@ class InvestigationPipeline:
         target_case_id: str | None = None,
     ) -> Case:
         registry = self.investigation_registry
-        # Round 16 (SPEC D10): a deferred candidate's drain run re-reads its case inside
-        # the signature lock, after the gate. A candidate a person closed or moved while
-        # the run waited is returned as stored and never re-run: a close made meanwhile
-        # would otherwise miss the open-case lookup below and mint a second case for the
-        # same events. New events after a close still open a new case (``handle_clusters``
-        # passes no known case, #4).
-        if trigger == "drain" and known_case_id and not force:
+        # Round 16 (SPEC D10): a deferred candidate's drain run, and an event-detection
+        # run on the candidate it just registered (the cross-cutting review), re-read
+        # that case inside the signature lock, after the gate. A candidate a person
+        # closed or moved while the run waited is returned as stored and never re-run: a
+        # close made meanwhile would otherwise miss the open-case lookup below and mint a
+        # second case for the same events. New events after a close still open a new
+        # case (``handle_clusters`` passes no known case, #4).
+        if trigger in _KNOWN_CANDIDATE_TRIGGERS and known_case_id and not force:
             stored = await self._cases.get(known_case_id)
             if stored is not None and (
                 str(getattr(stored.status, "value", stored.status)) not in OPEN_CASE_STATUSES
@@ -1151,8 +1174,8 @@ class InvestigationPipeline:
                     action_type=ActionType.DECISION, surface=source_surface.value,
                     actor="pipeline", case_id=stored.case_id,
                     result_summary=(
-                        "the candidate was closed or moved by a person before its deferred "
-                        "run started; not investigated"
+                        "the candidate was closed or moved by a person before its run "
+                        "started; not investigated"
                     ),
                 )
                 return stored
@@ -1933,8 +1956,16 @@ class InvestigationPipeline:
             tags=(list(existing.tags) if existing else []),
             comments=(list(existing.comments) if existing else []),
             assignee=(existing.assignee if existing else ""),
-            # Append-only record of automation rules on this case (Round 16 B09).
+            # Append-only record of automation rules on this case (Round 16 B09), the
+            # sent-notification record and the cross-source links, so a linked
+            # candidate closed by a declaration never leaves its link one-sided (the
+            # cross-cutting review). Carried field by field: ``_carry_case_work`` would
+            # replace the status history this close appends to.
             automation_actions=(list(existing.automation_actions) if existing else []),
+            notifications_sent=(list(existing.notifications_sent or []) if existing else []),
+            related_case_ids=(list(existing.related_case_ids or []) if existing else []),
+            cross_source_cluster_id=((existing.cross_source_cluster_id or "") if existing else ""),
+            source_breakdown=(dict(existing.source_breakdown or {}) if existing else {}),
             history=history,
             status_history=status_history,
             verdict_history=(list(existing.verdict_history) if existing else []),
@@ -2251,7 +2282,12 @@ def _carry_case_work(existing: Case | None, case: Case) -> Case:
     NOT carried: ``status`` (``_assemble_case`` sets it only as ``apply()``'s previous
     status; the other two builders set their own), ``escalation_level`` (a positive
     value reads as escalated everywhere, which the rebuilt status may not be) and
-    ``decision_by``. Never reads or changes the decision inputs (#3). Returns ``case``."""
+    ``decision_by``. Never reads or changes the decision inputs (#3). Returns ``case``.
+
+    The analyst-policy close (:meth:`InvestigationPipeline._close_by_analyst_policy`)
+    builds its closed case by hand, because it appends its own transition to the status
+    history; it carries ``automation_actions``, ``notifications_sent`` and the three
+    link fields the same way, field by field."""
     if existing is None:
         return case
     case.assignee = existing.assignee or ""

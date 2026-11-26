@@ -740,7 +740,7 @@ class Poller:
 
                 try:
                     # ``pipeline``: each link is written to the case as stored now,
-                    # under its signature lock (Round 16 B09).
+                    # under its case write lock (Round 16 B09, the cross-cutting review).
                     stats["cross_source_linked"] = await link_cross_source(
                         clusters, prefs, cases=self._cases, pipeline=self._pipeline
                     )

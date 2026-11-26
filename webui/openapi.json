@@ -33689,7 +33689,7 @@
     },
     "/api/standup": {
       "get": {
-        "description": "Daily standup summary. ALWAYS returns HTTP 200 with a renderable payload:\na clear ``{enabled: false}`` shape when disabled, the full happy-path result\nwhen data is present, or a graceful ``degraded: true`` + ``error`` + a short\nsummary note when the aggregation/summary step is unavailable (never a 500).",
+        "description": "Daily standup summary. ALWAYS returns HTTP 200 with a renderable payload:\na clear ``{enabled: false}`` shape when disabled, the full happy-path result\nwhen data is present, or a graceful ``degraded: true`` + ``error`` + a short\nsummary note when the aggregation/summary step is unavailable (never a 500).\n\nThe summary's AI spend, ``cost``, follows the one spend rule, ``cost:view``\n(Round 16 cross-cutting review): without it the key stays and its value is\n``null``, the withheld-spend shape of ``_withhold_case_spend``.",
         "operationId": "standup_api_standup_get",
         "parameters": [
           {

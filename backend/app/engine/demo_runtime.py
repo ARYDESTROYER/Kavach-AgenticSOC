@@ -713,8 +713,12 @@ class DemoStack:
                 before = await self.open_proposal_count()
                 # Round 16 (B08): read the case again just before the save, as the
                 # pipeline's post-decision automation does, so a stale copy never
-                # overwrites work saved meanwhile.
-                await automation.run(case, dprefs, save=self.cases.save, fetch=self.cases.get)
+                # overwrites work saved meanwhile; the re-read and the save hold the
+                # shared case write lock (the cross-cutting review).
+                await automation.run(
+                    case, dprefs, save=self.cases.save, fetch=self.cases.get,
+                    case_lock=self.pipeline.case_lock,
+                )
                 after = await self.open_proposal_count()
                 opened += max(0, after - before)
             except Exception as exc:  # noqa: BLE001 — a HITL seed glitch never breaks enable
@@ -787,11 +791,15 @@ class DemoStack:
                 status = getattr(case.status, "value", case.status)
                 if is_attach_only(case) or str(status) not in OPEN_CASE_STATUSES:
                     continue
+                # Named like the real event-detection re-entry, so a close made while
+                # the run waits never mints a second case with these events (#4).
                 await self.pipeline.investigate_cluster(
                     cluster,
                     SourceSurface.AUTOMATED_SCAN,
                     prefs,
                     query_source=source,
+                    trigger="detection",
+                    known_case_id=case.case_id,
                 )
                 count += 1
             return count

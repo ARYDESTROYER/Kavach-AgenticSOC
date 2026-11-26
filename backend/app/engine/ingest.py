@@ -599,10 +599,10 @@ async def link_cross_source(
     already-open case from another source.
 
     With ``pipeline`` (both built-in call sites pass it), each linked case is read
-    again by id under its signature lock and only the three link fields are written
-    to that fresh copy (Round 16 B09), so a pool copy read earlier can never overwrite
-    a decision or a person's work saved meanwhile. Without it, the pool copy is saved
-    as before."""
+    again by id under its case write lock and only the three link fields are written
+    to that fresh copy (Round 16 B09 and the cross-cutting review), so a pool copy
+    read earlier can never overwrite a decision or a person's work saved meanwhile.
+    Without it, the pool copy is saved as before."""
     from .correlation import (
         CrossSourceComponentSeed,
         CrossSourceItem,
@@ -769,6 +769,28 @@ def _apply_links(case, *, component_id: str, related: list[str], breakdown: dict
     return changed
 
 
+def _link_write_lock(pipeline, pooled):
+    """The lock a cross-source link write holds from its re-read to its save.
+
+    The case's write lock, taken alone (Round 16 cross-cutting review). A person's
+    action holds it across its read and save, and every automated writer holds it from
+    its re-read to its save: the pipeline builders and the attach path (inside the
+    signature lock), threshold automation and the notifier. So a link write never
+    lands between another writer's read and its save, and no writer's save erases the
+    links or a person's close. Taken alone, never inside a signature lock, it keeps the
+    lock order (a signature lock, then a case lock; never the reverse) and waits at
+    most for one save, never for a whole investigation. A pipeline without
+    ``case_lock`` (a stub) falls back to the signature lock, as before."""
+    case_lock = getattr(pipeline, "case_lock", None)
+    case_id = getattr(pooled, "case_id", None)
+    if callable(case_lock) and case_id:
+        try:
+            return case_lock(case_id)
+        except Exception:  # noqa: BLE001 - never let lock lookup break ingest
+            pass
+    return _sig_lock(pipeline, pooled.cluster_signature)
+
+
 async def _save_links_fresh(
     cases: "CaseStore",
     pipeline: "InvestigationPipeline",
@@ -780,11 +802,10 @@ async def _save_links_fresh(
 ) -> bool:
     """Write one case's cross-source links onto the case as stored now (Round 16 B09).
 
-    The case is read again by id under its signature lock (the lock every pipeline
-    builder and the attach path hold while they read and save the case), and only the
-    link fields change on that copy. A case that is gone saves nothing. Returns True
-    when the links were saved."""
-    async with _sig_lock(pipeline, pooled.cluster_signature):
+    The case is read again by id under its write lock (:func:`_link_write_lock`), and
+    only the link fields change on that copy. A case that is gone saves nothing.
+    Returns True when the links were saved."""
+    async with _link_write_lock(pipeline, pooled):
         fresh = await cases.get(pooled.case_id)
         if fresh is None:
             return False
@@ -1024,7 +1045,7 @@ class IngestService:
             if prefs.cross_source_correlation.enabled:
                 try:
                     # ``pipeline``: each link is written to the case as stored now,
-                    # under its signature lock (Round 16 B09).
+                    # under its case write lock (Round 16 B09, the cross-cutting review).
                     stats["cross_source_linked"] = await link_cross_source(
                         clusters, prefs, cases=self._cases, pipeline=self._pipeline
                     )

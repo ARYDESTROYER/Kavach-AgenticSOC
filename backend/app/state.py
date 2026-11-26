@@ -2273,10 +2273,13 @@ class AppState:
                 status = getattr(case.status, "value", case.status)
                 if is_attach_only(case) or str(status) not in OPEN_CASE_STATUSES:
                     continue
+                # The candidate is named (``known_case_id``): a person who closes it
+                # while the run waits for the gate gets it back as they left it, never
+                # a second case with its events (#4); the queued run shows on it.
                 await self._real_pipeline.investigate_cluster(
                     cluster, SourceSurface.AUTOMATED_SCAN, prefs,
                     query_source=self.poller.source_for_id(getattr(_src, "id", None)),
-                    trigger="detection",
+                    trigger="detection", known_case_id=case.case_id,
                 )
                 count += 1
             return count
