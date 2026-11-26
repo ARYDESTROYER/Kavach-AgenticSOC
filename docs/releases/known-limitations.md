@@ -329,6 +329,45 @@ The steps are in [Upgrades](../operations/upgrades.md#rolling-back-from-round-15
 
 **Required change:** none for later releases, which carry the forward contract.
 
+### Rolling back from 0.2.0 loses what the earlier build cannot keep
+
+Every field 0.2.0 stores is additive, and the earlier builds load documents with fields
+they do not know. They drop those fields when they save a document again. After an
+image-only rollback and the return:
+
+- **Recorded risk inputs** are lost on every case the earlier build saves again. Back on
+  0.2.0, such a case reads "not recorded", and its explanation uses today's weights.
+- **Second-factor lock counters** reset, so a locked account can try again at once.
+- **The read grants and the server-side forced password change revert** while the
+  earlier build runs: a custom role without a read grant can read again, and an account
+  that must change its password is not held to it. The rollback lane runs with sign-in
+  off, so it does not prove these two losses; they follow from the earlier build's code.
+- **The in-memory list of AI investigations** is lost, as on any restart.
+
+Usage-ledger rows are append-only and keep their rate fields. What's new markers
+survive, because the earlier build keeps personal preference entries it does not know.
+The steps are in [Upgrades](../operations/upgrades.md#rolling-back-from-020).
+
+The image-only rollback rehearsal to v0.1.1 on PostgreSQL: Recorded at release
+preparation.
+
+**Required change:** none for later releases; the earlier builds cannot be changed.
+
+### The audit id column is widened in place on PostgreSQL
+
+Every published release up to v0.1.12 created the PostgreSQL `audit.id` column as a
+32-bit integer. On its first start on such a database, 0.2.0 widens the column and its
+sequence to `bigint` in place. PostgreSQL rewrites the audit table to do it and holds an
+exclusive lock on it, so a large audit table makes the first start slower and audit
+writes wait until it finishes. A rollback never narrows the column again. The time per
+million rows is measured at release preparation.
+
+**Required control:** on a very large audit table, run the two `ALTER` statements in
+[Upgrades](../operations/upgrades.md#the-audit-id-column) in a maintenance window before
+upgrading. If the widening fails, the backend still starts, and
+`GET /api/diagnostics/health` reports the failed schema migration with the statements
+to run; strict audit writes, such as approving a proposal, fail until then.
+
 ### Single replica only
 
 Run exactly one backend replica. Signature locks, receiver ownership, schedulers,
@@ -341,8 +380,15 @@ and deliver inconsistent live updates. Workspace Chat's running answers are also
 process-local: the turn registry, the buffer a browser rejoins a running answer from,
 Stop, and the questions-at-once bounds live in one backend process. A backend restart
 ends running answers (nothing is saved for them, and the question can be asked again),
-and a second replica would neither see nor stop the first one's answers. The [scale-out roadmap](../architecture/ingestion.md#scale-out-roadmap)
-defines the required worker/lease split.
+and a second replica would neither see nor stop the first one's answers. The list of AI
+investigations in progress is process-local too: `GET /api/investigations/active`, the
+**AI working** chip, the queue marks and the navigation count show only the runs of the
+backend that serves the request, and a restart forgets them (the case itself keeps the
+run's result). The guard against a second reinvestigation of the same case is held in
+the same list. The [scale-out roadmap](../architecture/ingestion.md#scale-out-roadmap)
+defines the required worker/lease split. The second-factor sign-in step keeps its
+pending tokens in memory too, at most 10,000; the per-account failure count is stored and
+stays the lasting bound.
 
 Application background jobs do use strict-CAS mutations and renewable five-minute
 leases. That narrow registry protection is not a distributed application runtime: the
@@ -405,6 +451,12 @@ both, and another replica would not share them.
 Cases retain selected event IDs and evidence, but the suite does not yet provide a
 durable raw-event archive for pushed data. Keep the authoritative event in the
 source/broker/object store during evaluation.
+
+On a push source, correlation looks back over the last 500 events that source delivered,
+held in memory and lost on restart. A rule with a long window on a busy push source
+therefore sees at most those 500 events, not its whole window. A case built from a push
+source always says its events are not retrievable on the Evidence tab, even while that
+memory still holds them.
 
 ### Receiver supervision is process-local
 
@@ -499,6 +551,47 @@ a count its answer would contradict. Case lists in chat answers name a case by i
 and a short ID until the lookups return case numbers, and chat cannot yet filter cases by
 the signed-in analyst, so the answer to "Which of my open cases should I work on first?"
 says so and shows the open queue by assignee.
+
+### Case chat is a sixth tab
+
+A case has six tabs this release: Brief, Evidence, AI investigation, Response, Activity
+and Chat. Alt+2, Alt+4 and Alt+5 open different tabs than in earlier releases, and Chat
+moved to Alt+6. A later release is planned to move case chat into the case facts column,
+which brings the tabs back to five and changes the keys again.
+
+### Explanations of older records use today's settings
+
+Cases scored, decisions made and model calls recorded before 0.2.0 did not keep their
+inputs, thresholds or rates. Their explanations say "not recorded" and, where they can,
+use today's weights, policy or prices, marked as such. On Elasticsearch, a deployment
+whose client may not read or change index templates cannot add the new cases mapping,
+so its cases keep no risk inputs either; the backend logs this once.
+
+### Single sign-on maps only built-in roles
+
+A provider's default role and each group mapping must be a built-in role, and a custom
+role name is refused when the provider is saved. Mapping a group to a custom role is in
+the backlog. A provider saved before 0.2.0 with a custom role value is kept as stored
+until it is next changed. Give an SSO user custom-role grants on their account after
+their first sign-in.
+
+### Cost figures follow cost:view in case text, not everywhere
+
+Without `cost:view`, the cost figures in the text of a case's timeout, decision, runbook
+AI and budget rows read "hidden", and amounts "(amount hidden)": in the trace, the
+timeline, the activity feed, the case rationale and chat answers about the case. Tool
+output and log evidence are shown as they were recorded and are never rewritten. Two
+places still show cost text: the Audit log shows each row's summary as recorded to
+anyone with `audit:view` (every built-in role that holds it also holds `cost:view`), and
+a budget refusal's spend figure is stored in the case's error text, which every
+`cases:read` holder sees.
+
+### Demo user and host cases score low
+
+The seeded Demo runs with the tenant's asset criticality map, which is normally empty, so
+its user and host cases score about 10 to 40 and their impact reads low. A Demo asset map
+would raise about half of the seeded scores by some 9 points and change two seeded
+cases; it is not shipped.
 
 ### Screenshots are checked, not decoded
 

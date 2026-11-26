@@ -183,6 +183,20 @@ changing another administrator's role.
 Deleting an account also deletes that user's Workspace chat conversations, answer
 ratings and reports, and stops their running chat answers. Audit records are kept.
 
+## Read grants
+
+With role-based access on, every read asks for the grant of the data it returns, so a
+custom role can hide an area by leaving its read grant out: for example cases without
+`cases:read`, the Standup without `metrics:view`, the Models page without `models:read`,
+or a case's AI usage without `cost:view`. The built-in roles hold all of these grants.
+Only people who manage accounts (`users:manage`) see who started an AI investigation;
+everyone else sees "Started by a person". The full list is in
+[Permissions](../reference/permissions.md#read-grants-on-every-read).
+
+An account you create, or whose password you reset, must change that password before
+anything else, and a reset signs the account out everywhere (see
+[Authentication](authentication.md#sessions)).
+
 ## Limitations
 
 - Agentic SOC does not yet expose a complete API-key lifecycle for automation clients.

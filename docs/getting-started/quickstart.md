@@ -89,7 +89,10 @@ without contacting a model provider or upstream security system.
 The script starts the backend on port `8088` with sign-in enabled and the Console dev
 server on port `5173`, then completes setup for you. Open `http://127.0.0.1:5173` and
 sign in with the demo-only account printed by the script. In the standard seed it is
-`Admin` / `Admin@123`. Stop both processes with <kbd>Ctrl</kbd>+<kbd>C</kbd>.
+`Admin` / `Admin@123`. If this account has not seen the newest release's notes, a short
+**What's new** welcome shows their highlights once after you sign in; close it to go
+on. Stop both processes with
+<kbd>Ctrl</kbd>+<kbd>C</kbd>.
 
 !!! warning "Demo credentials are not deployment credentials"
 
@@ -245,7 +248,10 @@ In **Case Manager**, a case's Brief tab shows the **AI** lane, labelled **AI**, 
 the **Decision** lane, labelled **Code**. The AI investigation tab holds the advisory
 **AI assessment** and the trace; the decision's policy inputs are one click away in the
 Decision lane. The close or escalate decision is made by deterministic code against the
-operator policy, never by the model. The screenshot below is from version 0.1.13, where
+operator policy, never by the model. Point at the case's risk score to see its formula
+with the real numbers, and select it for the whole calculation (see
+[Explainable numbers](../analyst/explainable-numbers.md)). While the AI investigates a
+case, its header shows **AI working**. The screenshot below is from version 0.1.13, where
 the assessment and the decision card shared one tab.
 
 <figure markdown="span">

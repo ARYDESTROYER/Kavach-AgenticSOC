@@ -77,8 +77,13 @@ empty), the spent and remaining amounts of the AI budget (`GET /api/budget/statu
 the caps and settings for `models:read`), the cost and tokens on a case's agent timeline,
 a case's own investigation cost (`token_cost` is `null` on every case the API returns,
 and the case page, its case facts and Entity investigation leave it out), and the
-recorded case cost in Agent effectiveness (shown as unavailable). A role without
-`cost:view` still reads everything else on those pages.
+recorded case cost in Agent effectiveness (shown as unavailable). Since 0.2 it also
+covers a case's AI usage list (`GET /api/cases/{case_id}/usage`), the cost values in
+**View all fields**, and the cost figures in the text of a case's timeout, decision,
+runbook AI and budget rows, which read "hidden" (amounts "(amount hidden)") in the trace,
+the timeline, the activity feed, the case rationale and chat answers about the case.
+Tool output and log evidence are never rewritten. A role without `cost:view` still
+reads everything else on those pages.
 
 ## Runbooks
 
@@ -160,6 +165,32 @@ A refused screenshot delete writes an Access denied row. See
 file of the rows the person can read, so it needs `audit:view` as well; both are checked
 again at every page of the export and at download. An export also asks for a fresh
 sign-in and is not available in Demo Mode. See [Audit log](../administration/audit-log.md).
+
+### Read grants on every read
+
+Since version 0.2, every read of the API asks for the grant of the data it returns, as the
+writes always did. The built-in roles hold every one of these grants, so their access does
+not change; a custom role without the grant now gets `403` on that read.
+
+| Read | Grant |
+|---|---|
+| A case's export, trace, rationale, activity, thread and tasks; `GET /api/scans` and `/api/scans/notifications` | `cases:read` |
+| The AI investigations in progress (`GET /api/investigations/active` and the `investigations` live topic) | `cases:read` |
+| A case's raw events (`GET /api/cases/{case_id}/events`) | `cases:read` and `sources:read` |
+| A case's AI usage (`GET /api/cases/{case_id}/usage`) and cost values in **View all fields** | `cost:view` |
+| A source's feeds (`GET /api/sources/{source_id}/feeds`) | `sources:read` |
+| `GET /api/settings`, and today's network range in a case's risk explanation | `settings:read` |
+| The Standup (`GET /api/standup` and its report, action items and acknowledgements) and `GET /api/metrics/explain` | `metrics:view` |
+| `GET /api/llm/models`, `GET /api/models` and `GET /api/llm/providers` | `models:read` |
+| `GET /api/roles` | `roles:read` |
+| The name of the person who started an AI run | `users:manage` |
+
+Everyone else who may read the case sees "Started by a person" without the name. A few
+reads need only a signed-in account: your own account, preferences, sessions, views,
+terminology, notification preferences and inbox, the connector catalog, the persona
+catalog, and the live event stream, whose topics have their own grants.
+`GET /api/metrics/breakdown` and `GET /api/rules/summary` check their grants inside the
+request, per breakdown kind and per section.
 
 ## Settings and narrow administration grants
 

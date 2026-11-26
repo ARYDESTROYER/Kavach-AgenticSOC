@@ -216,7 +216,10 @@ repository. It is enabled on fresh installations with this configuration:
 }
 ```
 
-Only a canonical public `https://github.com/owner/repository` URL is accepted. Branch
+Only a canonical public `https://github.com/owner/repository` URL is accepted. A stored
+value that names the old repository, `ARYDESTROYER/Agentic-Kibana` in any letter case,
+is read as `https://github.com/ARYDESTROYER/Kavach-AgenticSOC`; any other value is kept
+as stored. Branch
 refs are bounded and reject ambiguous Git syntax. The discovery client is pinned to
 `api.github.com`, rejects redirects and oversized/malformed responses, and reads the
 branch head plus root `VERSION`. Stable discovery additionally requires the exact
@@ -399,8 +402,19 @@ normalised when read (a bad value is removed, never rejected):
 |---|---|
 | `misc.dashboards_hidden` | Built-in dashboard ids the user hid from the Dashboards library (`builtin:<name>`, at most 8; the Cyber Defence Center cannot be hidden) |
 | `misc.dismissed_intros` | Ids of the introductory notes the user dismissed (lower-case ids, at most 50) |
+| `misc.whats_new_seen` | The newest release-notes update id the user has seen in **What's new** (the same id grammar); absent means the account predates the feature, so the welcome shows once |
+| `misc.whats_new_auto` | `false` turns off the **What's new** welcome after updates (**Show What's new after updates**); absent means on |
 
-A change to either list is recorded in the audit log before it is saved. A personal
+A change to `dashboards_hidden`, `dismissed_intros` or `whats_new_seen` is recorded in
+the audit log before it is saved. A new account starts with `whats_new_seen` set to the
+newest update id this build ships, and the setup wizard sets it when it completes. With
+sign-in off, every caller shares one set of preferences, so the marker counts once per
+installation.
+
+The organization's default theme has one home: `branding.default_theme`, edited under
+**Settings → Organization → Branding**. The older `customization.default_theme` is read
+once on load: while Branding is still at its factory default, a non-`system` value is
+copied into Branding, and the older key becomes `system`. A personal
 dashboard (`DashboardLayout`) gains two optional fields: `default_window`, the window
 its time-range picker starts on (`now-24h`, `now-7d`, `now-30d` or `now-90d`; absent means
 the last 24 hours), and `derived_from`, the built-in board it was copied from. A request
@@ -436,6 +450,16 @@ rbac_switch_moved` to a body that would change it, and changing any other `rbac`
 (`roles`, `resources`, `custom_roles`, `denies`, `default_role`) through it needs
 `roles:manage` and a fresh sign-in. See
 [Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access).
+
+### Single sign-on
+
+A `PUT /api/settings` that changes the `sso` block (a provider added, removed or edited in
+any field, or `sso.enabled` changed) needs an account whose stored role is Super admin,
+with a strict fresh sign-in; so does `POST /api/auth/sso/providers/{provider_id}/secret`.
+Anyone else gets `403` with "Only a Super admin can change single sign-on." A provider's
+`default_role` and each `group_role_map` value must be a built-in role; a custom role
+name is refused with `422` when the provider is saved. A provider saved before 0.2.0 with
+a custom role value is kept as stored until it is next changed.
 
 ### Team activity
 
