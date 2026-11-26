@@ -2,10 +2,11 @@
  * The case's investigation cost, as a button that opens every AI call behind it (Round 16
  * SPEC §4.5 WP14, research data-visibility R3). The popover reads
  * `GET /api/cases/{id}/usage` when it opens: one row per ledger call (time, role, model,
- * tier, input, output and cache tokens, latency, attempts, an "Estimated" mark, the cost),
- * each with the cost formula in its own numbers and where its price came from, then the
- * case chat spend on its own line (never part of the investigation cost) and whether the
- * calls add up to the case's recorded cost.
+ * tier, input, output and cache tokens, latency, attempts, an "Estimated" mark, the build
+ * that wrote it, the cost), each with the cost formula in its own numbers and where its
+ * price came from, then the case chat spend and the runbook AI help spend on their own
+ * lines (neither is part of the investigation cost) and whether the calls add up to the
+ * case's recorded cost.
  *
  * The caller shows it only to a holder of `cost:view`, which the route requires too. A
  * model name is a text value (#9). Reads the ledger only; the gateway stays its only
@@ -21,7 +22,7 @@ import type { CaseUsagePage, CaseUsageRow } from '@/lib/types';
 import { Badge } from '@/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
 
-import { costFormula, exactMoney, priceBasisWords, recomputeCost, tokens } from './usageFormula';
+import { costFormula, exactMoney, priceBasisWords, recomputeCost, tokens, usageBuildText } from './usageFormula';
 import { eventTime } from './time';
 
 export interface CaseUsageButtonProps {
@@ -33,8 +34,13 @@ export interface CaseUsageButtonProps {
 
 type Loaded = { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; page: CaseUsagePage };
 
-/** "Router", "Investigator", "Case chat": a ledger role in words. */
-function roleWords(row: CaseUsageRow): string {
+/**
+ * "Router", "Investigator", "Case chat", "Runbook AI help": what a ledger call was for. A
+ * runbook step draft or suggestion uses the chat role on the `runbook` surface, so the
+ * surface is read first.
+ */
+export function roleWords(row: Pick<CaseUsageRow, 'role' | 'surface'>): string {
+  if (row.surface === 'runbook') return 'Runbook AI help';
   if (row.surface === 'chat' || row.role === 'chat') return 'Case chat';
   return row.role ? humanizeToken(row.role) : 'Model call';
 }
@@ -65,6 +71,7 @@ const UsageRow: React.FC<{ row: CaseUsageRow }> = ({ row }) => {
   const formula = costFormula(row);
   const differs = costDiffers(row);
   const failed = row.outcome && row.outcome !== 'ok' && row.outcome !== 'success';
+  const build = usageBuildText(row);
   return (
     <li className="space-y-0.5 py-2 first:pt-0 last:pb-0" data-testid="case-usage-row">
       <div className="flex min-w-0 items-baseline gap-2">
@@ -93,6 +100,12 @@ const UsageRow: React.FC<{ row: CaseUsageRow }> = ({ row }) => {
           <>
             <span aria-hidden>·</span>
             <span>{`${row.attempts.toLocaleString('en-US')} attempts`}</span>
+          </>
+        ) : null}
+        {build ? (
+          <>
+            <span aria-hidden>·</span>
+            <span data-testid="case-usage-build">{build}</span>
           </>
         ) : null}
         {row.usage_estimated ? (
@@ -124,7 +137,7 @@ const UsageRow: React.FC<{ row: CaseUsageRow }> = ({ row }) => {
         <p className="text-2xs text-muted-foreground">Rates not recorded for this call. The cost is shown as stored.</p>
       )}
       <p className="text-2xs text-muted-foreground">
-        {priceBasisWords(row.price_basis)}
+        {priceBasisWords(row.price_basis, row.pricing_source)}
         {row.cache_write_tokens && row.cache_write_ttl ? `, cache kept for ${row.cache_write_ttl}` : ''}
       </p>
     </li>
@@ -169,6 +182,12 @@ export const CaseUsageDetails: React.FC<{ loaded: Loaded; totalCost: number }> =
         <p className="text-muted-foreground" data-testid="case-usage-chat">
           {`Case chat on this case: ${atLeast}${fmtMoney(page.totals.chat, currency)}. Not part of the investigation cost.`}
         </p>
+        {/* Additive: a server before the runbook total sends none and counts that spend as chat. */}
+        {typeof page.totals.runbook === 'number' && page.totals.runbook > 0 ? (
+          <p className="text-muted-foreground" data-testid="case-usage-runbook">
+            {`Runbook AI help on this case: ${atLeast}${fmtMoney(page.totals.runbook, currency)}. Not part of the investigation cost.`}
+          </p>
+        ) : null}
         {page.totals.other > 0 ? (
           <p className="text-muted-foreground">{`Other AI use on this case: ${atLeast}${fmtMoney(page.totals.other, currency)}.`}</p>
         ) : null}

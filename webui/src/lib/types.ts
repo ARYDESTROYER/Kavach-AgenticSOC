@@ -6440,6 +6440,8 @@ export interface CaseUsageRow {
 export interface CaseUsageTotals {
   pipeline: number;
   chat: number;
+  /** Runbook AI help (surface `runbook`); absent from a server before it was split out. */
+  runbook?: number;
   other: number;
 }
 

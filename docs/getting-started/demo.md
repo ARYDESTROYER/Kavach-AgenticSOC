@@ -43,7 +43,9 @@ normalization, correlation, investigation, and deterministic decision pipeline.
 Demo-generated cases, events, usage, retrieval data, and polling cursors are kept in
 an isolated demo store. Demo spend is simulated: the mock model is never billed, and
 each Demo call is priced at a fixed simulated rate so the cost figures add up. A
-seeded case's cost matches the ledger rows of its investigation. The real
+seeded case's cost matches the ledger rows of its investigation, and its AI
+investigation trace shows that investigation's steps: the investigator's prompt, one
+read-only log query and the verdict. The real
 deterministic case policy is still used inside the sandbox: an uncertain verdict
 remains open for a human.
 

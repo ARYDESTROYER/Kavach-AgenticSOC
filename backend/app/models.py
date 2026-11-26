@@ -2677,10 +2677,13 @@ class CaseUsageTotals(BaseModel):
     """A case's ledger spend in USD, split as the Console shows it: ``pipeline`` (the
     investigation roles, ``constants.CASE_PIPELINE_USAGE_ROLES``, the figure
     ``Case.token_cost`` records) and ``chat`` (case chat on this case, never part of the
-    investigation cost); ``other`` holds anything else written with the case id."""
+    investigation cost); ``runbook`` (additive) is runbook AI help on the case, the
+    calls on surface ``runbook``, never case chat; ``other`` holds anything else written
+    with the case id."""
 
     pipeline: float = 0.0
     chat: float = 0.0
+    runbook: float = 0.0
     other: float = 0.0
 
 

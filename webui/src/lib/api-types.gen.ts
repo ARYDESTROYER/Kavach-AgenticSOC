@@ -2138,8 +2138,9 @@ export interface paths {
          *     deterministic actor, else the agent kinds); ``detail`` carries the bounded audit
          *     record behind it; ``cost_basis`` is ``exact`` when the span carries its own call's
          *     cost and latency from the ledger and ``split`` when a role's total is shared evenly
-         *     across its steps. ``rows_total`` and ``truncated`` say when the trace shows only
-         *     the newest records of a long-lived case.
+         *     across its steps; the decision span has none, because code made the decision and no
+         *     model call or ledger row exists for it. ``rows_total`` and ``truncated`` say when
+         *     the trace shows only the newest records of a long-lived case.
          */
         get: operations["case_timeline_api_cases__case_id__timeline_get"];
         put?: never;
@@ -9086,7 +9087,9 @@ export interface components {
          * @description A case's ledger spend in USD, split as the Console shows it: ``pipeline`` (the
          *     investigation roles, ``constants.CASE_PIPELINE_USAGE_ROLES``, the figure
          *     ``Case.token_cost`` records) and ``chat`` (case chat on this case, never part of the
-         *     investigation cost); ``other`` holds anything else written with the case id.
+         *     investigation cost); ``runbook`` (additive) is runbook AI help on the case, the
+         *     calls on surface ``runbook``, never case chat; ``other`` holds anything else written
+         *     with the case id.
          */
         CaseUsageTotals: {
             /**
@@ -9104,6 +9107,11 @@ export interface components {
              * @default 0
              */
             pipeline: number;
+            /**
+             * Runbook
+             * @default 0
+             */
+            runbook: number;
         };
         /** ChangePasswordBody */
         ChangePasswordBody: {

@@ -145,7 +145,11 @@ as a completed observation. Only completion of every configured query group make
 run `measured`; a completed zero-hit result is then an honest measured empty result.
 
 The trace marks people's steps, case chat and automatic code steps apart from the AI's
-steps, and its filter offers All, Agent, Tool, Code, People and Chat. Each step's
+steps, and its filter offers All, Agent, Tool, Code, People and Chat. The step counts
+show once, beside the **Investigation trace** heading; while a filter is on, the trace
+also says how many steps it shows, for example "3 of 12 steps". Opening the Evidence tab
+is not a step of the investigation, so the trace leaves it out; it stays in Activity and
+the audit log. Each step's
 **Details** show what it recorded: the model, latency, tokens, cost and how the cost was
 found, and the tool input, query and output, with log values marked untrusted. A call
 shows its own cost and latency when the ledger names it, otherwise an even split, and

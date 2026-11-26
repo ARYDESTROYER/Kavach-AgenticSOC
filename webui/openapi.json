@@ -2957,7 +2957,7 @@
         "type": "object"
       },
       "CaseUsageTotals": {
-        "description": "A case's ledger spend in USD, split as the Console shows it: ``pipeline`` (the\ninvestigation roles, ``constants.CASE_PIPELINE_USAGE_ROLES``, the figure\n``Case.token_cost`` records) and ``chat`` (case chat on this case, never part of the\ninvestigation cost); ``other`` holds anything else written with the case id.",
+        "description": "A case's ledger spend in USD, split as the Console shows it: ``pipeline`` (the\ninvestigation roles, ``constants.CASE_PIPELINE_USAGE_ROLES``, the figure\n``Case.token_cost`` records) and ``chat`` (case chat on this case, never part of the\ninvestigation cost); ``runbook`` (additive) is runbook AI help on the case, the\ncalls on surface ``runbook``, never case chat; ``other`` holds anything else written\nwith the case id.",
         "properties": {
           "chat": {
             "default": 0.0,
@@ -2972,6 +2972,11 @@
           "pipeline": {
             "default": 0.0,
             "title": "Pipeline",
+            "type": "number"
+          },
+          "runbook": {
+            "default": 0.0,
+            "title": "Runbook",
             "type": "number"
           }
         },
@@ -24347,7 +24352,7 @@
     },
     "/api/cases/{case_id}/timeline": {
       "get": {
-        "description": "A TYPED ReAct span timeline for a case (the ``TraceSpan`` shape).\n\nAssembled from the already-recorded ``tlsoc-agent-audit`` rows (oldest-first) +\nthe per-case usage/cost ledger. Each audit row becomes ONE span classified by\n``kind`` (invoke_agent | chat | execute_tool | decision) with ``step_index`` /\n``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION\nis rendered as a distinct TERMINAL ``decision`` span reporting the decision as it was\nRECORDED (its time, result, decider, rationale and the gate the run recorded, Round\n16 B63), with today's policy beside it; it mutates nothing (#3 made visible).\n\nTRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log\npayloads (es_query / tool output) are separated by the per-span ``trusted`` flag\n(#9). NEVER 404s: an unknown or not-yet-investigated case returns empty spans.\n``prompt_excerpt`` text is dropped from a span summary when\n``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle).\n\nThe cost and tokens come from the usage ledger, which ``cost:view`` governs (the\ngrant ``GET /api/usage/summary?case_id=`` needs): for a caller without it the\nledger is not read, every span's ``cost`` and ``tokens`` are ``null`` and so are\n``totals.cost`` and ``totals.tokens``.\n\nRound 16 (SPEC §4.5 WP10, [dv] R4 and R14): a span's ``kind`` says who acted\n(``person`` for a person's row, ``chat`` for case chat, ``system`` for a\ndeterministic actor, else the agent kinds); ``detail`` carries the bounded audit\nrecord behind it; ``cost_basis`` is ``exact`` when the span carries its own call's\ncost and latency from the ledger and ``split`` when a role's total is shared evenly\nacross its steps. ``rows_total`` and ``truncated`` say when the trace shows only\nthe newest records of a long-lived case.",
+        "description": "A TYPED ReAct span timeline for a case (the ``TraceSpan`` shape).\n\nAssembled from the already-recorded ``tlsoc-agent-audit`` rows (oldest-first) +\nthe per-case usage/cost ledger. Each audit row becomes ONE span classified by\n``kind`` (invoke_agent | chat | execute_tool | decision) with ``step_index`` /\n``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION\nis rendered as a distinct TERMINAL ``decision`` span reporting the decision as it was\nRECORDED (its time, result, decider, rationale and the gate the run recorded, Round\n16 B63), with today's policy beside it; it mutates nothing (#3 made visible).\n\nTRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log\npayloads (es_query / tool output) are separated by the per-span ``trusted`` flag\n(#9). NEVER 404s: an unknown or not-yet-investigated case returns empty spans.\n``prompt_excerpt`` text is dropped from a span summary when\n``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle).\n\nThe cost and tokens come from the usage ledger, which ``cost:view`` governs (the\ngrant ``GET /api/usage/summary?case_id=`` needs): for a caller without it the\nledger is not read, every span's ``cost`` and ``tokens`` are ``null`` and so are\n``totals.cost`` and ``totals.tokens``.\n\nRound 16 (SPEC §4.5 WP10, [dv] R4 and R14): a span's ``kind`` says who acted\n(``person`` for a person's row, ``chat`` for case chat, ``system`` for a\ndeterministic actor, else the agent kinds); ``detail`` carries the bounded audit\nrecord behind it; ``cost_basis`` is ``exact`` when the span carries its own call's\ncost and latency from the ledger and ``split`` when a role's total is shared evenly\nacross its steps; the decision span has none, because code made the decision and no\nmodel call or ledger row exists for it. ``rows_total`` and ``truncated`` say when\nthe trace shows only the newest records of a long-lived case.",
         "operationId": "case_timeline_api_cases__case_id__timeline_get",
         "parameters": [
           {

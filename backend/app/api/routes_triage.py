@@ -315,8 +315,9 @@ async def case_timeline(
     deterministic actor, else the agent kinds); ``detail`` carries the bounded audit
     record behind it; ``cost_basis`` is ``exact`` when the span carries its own call's
     cost and latency from the ledger and ``split`` when a role's total is shared evenly
-    across its steps. ``rows_total`` and ``truncated`` say when the trace shows only
-    the newest records of a long-lived case."""
+    across its steps; the decision span has none, because code made the decision and no
+    model call or ledger row exists for it. ``rows_total`` and ``truncated`` say when
+    the trace shows only the newest records of a long-lived case."""
     rows = await state.audit.records_for_case(case_id)
     rows_total, rows_relation = await _audit_row_total(state, case_id)
     truncated = _trace_truncated(len(rows), rows_total)
@@ -897,7 +898,8 @@ def _decision_span(
         summary=summary,
         payload_ref=payload,
         detail=detail,
-        cost_basis="exact",
+        # Code made the decision: no model call, so no ledger row to name a cost basis.
+        cost_basis=None,
     )
 
 

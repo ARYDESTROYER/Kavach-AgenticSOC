@@ -10,8 +10,10 @@
  *      events" opens the Evidence tab narrowed to those events) and the query to
  *      reproduce them, with the full assessment evidence (<WhyPanel>) one disclosure away.
  *   2. INPUTS: the knowledge and procedures the investigator consulted.
- *   3. TRACE: the ReAct <TraceTimeline>, with its step and tool counts, an actor filter
- *      and "Jump to decision"; collapsed, and open while an AI run is under way.
+ *   3. TRACE: the ReAct <TraceTimeline>, with its step and tool counts (once, beside
+ *      the heading; the card repeats a count only while a filter narrows it), an actor
+ *      filter and "Jump to decision"; collapsed, and open while an AI run is under way.
+ *      A person opening the Evidence tab is not a step of it (`investigationSpans`).
  *   4. PREVIOUS GRADINGS, when any.
  *
  * Moved out (Round 16): the Decision and the automation applied (the Brief's Decision
@@ -42,6 +44,7 @@ import {
   TRACE_FILTERS,
   TraceTimeline,
   filterSpans,
+  investigationSpans,
   traceCountsText,
   type TraceActor as TraceSpanActor,
 } from '@/soc/components/TraceTimeline';
@@ -77,6 +80,11 @@ export function rationaleCutText(rationale: CaseRationale | null | undefined): s
  * counts a person's step or a chat turn, and People and Chat have their own choices.
  */
 type TraceActor = TraceSpanActor | 'all';
+
+/** "3 of 12 steps": the trace card's count while a filter narrows it. */
+export function filteredTraceCountText(shown: number, total: number): string {
+  return `${shown.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} step${total === 1 ? '' : 's'}`;
+}
 
 const DisclosureTrigger: React.FC<{
   open: boolean;
@@ -128,12 +136,17 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
   const findings = (c.evidence || []).filter((e) => e && (e.summary || e.query));
   const reproduce = (c.reproduce_query || '').trim();
 
-  const spans = timeline?.spans ?? [];
+  // A person opening the Evidence tab is not a step of the investigation (SPEC 8.1): it
+  // stays in Activity and the audit log, out of this trace and its counts.
+  const spans = React.useMemo(() => investigationSpans(timeline?.spans ?? []), [timeline]);
   const hasDecisionStep = spans.some((span) => span.kind === 'decision');
   const filteredTimeline = React.useMemo<TimelineResponse | null>(() => {
-    if (!timeline || actor === 'all') return timeline;
-    return { ...timeline, spans: filterSpans(timeline.spans, actor) };
-  }, [timeline, actor]);
+    if (!timeline) return timeline;
+    return { ...timeline, spans: actor === 'all' ? spans : filterSpans(spans, actor) };
+  }, [timeline, spans, actor]);
+  // The heading counts every step; the card repeats a count only to show what a filter kept.
+  const filteredCounts =
+    filteredTimeline && actor !== 'all' ? filteredTraceCountText(filteredTimeline.spans.length, spans.length) : null;
 
   const handleTraceToggle = React.useCallback(
     (open: boolean) => {
@@ -266,12 +279,15 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
             >
               Investigation trace
             </h2>
+            {/* A failed load says so below, with Retry: no count and no "Loads when opened". */}
             <span className="text-xs tabular-nums text-muted-foreground" data-testid="investigation-trace-counts">
               {timeline
                 ? traceCountsText(spans)
                 : timelineLoading
                   ? 'Loading…'
-                  : 'Loads when opened'}
+                  : timelineError
+                    ? null
+                    : 'Loads when opened'}
             </span>
             <div className="ml-auto flex flex-wrap items-center gap-2">
               {hasDecisionStep ? (
@@ -308,6 +324,7 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
                   error={timelineError}
                   onRetry={onRetryTimeline}
                   presentation="case-manager"
+                  countsText={filteredCounts}
                 />
               )}
             </div>
