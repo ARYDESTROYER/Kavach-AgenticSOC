@@ -168,3 +168,174 @@ bundle (`npm run docs:bundle`), once in each theme:
 - **`test_app_help_tool_keeps_a_destination_the_console_labels_confirm`** fails at `08db702`,
   with or without this package's corpus (`settings:data_export` comes back beside
   `page:batchjobs`). The XFINT merge (`605a61e`, after this base) changes that help link.
+
+## WP17D: a screenshot for every visible change
+
+The acceptance pass found that Communication, What's new listed 66 highlights for 0.2.0 and
+only 18 had a figure. WP17D gave a light and a dark figure to every highlight an operator can
+see in the seeded Demo, and captured again each image of the newest update whose interface the
+acceptance fix packages (FXA1, FXA2, FXB, FXC, FXD1, FXD2 and FXE) had changed. The page now
+shows 44 figures; 22 highlights stay text only, each with its reason below. No update id,
+date, status or highlight changed, and no highlight was featured or unfeatured.
+
+### How they were taken
+
+- **Source.** The seeded Demo only (`DEMO_MODE=seeded ./scripts/run-demo.sh`) on the tree at
+  `39335e5`, signed in as the Demo's `Admin`. Every person, host and address on screen is the
+  seeded Demo's fictional data (`lumenpay.example` and the like).
+- **Browser and encoding.** Playwright 1.63.0 Chromium, headless, 1440 by 900 CSS pixels at
+  device scale factor 2, so a full frame is 2880 by 1800 pixels and a crop keeps the device
+  scale. PNG from the browser, then WebP through ImageMagick 6.9 with `-strip -quality Q
+  -define webp:method=6`, quality 80 to 90. Every file is at most 250,000 bytes and at most
+  2,880 pixels wide, and each light and dark pair has the same size.
+- **Theme.** Switched with the top-bar theme control (the sign-in page with its own Light and
+  Dark buttons), never by the browser scheme alone. Each file was checked by mean luminance
+  (every `-light` file above 0.7, every `-dark` file below 0.13) and by eye.
+- **Privacy.** Each image was looked at for secrets, real emails and personal names. The only
+  identifiers on screen are 8-character prefixes of throwaway Demo session ids in
+  `account-activity`, which ended with the Demo. The `required-mfa` crop starts below the
+  dialog's email and phone fields, and no password is visible anywhere (the sign-in field is
+  masked and the temporary password field is empty).
+- **What FXF changes was left out.** No capture shows a case that a run reopened (the Brief
+  People row), the routing sentence of the Decision lane (`case-tabs` and `case-manager.webp`
+  show a case the AI closed, whose line reads "Closed automatically by the case policy.",
+  and `case-workspace` and `ai-working` show the Evidence tab), the Branding preview, or any
+  explanation panel FXF changes (Agent effectiveness comparisons, the Team activity person
+  sheet, Standup counts, the noisiest rules, the posture change chips, the Auto-closed KPI
+  panel and the Metrics percentile steps). The risk panel in `explain-numbers` and the Total
+  cases card in `cyber-defence-center` are not among them.
+
+### Captured again (same name and size)
+
+| Highlight (update) | Light | Dark | Size |
+|---|---|---|---|
+| `ai-working` (0.2.0.2026-12) | `ai-working-light.webp`: 75,712 B | `ai-working-dark.webp`: 69,644 B | 1950 by 882 |
+| `case-workspace` (0.2.0.2026-12) | `case-workspace-light.webp`: 221,068 B | `case-workspace-dark.webp`: 210,976 B | 2880 by 1800 |
+| `case-tabs` (0.2.0.2026-12) | `case-tabs-light.webp`: 75,522 B | `case-tabs-dark.webp`: 71,062 B | 1950 by 1322 |
+| `explain-numbers` (0.2.0.2026-12) | `explain-numbers-light.webp`: 131,298 B | `explain-numbers-dark.webp`: 122,542 B | 1950 by 1664 |
+| `whats-new` (0.2.0.2026-12) | `whats-new-light.webp`: 163,242 B | `whats-new-dark.webp`: 156,636 B | 2880 by 1800 |
+| `sign-in` (0.2.0.2026-12) | `sign-in-light.webp`: 13,702 B | `sign-in-dark.webp`: 12,644 B | 1600 by 900 |
+| `case-records` (0.2.0.2026-12) | `case-records-light.webp`: 104,066 B | `case-records-dark.webp`: 95,932 B | 2880 by 1800 |
+
+What changed under each: the old `case-tabs`, `ai-working`, `case-workspace` and
+`explain-numbers` showed the Brief before FXA1, with the model's lane named "AI" beside its "AI"
+tag and the decision record word for word ("True positive routed to human: tp auto-close
+disabled."). The Brief now names that lane Assessment and says the decision in words.
+`case-tabs` and `explain-numbers` show the new Brief, and `ai-working` and `case-workspace` show
+the Evidence tab. `whats-new` shows the new `ai-working` as the page's first figure. The sign-in page's
+spacing (FXC) moved the form up by 100 CSS pixels, so the `sign-in` crop moved with it.
+`case-records` was captured again with the rest of the case page. The alt text of `ai-working`,
+`case-workspace`, `case-tabs` and `explain-numbers` now says what the new image shows.
+
+`repository-identity-{light,dark}.webp` was captured again and came out byte for byte the same,
+so it is unchanged. The single images of older updates (`calmer-case-manager`, `rbac-switch`,
+`setup-ai-runtime`, `install-create-admin`, `dashboards-library`, `audit-log`,
+`runbooks-library`, `chat-follow-ups`, `add-user` and `overview-redesign-{light,dark}`) show the
+interface of the update they belong to (SPEC §4.7 WP17), so they stay as they are.
+
+### Added
+
+| Highlight (update) | Light | Dark | Size |
+|---|---|---|---|
+| `team-activity` (0.2.0.2026-11-25) | `team-activity-light.webp`: 84,158 B | `team-activity-dark.webp`: 77,480 B | 2880 by 1800 |
+| `case-screenshots` (0.2.0.2026-11-25) | `case-screenshots-light.webp`: 20,728 B | `case-screenshots-dark.webp`: 19,410 B | 1390 by 704 |
+| `auto-close-review` (0.2.0.2026-11-25) | `auto-close-review-light.webp`: 133,658 B | `auto-close-review-dark.webp`: 125,890 B | 2880 by 1800 |
+| `close-case` (0.2.0.2026-11-25) | `close-case-light.webp`: 96,544 B | `close-case-dark.webp`: 86,800 B | 1632 by 1628 |
+| `account-activity` (0.2.0.2026-11-11) | `account-activity-light.webp`: 104,624 B | `account-activity-dark.webp`: 101,714 B | 2880 by 1800 |
+| `rule-sheets` (0.2.0.2026-11-06) | `rule-sheets-light.webp`: 86,288 B | `rule-sheets-dark.webp`: 78,956 B | 2880 by 1800 |
+| `severity-levels` (0.2.0.2026-11-06) | `severity-levels-light.webp`: 32,168 B | `severity-levels-dark.webp`: 30,758 B | 1462 by 834 |
+| `docked-navigation` (0.2.0.2026-11-06) | `docked-navigation-light.webp`: 115,750 B | `docked-navigation-dark.webp`: 111,620 B | 2880 by 1800 |
+| `chat-capacity` (0.2.0.2026-11-06) | `chat-capacity-light.webp`: 58,110 B | `chat-capacity-dark.webp`: 56,016 B | 1536 by 1520 |
+| `chat-starters` (0.2.0.2026-10-24) | `chat-starters-light.webp`: 56,874 B | `chat-starters-dark.webp`: 54,064 B | 2186 by 866 |
+| `chat-titles` (0.2.0.2026-10-24) | `chat-titles-light.webp`: 29,200 B | `chat-titles-dark.webp`: 27,844 B | 1992 by 416 |
+| `chat-unlimited` (0.2.0.2026-10-12) | `chat-unlimited-light.webp`: 56,542 B | `chat-unlimited-dark.webp`: 53,864 B | 1536 by 980 |
+| `remember-me` (0.2.0.2026-10-12) | `remember-me-light.webp`: 48,056 B | `remember-me-dark.webp`: 43,536 B | 1600 by 900 |
+| `report-downloads` (0.2.0.2026-10-12) | `report-downloads-light.webp`: 27,340 B | `report-downloads-dark.webp`: 25,350 B | 824 by 886 |
+| `workspace-chat` (0.2.0.2026-10-09) | `workspace-chat-light.webp`: 144,362 B | `workspace-chat-dark.webp`: 133,574 B | 2880 by 1800 |
+| `reports` (0.2.0.2026-10-09) | `reports-light.webp`: 152,542 B | `reports-dark.webp`: 145,312 B | 2880 by 1800 |
+| `kpi-drilldown` (0.2.0.2026-09-09) | `kpi-drilldown-light.webp`: 137,308 B | `kpi-drilldown-dark.webp`: 124,854 B | 2880 by 1800 |
+| `auto-closed-tile` (0.2.0.2026-09-09) | `auto-closed-tile-light.webp`: 19,760 B | `auto-closed-tile-dark.webp`: 18,870 B | 2728 by 292 |
+| `cyber-defence-center` (0.2.0.2026-08-24) | `cyber-defence-center-light.webp`: 125,018 B | `cyber-defence-center-dark.webp`: 119,218 B | 2880 by 1800 |
+| `human-vs-ai` (0.2.0.2026-08-24) | `human-vs-ai-light.webp`: 14,182 B | `human-vs-ai-dark.webp`: 13,570 B | 924 by 966 |
+| `required-mfa` (0.2.0.2026-08-24) | `required-mfa-light.webp`: 40,438 B | `required-mfa-dark.webp`: 38,520 B | 1440 by 1318 |
+| `enrichment-providers` (0.2.0.2026-08-24) | `enrichment-providers-light.webp`: 155,984 B | `enrichment-providers-dark.webp`: 151,026 B | 2880 by 1800 |
+| `background-jobs` (0.2.0.2026-08-22) | `background-jobs-light.webp`: 71,718 B | `background-jobs-dark.webp`: 70,026 B | 2880 by 1800 |
+| `data-export` (0.2.0.2026-08-22) | `data-export-light.webp`: 115,546 B | `data-export-dark.webp`: 111,456 B | 2880 by 1800 |
+| `declared-benign` (0.2.0.2026-08-22) | `declared-benign-light.webp`: 139,580 B | `declared-benign-dark.webp`: 134,498 B | 2880 by 1800 |
+| `noise-flow-views` (0.2.0.2026-08-22) | `noise-flow-views-light.webp`: 33,708 B | `noise-flow-views-dark.webp`: 33,258 B | 1822 by 982 |
+
+The fourteen highlights the acceptance pass named all have figures. The other twelve
+(`account-activity`, `rule-sheets`, `severity-levels`, `docked-navigation`, `chat-capacity`,
+`chat-titles`, `remember-me`, `auto-closed-tile`, `required-mfa`, `enrichment-providers`,
+`data-export` and `declared-benign`) are visible changes that had no figure either.
+
+### Docs screenshot
+
+`docs/assets/screenshots/case-manager.webp` (121,912 B, 2880 by 1800, light, the navigation
+expanded) was captured again: it showed the Brief's model lane as "AI AI", and the lane is now
+named Assessment. It shows CASE-000040, a false positive the AI closed, found with the queue's
+All scope and a search, so the open case is the highlighted row. The alt text in `README.md`
+and `docs/getting-started/quickstart.md` now names the Assessment lane and says the case policy
+closed the case.
+
+### Text only, with the reason
+
+- `access-fixes`: read gates, the forced password change, the MFA lock and other guards; no one
+  surface shows them.
+- `fixes`: many small fixes across the application; a contact sheet of them is not readable at
+  the figure width.
+- `license`: the Apache-2.0 license has no Console surface.
+- `super-admin-accounts`: a server check on role changes; the dialogs look the same.
+- `keep-human-work`: what a rebuild keeps on the server; nothing new to see.
+- `architecture-diagrams`: the diagrams live in the Help Center pages, which show them already.
+- `fallback-guidance`: changes what the investigator reads, not a screen.
+- `audit-control-characters`: a PostgreSQL storage fix; the Demo runs on its in-memory store.
+- `rollback-safety`: a storage compatibility fix for later releases.
+- `permission-aware-console`: shows only as controls a limited role does not get; the Demo signs
+  in as a Super admin who gets them all.
+- `chat-reading`: the reading column is in the `workspace-chat` figure and the cost on the meta
+  row is in the `chat-follow-ups` figure.
+- `chat-working`: the indicator shows only while an answer is written, and the Demo answers in
+  about half a second.
+- `exact-counts`: the "exact" mark on an answer is in the `workspace-chat` figure; dashboards
+  look the same.
+- `agent-health-bell`: the Agent health section appears in the bell only when the agent is
+  degraded, and the seeded Demo is healthy.
+- `navy-dark-mode`: it is the dark theme itself; every dark figure shows it.
+- `ground-truth`: the disposition is in the close dialog, the `close-case` figure.
+- `investigator-fields`: changes what the investigator reads, not a screen.
+- `authenticator-qr`: the QR code holds a second-factor secret, which an image must never show.
+- `precedent-promotion`: its effect is in what the investigator is told; the switch alone does
+  not show it.
+- `corpus-guard`: a server guard and a health reading that only a provider outage shows.
+- `supervised-updates`: works only on the PostgreSQL Compose deployment; the Demo reads Updates
+  unavailable.
+- `legacy-bootstrap`: a host script with no Console surface.
+
+### Checks
+
+- `python3 scripts/build_release_notes.py` then `--check`: current, 2 releases, newest update
+  `0.2.0.2026-12`. `backend/app/whats_new_latest.json` did not change.
+- **The welcome.** With the Admin account's marker set to `0.2.0.2026-11-25`, the welcome opened
+  with `ai-working`, `case-workspace`, `repository-identity`, `case-tabs` and
+  `explain-numbers`, its hero image `ai-working-{light,dark}.webp` loaded in the current theme
+  (1,950 pixels wide). **Got it** moved the marker to `0.2.0.2026-12`, and a reload showed no
+  welcome. The same in light and dark.
+- **Communication, What's new.** 0.2.0 renders 66 highlights and 44 figures, all 44 loaded and
+  none broken once each was scrolled into view: 35 themed pairs, each loaded in the page's
+  theme with no file of the other theme, and the 9 single images of older updates. 0.1.1 renders
+  9 highlights and no figures. The same in light and dark.
+- **Help Center bundle.** 18,063,795 bytes in 281 files before and 22,068,113 bytes in 333 files
+  after (`npm run docs:bundle`), so 4,004,318 bytes more: the 52 new images. The 79 files in
+  `docs/assets/releases/0.2.0/` hold 7,498,280 bytes.
+
+### Limitations
+
+- **Background jobs.** Demo Mode runs no durable job, so `background-jobs` shows the empty Jobs
+  list, the system workers and the LLM Batch counts. Its caption says so.
+- **The close dialog.** `close-case` shows the dialog as it opens: the six dispositions, Actions
+  taken, the note and screenshots. Rate the AI sits below them, collapsed, out of the crop.
+- **Reports.** `reports` shows the report panel beside the chat, where answers are collected
+  and summarised; the Reports library page lists the same report as one row.
+- **Noise reduction.** The Demo's alert counters cover part of the window, so
+  `noise-flow-views` reads "Reduced by" not measured, with the partial coverage note.

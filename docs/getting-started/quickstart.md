@@ -254,7 +254,7 @@ with the real numbers, and select it for the whole calculation (see
 case, its header shows **AI working**.
 
 <figure markdown="span">
-[![Case Manager with an escalated true-positive case open on its Brief tab: the Evidence lane, the AI lane, labelled AI, with the model's reading, and the Decision lane, labelled Code, which records that code routed the case to a person.](../assets/screenshots/case-manager.webp) ](../assets/screenshots/case-manager.webp)
+[![Case Manager with a false-positive case the AI closed automatically, open on its Brief tab: the Evidence lane, the Assessment lane, labelled AI, with the model's reading, and the Decision lane, labelled Code, which records that the case policy closed it.](../assets/screenshots/case-manager.webp) ](../assets/screenshots/case-manager.webp)
 <figcaption>Case Manager, Brief tab: the AI's advisory reading, then the code's decision.</figcaption>
 </figure>
 

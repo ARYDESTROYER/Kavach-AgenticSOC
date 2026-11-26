@@ -36,8 +36,8 @@ Visible AI work, explainable numbers and a clearer Case Manager.
     - When a run you started finishes, or a run replaces your close, your Inbox tells you.
 
 <figure markdown="span">
-[![Case header with the AI working chip and its popover open, titled AI investigation running, saying You started it, with the time the run has taken so far.](../assets/releases/0.2.0/ai-working-light.webp#only-light) ](../assets/releases/0.2.0/ai-working-light.webp)
-[![Case header with the AI working chip and its popover open, titled AI investigation running, saying You started it, with the time the run has taken so far.](../assets/releases/0.2.0/ai-working-dark.webp#only-dark) ](../assets/releases/0.2.0/ai-working-dark.webp)
+[![Case header with the AI working chip and its popover open. The popover lists the five steps of the run with the current one marked, says You started it with the time so far and the time cap, and says what happens to a close made before it finishes.](../assets/releases/0.2.0/ai-working-light.webp#only-light) ](../assets/releases/0.2.0/ai-working-light.webp)
+[![Case header with the AI working chip and its popover open. The popover lists the five steps of the run with the current one marked, says You started it with the time so far and the time cap, and says what happens to a close made before it finishes.](../assets/releases/0.2.0/ai-working-dark.webp#only-dark) ](../assets/releases/0.2.0/ai-working-dark.webp)
 <figcaption>The AI working chip and its popover.</figcaption>
 </figure>
 
@@ -48,8 +48,8 @@ Visible AI work, explainable numbers and a clearer Case Manager.
     - The Brief opens with the case's next step and four lanes: Evidence, AI, Decision and People.
 
 <figure markdown="span">
-[![Case Manager with the queue on the left, one row marked AI working, and an open case with its two-line header, the six tabs and the case facts column on the right.](../assets/releases/0.2.0/case-workspace-light.webp#only-light) ](../assets/releases/0.2.0/case-workspace-light.webp)
-[![Case Manager with the queue on the left, one row marked AI working, and an open case with its two-line header, the six tabs and the case facts column on the right.](../assets/releases/0.2.0/case-workspace-dark.webp#only-dark) ](../assets/releases/0.2.0/case-workspace-dark.webp)
+[![Case Manager with the queue on the left, one row marked AI working, and an open case on its Evidence tab with its two-line header, the six tabs and the case facts column on the right. The navigation counts one case the AI is working on.](../assets/releases/0.2.0/case-workspace-light.webp#only-light) ](../assets/releases/0.2.0/case-workspace-light.webp)
+[![Case Manager with the queue on the left, one row marked AI working, and an open case on its Evidence tab with its two-line header, the six tabs and the case facts column on the right. The navigation counts one case the AI is working on.](../assets/releases/0.2.0/case-workspace-dark.webp#only-dark) ](../assets/releases/0.2.0/case-workspace-dark.webp)
 <figcaption>The Case Manager in this update.</figcaption>
 </figure>
 
@@ -70,8 +70,8 @@ Visible AI work, explainable numbers and a clearer Case Manager.
     - A link to the retired Timeline or Threat context tab opens Evidence at the matching section.
 
 <figure markdown="span">
-[![Brief tab of a case under the six tabs Brief, Evidence, AI investigation, Response, Activity and Chat, with the Next step row above the Evidence, AI, Decision and People lanes.](../assets/releases/0.2.0/case-tabs-light.webp#only-light) ](../assets/releases/0.2.0/case-tabs-light.webp)
-[![Brief tab of a case under the six tabs Brief, Evidence, AI investigation, Response, Activity and Chat, with the Next step row above the Evidence, AI, Decision and People lanes.](../assets/releases/0.2.0/case-tabs-dark.webp#only-dark) ](../assets/releases/0.2.0/case-tabs-dark.webp)
+[![Brief tab of a case the AI closed as a false positive, under the six tabs Brief, Evidence, AI investigation, Response, Activity and Chat, with the Evidence, Assessment, Decision and People lanes.](../assets/releases/0.2.0/case-tabs-light.webp#only-light) ](../assets/releases/0.2.0/case-tabs-light.webp)
+[![Brief tab of a case the AI closed as a false positive, under the six tabs Brief, Evidence, AI investigation, Response, Activity and Chat, with the Evidence, Assessment, Decision and People lanes.](../assets/releases/0.2.0/case-tabs-dark.webp#only-dark) ](../assets/releases/0.2.0/case-tabs-dark.webp)
 <figcaption>The six case tabs, with the Brief open.</figcaption>
 </figure>
 
@@ -82,8 +82,8 @@ Visible AI work, explainable numbers and a clearer Case Manager.
     - A case scored before this version keeps its stored factors. Where its inputs were not kept, the panel says they were not recorded.
 
 <figure markdown="span">
-[![Risk score panel for one case listing each factor, its weight and its value, the weighted sum, the rounding and the total, with a Copy calculation button.](../assets/releases/0.2.0/explain-numbers-light.webp#only-light) ](../assets/releases/0.2.0/explain-numbers-light.webp)
-[![Risk score panel for one case listing each factor, its weight and its value, the weighted sum, the rounding and the total, with a Copy calculation button.](../assets/releases/0.2.0/explain-numbers-dark.webp#only-dark) ](../assets/releases/0.2.0/explain-numbers-dark.webp)
+[![Risk score panel for one case with the weights in force, each factor's formula and value, the weighted sum, the total, the rounding and the provenance, with a Copy calculation button.](../assets/releases/0.2.0/explain-numbers-light.webp#only-light) ](../assets/releases/0.2.0/explain-numbers-light.webp)
+[![Risk score panel for one case with the weights in force, each factor's formula and value, the weighted sum, the total, the rounding and the provenance, with a Copy calculation button.](../assets/releases/0.2.0/explain-numbers-dark.webp#only-dark) ](../assets/releases/0.2.0/explain-numbers-dark.webp)
 <figcaption>The risk score with its math.</figcaption>
 </figure>
 
@@ -142,13 +142,34 @@ Team activity, case screenshots and a calmer Case Manager.
 - **Team activity** (New, Administration). Per-person, per-day work counts from the audit log, for SOC managers and auditors. [Read more](../analyst/team-activity.md).
     - Counts come with their context. The page never ranks people or gives them a score.
     - A chart per day, a sheet for each person with their events, and a CSV download.
+
+<figure markdown="span">
+[![Team activity page for today, under a notice that role-based access is off. It shows people active, cases closed by people, acknowledged, reviews completed and the median time to acknowledge, a work per day chart, and the People table with Download CSV.](../assets/releases/0.2.0/team-activity-light.webp#only-light) ](../assets/releases/0.2.0/team-activity-light.webp)
+[![Team activity page for today, under a notice that role-based access is off. It shows people active, cases closed by people, acknowledged, reviews completed and the median time to acknowledge, a work per day chart, and the People table with Download CSV.](../assets/releases/0.2.0/team-activity-dark.webp#only-dark) ](../assets/releases/0.2.0/team-activity-dark.webp)
+<figcaption>Team activity in the seeded Demo.</figcaption>
+</figure>
+
 - **Screenshots on cases** (New, Cases). Add PNG, JPEG or WebP screenshots to a case. Their metadata is removed and they are never sent to a model. [Read more](../analyst/collaboration.md).
     - Paste, drag and drop or pick a file, with an optional caption.
     - Up to 20 images per case, 2 MiB each and 20 MiB per case.
+
+<figure markdown="span">
+[![Files section of a case's Activity tab with a caption field, the Add screenshots button that also takes a drop or a paste, and one added screenshot with its caption, who added it and when.](../assets/releases/0.2.0/case-screenshots-light.webp#only-light) ](../assets/releases/0.2.0/case-screenshots-light.webp)
+[![Files section of a case's Activity tab with a caption field, the Add screenshots button that also takes a drop or a paste, and one added screenshot with its caption, who added it and when.](../assets/releases/0.2.0/case-screenshots-dark.webp#only-dark) ](../assets/releases/0.2.0/case-screenshots-dark.webp)
+<figcaption>Screenshots on a case's Activity tab.</figcaption>
+</figure>
+
 - **A review of automatic closes** (New, Automation). About 5% of automatic closes are picked for a person to review, at most 10 a day and 3 per rule. [Read more](../automation/auto-close-review.md).
     - You classify the case before you see what the AI decided.
     - A review never changes the case unless you reopen it.
     - Reviews stay out of agent statistics. Agent effectiveness shows the agreement once 30 reviews exist.
+
+<figure markdown="span">
+[![Case Manager on the Review scope with three automatically closed cases waiting. One is open with the note that it was picked at random for review, beside the Review this auto-close panel that asks What was it before it shows the AI's answer.](../assets/releases/0.2.0/auto-close-review-light.webp#only-light) ](../assets/releases/0.2.0/auto-close-review-light.webp)
+[![Case Manager on the Review scope with three automatically closed cases waiting. One is open with the note that it was picked at random for review, beside the Review this auto-close panel that asks What was it before it shows the AI's answer.](../assets/releases/0.2.0/auto-close-review-dark.webp#only-dark) ](../assets/releases/0.2.0/auto-close-review-dark.webp)
+<figcaption>A review of an automatic close.</figcaption>
+</figure>
+
 - **A calmer Case Manager** (Improved, Cases). One control band above the queue, two-line queue rows, and one primary action for the case's state beside Take action. [Read more](../analyst/case-manager.md).
     - The queue gains a Review scope with the number of reviews waiting.
 
@@ -159,6 +180,13 @@ Team activity, case screenshots and a calmer Case Manager.
 
 - **A clearer close** (Improved, Cases). Closing a case asks for the disposition once and can record the actions taken. Rate the AI starts collapsed. [Read more](../analyst/case-manager.md#close-or-resolve-with-a-disposition).
     - A note is asked for only when your classification overrides the AI.
+
+<figure markdown="span">
+[![Close with a disposition dialog with the six dispositions, the AI's suggestion beside the heading, the Actions taken choices, an optional analyst note and screenshots, and the close buttons.](../assets/releases/0.2.0/close-case-light.webp#only-light) ](../assets/releases/0.2.0/close-case-light.webp)
+[![Close with a disposition dialog with the six dispositions, the AI's suggestion beside the heading, the Actions taken choices, an optional analyst note and screenshots, and the close buttons.](../assets/releases/0.2.0/close-case-dark.webp#only-dark) ](../assets/releases/0.2.0/close-case-dark.webp)
+<figcaption>The close dialog.</figcaption>
+</figure>
+
 - **A switch for role-based access** (New, Administration). A Super admin turns role-based access on or off on Roles and permissions, after a fresh sign-in. [Read more](../administration/users-rbac.md).
 
 <figure markdown="span">
@@ -199,6 +227,13 @@ Steadier runbook guidance and audit log fixes.
     - Guidance can change the verdict the AI returns, never the close decision.
 - **The audit log reads every row on PostgreSQL** (Fixed, Administration). A stray control character in an audit row no longer breaks the Audit log, its count, its exports or chat's audit search. [Read more](../administration/audit-log.md).
 - **Your account activity is back** (Fixed, Security). Settings, Account, Sessions and activity shows your own events again.
+
+<figure markdown="span">
+[![Sessions and activity settings on the Activity tab, listing the signed-in person's own events, such as sign-ins, started sessions and preference changes, with where and when.](../assets/releases/0.2.0/account-activity-light.webp#only-light) ](../assets/releases/0.2.0/account-activity-light.webp)
+[![Sessions and activity settings on the Activity tab, listing the signed-in person's own events, such as sign-ins, started sessions and preference changes, with where and when.](../assets/releases/0.2.0/account-activity-dark.webp#only-dark) ](../assets/releases/0.2.0/account-activity-dark.webp)
+<figcaption>Your own activity in Settings.</figcaption>
+</figure>
+
 - **Safer rollbacks** (Improved, Administration). This build keeps what a newer build writes, so a later release can roll back to it cleanly. [Read more](../operations/upgrades.md#rollback-forward-compatibility).
 
 ### 6 November 2026
@@ -222,6 +257,13 @@ A Dashboards library, a usable audit log, rule sheets and Runbooks.
 </figure>
 
 - **A sheet for every rule** (New, Detection). Press any rule name to see its alerts over time, its top sources and targets, and its latest alerts and cases, with Open all in Logs. [Read more](../automation/rules.md).
+
+<figure markdown="span">
+[![Rule sheet for LP-ES-RISK-1001 opened from a chat answer, with alerts, cases, still open and analyst outcome counts, Open all 6 in Logs, an alerts over time chart, top source IPs and targets, and the latest alerts.](../assets/releases/0.2.0/rule-sheets-light.webp#only-light) ](../assets/releases/0.2.0/rule-sheets-light.webp)
+[![Rule sheet for LP-ES-RISK-1001 opened from a chat answer, with alerts, cases, still open and analyst outcome counts, Open all 6 in Logs, an alerts over time chart, top source IPs and targets, and the latest alerts.](../assets/releases/0.2.0/rule-sheets-dark.webp#only-dark) ](../assets/releases/0.2.0/rule-sheets-dark.webp)
+<figcaption>The sheet for one rule.</figcaption>
+</figure>
+
 - **One Runbooks feature** (New, Intelligence). Phased procedures with matching that gives its reason, a run on each case with a Next step card, and reviewed versions. [Read more](../intelligence/runbooks.md).
     - A library of 12 built-in runbooks.
     - The investigator reads only Published runbook text.
@@ -233,8 +275,28 @@ A Dashboards library, a usable audit log, rule sheets and Runbooks.
 
 - **The Console offers only what your roles allow** (Improved, Security). Pages, panels and actions your roles cannot use are not offered, because the Console reads the server's own access check. [Read more](../reference/permissions.md).
 - **Named severity levels** (Improved, Dashboards). Severity breakdowns use named levels, with the top rules and Split by.
+
+<figure markdown="span">
+[![New cases by severity block with the named levels Critical, High, Medium, Low and Info, their counts, shares and trends, the top rules for each level, and the Split by Rule control.](../assets/releases/0.2.0/severity-levels-light.webp#only-light) ](../assets/releases/0.2.0/severity-levels-light.webp)
+[![New cases by severity block with the named levels Critical, High, Medium, Low and Info, their counts, shares and trends, the top rules for each level, and the Split by Rule control.](../assets/releases/0.2.0/severity-levels-dark.webp#only-dark) ](../assets/releases/0.2.0/severity-levels-dark.webp)
+<figcaption>Severity by named level, with top rules.</figcaption>
+</figure>
+
 - **Docked navigation and grouped Settings** (Improved, Platform). The navigation rail docks beside every page, and Settings is grouped.
+
+<figure markdown="span">
+[![Settings with the navigation rail docked and expanded on the left, and the settings sections grouped under Account, General and Integrations, open on Profile.](../assets/releases/0.2.0/docked-navigation-light.webp#only-light) ](../assets/releases/0.2.0/docked-navigation-light.webp)
+[![Settings with the navigation rail docked and expanded on the left, and the settings sections grouped under Account, General and Integrations, open on Profile.](../assets/releases/0.2.0/docked-navigation-dark.webp#only-dark) ](../assets/releases/0.2.0/docked-navigation-dark.webp)
+<figcaption>The docked navigation and grouped Settings.</figcaption>
+</figure>
+
 - **More room for chat** (Improved, Chat). The default chat timeouts and capacity are three times larger.
+
+<figure markdown="span">
+[![Timeouts and capacity settings for chat: 12 lookups at once, a 45 second lookup timeout, a 900 second model call timeout, 12 questions at once per user and 48 in total, then the indicator lookup limits.](../assets/releases/0.2.0/chat-capacity-light.webp#only-light) ](../assets/releases/0.2.0/chat-capacity-light.webp)
+[![Timeouts and capacity settings for chat: 12 lookups at once, a 45 second lookup timeout, a 900 second model call timeout, 12 questions at once per user and 48 in total, then the indicator lookup limits.](../assets/releases/0.2.0/chat-capacity-dark.webp#only-dark) ](../assets/releases/0.2.0/chat-capacity-dark.webp)
+<figcaption>Chat timeouts and capacity in Settings.</figcaption>
+</figure>
 
 ### 24 October 2026
 
@@ -243,6 +305,13 @@ Suggested questions and a neater chat.
 - **Suggested questions from your data** (New, Chat). A new chat offers 3 or 4 questions built from your own cases and sources, with no model call. [Read more](../analyst/chat.md).
     - Each suggestion has a one-line reason, and a line says what changed since your last visit.
     - Hide a suggestion for a day, or turn suggestions off in the composer options.
+
+<figure markdown="span">
+[![New chat with a greeting, a line saying what changed since the last visit, four suggested questions built from the Demo's cases, each with a one-line reason, the prompt categories and the composer.](../assets/releases/0.2.0/chat-starters-light.webp#only-light) ](../assets/releases/0.2.0/chat-starters-light.webp)
+[![New chat with a greeting, a line saying what changed since the last visit, four suggested questions built from the Demo's cases, each with a one-line reason, the prompt categories and the composer.](../assets/releases/0.2.0/chat-starters-dark.webp#only-dark) ](../assets/releases/0.2.0/chat-starters-dark.webp)
+<figcaption>Suggested questions on a new chat.</figcaption>
+</figure>
+
 - **Follow-up questions** (New, Chat). After an answer, up to three follow-up questions appear, each naming something the answer shows. [Read more](../analyst/chat.md).
 
 <figure markdown="span">
@@ -251,6 +320,13 @@ Suggested questions and a neater chat.
 </figure>
 
 - **Conversation titles** (Improved, Chat). A conversation takes its title from the first answer.
+
+<figure markdown="span">
+[![Chat history with a conversation titled New cases to triage, the same title at the top of the conversation, and the first question with the start of its answer.](../assets/releases/0.2.0/chat-titles-light.webp#only-light) ](../assets/releases/0.2.0/chat-titles-light.webp)
+[![Chat history with a conversation titled New cases to triage, the same title at the top of the conversation, and the first question with the start of its answer.](../assets/releases/0.2.0/chat-titles-dark.webp#only-dark) ](../assets/releases/0.2.0/chat-titles-dark.webp)
+<figcaption>A conversation titled from its first answer.</figcaption>
+</figure>
+
 - **A neater reading column** (Improved, Chat). Answers sit in a narrower reading column, with quieter block headers and the cost on the meta row.
 
 ### 12 October 2026
@@ -260,9 +336,30 @@ Chat without limits, Remember me and report downloads.
 - **Chat without per-question caps** (Improved, Chat). A question runs until it is answered, with loop guards instead of caps. Chat sits outside the daily and monthly AI budget. [Read more](../analyst/chat.md).
     - An optional chat-only daily cap is off by default.
     - Every chat call is still recorded in the cost ledger.
+
+<figure markdown="span">
+[![Chat assistant settings with Limits per question set to Unlimited and the loop guards that still apply, and the Daily chat spending limit switched off, under the note that chat is outside the daily AI budget.](../assets/releases/0.2.0/chat-unlimited-light.webp#only-light) ](../assets/releases/0.2.0/chat-unlimited-light.webp)
+[![Chat assistant settings with Limits per question set to Unlimited and the loop guards that still apply, and the Daily chat spending limit switched off, under the note that chat is outside the daily AI budget.](../assets/releases/0.2.0/chat-unlimited-dark.webp#only-dark) ](../assets/releases/0.2.0/chat-unlimited-dark.webp)
+<figcaption>Chat limits and spending in Settings.</figcaption>
+</figure>
+
 - **A working indicator you can come back to** (New, Chat). The navigation shows when chat is working. Leave the page and come back to the live answer.
 - **Remember me** (New, Security). Stay signed in on this device for a time your administrator bounds. [Read more](../administration/authentication.md#remember-me).
+
+<figure markdown="span">
+[![Sign-in page with the Stay signed in on this device dialog. It says who can use this browser, that the session still ends on the administrator's schedule, and offers Cancel and Keep me signed in.](../assets/releases/0.2.0/remember-me-light.webp#only-light) ](../assets/releases/0.2.0/remember-me-light.webp)
+[![Sign-in page with the Stay signed in on this device dialog. It says who can use this browser, that the session still ends on the administrator's schedule, and offers Cancel and Keep me signed in.](../assets/releases/0.2.0/remember-me-dark.webp#only-dark) ](../assets/releases/0.2.0/remember-me-dark.webp)
+<figcaption>The Remember me dialog.</figcaption>
+</figure>
+
 - **Report downloads** (Improved, Chat). Reports download reliably, now also as Word and Excel files.
+
+<figure markdown="span">
+[![Report panel with its Download as menu open: PDF, Word and Excel, then Markdown, HTML, CSV and JSON, and the Defang indicators option.](../assets/releases/0.2.0/report-downloads-light.webp#only-light) ](../assets/releases/0.2.0/report-downloads-light.webp)
+[![Report panel with its Download as menu open: PDF, Word and Excel, then Markdown, HTML, CSV and JSON, and the Defang indicators option.](../assets/releases/0.2.0/report-downloads-dark.webp#only-dark) ](../assets/releases/0.2.0/report-downloads-dark.webp)
+<figcaption>The report download menu.</figcaption>
+</figure>
+
 - **Exact counts in chat and dashboards** (Improved, Dashboards). Chat counts cases exactly over any window, all time and calendar periods included. Dashboards read exact totals.
 - **Overview and Case Manager redesigns** (Improved, Dashboards). The Overview and the Case Manager were redesigned, and a closed case shows the analyst's classification first. [Read more](../analyst/overview.md).
 
@@ -279,14 +376,41 @@ A read-only analyst assistant.
 - **Workspace chat** (New, Chat). A read-only assistant that looks things up for you and answers with blocks, citations and reports. [Read more](../analyst/chat.md).
     - One question can run several read-only lookups, and the page shows each one as it runs.
     - A live token meter shows what each answer costs.
+
+<figure markdown="span">
+[![Workspace chat with a question about new cases and its answer: a short summary, the cases that need attention first, and a New cases by risk table built from read-only lookups.](../assets/releases/0.2.0/workspace-chat-light.webp#only-light) ](../assets/releases/0.2.0/workspace-chat-light.webp)
+[![Workspace chat with a question about new cases and its answer: a short summary, the cases that need attention first, and a New cases by risk table built from read-only lookups.](../assets/releases/0.2.0/workspace-chat-dark.webp#only-dark) ](../assets/releases/0.2.0/workspace-chat-dark.webp)
+<figcaption>A chat answer with a table block.</figcaption>
+</figure>
+
 - **Reports** (New, Chat). Collect answers into a report with your notes and an optional AI summary. The Reports library lists them. [Read more](../analyst/chat.md).
+
+<figure markdown="span">
+[![Workspace chat with the report panel open: an AI-written summary marked to verify before acting, and two items added from the answer, each with a note field.](../assets/releases/0.2.0/reports-light.webp#only-light) ](../assets/releases/0.2.0/reports-light.webp)
+[![Workspace chat with the report panel open: an AI-written summary marked to verify before acting, and two items added from the answer, each with a note field.](../assets/releases/0.2.0/reports-dark.webp#only-dark) ](../assets/releases/0.2.0/reports-dark.webp)
+<figcaption>A report built from chat answers.</figcaption>
+</figure>
 
 ### 9 September 2026
 
 KPI drill-downs, Agent health in the bell and a navy dark mode.
 
 - **A drill-down behind every KPI** (Improved, Dashboards). Press a KPI tile to see the cases behind the number. Switch metrics in place and download the rows as CSV. [Read more](../analyst/overview.md).
+
+<figure markdown="span">
+[![Total critical details panel from the Cyber Defence Center, with the calculation, switches for the other KPIs, filters, counts over the listed cases and the six critical cases as rows, with Export listed and Open in Cases.](../assets/releases/0.2.0/kpi-drilldown-light.webp#only-light) ](../assets/releases/0.2.0/kpi-drilldown-light.webp)
+[![Total critical details panel from the Cyber Defence Center, with the calculation, switches for the other KPIs, filters, counts over the listed cases and the six critical cases as rows, with Export listed and Open in Cases.](../assets/releases/0.2.0/kpi-drilldown-dark.webp#only-dark) ](../assets/releases/0.2.0/kpi-drilldown-dark.webp)
+<figcaption>The drill-down behind a KPI.</figcaption>
+</figure>
+
 - **An Auto-closed tile** (New, Dashboards). A sixth KPI tile shows the cases the AI agent closed automatically, a part of Resolved or closed. [Read more](../analyst/kpi-glossary.md#auto-closed).
+
+<figure markdown="span">
+[![The six KPI tiles of the Cyber Defence Center, ending with Auto-closed: 31 cases, 94% of worked closes.](../assets/releases/0.2.0/auto-closed-tile-light.webp#only-light) ](../assets/releases/0.2.0/auto-closed-tile-light.webp)
+[![The six KPI tiles of the Cyber Defence Center, ending with Auto-closed: 31 cases, 94% of worked closes.](../assets/releases/0.2.0/auto-closed-tile-dark.webp#only-dark) ](../assets/releases/0.2.0/auto-closed-tile-dark.webp)
+<figcaption>The Auto-closed tile.</figcaption>
+</figure>
+
 - **Agent health in the notification bell** (Improved, Platform). Agent health sits at the top of the notification bell, so a problem shows on every page.
 - **A deep navy dark mode** (Improved, Platform). Dark mode moved to a deep navy palette, with every contrast pair measured again.
 - **A close records your classification** (Fixed, Cases). When you choose a disposition as you close a case, it counts as your classification. The AI's own label never counts as yours.
@@ -297,8 +421,29 @@ KPI drill-downs, Agent health in the bell and a navy dark mode.
 Cyber Defence Center and required MFA.
 
 - **Cyber Defence Center** (Improved, Dashboards). The landing dashboard has a new name, and every metric shows a trendline on hover or focus. [Read more](../analyst/overview.md).
+
+<figure markdown="span">
+[![Cyber Defence Center dashboard for the last 24 hours with the Total cases tile under the pointer. Its card says what the tile counts and shows a trend of new cases per hour. Below are the noise reduction flow and the Human vs AI card.](../assets/releases/0.2.0/cyber-defence-center-light.webp#only-light) ](../assets/releases/0.2.0/cyber-defence-center-light.webp)
+[![Cyber Defence Center dashboard for the last 24 hours with the Total cases tile under the pointer. Its card says what the tile counts and shows a trend of new cases per hour. Below are the noise reduction flow and the Human vs AI card.](../assets/releases/0.2.0/cyber-defence-center-dark.webp#only-dark) ](../assets/releases/0.2.0/cyber-defence-center-dark.webp)
+<figcaption>The Cyber Defence Center with a KPI trend open.</figcaption>
+</figure>
+
 - **Human vs AI** (New, Dashboards). A Human vs AI card shows how many cases people and the AI agent closed over time. [Read more](../analyst/kpi-glossary.md#human-vs-ai).
+
+<figure markdown="span">
+[![Human vs AI card with the AI agent, Human and System counts and shares for the last 24 hours, and a chart of closes per hour.](../assets/releases/0.2.0/human-vs-ai-light.webp#only-light) ](../assets/releases/0.2.0/human-vs-ai-light.webp)
+[![Human vs AI card with the AI agent, Human and System counts and shares for the last 24 hours, and a chart of closes per hour.](../assets/releases/0.2.0/human-vs-ai-dark.webp#only-dark) ](../assets/releases/0.2.0/human-vs-ai-dark.webp)
+<figcaption>The Human vs AI card.</figcaption>
+</figure>
+
 - **Multi-factor sign-in an administrator can require** (Security). An administrator can require multi-factor sign-in for an account. The person enrols while signing in. [Read more](../administration/authentication.md#mfa).
+
+<figure markdown="span">
+[![Add user dialog with the role and its grants and, under Security, Require multi-factor authentication switched on, so the person sets up an authenticator at their next sign-in.](../assets/releases/0.2.0/required-mfa-light.webp#only-light) ](../assets/releases/0.2.0/required-mfa-light.webp)
+[![Add user dialog with the role and its grants and, under Security, Require multi-factor authentication switched on, so the person sets up an authenticator at their next sign-in.](../assets/releases/0.2.0/required-mfa-dark.webp#only-dark) ](../assets/releases/0.2.0/required-mfa-dark.webp)
+<figcaption>Requiring multi-factor sign-in for a new account.</figcaption>
+</figure>
+
 - **Richer account creation** (Improved, Administration). Set a display name, email, phone and custom roles when you create an account, with a live summary of the role. [Read more](../administration/users-rbac.md).
 
 <figure markdown="span">
@@ -307,6 +452,13 @@ Cyber Defence Center and required MFA.
 </figure>
 
 - **38 enrichment providers** (New, Intelligence). 19 new enrichment providers, each with setup steps and an example on its card. [Read more](../intelligence/enrichment.md).
+
+<figure markdown="span">
+[![Enrichment settings with the Providers list, 11 of 38 on, each provider with a short description, a Free or Needs key label and its switch.](../assets/releases/0.2.0/enrichment-providers-light.webp#only-light) ](../assets/releases/0.2.0/enrichment-providers-light.webp)
+[![Enrichment settings with the Providers list, 11 of 38 on, each provider with a short description, a Free or Needs key label and its switch.](../assets/releases/0.2.0/enrichment-providers-dark.webp#only-dark) ](../assets/releases/0.2.0/enrichment-providers-dark.webp)
+<figcaption>The enrichment providers.</figcaption>
+</figure>
+
 - **Authenticator QR codes that scan** (Fixed, Security). The QR code for authenticator setup now follows the standard, so every scanner reads it.
 
 ### 22 August 2026
@@ -316,11 +468,39 @@ Background jobs, a full data export and declared-benign rules.
 - **Background jobs** (New, Platform). Long work runs as a background job that keeps going when you leave the page. Analytics, Jobs shows its progress and lets you cancel it. [Read more](../operations/background-jobs.md).
     - A job's file downloads only after the server has verified it.
     - Inbox tells you when a job finishes.
+
+<figure markdown="span">
+[![Jobs page with no application jobs, because Demo Mode runs none, the system workers with their schedules and states, and the related LLM Batch jobs counts.](../assets/releases/0.2.0/background-jobs-light.webp#only-light) ](../assets/releases/0.2.0/background-jobs-light.webp)
+[![Jobs page with no application jobs, because Demo Mode runs none, the system workers with their schedules and states, and the related LLM Batch jobs counts.](../assets/releases/0.2.0/background-jobs-dark.webp#only-dark) ](../assets/releases/0.2.0/background-jobs-dark.webp)
+<figcaption>Analytics, Jobs. Demo Mode runs no background jobs.</figcaption>
+</figure>
+
 - **A full data export** (New, Administration). Settings, Organization, Data export builds one verified ZIP of the scopes you choose, on the server. [Read more](../administration/settings.md#export-portable-application-state).
+
+<figure markdown="span">
+[![Data export settings with the Archive and Segmented assembly choices and the scopes to include. Build ZIP in background is off, with the note that exports are not available in Demo Mode.](../assets/releases/0.2.0/data-export-light.webp#only-light) ](../assets/releases/0.2.0/data-export-light.webp)
+[![Data export settings with the Archive and Segmented assembly choices and the scopes to include. Build ZIP in background is off, with the note that exports are not available in Demo Mode.](../assets/releases/0.2.0/data-export-dark.webp#only-dark) ](../assets/releases/0.2.0/data-export-dark.webp)
+<figcaption>Data export in Settings.</figcaption>
+</figure>
+
 - **Declare a rule benign** (New, Automation). Declare a detection rule benign in your environment. Its alerts then close with no model call, within a risk ceiling, a scope and an expiry you set. [Read more](../automation/rules.md#analyst-rule-policies).
     - Reinvestigating a case always overrides the declaration for that case, and a person's work is never closed over.
+
+<figure markdown="span">
+[![SLA, priority and suppression settings at Declared benign, with the warning that a declaration closes matching alerts with no model call and no human, no declarations yet and a Declare a rule benign button.](../assets/releases/0.2.0/declared-benign-light.webp#only-light) ](../assets/releases/0.2.0/declared-benign-light.webp)
+[![SLA, priority and suppression settings at Declared benign, with the warning that a declaration closes matching alerts with no model call and no human, no declarations yet and a Declare a rule benign button.](../assets/releases/0.2.0/declared-benign-dark.webp#only-dark) ](../assets/releases/0.2.0/declared-benign-dark.webp)
+<figcaption>Declared benign rules in Settings.</figcaption>
+</figure>
+
 - **Analyst-confirmed precedent** (New, Intelligence). When you turn it on, the investigator is told how many cases of the same rule analysts confirmed. The verdict stays the model's. [Read more](../intelligence/knowledge-memory.md#precedent-by-detection-rule).
 - **Simple and Detailed noise reduction views** (Improved, Dashboards). The noise reduction flow has a Simple view of the whole alert-to-case flow and a Detailed view. [Read more](../analyst/kpi-glossary.md#noise-reduction-funnel).
+
+<figure markdown="span">
+[![Noise reduction flow card in its Detailed view, with the Simple and Detailed switch, the flow from alerts ingested to closed by human, and a count and share for each stage. The reduction reads not measured because of partial coverage.](../assets/releases/0.2.0/noise-flow-views-light.webp#only-light) ](../assets/releases/0.2.0/noise-flow-views-light.webp)
+[![Noise reduction flow card in its Detailed view, with the Simple and Detailed switch, the flow from alerts ingested to closed by human, and a count and share for each stage. The reduction reads not measured because of partial coverage.](../assets/releases/0.2.0/noise-flow-views-dark.webp#only-dark) ](../assets/releases/0.2.0/noise-flow-views-dark.webp)
+<figcaption>The Detailed view of the noise reduction flow.</figcaption>
+</figure>
+
 - **A provider outage cannot empty the knowledge corpus** (Fixed, Intelligence). A rebuild that would empty the knowledge corpus is refused, and health reads Degraded while the corpus is empty.
 
 ### 5 August 2026

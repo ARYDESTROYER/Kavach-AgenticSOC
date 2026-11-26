@@ -175,7 +175,7 @@ dark theme by default. Select a thumbnail to open it full size.
 <table>
   <tr>
     <td width="33%" valign="top">
-      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with an escalated true-positive case open on its Brief tab: the Evidence lane, the AI lane, labelled AI, with the model's reading, and the Decision lane, labelled Code, which records that code routed the case to a person."></a><br>
+      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with a false-positive case the AI closed automatically, open on its Brief tab: the Evidence lane, the Assessment lane, labelled AI, with the model's reading, and the Decision lane, labelled Code, which records that the case policy closed it."></a><br>
       <sub><b>Case Manager.</b> On the Brief tab, the AI's advisory reading (AI) sits above the code's decision (Code).</sub>
     </td>
     <td width="33%" valign="top">
