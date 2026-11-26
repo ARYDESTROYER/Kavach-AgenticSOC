@@ -81,6 +81,7 @@ import { FactExplain } from './explain/FactExplain';
 import { AllFieldsSheet } from './records/AllFieldsSheet';
 import { AwaitingReason } from './records/AwaitingReason';
 import { CaseUsageButton } from './records/CaseUsageButton';
+import { NotificationsSent } from './records/NotificationsSent';
 import type { FpPolicy } from './shared';
 import { caseClocks, caseDisplayId, entityTypeLabel, firstEventAt, severityVersusRiskNote } from './caseFacts';
 import { caseSlaReading } from './triageReads';
@@ -275,6 +276,8 @@ export interface FactsRailProps {
   onSetDisposition?: () => void;
   /** Open the Evidence tab's related-cases list. */
   onShowRelated?: () => void;
+  /** Open the Evidence tab's events table (the Signal section's event count). */
+  onShowEvents?: () => void;
   /** The viewer may edit the tags (`cases:write`) on the case on screen. */
   canTag?: boolean;
   /** The tag editor popover, controlled so T and "Edit tags" can open it. */
@@ -319,6 +322,7 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   onCaseChange,
   onSetDisposition,
   onShowRelated,
+  onShowEvents,
   canTag = false,
   tagsOpen = false,
   onTagsOpenChange,
@@ -369,7 +373,6 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   const related = (Array.isArray(c.related_case_ids) ? c.related_case_ids : []).filter(
     (rid) => typeof rid === 'string' && rid && rid !== c.case_id,
   );
-  const notifications = Array.isArray(c.notifications_sent) ? c.notifications_sent : [];
   const classifications = classificationHistory(c);
   const verdictHistory = Array.isArray(c.verdict_history) ? (c.verdict_history as Array<Record<string, unknown>>) : [];
   const appVersion = typeof c.app_version === 'string' ? c.app_version.trim() : '';
@@ -499,7 +502,7 @@ export const FactsRail: React.FC<FactsRailProps> = ({
       </RailSection>
 
       <RailSection {...section('signal')} testId="facts-signal">
-        <SignalProfile c={c} triage={triage} assetRange={assetRange} />
+        <SignalProfile c={c} triage={triage} assetRange={assetRange} onShowEvents={onShowEvents} />
         <dl className="space-y-1.5" data-testid="facts-triage">
           <Fact label="Severity">
             {severity ? (
@@ -680,7 +683,7 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             </Fact>
           ) : c.playbook_id ? (
             /* A case investigated before Round 14 keeps its stored id (shown verbatim). */
-            <Fact label="Runbook (before Round 14)" mono>
+            <Fact label="Older runbook" mono>
               {c.playbook_id}
             </Fact>
           ) : null}
@@ -721,28 +724,8 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             </ol>
           </div>
         ) : null}
-        {notifications.length ? (
-          <div className="space-y-1">
-            <span className={cn('block', FIELD_LABEL)}>Notifications sent ({notifications.length})</span>
-            <ol className="space-y-1 text-xs">
-              {[...notifications]
-                .reverse()
-                .slice(0, 5)
-                .map((n, index) => (
-                  <li key={`${n.ts ?? ''}-${index}`} className="text-foreground">
-                    {humanizeToken(String(n.type || 'channel'))}
-                    <span className="text-muted-foreground">
-                      {n.trigger ? ` · ${humanizeToken(n.trigger)}` : ''}
-                      {` · ${n.ok ? 'sent' : 'failed'}`}
-                      {/* Delivery detail is operator or provider text, rendered as plain text (#9). */}
-                      {!n.ok && n.detail ? ` (${n.detail})` : ''}
-                      {n.ts ? ` · ${humanizeAge(n.ts)}` : ''}
-                    </span>
-                  </li>
-                ))}
-            </ol>
-          </div>
-        ) : null}
+        {/* The newest five, then "Show all", each with its channel id (WP14). */}
+        <NotificationsSent records={c.notifications_sent} />
         <Button
           type="button"
           size="sm"

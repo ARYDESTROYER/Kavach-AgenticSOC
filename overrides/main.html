@@ -54,9 +54,9 @@
       {% for _ in range(12) %}
         <span class="tlsoc-marquee__item"{% if not loop.first %} aria-hidden="true"{% endif %}>
           {% if is_stable %}
-            STABLE DOCUMENTATION — AGENTIC SOC {{ config.extra.docs_version }}
+            STABLE DOCUMENTATION · AGENTIC SOC {{ config.extra.docs_version }}
           {% else %}
-            TESTING CHANNEL — AGENTIC SOC {{ config.extra.docs_version }} — PROMOTES TO STABLE ON MAIN
+            TESTING CHANNEL · AGENTIC SOC {{ config.extra.docs_version }} · PROMOTES TO STABLE ON MAIN
           {% endif %}
           <span class="tlsoc-marquee__dot">■</span>
         </span>

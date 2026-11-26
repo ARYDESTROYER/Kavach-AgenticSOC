@@ -269,6 +269,26 @@ describe('Add to case snapshot', () => {
     expect(sourceLine({ id: 'Q1', kind: 'query', title: '  failed\nlogins  ' })).toBe('[Q1] Query · failed logins');
   });
 
+  it('names a cited case by its display number in the Sources lines, else by its id (WP16, B42)', () => {
+    expect(sourceLine({ id: 'C2', kind: 'case', title: 'Suspicious login', case_id: 'c-7f3e', case_number: 'CASE-000042' })).toBe(
+      '[C2] Case CASE-000042 · Suspicious login',
+    );
+    // An older transcript has no number: the id, as before.
+    expect(sourceLine({ id: 'C2', kind: 'case', title: 'Suspicious login', case_id: 'c-7f3e' })).toBe('[C2] Case c-7f3e · Suspicious login');
+    expect(sourceLine({ id: 'C2', kind: 'case', title: 'Suspicious login', case_id: 'c-7f3e', case_number: '  ' })).toBe(
+      '[C2] Case c-7f3e · Suspicious login',
+    );
+    const at = Date.parse('2026-11-25T10:00:00Z');
+    const snap = caseSnapshot({
+      question: 'Which case?',
+      answer: 'See the login case [C2].',
+      citations: [{ id: 'C2', kind: 'case', title: 'Suspicious login', case_id: 'c-7f3e', case_number: 'CASE-000042' }],
+      at,
+    });
+    expect(snap.body).toContain('[C2] Case CASE-000042 · Suspicious login');
+    expect(snap.body).not.toContain('c-7f3e');
+  });
+
   it('keeps the Sources list when a long answer is shortened, for the markers that remain', () => {
     const citations = [
       { id: 'D1', kind: 'doc' as const, title: 'Early source' },

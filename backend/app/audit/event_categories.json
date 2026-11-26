@@ -26,7 +26,7 @@
     {"action_type": "reset", "surface": "*", "category": "config", "label": "Data reset"},
     {"action_type": "system_update", "surface": "*", "category": "config", "label": "System update"},
     {"action_type": "runbook", "surface": "*", "category": "config", "label": "Runbook changed"},
-    {"action_type": "playbook", "surface": "*", "category": "config", "label": "Runbook (before Round 14)"},
+    {"action_type": "playbook", "surface": "*", "category": "config", "label": "Older runbook"},
     {"action_type": "tuning", "surface": "*", "category": "config", "label": "Threshold tuning"},
     {"action_type": "automation", "surface": "*", "category": "config", "label": "Rule automation"},
     {"action_type": "status", "surface": "*", "category": "case_work", "label": "Case status changed"},
@@ -224,7 +224,7 @@
     ]
   },
   "actor_labels": {
-    "playbook_selector": "Runbook selector (before Round 14)",
-    "run_playbook": "Runbook automation (before Round 14)"
+    "playbook_selector": "Older runbook selector",
+    "run_playbook": "Older runbook automation"
   }
 }

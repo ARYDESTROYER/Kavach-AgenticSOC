@@ -93,7 +93,7 @@ a runbook that was matched but never reached the investigator (the Generic incid
 fallback, which is never given to it as guidance, the cheap router path, the kill switch,
 a guidance budget) shows as **Selected only** on the AI investigation tab and never counts
 as an input. A case investigated before Round 14 keeps its stored procedure id under
-**Runbook (before Round 14)**. If no applicable input was recorded,
+**Older runbook**. If no applicable input was recorded,
 the summary stays absent. If
 provenance could not be read, the Console reports that limitation instead of treating
 it as a successful empty result.

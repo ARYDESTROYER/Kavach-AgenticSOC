@@ -155,7 +155,7 @@ a stock read across all time, whatever the window says.
 | SOC operations | Open now | Cases not closed or resolved right now. |
 | | Awaiting a decision | Open cases whose AI verdict is Needs human. |
 | | Unassigned | Open cases with no assignee. |
-| | SLA breached | Open cases past their response or resolve target. |
+| | SLA breached | Open cases past their response target. |
 | | New cases | Cases created in the window. |
 | | Closed | Cases created in the window that are now closed or resolved, not counting closes by an analyst policy. |
 | Detection and data health | Sources reporting | Enabled sources that sent at least one event in the window. |

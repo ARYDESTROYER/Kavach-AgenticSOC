@@ -815,7 +815,9 @@ def main() -> int:
         "TLSOC_DOCS_SITE_URL",
         f'product_version: "{version}"',
         f'docs_version: "{docs_version}"',
-        "provider: mike",
+        # The published site lists its versions through Mike; only the Console's bundled
+        # Help Center empties the variable (one installed line, no versions.json).
+        "provider: !ENV [TLSOC_DOCS_VERSION_PROVIDER, mike]",
         "default: stable",
     ):
         if marker not in mkdocs_source:

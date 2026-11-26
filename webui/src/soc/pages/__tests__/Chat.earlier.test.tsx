@@ -354,9 +354,12 @@ describe('Workspace Chat — a long conversation', () => {
 
   it('keeps a hit pending when its older messages could not be read, says so, and Retry opens it', async () => {
     pageFailures = 1;
+    // A loaded worker can take longer than the default second to open the conversation
+    // and page back (the test allows 20 s): each wait says how long it may take (WP16).
+    const slow = { timeout: 5000 };
     renderChat({ opts: { conversationId: 'c-long', messageId: 'm-0021' } });
-    expect(await screen.findByText('Earlier messages could not be loaded.')).toHaveAttribute('role', 'alert');
-    await waitFor(() => expect(toastMock.error).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('Earlier messages could not be loaded.', undefined, slow)).toHaveAttribute('role', 'alert');
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledTimes(1), slow);
     const [title, options] = toastMock.error.mock.calls[0] as [string, { description: string; action: { label: string; onClick: () => void } }];
     expect(title).toBe('Could not open that message');
     expect(options.description).toBe('Earlier messages could not be loaded.');
@@ -366,7 +369,11 @@ describe('Workspace Chat — a long conversation', () => {
     expect(document.querySelector('[data-highlighted="true"]')).toBeNull();
     // The toast's Retry resumes the read-back (the server maximum), then highlights it.
     act(() => options.action.onClick());
-    await waitFor(() => expect(document.querySelector('[data-message-id="m-0021"][data-highlighted="true"]')).not.toBeNull());
+    // The highlight lasts HIGHLIGHT_MS (2 s) once it shows; it is polled every 20 ms.
+    await waitFor(() => expect(document.querySelector('[data-message-id="m-0021"][data-highlighted="true"]')).not.toBeNull(), {
+      ...slow,
+      interval: 20,
+    });
     expect(pageCalls().map((c) => new URLSearchParams(c.url.split('?')[1]).get('limit'))).toEqual(['100', '100']);
     expect(screen.queryByText('Earlier messages could not be loaded.')).toBeNull();
   }, 20_000);

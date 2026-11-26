@@ -52,6 +52,10 @@ describe('rule 1: not measured, never 0', () => {
     expect(r.reason).toBe('No case has a first event time.');
   });
 
+  it('defines SLA breached as the field counts it: open cases past their response target (WP16)', () => {
+    expect(binding('operations', 'sla_breached').definition).toBe('Open cases past their response target.');
+  });
+
   it('availableField false is Not measured even when a number is present', () => {
     // No SLA policy: the server reports 0 breached, which is not a measurement.
     const shift = { sla_aging: { enabled: false, totals: { breached: 0, open: 4 } } };

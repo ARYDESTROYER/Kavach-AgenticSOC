@@ -30,6 +30,7 @@ import { BulkCloseDialog } from '../BulkCloseDialog';
 import { ALL_ACTIONS, type ActionDef } from '../shared';
 import { emptyGradingDraft } from '../grading';
 import { resetInvestigationsForTests } from '@/soc/investigations/store';
+import { AiRunCloseNotice } from '@/soc/investigations/AiRunCloseNotice';
 
 const T0 = Date.parse('2026-11-25T10:00:00Z');
 
@@ -207,6 +208,34 @@ describe('the bulk close dialog during AI runs', () => {
     );
     expect(screen.getByTestId('ai-run-close-finished')).toHaveTextContent(
       'The AI investigations on the selected cases finished. Check them before you close.',
+    );
+  });
+
+  it('words a bulk status change (Acknowledge, Set status) as a status, never a close (WP16)', async () => {
+    serve([view(), view({ run_id: 'inv-2', case_id: 'case-2' })]);
+    render(<AiRunCloseNotice caseIds={['case-1', 'case-2', 'case-3']} open action="status" />);
+    await settle();
+    expect(screen.getByTestId('ai-run-close-notice')).toHaveTextContent(
+      '2 of the selected cases have an AI investigation running. Their results replace the status you set now when they finish.',
+    );
+  });
+
+  it('words one case of a bulk status change in the singular, then says when its run finished (WP16)', async () => {
+    serve([view({ case_id: 'case-2' })]);
+    render(<AiRunCloseNotice caseIds={['case-1', 'case-2']} open action="status" />);
+    await settle();
+    expect(screen.getByTestId('ai-run-close-notice')).toHaveTextContent(
+      '1 of the selected cases has an AI investigation running. Its result replaces the status you set now when it finishes.',
+    );
+    act(() =>
+      h.onEvent?.({
+        type: 'case.investigation',
+        data: { ...view({ case_id: 'case-2', state: 'finished', outcome: 'decided', status_after: 'closed' }), active: 0, new_runs: 0 },
+        lastEventId: '7',
+      }),
+    );
+    expect(screen.getByTestId('ai-run-close-finished')).toHaveTextContent(
+      'The AI investigations on the selected cases finished. Check them before you change the status.',
     );
   });
 

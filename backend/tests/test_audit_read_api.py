@@ -248,7 +248,7 @@ def test_fixture_labels_are_console_copy():
         ({"action_type": "status", "surface": "case"}, "case_work", "Case status changed"),
         ({"action_type": "status", "surface": "rules"}, "config", "Detection rule changed"),
         ({"action_type": "auth", "surface": "anything"}, "access", "Sign-in event"),
-        ({"action_type": "playbook", "surface": "x"}, "config", "Runbook (before Round 14)"),
+        ({"action_type": "playbook", "surface": "x"}, "config", "Older runbook"),
         ({"action_type": "user_mgmt", "surface": "settings"}, "access", "User changed"),
         ({"action_type": "user_mgmt", "surface": "users"}, "access", "User changed"),
         ({"action_type": "user_mgmt", "surface": "rbac"}, "access", "User changed"),

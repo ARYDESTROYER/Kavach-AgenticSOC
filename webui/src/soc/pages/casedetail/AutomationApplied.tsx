@@ -42,7 +42,7 @@ const AUTOMATION_META: Record<string, AutomationMeta> = {
   recommend: { label: 'Recommendation', icon: Info, tone: 'medium' },
   notify: { label: 'Notified', icon: Bell, tone: 'info' },
   // A record from before Round 14 keeps its token; the label is Console-authored.
-  run_playbook: { label: 'Runbook automation (before Round 14)', icon: BookOpen, tone: 'low' },
+  run_playbook: { label: 'Older runbook automation', icon: BookOpen, tone: 'low' },
   request_approval: { label: 'Proposed (needs approval)', icon: Lock, tone: 'high' },
 };
 

@@ -286,6 +286,9 @@ function stepsOpenRefusal(error: unknown): RunbookStepsOpen[] | null {
  */
 export { reinvestigateErrorText };
 
+/** Why Take action's Reinvestigate is unavailable while a run is queued or running. */
+export const REINVESTIGATE_RUNNING_HINT = 'An AI investigation is already running.';
+
 /** Where the inspector's shown or hidden state is kept (a per-viewer convenience). */
 export const INSPECTOR_KEY = 'soc.caseManager.inspector';
 
@@ -1861,7 +1864,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       else if (key === 'c') fire(byKind('close_disposition'));
       else if (key === 'e') fire(byKind('escalate'));
       else if (key === 'h') fire(byKind('hold'));
-      else if (key === 'r' && state.canReinvestigate) {
+      else if (key === 'r' && state.canReinvestigate && !state.aiRunning) {
         event.preventDefault();
         actionOpenerRef.current = takeActionTriggerRef.current;
         setReinvestOpen(true);
@@ -1965,6 +1968,15 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
             setDetailsOpen(false);
           }
           openTabSection('evidence', 'related-cases');
+        }}
+        onShowEvents={() => {
+          if (placement === 'sheet') {
+            sheetLeavesFocusRef.current = true;
+            setDetailsOpen(false);
+          }
+          // Every event of the case, never a finding's narrowed set.
+          setEventFilter(null);
+          openTabSection('evidence', 'what-happened');
         }}
         canTag={canTag}
         tagsOpen={tagsEditor === placement}
@@ -2197,18 +2209,33 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                       ) : null}
                       <DropdownMenuLabel>Investigation</DropdownMenuLabel>
                       {canReinvestigate ? (
+                        // While a run is queued or running a second one is refused, so the
+                        // item stays FOCUSABLE (`aria-disabled`, never Radix `disabled`,
+                        // which roving focus skips) and says why in the reading order.
                         <DropdownMenuItem
                           disabled={busy}
-                          aria-keyshortcuts="R"
-                          onSelect={() => {
+                          aria-disabled={aiRunning || undefined}
+                          aria-keyshortcuts={aiRunning ? undefined : 'R'}
+                          className={cn(aiRunning && 'text-muted-foreground')}
+                          data-testid="case-action-reinvestigate"
+                          onSelect={(event) => {
+                            if (aiRunning) {
+                              event.preventDefault();
+                              return;
+                            }
                             actionOpenerRef.current = takeActionTriggerRef.current;
                             setTakeActionOpen(false);
                             setReinvestOpen(true);
                           }}
                         >
                           <Zap className="h-4 w-4" />
-                          <span className="flex-1">Reinvestigate</span>
-                          <MenuShortcut>R</MenuShortcut>
+                          <span className="min-w-0 flex-1">
+                            Reinvestigate
+                            {aiRunning ? (
+                              <span className="block text-2xs text-muted-foreground">{REINVESTIGATE_RUNNING_HINT}</span>
+                            ) : null}
+                          </span>
+                          {aiRunning ? null : <MenuShortcut>R</MenuShortcut>}
                         </DropdownMenuItem>
                       ) : null}
                       {canReadRunbooks && canRunRunbooks && runbookPrefs.enabled ? (

@@ -334,8 +334,9 @@ export function DashboardBuilder({
   const [configWidget, setConfigWidget] = React.useState<DashboardWidget | null>(null);
 
   // Ask before a changed draft is left: in-app moves through the router (including the
-  // ones that stay on #/dashboards) and a reload or tab close through the browser.
-  // Browser Back and Forward change the hash directly and cannot be paused.
+  // ones that stay on #/dashboards), browser Back, Forward and a typed link too (the
+  // router puts the board's URL back and asks with the same dialog, B44), and a reload
+  // or tab close through the browser.
   const guarded = editing && dirty;
   const boardName = displayBoardName(dashboard);
   useNavigationBlocker(guarded, {

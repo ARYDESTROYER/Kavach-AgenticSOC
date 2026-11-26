@@ -204,6 +204,34 @@ describe('lower bounds and withheld shares', () => {
     const el = cell('gauge.active_risk');
     await waitFor(() => expect(el.textContent).toContain('No open cases to score right now'));
     expect(el.textContent).not.toContain('74 and above is critical');
+    expect(el.querySelector('[data-metric-explain]')).toBeNull();
+  });
+
+  it('the risk gauge explains itself from metric=active_risk_index (WP16)', async () => {
+    apiMocks.getMetrics.mockResolvedValue({ active_risk_index: 59, active_risk_case_count: 12 });
+    board([w('gauge.active_risk')]);
+    const el = cell('gauge.active_risk');
+    await waitFor(() => expect(el.querySelector('[data-metric-explain="active_risk_index"]')).not.toBeNull());
+    expect(el.querySelector('[data-metric-explain] [data-explain-trigger]')).not.toBeNull();
+  });
+
+  it('the SLA attainment tile explains itself from metric=sla_attainment, and only when measured (WP16)', async () => {
+    fetchPostureMock.mockResolvedValue(
+      posture({ sla: { enabled: true, evaluated: 10, response_breached: 3, response_at_risk: 0, resolve_breached: 0, resolve_at_risk: 0, attainment_pct: 70, attainment_reason: '', breaching: [] } }),
+    );
+    const view = board([w('kpi.strip', { preset: 'executive' })]);
+    let tile = await waitFor(() => within(cell('kpi.strip')).getByTestId('kpi-strip-sla_attainment'));
+    await waitFor(() => expect(tile.querySelector('[data-metric-explain="sla_attainment"] [data-explain-trigger]')).not.toBeNull());
+    expect(tile.textContent).toContain('70%');
+    view.unmount();
+
+    fetchPostureMock.mockResolvedValue(
+      posture({ sla: { enabled: true, evaluated: 0, response_breached: 0, response_at_risk: 0, resolve_breached: 0, resolve_at_risk: 0, attainment_pct: null, attainment_reason: 'no case was scored', breaching: [] } }),
+    );
+    board([w('kpi.strip', { preset: 'executive' })]);
+    tile = await waitFor(() => within(cell('kpi.strip')).getByTestId('kpi-strip-sla_attainment'));
+    await waitFor(() => expect(tile.textContent).toContain(DASH));
+    expect(tile.querySelector('[data-metric-explain]')).toBeNull();
   });
 });
 

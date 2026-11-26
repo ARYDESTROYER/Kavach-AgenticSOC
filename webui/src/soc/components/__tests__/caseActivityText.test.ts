@@ -133,6 +133,31 @@ describe('activityText', () => {
     });
   });
 
+  it("words a person's status change and keeps the recorded text under Details (WP16)", () => {
+    const summary = 'action=hold status escalated→on_hold disposition=none reason=Waiting for the owner to confirm';
+    expect(activityText(row(summary, 'status', 'aryan'))).toEqual({
+      text: 'Put the case on hold. The status went from escalated to on hold. Reason: Waiting for the owner to confirm.',
+      recorded: summary,
+    });
+    // The classification made in this action, and the arrow written as two characters.
+    expect(
+      activityText(row('action=close status open->closed disposition=false_positive classified=false_positive', 'status', 'aryan')).text,
+    ).toBe('Closed the case. The status went from open to closed. Classified as false positive.');
+    // A disposition set without a classification; an unchanged status; an unknown start.
+    expect(activityText(row('action=set_disposition status closed→closed disposition=true_positive', 'status', 'x')).text).toBe(
+      'Set the disposition. The status stays closed. Disposition: true positive.',
+    );
+    expect(activityText(row('action=acknowledge status ?→investigating disposition=none', 'status', 'x')).text).toBe(
+      'Acknowledged the case. The status is now investigating.',
+    );
+    // A reason with words that look like fields stays the person's text.
+    expect(activityText(row('action=escalate status open→escalated disposition=none reason=status a=b', 'status', 'x')).text).toBe(
+      'Escalated the case. The status went from open to escalated. Reason: status a=b.',
+    );
+    // Never the raw key=value text.
+    expect(activityText(row(summary, 'status', 'aryan')).text).not.toMatch(/action=|disposition=|→/);
+  });
+
   it('names a drafted proposal by what approving it does', () => {
     expect(
       activityText(row('automation drafted automation_ack proposal prop-9ac06f (rule=demo-seed-approval)', 'proposal', 'automation'))
@@ -361,8 +386,8 @@ describe('rows from before Round 14', () => {
       'Runbook brute_force_login v3 selected for the identity persona. Its match rules matched this case.',
     );
     expect(out.recorded).toBe(summary);
-    expect(activityActorLabel('playbook_selector')).toBe('Runbook selector (before Round 14)');
-    expect(activityKindLabel('playbook')).toBe('Runbook (before Round 14)');
+    expect(activityActorLabel('playbook_selector')).toBe('Older runbook selector');
+    expect(activityKindLabel('playbook')).toBe('Older runbook');
     expect(visible(out, 'playbook_selector', 'playbook').toLowerCase()).not.toContain('playbook');
   });
 
@@ -406,7 +431,7 @@ describe('rows from before Round 14', () => {
     expect(out.text).toBe(text);
     expect(out.recorded).toBe(summary);
     expect(visible(out, 'run_playbook', 'automation').toLowerCase()).not.toContain('playbook');
-    expect(activityActorLabel('run_playbook')).toBe('Runbook automation (before Round 14)');
+    expect(activityActorLabel('run_playbook')).toBe('Older runbook automation');
   });
 });
 
@@ -454,7 +479,7 @@ describe('activityKindLabel', () => {
   it('words the kind badge, with the friendly name of the legacy kind', () => {
     expect(activityKindLabel('decision')).toBe('Decision');
     expect(activityKindLabel('tool_call')).toBe('Tool call');
-    expect(activityKindLabel('PLAYBOOK')).toBe('Runbook (before Round 14)');
+    expect(activityKindLabel('PLAYBOOK')).toBe('Older runbook');
     expect(activityKindLabel('')).toBe('Event');
     expect(activityKindLabel(null)).toBe('Event');
   });

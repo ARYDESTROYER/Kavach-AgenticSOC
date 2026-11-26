@@ -71,8 +71,23 @@ vi.mock('@/soc/investigations/aiRunText', () => ({
     view ? (view.state === 'queued' ? 'AI investigation waiting' : 'AI investigation running') : null,
 }));
 vi.mock('@/soc/investigations/AiRunMark', () => ({
-  AiRunMark: ({ caseId }: { caseId: string }) =>
-    mocks.aiRuns[caseId] ? <span data-testid="ai-run-mark">AI working</span> : null,
+  AiRunMark: ({ caseId, wordsClassName }: { caseId: string; wordsClassName?: string }) =>
+    mocks.aiRuns[caseId] ? (
+      <span data-testid="ai-run-mark">
+        <span data-testid="ai-run-mark-words" className={wordsClassName}>
+          AI working
+        </span>
+      </span>
+    ) : null,
+}));
+// The status-moving bulk dialogs' AI-run note (WP16): which cases and which action it covers.
+vi.mock('@/soc/investigations/AiRunCloseNotice', () => ({
+  AiRunCloseNotice: ({ caseIds, open, action }: { caseIds?: readonly string[]; open: boolean; action?: string }) =>
+    open && caseIds?.some((id) => mocks.aiRuns[id]) ? (
+      <p data-testid="ai-run-close-notice" data-action={action ?? 'close'}>
+        {caseIds.join(',')}
+      </p>
+    ) : null,
 }));
 vi.mock('@/soc/investigations/AiQueueNotice', () => ({
   AiQueueNotice: () => (mocks.queueNotice ? <p data-testid="ai-queue-notice-text">2 new alerts under investigation</p> : null),
@@ -236,6 +251,8 @@ vi.mock('../CaseDetail', () => ({
       <span>Overview</span><span>Timeline</span><span>Investigation</span>
       <span>Threat context</span><span>Collaboration</span><span>Chat</span>
       <button type="button" onClick={onClose}>Mock back</button>
+      {/* The header's own Back (WP03), the one back path below xl. */}
+      <button type="button" aria-label="Back to case queue" data-case-header-back="" onClick={onClose} />
       <button
         type="button"
         onClick={() => onCaseChange?.({ ...OPEN_CRITICAL, status: 'resolved' })}
@@ -873,6 +890,39 @@ describe('CaseManager', () => {
       expect.anything(),
     );
     expect(screen.getByText('2 selected')).toBeInTheDocument();
+  });
+
+  it('keeps the status words beside an AI run mark: the ring alone in a narrow queue (WP16)', async () => {
+    mocks.aiRuns = { [OPEN_HIGH.case_id]: { run_id: 'inv-1', state: 'running' } };
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    const row = document.querySelector(`[data-case-id="${OPEN_HIGH.case_id}"]`) as HTMLElement;
+    const status = within(row).getByTestId('case-queue-status');
+    // The words and the dot after them show only in a queue wide enough for both.
+    expect(within(status).getByTestId('ai-run-mark-words')).toHaveClass('hidden', '@[30rem]/queue:inline');
+    const dot = within(status).getByText('·');
+    expect(dot).toHaveClass('hidden', '@[30rem]/queue:inline');
+    expect(status).toHaveTextContent('Open · awaiting analyst');
+  });
+
+  it('notes an AI run on a selected case in the bulk Acknowledge and Set status dialogs (WP16)', async () => {
+    mocks.aiRuns = { [OPEN_HIGH.case_id]: { run_id: 'inv-1', state: 'running' } };
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all visible cases' }));
+    await chooseBulkAction('Acknowledge');
+    const dialog = await screen.findByRole('alertdialog');
+    const note = within(dialog).getByTestId('ai-run-close-notice');
+    // A status change, for every selected case (the note counts those with a run).
+    expect(note).toHaveAttribute('data-action', 'status');
+    expect(note).toHaveTextContent([OPEN_CRITICAL.case_id, OPEN_HIGH.case_id].sort().join(','));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+
+    await chooseBulkAction(/^Set status/);
+    const form = await screen.findByRole('dialog', { name: /set status for 2 selected cases/i });
+    expect(within(form).getByTestId('ai-run-close-notice')).toHaveAttribute('data-action', 'status');
   });
 
   it('keeps assignment and tagging status-neutral with their dedicated job kinds', async () => {
@@ -2461,15 +2511,16 @@ describe('CaseManager', () => {
       expect(within(pane).queryByRole('button', { name: /reviews? waiting/ })).toBeNull();
     });
 
-    it('keeps the below-xl back bar only until the case header carries a Back of its own', async () => {
+    it("keeps one Back below xl: the case header's, never a back bar of its own (WP16)", async () => {
       render(<CaseManager />);
       await screen.findByTestId('embedded-case-detail');
-      const bar = screen.getByTestId('case-manager-back-bar');
-      // A header Back marked `data-case-header-back` (WP03) hides the bar through `:has`,
-      // so a phone keeps one back path and the case starts 40px higher.
-      expect(bar).toHaveClass('xl:hidden', 'group-has-[[data-case-header-back]]/detail:hidden');
-      expect(screen.getByRole('region', { name: 'Selected case workspace' })).toHaveClass('group/detail');
-      expect(within(bar).getByRole('button', { name: 'Back to case queue' })).toBeInTheDocument();
+      // The case header's Back (marked `data-case-header-back`, WP03) is the one back path
+      // in every browser, so a phone shows one Back and the case starts 40px higher.
+      expect(screen.queryByTestId('case-manager-back-bar')).toBeNull();
+      const workspace = screen.getByRole('region', { name: 'Selected case workspace' });
+      const backs = within(workspace).getAllByRole('button', { name: 'Back to case queue' });
+      expect(backs).toHaveLength(1);
+      expect(backs[0]).toHaveAttribute('data-case-header-back');
     });
 
     it('moves Refresh and "About Case Manager" into the view menu when the queue is under 400px', async () => {
@@ -2687,7 +2738,7 @@ describe('caseManagerShortcuts and canSelectCases', () => {
   const keysFor = (...held: string[]) => caseManagerShortcuts(grantsOf(...held)).map((row) => row.keys);
 
   it('lists the case keys each grant allows, and the selection keys with any bulk grant', () => {
-    expect(keysFor('cases:read')).toEqual(['↑ ↓  or  K J', 'Home  End', 'Enter', '/', '?', TAB_KEYS]);
+    expect(keysFor('cases:read')).toEqual(['↑ ↓  or  K J', ']', 'Home  End', 'Enter', '/', '?', 'W', TAB_KEYS]);
     expect(keysFor('cases:write')).toEqual(
       expect.arrayContaining(['X  or  Space', 'A  E  H', 'T']),
     );
@@ -2705,6 +2756,12 @@ describe('caseManagerShortcuts and canSelectCases', () => {
     for (const grant of ['cases:write', 'cases:assign', 'cases:reinvestigate', 'cases:close']) {
       expect(canSelectCases(grantsOf(grant))).toBe(true);
     }
+  });
+
+  it('lists ] (the case details) and W (the live AI run), which the open case handles for every viewer', () => {
+    const rows = caseManagerShortcuts(grantsOf('cases:read'));
+    expect(rows.find((row) => row.keys === ']')?.action).toBe('Show or hide the case details');
+    expect(rows.find((row) => row.keys === 'W')?.action).toBe('Watch the AI run, while one is under way');
   });
 
   it('promises [ only where the queue and the case sit side by side (Round 16, WP02)', () => {

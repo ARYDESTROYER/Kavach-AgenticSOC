@@ -76,7 +76,13 @@ export const AiRunCloseNotice: React.FC<AiRunCloseNoticeProps> = ({ caseIds, ope
         <Bot className="h-4 w-4" aria-hidden />
         <AlertDescription>
           {`${running.toLocaleString()} of the selected cases ${one ? 'has' : 'have'} an AI investigation running. `}
-          {one ? 'Its result replaces this close when it finishes.' : 'Their results replace this close when they finish.'}
+          {closes
+            ? one
+              ? 'Its result replaces this close when it finishes.'
+              : 'Their results replace this close when they finish.'
+            : one
+              ? 'Its result replaces the status you set now when it finishes.'
+              : 'Their results replace the status you set now when they finish.'}
         </AlertDescription>
       </Alert>
     );
@@ -86,7 +92,7 @@ export const AiRunCloseNotice: React.FC<AiRunCloseNoticeProps> = ({ caseIds, ope
     const verdict = ended?.verdict_after ? ` The verdict is now ${verdictWords(ended.verdict_after)}.` : '';
     const text = ended
       ? `The AI investigation finished.${verdict} Check it before you ${closes ? 'close' : 'change the status'}.`
-      : 'The AI investigations on the selected cases finished. Check them before you close.';
+      : `The AI investigations on the selected cases finished. Check them before you ${closes ? 'close' : 'change the status'}.`;
     return (
       <Alert variant="info" data-testid="ai-run-close-finished" className={className}>
         <CheckCircle2 className="h-4 w-4" aria-hidden />

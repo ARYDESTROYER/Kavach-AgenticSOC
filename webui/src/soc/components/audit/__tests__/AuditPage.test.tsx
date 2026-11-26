@@ -828,14 +828,14 @@ describe('Audit log: the grid and the inspector', () => {
   it('shows a legacy token by its friendly name in the list and unchanged in Raw record and Record', async () => {
     const user = userEvent.setup();
     h.list.mockResolvedValue(
-      page([rec({ record_id: 'mem:8', action_type: 'playbook', actor: 'run_playbook', event_label: 'Runbook (before Round 14)', category: 'config' })]),
+      page([rec({ record_id: 'mem:8', action_type: 'playbook', actor: 'run_playbook', event_label: 'Older runbook', category: 'config' })]),
     );
     renderAudit();
     const grid = await screen.findByRole('grid', { name: 'Audit events' });
-    expect(await within(grid).findByText('Runbook automation (before Round 14)')).toBeInTheDocument();
+    expect(await within(grid).findByText('Older runbook automation')).toBeInTheDocument();
     expect(within(grid).queryByText('run_playbook')).toBeNull();
-    await user.click(within(grid).getByText('Runbook (before Round 14)'));
-    const sheet = await screen.findByRole('region', { name: 'Runbook (before Round 14)' });
+    await user.click(within(grid).getByText('Older runbook'));
+    const sheet = await screen.findByRole('region', { name: 'Older runbook' });
     const raw = within(within(sheet).getByRole('region', { name: 'Raw record' })).getByText(/"action_type"/).textContent ?? '';
     expect(raw).toContain('"run_playbook"');
     expect(raw).toContain('"playbook"');

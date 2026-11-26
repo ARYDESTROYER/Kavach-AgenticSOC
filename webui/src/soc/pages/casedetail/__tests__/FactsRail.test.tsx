@@ -174,7 +174,7 @@ describe('FactsRail', () => {
       'Investigation cost',
       'v0.1.13 · abcdef012345',
       'Network specialist',
-      'Runbook (before Round 14)',
+      'Older runbook',
       'pb-ssh',
       'Classification history',
       'AI verdict history',
@@ -183,6 +183,43 @@ describe('FactsRail', () => {
     ]) {
       expect(record).toHaveTextContent(text);
     }
+  });
+
+  it('opens the Evidence events table from the Signal section event count (WP16, research R2)', () => {
+    const onShowEvents = vi.fn();
+    renderRail({ ...FULL, member_event_ids: ['e1', 'e2', 'e3'] } as unknown as Case, { onShowEvents });
+    const line = within(screen.getByTestId('facts-signal')).getByTestId('signal-event-count');
+    expect(line).toHaveTextContent('The case holds 3 events.');
+    fireEvent.click(within(line).getByRole('button', { name: '3 events. Show them on the Evidence tab' }));
+    expect(onShowEvents).toHaveBeenCalledTimes(1);
+    cleanup();
+    // Without a handler the count is plain text; without events there is no line.
+    renderRail({ ...FULL, member_event_ids: ['e1'] } as unknown as Case);
+    expect(screen.getByTestId('signal-event-count')).toHaveTextContent('The case holds 1 event.');
+    expect(within(screen.getByTestId('signal-event-count')).queryByRole('button')).toBeNull();
+    cleanup();
+    renderRail({ ...FULL, member_event_ids: [] } as unknown as Case);
+    expect(screen.queryByTestId('signal-event-count')).toBeNull();
+  });
+
+  it('lists the notifications through the records kit: the newest five, Show all, the channel id (WP16)', () => {
+    const sent = Array.from({ length: 7 }, (_, i) => ({
+      type: 'slack',
+      channel_id: `soc-alerts-${i}`,
+      trigger: 'case_created',
+      ok: i !== 6,
+      detail: i === 6 ? 'webhook answered 500' : undefined,
+      ts: iso(-(7 - i) * 60_000),
+    }));
+    renderRail({ ...FULL, notifications_sent: sent } as unknown as Case);
+    const list = within(openRecord()).getByTestId('facts-notifications');
+    expect(list).toHaveTextContent('Notifications sent (7)');
+    // Newest first, with the channel id and the failed delivery's detail.
+    expect(within(list).getAllByRole('listitem')).toHaveLength(5);
+    expect(within(list).getAllByRole('listitem')[0]).toHaveTextContent('failed (webhook answered 500)');
+    expect(within(list).getByText('soc-alerts-6')).toBeInTheDocument();
+    fireEvent.click(within(list).getByRole('button', { name: 'Show all (7)' }));
+    expect(within(list).getAllByRole('listitem')).toHaveLength(7);
   });
 
   it('leaves the investigation cost out without cost:view, and when the server withholds it', () => {
