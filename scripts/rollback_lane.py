@@ -27,6 +27,19 @@ from the grade (``origin``, ``review_id``) but keeps the case history. In step 3
 asserts that the grade stays excluded (the history marker alone identifies it) and that
 the screenshot still lists and serves.
 
+Round 16 (SPEC §3.7) adds, unconditionally: in step 1, N's stores hold a case whose
+risk score carries its recorded inputs (``risk_breakdown.inputs``), the ledger row of
+that case's investigation with its price rates, an account with a second-factor
+lockout counter, and the What's new marker of the personal preferences. In step 2, N-1
+reads each of them (the case, the case's spend, the account list, the preferences) and
+rewrites the case (a comment), the account (a display name) and the preferences (a
+theme). In step 3, N reads the rewritten case: when N-1 does not define the recorded
+inputs it dropped them, and N reads "not recorded" (no ``inputs``, today's weights)
+with the score and its factors unchanged. The ledger row keeps its rates (rows are
+append-only), the lockout counter reads reset when N-1 does not define it, and the
+What's new marker survives (``misc`` is a free dictionary in every release). An N-1
+that defines a field (the self-forward scenario) must keep it instead.
+
 With ``"forward_contract": true`` in the pin file (set it once N-1 is a release that
 carries the forward-compatibility contract: tolerated unknown job kinds, preserved
 unknown preference keys, corpus-migration markers), the lane also plants synthetic
@@ -116,6 +129,40 @@ REVIEW_ID = "acr-rollback-lane"
 REVIEW_EVENT = "auto_close_review"
 SCREENSHOT_CAPTION = "Rollback lane screenshot"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+#: The Round 16 plants (SPEC §3.7).
+RISK_CASE_ID = "case-rollback-lane-risk"
+RISK_CASE_NUMBER = "CASE-ROLLBACK-LANE-RISK"
+RISK_COMMENT = "Saved again by the previous release (recorded risk inputs)."
+RISK_FACTORS = ("volume", "velocity", "reputation", "diversity", "asset_criticality", "total")
+#: The scoring cluster of the risk case: 12 events over 6 minutes, two rules, an IP
+#: entity whose reputation came from enrichment.
+RISK_EVENTS = 12
+RISK_SPAN_MS = 360_000
+RISK_RULES = ("rollback-lane-rule-a", "rollback-lane-rule-b")
+RISK_REPUTATION = 40.0
+#: The case's one ledger row: an investigator call on the default model.
+USAGE_ROLE = "investigator"
+USAGE_PROMPT_TOKENS = 1_200
+USAGE_COMPLETION_TOKENS = 300
+USAGE_RATE_FIELDS = (
+    "input_rate_per_million", "output_rate_per_million", "cache_read_rate_per_million",
+    "cache_write_rate_per_million", "cache_write_ttl", "price_basis",
+)
+#: The account with a second-factor lockout: ten failures, N's lock threshold.
+LOCKED_USER = "rollback-lane-locked"
+LOCKED_USER_FAILURES = 10
+LOCKED_USER_LOCK_MINUTES = 60
+LOCKED_USER_DISPLAY_NAME = "Renamed by the previous release"
+#: The What's new preference keys (``UserPrefs.misc``) and the theme N-1 writes.
+WHATS_NEW_SEEN_KEY = "whats_new_seen"
+WHATS_NEW_AUTO_KEY = "whats_new_auto"
+WHATS_NEW_LATEST = BACKEND / "app" / "whats_new_latest.json"
+PREVIOUS_THEME = "dark"
+#: How the source of a release names each Round 16 field (``previous_defines``).
+DEFINES_RISK_INPUTS = "class RiskInputs("
+DEFINES_MFA_LOCKOUT = "mfa_failed_count"
+#: The update id grammar (``models.DISMISSED_INTRO_ID_PATTERN``).
+UPDATE_ID_PATTERN = r"[a-z0-9][a-z0-9_.:-]{0,63}"
 
 
 class LaneFailure(AssertionError):
@@ -246,6 +293,141 @@ def review_marker_note(case: dict[str, Any]) -> str:
     return "release-n again: N-1's save dropped the grade's marker; the history event alone kept it excluded"
 
 
+def whats_new_marker(path: Path = WHATS_NEW_LATEST) -> str:
+    """The newest update id bundled with this build (``whats_new_latest.json``), the
+    value an account that saw What's new holds in ``misc.whats_new_seen``."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    marker = str((data or {}).get("latest_update_id") or "") if isinstance(data, dict) else ""
+    if not re.fullmatch(UPDATE_ID_PATTERN, marker):
+        raise ValueError(f"{path.name}: latest_update_id {marker!r} is not an update id")
+    return marker
+
+
+def previous_defines(backend: Path, token: str) -> bool:
+    """Whether the backend at ``backend`` defines a stored field, read from its
+    ``app/models.py`` (``token`` is how the source names it). A release that does not
+    define a field drops it when it rewrites a document (Pydantic's default ``extra``
+    handling); one that defines it keeps it. The lane expects exactly that."""
+    try:
+        source = (backend / "app" / "models.py").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise LaneFailure(f"the previous backend has no readable app/models.py ({exc})") from exc
+    return token in source
+
+
+def risk_cluster_doc(now_ms: int) -> dict[str, Any]:
+    """The scoring cluster of the risk case (``models.Cluster``), ending at ``now_ms``."""
+    return {
+        "signature": "sig-rollback-lane-risk",
+        "entity": {"type": "ip", "value": "203.0.113.9"},
+        "group_by": "ip",
+        "rule_values": list(RISK_RULES),
+        "member_event_ids": [f"rollback-lane-event-{index}" for index in range(RISK_EVENTS)],
+        "first_seen_millis": now_ms - RISK_SPAN_MS,
+        "last_seen_millis": now_ms,
+        "count": RISK_EVENTS,
+    }
+
+
+def risk_case_doc(now_iso: str, breakdown: dict[str, Any], token_cost: float) -> dict[str, Any]:
+    """The open case whose score carries its recorded inputs (``breakdown`` is the
+    stored ``RiskBreakdown``, ``inputs`` included) and whose investigation cost one
+    ledger row."""
+    return {
+        "case_id": RISK_CASE_ID,
+        "case_number": RISK_CASE_NUMBER,
+        "title": "Rollback lane: a risk score with its recorded inputs",
+        "cluster_signature": "sig-rollback-lane-risk",
+        "source_surface": "automated_scan",
+        "rule_ids": list(RISK_RULES),
+        "entity": {"type": "ip", "value": "203.0.113.9"},
+        "verdict": "NEEDS_HUMAN",
+        "confidence": 0.5,
+        "risk_score": float(breakdown["total"]),
+        "risk_breakdown": breakdown,
+        "token_cost": token_cost,
+        "status": "open",
+        "decision_by": "agent",
+        "escalate": True,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "history": [{
+            "ts": now_iso, "event": "decision", "status": "open", "decision_by": "agent",
+            "escalate": True, "rationale": "NEEDS_HUMAN escalated",
+        }],
+    }
+
+
+def risk_factors(case: dict[str, Any]) -> dict[str, Any]:
+    """The stored score and its five factors and total, as a case read serves them."""
+    breakdown = case.get("risk_breakdown") or {}
+    return {"risk_score": case.get("risk_score"), **{key: breakdown.get(key) for key in RISK_FACTORS}}
+
+
+def risk_weight_basis(stages: Any) -> str:
+    """``weight_basis`` of the risk stage of ``GET /api/cases/{id}/stages``: the weights
+    recorded at scoring, or today's when the case holds no recorded inputs."""
+    for stage in (stages or {}).get("stages") or []:
+        if isinstance(stage, dict) and stage.get("id") == "risk":
+            calculation = ((stage.get("state") or {}).get("risk_calculation")) or {}
+            return str(calculation.get("weight_basis") or "")
+    return ""
+
+
+def usage_rates(row: dict[str, Any]) -> dict[str, Any]:
+    """The price inputs a ledger row carries (``None`` where a row has none)."""
+    return {key: row.get(key) for key in USAGE_RATE_FIELDS}
+
+
+def round16_plant_docs(now: Any) -> dict[str, Any]:
+    """The risk case and its ledger row as this build writes them (``now`` is an aware
+    ``datetime``), and the values every later read must give back: the score and its
+    factors, the recorded inputs, the cost and the row's rates.
+
+    The inputs are recorded beside ``compute_risk`` exactly as the pipeline does
+    (``explain_risk`` over the same cluster, weights and reputation), and the row
+    carries the rates ``pricing.rates_for`` resolves for the default investigator model,
+    the catalog price the gateway records. Needs this checkout's backend importable."""
+    _backend_on_path()
+    from app.config import Preferences  # noqa: PLC0415
+    from app.engine.risk import compute_risk  # noqa: PLC0415
+    from app.engine.risk_explain import explain_risk  # noqa: PLC0415
+    from app.llm.pricing import cost_for, rates_for  # noqa: PLC0415
+    from app.models import Case, Cluster, UsageDoc  # noqa: PLC0415
+
+    now_iso = now.isoformat()
+    prefs = Preferences()
+    cluster = Cluster.model_validate(risk_cluster_doc(int(now.timestamp() * 1000)))
+    breakdown = compute_risk(cluster, prefs, RISK_REPUTATION)
+    breakdown.inputs = explain_risk(
+        cluster, prefs, RISK_REPUTATION, reputation_source="enrichment", scored_at=now_iso,
+    )
+    model = prefs.model_for(USAGE_ROLE).model
+    rates = rates_for(model)
+    cost = cost_for(model, USAGE_PROMPT_TOKENS, USAGE_COMPLETION_TOKENS)
+    usage = UsageDoc(
+        ts=now_iso, surface="investigation", case_id=RISK_CASE_ID, role=USAGE_ROLE, model=model,
+        prompt_tokens=USAGE_PROMPT_TOKENS, completion_tokens=USAGE_COMPLETION_TOKENS,
+        total_tokens=USAGE_PROMPT_TOKENS + USAGE_COMPLETION_TOKENS, cost=cost,
+        input_rate_per_million=rates.input_per_million,
+        output_rate_per_million=rates.output_per_million,
+        cache_read_rate_per_million=rates.cache_read_per_million,
+        cache_write_rate_per_million=rates.cache_write_per_million,
+        cache_write_ttl=rates.cache_write_ttl, price_basis="catalog",
+    ).model_dump(mode="json")
+    case = Case.model_validate(
+        risk_case_doc(now_iso, breakdown.model_dump(mode="json"), token_cost=cost)
+    ).model_dump(mode="json")
+    return {
+        "case": case,
+        "usage": usage,
+        "factors": risk_factors(case),
+        "inputs": case["risk_breakdown"]["inputs"],
+        "cost": cost,
+        "rates": usage_rates(usage),
+    }
+
+
 def check(condition: bool, message: str) -> None:
     if not condition:
         raise LaneFailure(message)
@@ -343,6 +525,8 @@ class Lane:
         #: The Round 15 plants: the screenshot's id and the feedback count before the review.
         self.screenshot_id = ""
         self.feedback_baseline = -1
+        #: The Round 16 plants as N wrote them (the expected values of every read).
+        self.round16: dict[str, Any] = {}
 
     # ----- set-up ------------------------------------------------------ #
     def materialise_previous(self) -> None:
@@ -601,6 +785,198 @@ class Lane:
         finally:
             await engine.dispose()
 
+    # ----- the Round 16 plants (SPEC §3.7) ---------------------------- #
+    def plant_round16(self, boot: Boot) -> None:
+        """On release N: the risk case and its ledger row and the locked account,
+        written directly (N's case repository, ledger and account store), then the
+        What's new marker through N's own preferences route. N serves each one back."""
+        self.round16 = asyncio.run(self._plant_round16())
+        marker = whats_new_marker()
+        self.round16["marker"] = marker
+        status, body = boot.put("/api/prefs/user", {"misc": {WHATS_NEW_SEEN_KEY: marker, WHATS_NEW_AUTO_KEY: False}})
+        check(status == 200, f"release-n: the What's new marker write answered {status} {body}")
+        self.assert_risk_case(boot, recorded=True)
+        self.assert_usage_rates(boot)
+        self.assert_locked_user(boot, kept=True, display_name="")
+        self.assert_marker(boot)
+
+    async def _plant_round16(self) -> dict[str, Any]:
+        _backend_on_path()
+        from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+        from app.auth.passwords import hash_password  # noqa: PLC0415
+        from app.models import Case, UsageDoc  # noqa: PLC0415
+        from app.stores.sql import SqlKVStore, build_async_engine  # noqa: PLC0415
+        from app.stores.sql.repositories import SqlCaseRepository, SqlUsageRepository  # noqa: PLC0415
+        from app.stores.users import UserStore  # noqa: PLC0415
+
+        now = datetime.now(timezone.utc)
+        docs = round16_plant_docs(now)
+        engine = build_async_engine(self.url)
+        try:
+            repository = SqlCaseRepository(engine)
+            # Written as stored data, never announced on a bus (no process listens here).
+            repository.publishes_case_events = False
+            await repository.save(Case.model_validate(docs["case"]))
+            await SqlUsageRepository(engine).write_strict(UsageDoc.model_validate(docs["usage"]))
+            accounts = UserStore(SqlKVStore(engine))
+            if await accounts.get(LOCKED_USER) is None:
+                await accounts.create(
+                    username=LOCKED_USER, password_hash=hash_password(uuid.uuid4().hex),
+                    role="analyst_tier1",
+                )
+            locked: tuple[int, str, bool] = (0, "", False)
+            # N's own failure counter, run to its lock (the second-factor route's path).
+            for _ in range(LOCKED_USER_FAILURES):
+                locked = await accounts.record_mfa_failure(
+                    LOCKED_USER, threshold=LOCKED_USER_FAILURES,
+                    lock_minutes=lambda _nth: LOCKED_USER_LOCK_MINUTES, now_iso=now.isoformat(),
+                    until_iso=lambda minutes: (now + timedelta(minutes=minutes)).isoformat(),
+                )
+        finally:
+            await engine.dispose()
+        check(locked[0] == LOCKED_USER_FAILURES and bool(locked[1]), f"release-n: the account did not lock ({locked})")
+        return {
+            "factors": docs["factors"],
+            "inputs": docs["inputs"],
+            "cost": docs["cost"],
+            "rates": docs["rates"],
+            "lockout": {"mfa_failed_count": locked[0], "mfa_locked_until": locked[1]},
+        }
+
+    async def _stored_user(self) -> dict[str, Any] | None:
+        """The locked account as this build's account store reads it (the fields a
+        route never returns, the lockout counter among them)."""
+        _backend_on_path()
+        from app.stores.sql import SqlKVStore, build_async_engine  # noqa: PLC0415
+        from app.stores.users import UserStore  # noqa: PLC0415
+
+        engine = build_async_engine(self.url)
+        try:
+            user = await UserStore(SqlKVStore(engine)).get(LOCKED_USER)
+            return None if user is None else user.model_dump(mode="json")
+        finally:
+            await engine.dispose()
+
+    def assert_risk_case(self, boot: Boot, *, recorded: bool, comment: bool = False) -> None:
+        """This build reads the risk case: the score and its factors as planted, and
+        either the recorded inputs (the weights recorded at scoring) or none at all,
+        which the Console reads as "not recorded" (today's weights)."""
+        status, case = boot.get(f"/api/cases/{RISK_CASE_ID}")
+        check(status == 200 and isinstance(case, dict), f"{boot.label}: the risk case answered {status}")
+        check(
+            risk_factors(case) == self.round16["factors"],
+            f"{boot.label}: the risk case's score or factors changed ({risk_factors(case)})",
+        )
+        inputs = (case.get("risk_breakdown") or {}).get("inputs")
+        if recorded:
+            check(
+                json.dumps(inputs, sort_keys=True) == json.dumps(self.round16["inputs"], sort_keys=True),
+                f"{boot.label}: the risk case does not carry the inputs recorded at scoring ({inputs})",
+            )
+        else:
+            check(
+                "inputs" not in (case.get("risk_breakdown") or {}),
+                f"{boot.label}: the risk case still carries inputs after a rewrite that drops them",
+            )
+        if comment:
+            comments = [str(c.get("body") or "") for c in case.get("comments") or []]
+            check(RISK_COMMENT in comments, f"{boot.label}: the previous release's save of the risk case is missing")
+        status, stages = boot.get(f"/api/cases/{RISK_CASE_ID}/stages")
+        check(status == 200, f"{boot.label}: the risk case's stages answered {status}")
+        expected = "recorded_at_scoring" if recorded else "current_preferences"
+        basis = risk_weight_basis(stages)
+        check(basis == expected, f"{boot.label}: the risk calculation reads weight basis {basis!r}, expected {expected!r}")
+
+    def assert_usage_rates(self, boot: Boot) -> None:
+        """The case's one ledger row, served with the rates it was written with."""
+        status, page = boot.get(f"/api/cases/{RISK_CASE_ID}/usage")
+        check(status == 200 and isinstance(page, dict), f"{boot.label}: the case usage answered {status}")
+        rows = list(page.get("rows") or [])
+        check(len(rows) == 1, f"{boot.label}: the risk case has {len(rows)} ledger rows, expected 1")
+        check(
+            usage_rates(rows[0]) == self.round16["rates"],
+            f"{boot.label}: the ledger row's rates are {usage_rates(rows[0])}, expected {self.round16['rates']}",
+        )
+        check(page.get("reconciles") is True, f"{boot.label}: the ledger row does not reconcile with the case cost")
+
+    def assert_locked_user(self, boot: Boot, *, kept: bool, display_name: str) -> None:
+        """The account is listed, and this build reads its lockout counter as planted
+        (``kept``) or reset, as an older release's rewrite leaves it."""
+        status, listing = boot.get("/api/users")
+        check(status == 200 and isinstance(listing, dict), f"{boot.label}: the account list answered {status}")
+        names = {str(u.get("username")): u for u in listing.get("users") or [] if isinstance(u, dict)}
+        check(LOCKED_USER in names, f"{boot.label}: the locked account is not listed")
+        check(
+            str(names[LOCKED_USER].get("display_name") or "") == display_name,
+            f"{boot.label}: the locked account's display name is {names[LOCKED_USER].get('display_name')!r}",
+        )
+        stored = asyncio.run(self._stored_user()) or {}
+        lockout = {key: stored.get(key) for key in ("mfa_failed_count", "mfa_locked_until")}
+        expected = self.round16["lockout"] if kept else {"mfa_failed_count": 0, "mfa_locked_until": ""}
+        check(lockout == expected, f"{boot.label}: the lockout counter reads {lockout}, expected {expected}")
+
+    def assert_marker(self, boot: Boot, *, theme: str | None = None) -> None:
+        """The What's new marker and switch in the personal preferences."""
+        status, prefs = boot.get("/api/prefs/user")
+        check(status == 200 and isinstance(prefs, dict), f"{boot.label}: the personal preferences answered {status}")
+        misc = prefs.get("misc") or {}
+        check(
+            misc.get(WHATS_NEW_SEEN_KEY) == self.round16["marker"] and misc.get(WHATS_NEW_AUTO_KEY) is False,
+            f"{boot.label}: the What's new marker reads {misc.get(WHATS_NEW_SEEN_KEY)!r}, switch {misc.get(WHATS_NEW_AUTO_KEY)!r}",
+        )
+        if theme is not None:
+            check(prefs.get("theme_mode") == theme, f"{boot.label}: the theme reads {prefs.get('theme_mode')!r}")
+
+    def round16_on_previous(self, boot: Boot) -> None:
+        """On release N-1: it reads every Round 16 plant, then rewrites the case, the
+        account and the preferences through its own routes."""
+        status, case = boot.get(f"/api/cases/{RISK_CASE_ID}")
+        check(status == 200 and isinstance(case, dict), f"release-n-1: the risk case answered {status}")
+        check(risk_factors(case) == self.round16["factors"], "release-n-1: the risk case's score or factors changed")
+        status, saved = boot.post(
+            f"/api/cases/{RISK_CASE_ID}/comment", {"author": "rollback-lane", "body": RISK_COMMENT},
+        )
+        check(status == 200, f"release-n-1: the comment on the risk case answered {status} {saved}")
+        status, summary = boot.get(f"/api/usage/summary?case_id={RISK_CASE_ID}&window_hours=24")
+        check(status == 200 and isinstance(summary, dict), f"release-n-1: the case's spend answered {status}")
+        check(
+            summary.get("call_count") == 1 and summary.get("total_cost") == round(self.round16["cost"], 6),
+            f"release-n-1: the case's spend reads {summary.get('call_count')} calls, {summary.get('total_cost')}",
+        )
+        status, listing = boot.get("/api/users")
+        check(status == 200 and isinstance(listing, dict), f"release-n-1: the account list answered {status}")
+        names = {str(u.get("username")) for u in listing.get("users") or [] if isinstance(u, dict)}
+        check(LOCKED_USER in names, "release-n-1: the locked account is not listed")
+        status, body = boot.put(f"/api/users/{LOCKED_USER}", {"display_name": LOCKED_USER_DISPLAY_NAME})
+        check(status == 200, f"release-n-1: the account update answered {status} {body}")
+        status, prefs = boot.get("/api/prefs/user")
+        check(status == 200 and isinstance(prefs, dict), f"release-n-1: the personal preferences answered {status}")
+        check(
+            (prefs.get("misc") or {}).get(WHATS_NEW_SEEN_KEY) == self.round16["marker"],
+            "release-n-1: the What's new marker is not in the preferences it read",
+        )
+        status, body = boot.put("/api/prefs/user", {"theme_mode": PREVIOUS_THEME})
+        check(status == 200, f"release-n-1: the preferences write answered {status} {body}")
+
+    def assert_round16_return(self, boot: Boot) -> list[str]:
+        """On release N again, after N-1's rewrites: the reads SPEC §3.7 names. Returns
+        the result lines (which path each rewrite took)."""
+        keeps_inputs = previous_defines(self.previous_backend, DEFINES_RISK_INPUTS)
+        keeps_lockout = previous_defines(self.previous_backend, DEFINES_MFA_LOCKOUT)
+        self.assert_risk_case(boot, recorded=keeps_inputs, comment=True)
+        self.assert_usage_rates(boot)
+        self.assert_locked_user(boot, kept=keeps_lockout, display_name=LOCKED_USER_DISPLAY_NAME)
+        self.assert_marker(boot, theme=PREVIOUS_THEME)
+        return [
+            "release-n again: the risk case kept its recorded inputs through N-1's save" if keeps_inputs
+            else "release-n again: N-1's save dropped the risk inputs; the case reads not recorded, score unchanged",
+            "release-n again: the ledger row keeps its rates",
+            "release-n again: the lockout counter survived N-1's rewrite" if keeps_lockout
+            else "release-n again: N-1's rewrite reset the lockout counter",
+            "release-n again: the What's new marker survived N-1's preferences write",
+        ]
+
     # ----- the phases -------------------------------------------------- #
     def phase_n(self) -> None:
         boot = self.boot("release-n", BACKEND, sys.executable)
@@ -626,9 +1002,14 @@ class Lane:
         )
         self.assert_runbook_choices(boot)
         self.plant_review_case(boot)
+        self.plant_round16(boot)
         self.stop(boot)
         self.results.append("release-n: wrote an audit export, the migrated corpus and runbook settings")
         self.results.append("release-n: recorded an auto-close review and a screenshot on an agent-closed case")
+        self.results.append(
+            "release-n: wrote a case with recorded risk inputs, its rated ledger row, "
+            "a locked account and a What's new marker"
+        )
 
     def phase_previous(self) -> None:
         boot = self.boot("release-n-1", self.previous_backend, self.previous_python)
@@ -647,9 +1028,15 @@ class Lane:
             {"author": "rollback-lane", "body": "Saved again by the previous release."},
         )
         check(status == 200, f"release-n-1: the comment on the review case answered {status} {saved}")
+        # The Round 16 plants (SPEC §3.7): read each, then rewrite what N-1 can write.
+        self.round16_on_previous(boot)
         self.stop(boot)
         self.results.append("release-n-1: healthy on release N data; corpus served; settings intact")
         self.results.append("release-n-1: made a full save of the reviewed case")
+        self.results.append(
+            "release-n-1: read the risk case, its spend, the locked account and the marker; "
+            "rewrote the case, the account and the preferences"
+        )
 
     def phase_return(self) -> None:
         boot = self.boot("release-n-again", BACKEND, sys.executable)
@@ -663,10 +1050,12 @@ class Lane:
         )
         self.assert_review_grade_excluded(boot)
         self.assert_screenshot_served(boot)
+        round16 = self.assert_round16_return(boot)
         self.stop(boot)
         self.results.append("release-n again: the runbook settings survived the round trip")
         self.results.append(review_marker_note(case))
         self.results.append("release-n again: the review grade stays excluded; the screenshot lists and serves")
+        self.results.extend(round16)
 
     # ----- synthetic future data (forward_contract) -------------------- #
     async def _plant_future(self) -> dict[str, Any]:
