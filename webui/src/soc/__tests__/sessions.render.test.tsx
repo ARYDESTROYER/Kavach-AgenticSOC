@@ -229,6 +229,39 @@ describe('Sessions activity rows', () => {
     expect(activitySentence(undefined)).toBeNull();
   });
 
+  it('fits a phone panel without scrolling sideways, so it needs no focusable scroller', async () => {
+    // At 390 by 844 the Settings panel gives the table 358 px. The list holds nothing a
+    // keyboard can focus, so a table wider than that is a scroll region no keyboard can
+    // reach (axe scrollable-region-focusable, serious) and it cuts off the When column.
+    // A fixed layout truncates or wraps text instead of widening the table, and its
+    // planned minimum width stays inside the panel.
+    activity.mockResolvedValue({
+      activity: [
+        { ...record, id: 'a-1', action: 'user.preferences_updated', event_label: 'Personal preferences changed' },
+        { ...record, id: 'a-2', ts: new Date(Date.now() - 300 * 86_400_000).toISOString() },
+      ],
+    });
+    sessionsList.mockResolvedValue({ sessions: [] });
+    renderSessions();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    const table = await screen.findByRole('table', { name: 'Recent account activity' });
+    expect(table).toHaveClass('table-fixed');
+    const min = table.style.minWidth;
+    const rem = /^calc\((.+)\)$/.exec(min)?.[1] ?? min;
+    // Each term is `<n>rem` or `<k> * <n>rem` (DataTable's planned minimum).
+    const px = rem.split('+').reduce((sum, term) => {
+      const m = /^\s*(?:(\d+)\s*\*\s*)?([\d.]+)rem\s*$/.exec(term);
+      if (!m) throw new Error(`Unexpected minimum width term "${term}" in "${min}".`);
+      return sum + Number(m[1] ?? 1) * Number(m[2]) * 16;
+    }, 0);
+    expect(px).toBeGreaterThan(0);
+    expect(px).toBeLessThanOrEqual(358);
+    // The sentence wraps on a narrow screen instead of being cut short.
+    const sentence = within(table).getByText('Your personal preferences changed.');
+    expect(sentence).not.toHaveClass('truncate');
+    expect(within(table).getByText('10mo ago')).toBeInTheDocument();
+  });
+
   it('names each event the way the Audit log does, never the raw event id', async () => {
     activity.mockResolvedValue({ activity: [{ ...record, event_label: 'Signed in' }] });
     sessionsList.mockResolvedValue({ sessions: [] });

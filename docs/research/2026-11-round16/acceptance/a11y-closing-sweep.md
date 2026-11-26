@@ -131,6 +131,47 @@ as unknown.
 No page scrolled sideways at 390 by 844, before or after, and no surface logged a console
 error or a page error.
 
+### Found by the review
+
+The independent review re-ran the four fixes live in all four combinations and then opened
+what the sweep above did not: every tab inside a page or a Settings section that is not
+selected when it opens (13 per combination: Sessions & activity's Activity, Metrics'
+Performance and Posture, and the other in-page tabs). Axe found three more serious runs.
+Each was already on the base tree, and each is fixed here with a regression test that failed
+before its fix.
+
+**5. Sessions & activity, the Activity tab at 390 (both themes).** axe
+`scrollable-region-focusable`, serious, one node: the `[data-table-scroll]` wrapper of the
+activity table. The table used an automatic layout, so each one-line event name, sentence and
+address widened it past the 358 px panel (667 px of content on the base tree, 382 px after
+finding 4 shortened the text). Nothing in the list can take focus, so a keyboard could not
+scroll it, and the When column was cut off at the edge. Fix in
+`webui/src/soc/pages/Sessions.tsx`: Where takes 30% and When 6rem, which switches the table to
+a fixed layout whose planned minimum is 224 px; the event name still truncates and the
+sentence wraps instead of being cut short. No scroller is left at 390 or 1440, in either
+theme.
+
+**6. Metrics, Performance, the percentile table at 390 (found in light; the markup is the
+same in dark).** axe
+`scrollable-region-focusable`, serious, one node: the six columns of "Percentile distribution"
+scroll sideways and no cell can take focus. Fix in `webui/src/soc/pages/Metrics.tsx`: the
+table passes `scrollLabel="Lifecycle timing percentiles"`, so its wrapper is a named region a
+keyboard can focus, as the B78 contract does for the other two tables.
+
+**7. Metrics, Posture, the MITRE heatmap chips (dark at 390 by axe; both themes by
+measurement).** axe `color-contrast`, serious, one node: the count on the brightest cell. Each
+chip printed its technique id and count on `bg-background/85`, but a browser that supports
+backdrop-filter used the `supports-[backdrop-filter]:bg-background/70` variant, so 30% of the
+viridis fill showed through. The muted count then read 3.12:1 over the brightest bucket in
+dark and 3.54:1 over the darkest in light. Fix in `webui/src/soc/components/MitreHeatmap.tsx`:
+the chip is `bg-background/90` in every engine (the lighter variant is gone; the 1 px blur
+stays). Measured live on the seeded Demo, the count now reads at least 5.08:1 in light and
+5.86:1 in dark, and the id at least 12.58:1, with no axe finding in any combination.
+
+After the three fixes the tab pass found no serious or critical run and no scroller without
+focus in any of the four combinations. The keyboard reaches the percentile region at 390 and
+the arrow keys scroll it.
+
 ## Left as they are
 
 Moderate and minor findings whose fix is not one safe line:
@@ -167,6 +208,9 @@ Each test failed before its fix (the fix reverted once, the test run, the fix re
 | 2 | `webui/src/soc/pages/casedetail/records/__tests__/records.a11y.test.tsx` (2 tests): a scrolling list is a region named "AI calls" with `tabindex="0"` holding the 12 calls as a list; a list that fits has no region and no tab stop | `Unable to find an accessible element with the role "region" and name "AI calls"` |
 | 3 | `webui/src/design-system/__tests__/material-chip-contrast.test.ts` (4 tests): reads each wash badge's alpha and ink from `badgeVariants`, the re-point from the material rules in `theme.css`, and each material's fill (the glass top bar from its tokens, `materialBar` and `materialThick` from their recipes), and composites over black, white, the canvas and the panel in both themes | 3 failed: `light high (--high-text) on the glass top bar over black: expected 4.302 ...`, the same on `materialBar` (4.407), and `dark critical (--critical-text) on materialThick over white: expected 4.314 ...` |
 | 4 | `webui/src/soc/__tests__/sessions.render.test.tsx` (1 new test, 1 updated): rows for `auth.login`, `session.created`, `session.refreshed` and `case.closed` with raw summaries show the three sentences and the event name, and none of `login ok`, `session_create`, `sid=`, `refresh_rotate` or the case summary; `activitySentence` answers null for an unknown action, `toString` and `undefined` | `Unable to find an element with the text: You signed in.` |
+| 5 | `webui/src/soc/__tests__/sessions.render.test.tsx` (1 new test): the activity table has a fixed layout whose planned minimum width fits the 358 px phone panel, the sentence does not truncate, and a ten-month-old row still shows its age | `expect(element).toHaveClass("table-fixed")` |
+| 6 | `webui/src/soc/__tests__/metrics-posture.test.tsx` (3 new assertions in the Performance test): the percentile table sits in a region named "Lifecycle timing percentiles" with `tabindex="0"` | `Unable to find an accessible element with the role "region" and name "Lifecycle timing percentiles"` |
+| 7 | `webui/src/soc/components/__tests__/MitreHeatmap.chip-contrast.test.tsx` (1 test): renders counts in all five buckets, reads each cell's fill, the lowest `bg-background/NN` the chip can take and the ink of the id and the count, and composites them in both themes | `light count on rgb(66, 61, 132) under a 0.7 chip: expected 3.5449... to be greater than or equal to 4.5` |
 
 ## Gates
 
@@ -189,6 +233,16 @@ Run in `webui/` on the finished package:
 As the brief says, the whole backend suite and `npm run test:strict` were not run here; the
 package changes no backend file.
 
+The review ran the package gates once more on the finished tree, its fixes included:
+typecheck clean; lint 0 errors and 0 warnings; `npm run gates` all pass (37 tokens, 182
+contrast axes); `check:types` no drift; the stamped `build:app` entry chunk 318,008 B, unchanged;
+`bundle-first-paint.test.ts` 29 passed and 1 skipped; `npm run test:strict` (with
+`--maxWorkers=2 --minWorkers=1`) 786 files, 9,972 passed and 1 skipped, no stderr;
+`check_version.py`, `check_ci_contract.py`, `check_docs.py` (90 pages) and
+`build_app_knowledge.py --check` (1,099 chunks) pass. The whole backend suite: 13,986 passed,
+29 skipped and 5 failed, the five sandbox-only environment tests, whose four files pass 55 of
+55 with the sandbox's proxy and AWS variables unset.
+
 ## Screenshots
 
 In `round16/shots/A11Y/` of the build scratchpad, at 1440 and 390 in light and dark unless
@@ -204,3 +258,12 @@ noted:
   Settings, Detection scrolled beneath).
 - Finding 4: `before-fix-sessions-activity-{1440,390}-light.png`,
   `after-fix-sessions-activity-*`.
+
+The review's captures are in `round16/shots/A11Y-review/` of the build scratchpad:
+`review-{detection-disabled-field,topbar-scrolled,usage-list-focused,sessions-activity}-*`
+(the four fixes above, live, all four combinations); finding 5:
+`review-base-sessions-activity-390-light.png` (the base tree),
+`review-before-sessions-activity-390-light.png` and `review-after-sessions-activity-*`;
+finding 6: `review-before-metrics-percentiles-390-light.png` and
+`review-after-metrics-percentiles-390-*` (the region focused); finding 7:
+`review-before-mitre-390-dark.png` and `review-after-mitre-*`.

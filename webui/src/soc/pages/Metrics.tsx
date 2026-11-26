@@ -1392,7 +1392,9 @@ function PerformanceTab({
       </KpiStrip>
 
       <Panel title="Percentile distribution" caption={caption} padding="none" data-testid="performance-percentiles">
-        <Table aria-label="Lifecycle timing percentiles" containerClassName="pb-2">
+        {/* On a phone the six columns scroll sideways and no cell can take focus, so the
+            scroller is a named region a keyboard can focus (axe scrollable-region-focusable). */}
+        <Table aria-label="Lifecycle timing percentiles" scrollLabel="Lifecycle timing percentiles" containerClassName="pb-2">
             <TableHeader>
               <TableRow>
                 <TableHead density="compact" className="pl-4 xl:pl-5 3xl:pl-6">Interval</TableHead>

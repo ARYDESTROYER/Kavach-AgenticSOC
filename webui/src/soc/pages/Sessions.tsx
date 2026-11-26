@@ -440,10 +440,15 @@ function ActivityList({
   /** The last read failed: the empty slot says so instead of "No recent activity." */
   failed?: boolean;
 }) {
+  // A fixed layout (the Where and When widths) keeps the table inside a phone panel: the
+  // list holds nothing a keyboard can focus, so a table wider than its panel would be a
+  // scroll region no keyboard can reach, with the When column cut off. Its planned
+  // minimum is 6rem + 8rem (224 px); the sentence wraps instead of being cut short.
   const columns: DataTableColumn<ActivityEvent>[] = [
     {
       id: 'action',
       header: 'Event',
+      wrap: true,
       cell: (e) => {
         const sentence = activitySentence(e.action);
         return (
@@ -452,7 +457,7 @@ function ActivityList({
               {e.event_label || (e.action ? humanizeToken(String(e.action)) : 'Event')}
             </span>
             {sentence ? (
-              <span className="block truncate text-xs text-muted-foreground" data-activity-sentence>
+              <span className="block break-words text-xs text-muted-foreground" data-activity-sentence>
                 {sentence}
               </span>
             ) : null}
@@ -463,6 +468,7 @@ function ActivityList({
     {
       id: 'location',
       header: 'Where',
+      width: '30%',
       cell: (e) => {
         const loc = sessionLocation(e);
         const dev = sessionDevice(e);
@@ -480,6 +486,7 @@ function ActivityList({
       id: 'ts',
       header: 'When',
       align: 'right',
+      width: '6rem',
       cell: (e) => (
         <span className="text-sm text-muted-foreground" title={formatTimestamp(e.ts)}>
           {humanizeAge(e.ts)}

@@ -204,6 +204,11 @@ describe('Metrics posture (Round 3 / F5)', () => {
     ]);
     expect(within(rows[2]).getByText('10h')).toBeInTheDocument();
     expect(within(rows[2]).getByText('15h')).toBeInTheDocument();
+    // On a phone the six columns scroll sideways and no cell holds anything focusable, so
+    // the scroller is a named region a keyboard can focus (axe scrollable-region-focusable).
+    const scroller = screen.getByRole('region', { name: 'Lifecycle timing percentiles' });
+    expect(scroller).toHaveAttribute('tabindex', '0');
+    expect(scroller).toContainElement(table);
 
     // FP-rate quality tile renders as a percent (0.625 is 63%) under the window caption.
     const quality = screen.getByTestId('performance-quality');

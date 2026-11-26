@@ -192,7 +192,9 @@ export const MitreHeatmap = React.forwardRef<HTMLDivElement, MitreHeatmapProps>(
                         near-opaque surface chip so `text-foreground` always meets AA
                         (≥4.5:1) regardless of how saturated the underlying ramp band
                         is. Without the chip, white/foreground text over the critical/
-                        high fill measured ~3.0:1.
+                        high fill measured ~3.0:1. The chip is 90% opaque in every engine:
+                        the muted count needs it (5.1:1 in light, 5.9:1 in dark over the
+                        worst bucket); a lighter 70% fill read 3.5:1 and 3.1:1.
 
                         Non-color signaling (§6.1): the ramp intensity is quantitative
                         (a sequential scale, not a categorical shape vocabulary), so the
@@ -204,7 +206,7 @@ export const MitreHeatmap = React.forwardRef<HTMLDivElement, MitreHeatmapProps>(
                         (a sub-technique id beside a four-digit count), the count wraps under
                         the id, and the cell grows to hold both. */}
                     <span
-                      className="flex max-w-full flex-wrap items-baseline justify-center gap-x-0.5 rounded-sm bg-background/85 px-1 py-0.5 text-foreground supports-[backdrop-filter]:bg-background/70 supports-[backdrop-filter]:backdrop-blur-[1px]"
+                      className="flex max-w-full flex-wrap items-baseline justify-center gap-x-0.5 rounded-sm bg-background/90 px-1 py-0.5 text-foreground supports-[backdrop-filter]:backdrop-blur-[1px]"
                       data-mitre-chip=""
                     >
                       <span data-mitre-technique="">{cell.technique}</span>
