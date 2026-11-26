@@ -14,7 +14,8 @@ The latest fully recorded local baseline is **13,143 backend tests** passed (24 
 and **8,864 Console tests** passed (16 skipped) across 679 files. The
 Console baseline also has zero stderr bytes and zero Vitest-captured console stdout
 blocks under `npm run test:strict`. Counts rise as coverage is added; the commands
-and zero-failure result are the contract, not a frozen target.
+and zero-failure result are the contract, not a frozen target. These are the Round 15
+closing figures. Round 16 figures are recorded after its closing gates.
 
 The remote uses `Testing` for integration and default `main` for accepted Stable
 source. Version 0.2.0 is a candidate on `Testing` and is Stable only when the
@@ -135,6 +136,11 @@ the receipt or linked automated evidence.
 | Area | Required browser path |
 | --- | --- |
 | Identity and setup | Sign-in username → password flow, optional demo/SSO controls when configured, theme switch, error/retry, software-keyboard-safe narrow layout, first-run setup progress/content/footer, and close/re-run behavior |
+| Sign-in page | The heading with the organization name, one entrance and no motion after paint, Remember me with no duration (its confirmation dialog the first time, and the disabled row with its reason when turned off or insecure), the six-box second-factor step and its return to the password step after five wrong codes, a fixed sentence for an `sso_error` link, at 1440 by 900 and 390 by 844 in both themes |
+| AI work on a case | The case header chip ("AI working · m:ss", "AI queued") and its popover across a full Reinvestigate (`202`, the finish toast and Inbox item, a second request refused), the queue row mark, the Case Manager navigation count and band line, the close and bulk dialogs' AI notes, Take action with Reinvestigate unavailable during a run, and one EventSource per tab |
+| Explainable numbers | Every explainable number on hover, focus and click: the risk score with its recorded inputs (and "not recorded" on an older case), the Decision card and its gate, severity, priority, the SLA line, cost and the usage popover, an Overview KPI panel and Show all samples, and Copy calculation; the queue row hover line is mouse-only |
+| Case records | The Evidence events table and its side sheet (Table and JSON, NDJSON download, Open in Logs, an aged-out or push-source reason), View all fields with and without `cost:view`, trace Details, History reasons, and Cites N events narrowing the table |
+| What's new and Communication | The welcome on the first sign-in after an update and not again after dismissal, a new account that starts with it seen, Show What's new after updates off, the Communication group with Inbox and What's new, the release tracker with a release's screenshots and the earlier release records, the release badge link, and the Help Center What's new page |
 | Overview | Cyber Defence Center time/refresh controls, KPI and case drill-down, Latest Cases hover and focus detail, Noise Reduction expand/close, the Dashboards library with each built-in board and a personal board in Edit mode, and Standup |
 | Triage | Cases filters/table/loading and exact Case Manager handoff; Case Manager Active/Mine/Review/All queue, resize/keyboard reset, the `[` queue fold and the empty pane, selection/bulk menu, the compact case header with its meta strip, Brief/Evidence/AI investigation/Response/Activity/Chat tabs on Alt+1 to Alt+6 (including a legacy `tab=timeline` or `tab=threat` link landing on its Evidence section), the case facts column and its `]` toggle (a side sheet in a narrow pane), the close dialog, case Files (add, paste, view, delete), an auto-close review, Campaigns, Logs, Workspace Chat/history, Entity investigation, and Approvals |
 | Intelligence and analytics | Knowledge corpus, Runbooks (library, editor, history, a run on a case with its Next step card), Operator memory, Agent personas, Metrics, Team activity (range, chart, person sheet), Agent effectiveness (with its auto-close review module), Cost, Models, Baseline, Jobs, and Auto-tuning Operations/Outcomes/Policy & history |

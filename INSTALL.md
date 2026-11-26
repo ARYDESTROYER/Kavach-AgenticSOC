@@ -668,8 +668,9 @@ them.
   (**Enable updates** here; see [section 8](#8-updates)), the health pill (**Healthy**) and your
   account menu.
 - The navigation rail groups Overview, Triage (Cases, Case Manager, Campaigns, Logs, Workspace,
-  Approvals), Intelligence, Analytics, Notifications and Platform (Sources, Audit log, Auto-tuning,
-  Settings). <kbd>Ctrl</kbd>+<kbd>B</kbd> collapses it. **Help Center** sits at the bottom.
+  Approvals), Intelligence, Analytics, Communication (Inbox and What's new) and Platform
+  (Sources, Audit log, Auto-tuning, Settings). <kbd>Ctrl</kbd>+<kbd>B</kbd> collapses it.
+  **Help Center** sits at the bottom.
 
 Check the installation:
 

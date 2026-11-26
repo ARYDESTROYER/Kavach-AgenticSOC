@@ -104,6 +104,10 @@ What it is not:
 
 - **Deterministic case authority:** `decide()` compares the verdict, confidence and risk
   score with your `AutoClosePolicy` and chooses Close, Escalate or Needs human.
+- **Every number explains itself:** hover a risk score, verdict, SLA, cost or dashboard
+  figure for its formula with the real numbers, or click it for the inputs, steps, rounding
+  and provenance. Risk scores record their inputs and the decision records the thresholds
+  it compared, so the arithmetic reproduces what was stored.
 - **Append-only audit log:** a searchable page with three scopes, a record inspector and an
   audited CSV or JSON Lines export.
 - **Metered AI spend:** one model gateway writes one usage and cost record for every call.
@@ -118,7 +122,11 @@ What it is not:
 - **Case Manager:** an Active, Mine, Review and All queue beside the full case, with a
   compact header, Brief, Evidence, AI investigation, Response, Activity and Chat tabs, the
   case facts beside every tab, a close dialog that records the disposition and the actions
-  taken, screenshots on the case, and bulk actions that run as background jobs.
+  taken, screenshots on the case, and bulk actions that run as background jobs. While the AI
+  investigates a case, the header, the queue row and the navigation show it, and the close
+  dialogs say that the run's result will replace a close made now.
+- **What's new:** a short welcome after each update and a release tracker with notes and
+  screenshots, under the Communication group with the Inbox.
 - **Auto-close review:** a small random sample of the cases the AI agent closed goes to a
   person to classify (on by default, about 5% and at most 10 a day); the answer is kept as
   independent ground truth and never changes the case unless the reviewer reopens it.

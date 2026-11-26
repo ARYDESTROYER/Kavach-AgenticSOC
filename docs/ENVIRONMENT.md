@@ -23,8 +23,9 @@ pain, so they are documented separately.
 > **archived** (`archive/kibana-plugin/`, frozen, not built/shipped). The suite's own
 > state runs on a **selectable backend** (Elasticsearch, PostgreSQL, or SQLite).
 > Optional auth (6-role RBAC + custom roles / MFA-TOTP / OIDC SSO + **server-enforced
-> sessions** with idle/absolute/revocation and refresh rotation) is **fully built but
-> DEFAULT OFF** — `TLSOC_AUTH_ENABLED=true` to turn it on. A reversible, $0 **Demo
+> sessions** with idle and absolute limits and revocation; no sign-in issues a refresh
+> token, and `POST /api/auth/refresh` is deprecated) is **fully built but DEFAULT OFF**:
+> `TLSOC_AUTH_ENABLED=true` turns it on. A reversible, $0 **Demo
 > Mode** populates the product with synthetic data without any source wiring (see
 > `DEMO.md`). See `COMPATIBILITY.md` for the full matrix.
 >

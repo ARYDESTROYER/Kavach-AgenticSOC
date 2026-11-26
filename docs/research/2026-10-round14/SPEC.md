@@ -263,6 +263,12 @@ This is the part of the round no prototype showed as one piece. Every rule below
 | D44 | 9 | Old routes and pages stay as aliases for one release, then are removed. |
 | D45 | 9 | Demo Mode honours runbooks: the demo pipeline gets the same library. |
 
+Amendment (2026-11-26, Round 16 SPEC D6 and §6.4): D3 is reversed for the sign-in row. The
+Remember me row shows only "Remember me", with no duration line and no accessible description.
+The warning dialog that opens the first time a person ticks it is now the disclosure: it states
+how long the session lasts and the inactivity limit. A row that is unavailable (turned off by an
+administrator, or on an insecure connection) keeps its one-line reason.
+
 ### 2.4 Decisions this spec makes that the operator did not state
 
 Each is recorded so a reviewer can challenge it; none touches a non-negotiable.

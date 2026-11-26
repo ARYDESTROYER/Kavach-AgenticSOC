@@ -153,7 +153,10 @@ cursors. It is **fully reversible in one click**.
     scheduled source-native alerts and Agentic SOC detections advance a shared MITRE
     ATT&CK storyline, so visible activity is guaranteed while you present.
 - Notice the amber **Demo banner** pinned in the app shell and the **`SAMPLE`**
-  badge on every demo row; cost tiles read **"(simulated)"**. The Sources UI disables
+  badge on every demo row; cost tiles read **"(simulated)"**. Since 0.2.0 every seeded
+  case with a cost has simulated Demo ledger rows (`price_basis` `demo_simulated`), so its
+  investigation cost, its usage popover, the Cost page and Agent effectiveness agree, and
+  Demo spend is never billed. The Sources UI disables
   real connector controls and outbound notification tests are refused while the
   demo is active. Other organization/admin settings remain live: do not edit them
   during a presentation if you want the underlying deployment unchanged.
@@ -243,11 +246,12 @@ cursors. It is **fully reversible in one click**.
   simply doesn't appear (and the rail auto-jumps off a hidden active section).
   When auth is off, everything shows.
 - This is a *Settings*-only regroup — it's separate from the app's top-level
-  left-nav, which has its own **six groups**: **Overview** (Dashboard, Dashboards,
-  Standup), **Triage** (Cases, Campaigns, Logs, Workspace → Chat/Investigate,
-  Automated scans, Approvals), **Intelligence** (Knowledge, Memory, Playbooks),
-  **Analytics** (Metrics, Cost, Models, Baseline, Batch jobs), **Notifications**
-  (Inbox), and **Platform** (Sources, Audit log, Auto-tuning, Settings). Point out
+  left-nav, which has its own **six groups**: **Overview** (Cyber Defence Center,
+  Dashboards, Standup), **Triage** (Cases, Case Manager, Campaigns, Logs, Workspace →
+  Chat/Entity investigation/Reports, Approvals), **Intelligence** (Knowledge corpus,
+  Runbooks, Operator memory, Agent personas), **Analytics** (Metrics, Team activity, Agent
+  effectiveness, Cost, Models, Baseline, Jobs), **Communication** (Inbox and What's new,
+  since 0.2.0), and **Platform** (Sources, Audit log, Auto-tuning, Settings). Point out
   Sources and Audit log are standalone **Platform** pages now, not buried in
   Settings.
 

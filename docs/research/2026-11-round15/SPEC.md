@@ -654,6 +654,16 @@ facts repeated two to five times.
   1427-1430` pins), `docs/analyst/investigation.md` (runbook tab text), `docs/analyst/cases.md`
   where it describes the workspace, `docs/development/ui-standard.md` (§6.3).
 
+Amendment (2026-11-26, Round 16 SPEC D8 and §6.4): the five case tabs and the facts rail of
+this section are superseded. The case detail has six tabs, one lane each, with Chat last
+(Brief, Evidence, AI investigation, Response, Activity and Chat, ids `overview`, `evidence`,
+`investigation`, `runbook`, `collab` and `chat`, on Alt+1 to Alt+6), and the facts rail is the
+case facts inspector: a column beside the tabs from a 52rem pane, or a side sheet below that,
+shown or hidden with `]`, with six sections. The header is one title row and one meta strip,
+and the review sentence moved from the header to the review chip and the Brief. The queue
+contracts of D8.1 and the kept contracts of D8.6 still hold, except that Live and Refresh moved
+from the page header into the queue's first control row (Round 16 WP02).
+
 ### 2.9 Pre-existing defects (D11)
 
 Fixed this round: D7.2 attribution; D6.10 carry-over; G17 AI assessment fallback; the stale
