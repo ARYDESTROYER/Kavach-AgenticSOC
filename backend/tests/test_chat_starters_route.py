@@ -725,6 +725,18 @@ def test_the_20000_case_sqlite_fixture_answers_within_the_bound(monkeypatch: pyt
     from app.stores.sql.models import CaseRow
     from app.stores.sql.repositories import _canonical_created_at, _entity_value
 
+    # A build answers by its deadline (``BUILD_TIMEOUT_S``, 1.5 s, and a family's own
+    # ``FAMILY_TIMEOUT_S``). On a machine slowed by other work (load average 15 to 19 on
+    # four cores) one read of the 20,000-case open population can pass it, and the
+    # build then rightly drops the case families: that is the designed degradation, and
+    # the engine pins it (test_a_population_read_past_the_build_bound_skips_only_its_families).
+    # This test is about the families the route builds over 20,000 cases and its speed,
+    # so the deadline is raised here (Round 16, WP16) and the speed keeps its own bound:
+    # the best of three replies under 0.6 s. A reply that waited for a background
+    # reading (review A-2) still fails, by that bound and by dropping its families once
+    # the raised deadline passes.
+    monkeypatch.setattr(cs, "BUILD_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(cs, "FAMILY_TIMEOUT_S", 30.0)
     rng = random.Random(13)
     now = datetime.now(UTC)
     statuses = list(CaseStatus)

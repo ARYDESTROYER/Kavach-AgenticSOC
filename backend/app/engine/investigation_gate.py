@@ -28,6 +28,19 @@ class InvestigationGate:
     def active(self) -> int:
         return self._active
 
+    def would_wait(self, cap: int, priority: InvestigationPriority = "ingest") -> bool:
+        """Whether a caller asking now for a permit at ``priority`` would wait (Round
+        16, WP16): the same test :meth:`permit` waits on, read without changing
+        anything. A background caller also waits while an ingest caller is queued or
+        while the background slots (``cap - 1`` when ``cap`` is above one) are full, so
+        a run can say it is queued even when a slot looks free."""
+        limit = max(1, int(cap or 1))
+        if self._active >= limit:
+            return True
+        if priority != "background":
+            return False
+        return self._ingest_waiters > 0 or self._background_active >= max(1, limit - 1)
+
     @asynccontextmanager
     async def permit(
         self,

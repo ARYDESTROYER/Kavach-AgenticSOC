@@ -370,17 +370,44 @@ async def perform_precedent_candidate(
     case save but before projection acknowledgement, re-entering this helper skips the
     duplicate history append and safely upserts the same ``resolved_case:<id>`` RAG
     document. Both the synchronous route and durable Jobs runner use this seam.
+
+    Round 16 (WP16): each history append re-reads the stored case and saves it under
+    the case's write lock, so a person's tag, comment or close saved since the candidate
+    list was read is kept (the candidate copy is then updated to what was saved). The
+    projection itself runs outside the lock.
     """
-    newly_ratified = not is_bulk_ratified(case)
-    if newly_ratified:
-        entry = precedent_ratification_entry(
+    async def _append_history(make_entry: Any) -> bool:
+        """Append ``make_entry(stored)`` (``None`` = nothing to add) to the stored case
+        under its lock; True when a row was saved."""
+        async with _case_write_lock(state, case.case_id):
+            stored = await state.cases.get(case.case_id)
+            target = stored if stored is not None and type(stored) is type(case) else case
+            entry = make_entry(target)
+            if entry is None:
+                _mirror(target)
+                return False
+            target.history.append(entry)
+            await state.cases.save(target)
+            _mirror(target)
+            return True
+
+    def _mirror(saved: Any) -> None:
+        if saved is not case:
+            for name in getattr(type(case), "model_fields", {}):
+                setattr(case, name, getattr(saved, name))
+
+    def _ratification(target: Any) -> dict[str, Any] | None:
+        if is_bulk_ratified(target):
+            return None
+        return precedent_ratification_entry(
             actor=actor,
             batch_id=batch_id,
             outcome=str((item.get("metadata") or {}).get("outcome") or ""),
-            confidence=float(case.confidence or 0.0),
+            confidence=float(target.confidence or 0.0),
         )
-        case.history.append(entry)
-        await state.cases.save(case)
+
+    newly_ratified = await _append_history(_ratification)
+    if newly_ratified:
         try:
             await state.audit.record(
                 action_type=ActionType.CONTEXT,
@@ -407,21 +434,27 @@ async def perform_precedent_candidate(
     )
     if indexed < 1:
         raise RuntimeError("precedent projection produced no indexable chunk")
-    if not any(
-        isinstance(entry, dict)
-        and entry.get("event") == "precedent_projection_ack"
-        for entry in list(case.history or [])
-    ):
-        case.history.append(
-            {
-                "ts": iso_now(),
-                "event": "precedent_projection_ack",
-                "batch_id": str(batch_id or ""),
-                "projected_by": str(actor or ""),
-            }
-        )
-        await state.cases.save(case)
+
+    def _ack(target: Any) -> dict[str, Any] | None:
+        if is_precedent_projected(target):
+            return None
+        return {
+            "ts": iso_now(),
+            "event": "precedent_projection_ack",
+            "batch_id": str(batch_id or ""),
+            "projected_by": str(actor or ""),
+        }
+
+    await _append_history(_ack)
     return {"ratified": newly_ratified, "indexed": indexed}
+
+
+def _case_write_lock(state: Any, case_id: str) -> Any:
+    """The case's write lock (Round 16 SPEC §4.5 WP08), imported lazily because
+    ``routes`` imports this module's router; a no-op context for a state without one."""
+    from .routes import _case_write_lock as lock_for
+
+    return lock_for(state, case_id)
 
 
 def is_precedent_projected(case: Any) -> bool:

@@ -1247,10 +1247,12 @@ export interface paths {
         };
         /**
          * Get Case Activity
-         * @description The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed
+         * @description The case ACTIVITY timeline: the authoritative audit rows for the case UNIONed
          *     with the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays
          *     the source of truth (#2); the friendly feed adds human-readable collaboration
-         *     events. All text is returned plain (#9).
+         *     events. All text is returned plain (#9). For a caller without ``cost:view`` the
+         *     cost figures a spend writer put into a row's ``result_summary`` are replaced, as
+         *     on the trace (Round 16, WP16: ``api.cost_text``).
          */
         get: operations["get_case_activity_api_cases__case_id__activity_get"];
         put?: never;
@@ -1552,15 +1554,21 @@ export interface paths {
         /**
          * Case Rationale
          * @description Case EXPLAINABILITY: a clean, human-readable "why" object assembled from the
-         *     case + its audit records — WITHOUT calling the LLM.
+         *     case + its audit records, WITHOUT calling the LLM.
          *
          *     Surfaces exactly how a case reached its verdict: the persona/playbook chosen, the
          *     operator MEMORY facts consulted, the RAG knowledge retrieved (source + snippet),
          *     the IP enrichment/reputation, the read-only tools/queries the agent ran, the
          *     investigator's reasoning excerpt, the deterministic close/escalate rationale, the
          *     MITRE techniques, and the evidence. Every piece is parsed DEFENSIVELY from the
-         *     audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields — a
+         *     audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields; a
          *     missing piece degrades to an empty value, never an error. NEVER 404s.
+         *
+         *     Round 16 (WP16, [dv] R14): additive ``returned``, ``rows_total``,
+         *     ``rows_total_relation`` and ``truncated``, as the timeline answers them, say when
+         *     the rationale was read from only the newest audit records of a long-lived case.
+         *     For a caller without ``cost:view`` the cost figure in ``decision_rationale`` (the
+         *     case manager's DECISION row text) is replaced (``api.cost_text``).
          */
         get: operations["case_rationale_api_cases__case_id__rationale_get"];
         put?: never;
@@ -2155,9 +2163,11 @@ export interface paths {
          *
          *     Projects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator
          *     → tool calls → verdict → formatter → case-manager decision) into a timeline.
-         *     Read-only on the management-scoped audit index. NEVER 404s — an unknown or
+         *     Read-only on the management-scoped audit index. NEVER 404s: an unknown or
          *     not-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is
-         *     omitted when ``prefs.trace.include_prompts`` is false.
+         *     omitted when ``prefs.trace.include_prompts`` is false. For a caller without
+         *     ``cost:view`` the cost figures a spend writer put into a row's ``result_summary``
+         *     are replaced (Round 16, WP16: ``api.cost_text``); tool output is never changed.
          */
         get: operations["case_trace_api_cases__case_id__trace_get"];
         put?: never;
@@ -3316,7 +3326,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Investigate */
+        /**
+         * Investigate
+         * @description The Investigate page: a person asks for one investigation. The run is a manual
+         *     run of that person (Round 16, WP16), so the AI run popover names who asked and the
+         *     finish notice reaches them, as Investigate on a case does.
+         */
         post: operations["investigate_api_investigate_post"];
         delete?: never;
         options?: never;
@@ -4694,6 +4709,11 @@ export interface paths {
          * Prefs Org Put
          * @description Replace the ORG customization defaults (admin-only). Validated/bounded by
          *     CustomizationConfig. All free-text is plain data (#9).
+         *
+         *     Round 16 (WP16): the new settings are validated as a whole ``Preferences``, so its
+         *     after-validators run on this write as on every other: a legacy
+         *     ``customization.default_theme`` other than ``system`` is moved into Branding (B45)
+         *     and is never stored here.
          */
         put: operations["prefs_org_put_api_prefs_org_put"];
         post?: never;

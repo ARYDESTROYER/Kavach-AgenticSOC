@@ -549,11 +549,24 @@ async def _extend_cases_mapping(es: Any, base: str, mapping: dict[str, Any]) -> 
             "stores them."
         )
         return "unsupported"
+    template_name = f"{base}-template"
     try:
-        template_ok, template_kept = await _refresh_cases_template(es, f"{base}-template", mapping)
+        template_ok, template_kept = await _refresh_cases_template(es, template_name, mapping)
+    except NotImplementedError as exc:
+        # The management key may not read the template (403), or the cluster has no
+        # such template or no composable template API (404) (Round 16, WP16).
+        logger.warning(
+            "Cases mapping not checked: the cases index template %s cannot be read (%s), "
+            "so recorded risk inputs are left out of stored cases.", template_name, exc,
+        )
+        return "unsupported"
+    try:
         live = await es.get_index_mapping(f"{base},{base}-*")
     except NotImplementedError:
-        logger.warning("Cases mapping not checked: this client cannot read or extend index mappings")
+        logger.warning(
+            "Cases mapping not checked: this client cannot read the cases index mappings, "
+            "so recorded risk inputs are left out of stored cases."
+        )
         return "unsupported"
     except Exception as exc:  # noqa: BLE001 (never fail the boot)
         logger.warning("Cases index mappings could not be read: %s", exc)

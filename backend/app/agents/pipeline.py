@@ -273,6 +273,20 @@ class CaseLocks:
         return len(self._locks)
 
 
+def _gate_would_wait(gate: Any, cap: int, priority: str) -> bool:
+    """Whether a run asking ``gate`` for a permit now would wait (Round 16, WP16): the
+    gate's own ``would_wait`` read, so a background job run held back by the ingest
+    headroom is announced as queued too; a gate without it falls back to the slot
+    count. Never raises: the answer only chooses the run's first frame."""
+    try:
+        would_wait = getattr(gate, "would_wait", None)
+        if callable(would_wait):
+            return bool(would_wait(cap, priority))
+        return int(getattr(gate, "active", 0) or 0) >= cap
+    except Exception:  # noqa: BLE001 (a frame choice never touches a run)
+        return False
+
+
 class _CaseWriteHold:
     """One run's hold on its case lock: idempotent :meth:`hold` and :meth:`release`, so
     the success path, the failure path and the ``finally`` can each call them."""
@@ -1041,7 +1055,9 @@ class InvestigationPipeline:
             handle = registry.begin(
                 run_id=run_id, signature=cluster.signature, case_id=known_case_id,
                 trigger=trigger, requested_by=requested_by,
-                announce_queued=bool(gate is not None and gate.active >= cap),
+                announce_queued=bool(gate is not None and _gate_would_wait(
+                    gate, cap, "background" if investigation_priority == "background" else "ingest",
+                )),
             )
         token = _CURRENT_INVESTIGATION.set(handle)
         try:
@@ -1215,7 +1231,7 @@ class InvestigationPipeline:
             # answered at the rule level. See ``_close_by_analyst_policy``.
             policy_case = await self._close_by_analyst_policy(
                 cluster, source_surface, prefs,
-                case_id=case_id, existing=existing, force=force,
+                case_id=case_id, existing=existing, force=force, write_hold=write_hold,
             )
             if policy_case is not None:
                 _attach_run_case(registry, policy_case.case_id)
@@ -1726,6 +1742,7 @@ class InvestigationPipeline:
         case_id: str,
         existing: Case | None,
         force: bool = False,
+        write_hold: "_CaseWriteHold | None" = None,
     ) -> Case | None:
         """Close a cluster the operator has DECLARED benign — with no LLM call at all.
 
@@ -1769,7 +1786,22 @@ class InvestigationPipeline:
         Returns the closed Case, or ``None`` when no declaration covers this cluster.
         Fail-safe: any error returns ``None``, so a broken declaration degrades to a
         normal investigation rather than dropping the cluster.
+
+        Round 16 (WP16): when a declaration matches, the close holds ``write_hold`` (the
+        case's write lock, inside the signature lock the caller holds) from a fresh read
+        of the stored case to its save, so a person's tag, comment or close saved since
+        ``existing`` was read is carried, or wins. The caller releases the hold in its
+        own ``finally``; without one, the close makes and releases its own.
         """
+        if write_hold is None:
+            own = _CaseWriteHold(self.case_lock(case_id))
+            try:
+                return await self._close_by_analyst_policy(
+                    cluster, source_surface, prefs,
+                    case_id=case_id, existing=existing, force=force, write_hold=own,
+                )
+            finally:
+                own.release()
         # An explicit human action on THIS case always wins over a rule-level statement.
         #
         # ``verdict is not None`` alone is not that test. The analyst lifecycle path
@@ -1821,6 +1853,16 @@ class InvestigationPipeline:
         if match is None:
             return None
 
+        hold = write_hold
+        await hold.hold()
+        existing = await self._latest_stored_case(case_id, existing)
+        if existing is not None and (
+            existing.verdict is not None
+            or existing.decision_by == DecisionBy.ANALYST
+        ):
+            # A person acted on the case after it was first read: their action wins.
+            hold.release()
+            return None
         case_number = await self._allocate_case_number(existing, cluster, prefs)
         now = iso_now()
         rules = ", ".join(match.rule_ids)
@@ -1908,7 +1950,10 @@ class InvestigationPipeline:
             **_procedure_history(existing),
             analyst_policy=match.as_dict(),
         )
-        await self._cases.save(case)
+        try:
+            await self._cases.save(case)
+        finally:
+            hold.release()
         await self._audit.record(
             action_type=ActionType.DECISION, surface=source_surface.value,
             actor=DecisionBy.ANALYST_POLICY.value, case_id=case_id,
@@ -1948,19 +1993,41 @@ class InvestigationPipeline:
     ) -> Case:
         existing = await find_open_case_for_cluster(self._cases, cluster)
         case_id = existing.case_id if existing else new_id("case-")
+        # Round 16 (WP16): the rebuild holds the case's write lock (inside the signature
+        # lock held here, WP08's lock order) from a fresh read of the stored case to its
+        # save, as a run's rebuild does, so a person's tag, comment or close saved since
+        # ``existing`` was read is never erased. Released in the ``finally`` whatever
+        # way the rebuild ends.
+        hold = _CaseWriteHold(self.case_lock(case_id))
+        try:
+            return await self._register_candidate_held(
+                cluster, source_surface, prefs, existing=existing, case_id=case_id,
+                hold=hold, awaiting_reason=awaiting_reason,
+            )
+        finally:
+            hold.release()
+
+    async def _register_candidate_held(
+        self, cluster: Cluster, source_surface: SourceSurface, prefs: Preferences, *,
+        existing: Case | None, case_id: str, hold: "_CaseWriteHold", awaiting_reason: str,
+    ) -> Case:
         # A declared-benign cluster is CLOSED here too, not parked as a candidate: the
         # operator answered this at the rule level, so leaving it open would put work
         # back on the queue the declaration exists to clear.
         policy_case = await self._close_by_analyst_policy(
-            cluster, source_surface, prefs, case_id=case_id, existing=existing
+            cluster, source_surface, prefs, case_id=case_id, existing=existing,
+            write_hold=hold,
         )
         if policy_case is not None:
             return policy_case
+        await hold.hold()
+        existing = await self._latest_stored_case(case_id, existing)
         # A decided case, or one a person moved, is never rebuilt as a candidate
         # (Round 16 B04): the events attach and the case is returned as it is, the
         # same rule the realtime path applies. Rebuilding it would wipe its verdict,
         # decision and escalation and hand it back to a run that could re-decide it.
         if existing is not None and is_attach_only(existing):
+            hold.release()  # the attach takes the case lock itself
             await attach_cluster(self._cases, existing, cluster, pipeline=self)
             return existing
         breakdown = compute_risk(cluster, prefs, 0.0)
@@ -2023,6 +2090,7 @@ class InvestigationPipeline:
         _carry_case_work(existing, case)
         _record_rebuild_transition(existing, case, reason=case.summary)
         await self._cases.save(case)
+        hold.release()
         await self._audit.record(
             action_type=ActionType.POLL, surface=source_surface.value, actor="poller",
             case_id=case_id,

@@ -964,6 +964,7 @@ class GetCaseTool(ChatTool):
         projected; the engine fences the whole observation. The runbook's selection
         reason and match explanation are never projected: they quote rule names and
         other values that come from logs (#9)."""
+        from ...api.cost_text import withhold_cost_text
         from ...engine.case_rationale import build_rationale
 
         try:
@@ -996,7 +997,13 @@ class GetCaseTool(ChatTool):
             "knowledge_sources": dict(knowledge_sources.most_common(5)),
             "reasoning": opt_text(data.get("reasoning"), 600),
             # Engine-authored by case_manager (verdict enum, numbers, policy values).
-            "decision_rationale": opt_text(data.get("decision_rationale"), 400),
+            # Its spend figure follows cost:view, as the rationale route's does
+            # (Round 16, WP16: ``api.cost_text``).
+            "decision_rationale": opt_text(
+                data.get("decision_rationale") if ctx.has("cost", "view")
+                else withhold_cost_text(data.get("decision_rationale")),
+                400,
+            ),
             "persona": opt_text(persona, 60),
             # Round 14: set only when the runbook's guidance reached the investigator.
             "runbook": opt_text(runbook.get("id"), 64),

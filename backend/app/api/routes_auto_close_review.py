@@ -537,7 +537,7 @@ async def _record_review_locked(
     before)``; the review id is empty for a case that was not sampled, and ``disagreed
     before`` says the reviewer had already recorded a disagreeing grade of that case (a
     sampled case takes one review, so it is always False there)."""
-    from .routes import _case_audit_fields, _request_audit_context
+    from .routes import _case_audit_fields, _case_write_lock, _request_audit_context
 
     case = await state.cases.get(case_id)
     if case is None:
@@ -605,46 +605,49 @@ async def _record_review_locked(
                      "The audit log could not record the review, so nothing changed. Try again.") from exc
 
     # 2. Read the case again and save it with one appended grade (never its status,
-    # decider or disposition, #3).
+    # decider or disposition, #3). The read and the save hold the case's write lock
+    # (Round 16, WP16), inside the review store's lock, so a person's tag, comment or
+    # close saved meanwhile is never erased by this save, nor this grade by theirs.
     now = iso_now()
     reviewer_key = actor.strip().lower()
     try:
-        fresh = await state.cases.get(case_id) or case
-        # Read before this review's grade is appended (and under the store lock, so two
-        # concurrent repeats cannot both read "not yet").
-        disagreed_before = not sampled and any(
-            fb.assessment == "disagree" and (fb.analyst or "").strip().lower() == reviewer_key
-            for fb in fresh.feedback
-        )
-        grade = FeedbackEntry(
-            ts=now,
-            analyst=actor,
-            assessment=("" if agrees is None else ("agree" if agrees else "disagree")),
-            accuracy=float(body.accuracy or 0.0),
-            reasoning_quality=float(body.reasoning_quality or 0.0),
-            action_appropriateness=float(body.action_appropriateness or 0.0),
-            actual_outcome=CLASSIFICATION_OUTCOME[body.classification],
-            comment=body.note,
-            ai_verdict=ai_verdict,
-            ai_confidence=float(getattr(fresh, "confidence", 0.0) or 0.0),
-            origin=AUTO_CLOSE_REVIEW_ORIGIN if sampled else "",
-            review_id=review_id if sampled else "",
-        )
-        fresh.feedback.append(grade)
-        if sampled:
-            # Only for a case in the ledger (D6.6): the rollback-safe marker.
-            fresh.history.append({
-                "ts": now,
-                "event": AUTO_CLOSE_REVIEW_EVENT,
-                "review_id": review_id,
-                "feedback_ts": grade.ts,
-                "analyst": actor,
-                "agrees": agrees,
-                "classification": body.classification,
-                "elapsed_ms": body.elapsed_ms,
-            })
-        fresh.updated_at = now
-        await state.cases.save(fresh)
+        async with _case_write_lock(state, case_id):
+            fresh = await state.cases.get(case_id) or case
+            # Read before this review's grade is appended (and under the store lock, so two
+            # concurrent repeats cannot both read "not yet").
+            disagreed_before = not sampled and any(
+                fb.assessment == "disagree" and (fb.analyst or "").strip().lower() == reviewer_key
+                for fb in fresh.feedback
+            )
+            grade = FeedbackEntry(
+                ts=now,
+                analyst=actor,
+                assessment=("" if agrees is None else ("agree" if agrees else "disagree")),
+                accuracy=float(body.accuracy or 0.0),
+                reasoning_quality=float(body.reasoning_quality or 0.0),
+                action_appropriateness=float(body.action_appropriateness or 0.0),
+                actual_outcome=CLASSIFICATION_OUTCOME[body.classification],
+                comment=body.note,
+                ai_verdict=ai_verdict,
+                ai_confidence=float(getattr(fresh, "confidence", 0.0) or 0.0),
+                origin=AUTO_CLOSE_REVIEW_ORIGIN if sampled else "",
+                review_id=review_id if sampled else "",
+            )
+            fresh.feedback.append(grade)
+            if sampled:
+                # Only for a case in the ledger (D6.6): the rollback-safe marker.
+                fresh.history.append({
+                    "ts": now,
+                    "event": AUTO_CLOSE_REVIEW_EVENT,
+                    "review_id": review_id,
+                    "feedback_ts": grade.ts,
+                    "analyst": actor,
+                    "agrees": agrees,
+                    "classification": body.classification,
+                    "elapsed_ms": body.elapsed_ms,
+                })
+            fresh.updated_at = now
+            await state.cases.save(fresh)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Auto-close review save failed for %s: %s", case_id[:80], exc)
         await _failed("case_store_unavailable")

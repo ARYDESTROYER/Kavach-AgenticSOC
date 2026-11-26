@@ -21,9 +21,9 @@ walk starts at the entry the trusted peer appended and skips only addresses that
 trusted proxies (a load balancer in front of the bundled Web UI), so a caller can
 never choose the recorded address by sending a header. Otherwise the address is the
 socket peer, whatever the caller sent. So a caller that reaches the backend port
-directly can never choose its recorded address. This is deliberately not
-``state.client_ip_from``, which returns the first, client-supplied entry and stays as
-it is for session metadata.
+directly can never choose its recorded address. Since Round 16 (B22) the session
+registry records the same address (``session_metadata`` calls
+:func:`audit_client_ip`), so the session list and the audit trail always agree.
 
 A row written before its actor has signed in (a failed sign-in, a second-factor
 check, a refused single sign-on) is built with ``from_request=False``: the credential

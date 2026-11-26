@@ -1738,7 +1738,9 @@ class TraceSpan(BaseModel):
     id: str = Field(default_factory=lambda: new_id("span-"))
     case_id: str = ""
     step_index: int = 0
-    kind: str = ""                        # invoke_agent | chat | execute_tool | decision
+    # invoke_agent | chat | execute_tool | decision | person | system (Round 16: a
+    # person's row and a deterministic actor's row, ``routes_triage._span_kind``)
+    kind: str = ""
     name: str = ""
     ts: str = Field(default_factory=iso_now)
     latency_ms: int | None = None
