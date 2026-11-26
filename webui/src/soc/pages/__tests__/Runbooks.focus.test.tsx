@@ -99,12 +99,51 @@ describe('Runbooks focus on a view switch (B77)', () => {
     await waitFor(() => expect(document.activeElement).toBe(row));
   });
 
+  it('lands on the phone row of the runbook just left', async () => {
+    // A phone lists the runbooks as rows (no table), whose title link has no id attribute.
+    const realMatchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: /max-width:\s*767px/.test(query),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      renderPage();
+      const link = await screen.findByRole('link', { name: 'Phishing triage' });
+      expect(link).not.toHaveAttribute('data-runbook-link');
+      fireEvent.click(link);
+      await screen.findByTestId('editor-stub');
+      await goTo('#/runbooks');
+      const row = await screen.findByRole('link', { name: 'Phishing triage' });
+      await waitFor(() => expect(document.activeElement).toBe(row));
+    } finally {
+      window.matchMedia = realMatchMedia;
+    }
+  });
+
   it('lands on the library heading when the runbook left is not listed', async () => {
     window.location.hash = '#/runbooks?id=discarded-draft';
     renderPage();
     await screen.findByTestId('editor-stub');
     await goTo('#/runbooks');
     await screen.findByRole('link', { name: 'Phishing triage' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1, name: 'Runbooks' })));
+  });
+
+  it('lands on the library heading when the library could not be read', async () => {
+    mocks.listRunbookLibrary.mockReset().mockRejectedValue(new Error('library down'));
+    window.location.hash = '#/runbooks?id=phishing-triage';
+    renderPage();
+    await screen.findByTestId('editor-stub');
+    // The editor's own read of the library failed too; give it time to settle.
+    await waitFor(() => expect(mocks.listRunbookLibrary).toHaveBeenCalled());
+    await goTo('#/runbooks');
+    await screen.findByText('Could not load the runbooks');
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1, name: 'Runbooks' })));
   });
 

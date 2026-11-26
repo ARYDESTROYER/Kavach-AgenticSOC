@@ -509,17 +509,23 @@ export default function Runbooks(_props: RunbooksProps = {}) {
       return;
     }
     const left = lastOpen.current;
-    if (!left || !library) return;
+    // Wait while the first read of the library runs; a library that could not be read still
+    // shows its heading, which then takes focus.
+    if (!left || (!library && libraryState === 'loading')) return;
     lastOpen.current = null;
     const active = document.activeElement;
     if (active && active !== document.body && active.isConnected) return;
-    const row = Array.from(document.querySelectorAll<HTMLElement>('[data-runbook-link]')).find(
-      (el) => el.getAttribute('data-runbook-link') === left,
-    );
+    // The table's title link carries the id; a phone lists the runbooks as rows whose one
+    // link is found by its address instead.
+    const links = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="runbooks-library"] a[href]'));
+    const leftHref = pageHash('runbooks', { id: left });
+    const row =
+      links.find((el) => el.getAttribute('data-runbook-link') === left) ??
+      links.find((el) => el.getAttribute('href') === leftHref);
     const target = row ?? document.querySelector<HTMLElement>('[data-testid="runbooks-library"] h1');
     if (target && !row && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
     target?.focus();
-  }, [viewKey, library]);
+  }, [viewKey, library, libraryState]);
 
   const openRunbook = React.useCallback(
     (id: string, detail?: RunbookDetail, edits?: RunbookCarriedEdits) => {

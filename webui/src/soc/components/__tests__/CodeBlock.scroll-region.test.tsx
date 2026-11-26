@@ -50,6 +50,9 @@ describe('CodeBlock scroll region (B78)', () => {
     const region = screen.getByRole('region', { name: 'Raw record' });
     expect(region.tagName).toBe('PRE');
     expect(region).toHaveAttribute('tabindex', '0');
+    // jsdom lays nothing out, so axe finds scrollable-region-focusable inapplicable here: the
+    // attributes above are the check, and the browser axe sweep runs the rule itself. This
+    // run holds the region role on a <pre> to aria-allowed-role.
     const results = await act(() => axe(container, { runOnly: { type: 'rule', values: ['scrollable-region-focusable', 'aria-allowed-role'] } }));
     expect(results).toHaveNoViolations();
   });
