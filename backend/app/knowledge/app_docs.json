@@ -8465,7 +8465,7 @@
    "page": "releases/whats-new.md",
    "anchor": "agentic-soc-020",
    "heading": "Agentic SOC 0.2.0",
-   "text": "Testing candidate, not yet released. Visible AI work, explainable numbers and a cleaner Case Manager. Everything since 0.1.1 in one release, under a new repository identity and the Apache-2.0 license.\n\nRead the Agentic SOC 0.2.0 release record.\n\nWhat changed in this version, newest first.",
+   "text": "Testing candidate, not yet released. Visible AI work, explainable numbers and a clearer Case Manager. Everything since 0.1.1 in one release, under a new repository identity and the Apache-2.0 license.\n\nRead the Agentic SOC 0.2.0 release record.\n\nWhat changed in this version, newest first.",
    "console": []
   },
   {
@@ -8473,7 +8473,7 @@
    "page": "releases/whats-new.md",
    "anchor": "not-yet-released",
    "heading": "Not yet released",
-   "text": "What's new, explainable numbers and a cleaner Case Manager.",
+   "text": "Visible AI work, explainable numbers and a clearer Case Manager.",
    "console": []
   },
   {
@@ -8481,7 +8481,7 @@
    "page": "releases/whats-new.md",
    "anchor": "not-yet-released",
    "heading": "Not yet released",
-   "text": "- **Case tabs in a new order** (Improved, Cases). Six tabs: Brief, Evidence, AI investigation, Response, Activity and Chat. Alt+2, Alt+4 and Alt+5 open new tabs, and Chat moves to Alt+6. Read more.\n    - Alt+1 to Alt+6 open the tabs in that order.\n    - Alt+2 now opens Evidence, Alt+4 opens Response and Alt+5 opens Activity.\n    - Chat moves from Alt+5 to Alt+6.\n- **See when the AI is working on a case** (New, Cases). The queue, the case header and the close dialogs show when an AI investigation is running or waiting. Read more.\n    - The result of the run stays authoritative. A close made while it runs is replaced by its result, and the close dialogs say so first.\n    - When a run you started finishes, your Inbox tells you.\n- **Every risk score shows its math** (New, Cases). Hover a risk score for its formula with the real numbers, or press it for the inputs, the weights and the rounding. Read more.\n- **What's new and Communication** (New, Help). This welcome appears once after each update. The Communication group holds Inbox and What's new, the release tracker.\n    - Open Communication, then What's new, to read every release.\n    - Turn the welcome off in Settings, Appearance, with Show What's new after updates.\n- **A quieter sign-in page** (Improved, Security). The sign-in page uses the Console's colours and animates once. The Remember me row shows only its name. Read more.",
+   "text": "- **See when the AI is working on a case** (New, Cases). The queue, the case header, the navigation and the close dialogs show when an AI investigation is running or waiting. Read more.\n    - The case header shows **AI working** with the time so far, or **AI queued**. Its popover says who started the run.\n    - The Case Manager item in the navigation counts the cases the AI is working on.\n    - The run's result stays authoritative. A close made while it runs is replaced by its result, and the close dialogs say so before you act.\n    - When a run you started finishes, or a run replaces your close, your Inbox tells you.\n- **A clearer Case Manager** (Improved, Cases). Each part of a case has one place. The header takes two lines, the case facts sit in their own column, and the queue folds away when you need the width. Read more.\n    - The header's second line keeps the case number, severity, status, risk, AI verdict, owner and SLA on one line.\n    - Press **]** to show or hide the case facts. In a narrow pane they open in a side sheet.\n    - Press **[** to fold the queue into a narrow strip. J and K still move through the cases.\n    - The Brief opens with the case's next step and four lanes: Evidence, AI, Decision and People.",
    "console": []
   },
   {
@@ -8489,7 +8489,23 @@
    "page": "releases/whats-new.md",
    "anchor": "not-yet-released",
    "heading": "Not yet released",
-   "text": "- **Access and account security fixes** (Security). Case reads, the settings read and Standup now check permissions, and account security is stricter. Read more.\n    - A role without the permission now gets an Access denied answer from these reads.\n    - An account flagged to change its password must change it before anything else.\n    - Multi-factor sign-in locks after 10 failed codes.\n    - A password change signs out your other sessions.\n    - Only a Super admin with a fresh sign-in can change single sign-on settings.\n- **Fixes across the application** (Fixed, Platform). Fixes from a full review of the application, among them reinvestigation, SLA timers, Demo Mode and accessibility.\n- **Apache-2.0 license** (New, Platform). Agentic SOC is free software under the Apache License 2.0. Read more.\n- **A new repository identity for updates** (Improved, Administration). Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater. Read more.\n    - Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact case.",
+   "text": "- **Case tabs in a new order** (Improved, Cases). Six tabs: Brief, Evidence, AI investigation, Response, Activity and Chat. Alt+2, Alt+4 and Alt+5 now open Evidence, Response and Activity, and Chat moves to Alt+6. Read more.\n    - Alt+1 to Alt+6 open the tabs in that order.\n    - Before, Alt+2 opened Runbook, Alt+4 opened Collaboration and Alt+5 opened Chat.\n    - A link to the retired Timeline or Threat context tab opens Evidence at the matching section.\n- **Every number shows its math** (New, Cases). Hover a risk score, a decision or a dashboard figure for its formula with the real numbers. Press it for the inputs, the steps and the rounding. Read more.\n    - On a case: the risk score, the close or escalate decision, the priority, the SLA and the AI cost.\n    - On dashboards and Metrics: the KPI figures, with the cases behind them.\n    - **Copy calculation** copies the whole arithmetic.\n    - A case scored before this version keeps its stored factors. Where its inputs were not kept, the panel says they were not recorded.\n- **What's new and Communication** (New, Help). This welcome appears once after each update. The Communication group holds Inbox and What's new, the release tracker.\n    - Open **Communication**, then **What's new**, to read every release with its highlights and screenshots.",
+   "console": []
+  },
+  {
+   "id": "releases/whats-new#not-yet-released:3",
+   "page": "releases/whats-new.md",
+   "anchor": "not-yet-released",
+   "heading": "Not yet released",
+   "text": "- Turn the welcome off with **Show What's new after updates** in Settings, Account, Appearance.\n- **A quieter sign-in page** (Improved, Security). The sign-in page uses the Console's own colours and moves once as it opens. The Remember me row shows only its name. Read more.\n    - Checking **Remember me** opens a warning first. It says how long this device stays signed in.\n    - When an administrator turned Remember me off, or the connection is not secure, the row stays visible and disabled, with the reason.\n    - A single sign-on error shows a fixed sentence, never text from the address bar.\n- **Every case record within reach** (New, Cases). The Evidence tab lists the raw events behind a case. The case facts open every stored field and each AI call with its cost. Read more.\n    - Open an event for every field as a table or as JSON, then copy or download it.\n    - **View all fields** in the case facts shows every stored field of the case.\n    - The cost in the case facts lists each AI call with its tokens and its cost formula.\n    - Raw events need the `sources:read` permission. AI costs need `cost:view`.\n- **A new repository identity for updates** (Improved, Administration). Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater. Read more.",
+   "console": []
+  },
+  {
+   "id": "releases/whats-new#not-yet-released:4",
+   "page": "releases/whats-new.md",
+   "anchor": "not-yet-released",
+   "heading": "Not yet released",
+   "text": "- Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact letter case.\n    - The bootstrap refuses a missing line or the former name, prints the line to add, and never edits .env.\n    - Releases 0.1.12 and earlier stay valid under the former name. The public Help Center moved to the new Pages address.\n- **Access and account security fixes** (Security). Case reads, the settings read and Standup now check permissions, and account security is stricter. Read more.\n    - A role without the permission now gets an Access denied answer from these reads.\n    - An account an administrator creates or resets must change its temporary password before anything else.\n    - Ten wrong second-factor codes in a row pause second-factor checks for 5 minutes, doubling up to an hour.\n    - Changing your own password signs out your other sessions. An administrator's reset signs the account out everywhere.\n    - Only a Super admin with a fresh sign-in can change single sign-on settings.\n    - Single sign-on no longer links an account created through another provider because the email matches.\n- **Fixes across the application** (Fixed, Platform). Fixes from a full review of the application, in the AI pipeline, SLA timers, metrics, settings, Demo Mode and accessibility.\n    - A case a person closed before an automatic AI run started stays closed.\n    - The SLA response clock stops for a case the AI agent closed.\n    - Settings refuses values that cannot work together, such as a response target longer than the resolution target.\n    - In Demo Mode, a seeded case's cost has usage rows behind it, and its risk score matches its factors.\n    - Focus, names and reflow work better with a keyboard, a screen reader and a phone.\n- **Apache-2.0 license** (New, Platform). Agentic SOC is free software under the Apache License 2.0. Read more.\n    - The license text is in the repository and in each image.",
    "console": []
   },
   {
@@ -8497,7 +8513,7 @@
    "page": "releases/whats-new.md",
    "anchor": "25-november-2026",
    "heading": "25 November 2026",
-   "text": "Team activity, case screenshots and a calmer Case Manager.",
+   "text": "Team activity, case screenshots and a calmer Case Manager.\n\n- **Team activity** (New, Administration). Per-person, per-day work counts from the audit log, for SOC managers and auditors. Read more.\n    - Counts come with their context. The page never ranks people or gives them a score.\n    - A chart per day, a sheet for each person with their events, and a CSV download.\n- **Screenshots on cases** (New, Cases). Add PNG, JPEG or WebP screenshots to a case. Their metadata is removed and they are never sent to a model. Read more.\n    - Paste, drag and drop or pick a file, with an optional caption.\n    - Up to 20 images per case, 2 MiB each and 20 MiB per case.\n- **A review of automatic closes** (New, Automation). About 5% of automatic closes are picked for a person to review, at most 10 a day and 3 per rule. Read more.\n    - You classify the case before you see what the AI decided.\n    - A review never changes the case unless you reopen it.\n    - Reviews stay out of agent statistics. Agent effectiveness shows the agreement once 30 reviews exist.\n- **A calmer Case Manager** (Improved, Cases). One control band above the queue, two-line queue rows, and one primary action for the case's state beside Take action. Read more.\n    - The queue gains a Review scope with the number of reviews waiting.\n\nThe Case Manager in this update.",
    "console": []
   },
   {
@@ -8505,7 +8521,23 @@
    "page": "releases/whats-new.md",
    "anchor": "25-november-2026",
    "heading": "25 November 2026",
-   "text": "- **Team activity** (New, Administration). Per-person, per-day work counts from the audit log, for SOC managers and auditors. Read more.\n    - Counts come with their context. The page never ranks people or gives them a score.\n- **Screenshots on cases** (New, Cases). Add PNG, JPEG or WebP screenshots to a case. Their metadata is removed and they are never sent to a model. Read more.\n    - Up to 20 images per case, 2 MiB each and 20 MiB per case.\n- **A review of automatic closes** (New, Automation). About 5% of automatic closes are picked for a person to review, at most 10 a day and 3 per rule. Read more.\n    - You classify the case before you see what the AI decided.\n    - Reviews stay out of agent statistics. Agent effectiveness shows the agreement once 30 reviews exist.\n- **A switch for role-based access** (New, Administration). A Super admin turns role-based access on or off on Roles and permissions, after a fresh sign-in. Read more.\n- **Truthful setup wording** (Improved, Administration). The setup wizard says Ready for live triage only when a source is connected and the investigation models can be called. Read more.\n- **A clearer close** (Improved, Cases). Closing a case asks for the disposition once and records the actions taken. Rate the AI starts collapsed. Read more.\n- **A calmer Case Manager** (Improved, Cases). One control band, two-line queue rows, one primary action beside Take action, and an eight-section facts rail. Read more.",
+   "text": "- **A clearer close** (Improved, Cases). Closing a case asks for the disposition once and can record the actions taken. Rate the AI starts collapsed. Read more.\n    - A note is asked for only when your classification overrides the AI.\n- **A switch for role-based access** (New, Administration). A Super admin turns role-based access on or off on Roles and permissions, after a fresh sign-in. Read more.\n\nThe Role-based access group in this update.\n\n- **Truthful setup wording** (Improved, Administration). The setup wizard says Ready for live triage only when a source is connected and the investigation models can be called. Read more.\n    - Without a usable key it says so, and that new cases wait for a person.\n\nThe setup wizard's AI runtime stage in this update.\n\n- **Only a Super admin manages Super admin accounts** (Security). Giving an account the Super admin role, or changing one that has it, needs a Super admin with a recent sign-in. Read more.\n- **Reinvestigation keeps people's work** (Fixed, Cases). Rebuilding a case keeps its owner, comments, grades, history and a disposition an analyst set.",
+   "console": []
+  },
+  {
+   "id": "releases/whats-new#13-november-2026:0",
+   "page": "releases/whats-new.md",
+   "anchor": "13-november-2026",
+   "heading": "13 November 2026",
+   "text": "A step-by-step install guide with real screenshots.\n\n- **A step-by-step install guide** (New, Help). The Install and First-run setup pages walk through every step with real screenshots of each first-run screen. Read more.\n    - The repository's install guide covers five paths: a workstation demo, the Compose stack, production hardening, an existing Elastic stack and running from source.\n\nOne of the first-run screens the guide shows.\n\n- **Architecture diagrams** (New, Help). Light and dark diagrams show the system data flow and the Compose deployment. Read more.",
+   "console": []
+  },
+  {
+   "id": "releases/whats-new#11-november-2026:0",
+   "page": "releases/whats-new.md",
+   "anchor": "11-november-2026",
+   "heading": "11 November 2026",
+   "text": "Steadier runbook guidance and audit log fixes.\n\n- **The fallback runbook no longer guides the AI** (Fixed, Intelligence). The Generic incident fallback runbook is still attached for people, but it no longer guides the investigator. A specific runbook still does. Read more.\n    - Guidance can change the verdict the AI returns, never the close decision.\n- **The audit log reads every row on PostgreSQL** (Fixed, Administration). A stray control character in an audit row no longer breaks the Audit log, its count, its exports or chat's audit search. Read more.\n- **Your account activity is back** (Fixed, Security). Settings, Account, Sessions and activity shows your own events again.\n- **Safer rollbacks** (Improved, Administration). This build keeps what a newer build writes, so a later release can roll back to it cleanly. Read more.",
    "console": []
   },
   {
@@ -8513,7 +8545,15 @@
    "page": "releases/whats-new.md",
    "anchor": "6-november-2026",
    "heading": "6 November 2026",
-   "text": "A Dashboards library, a usable audit log, rule sheets and Runbooks.\n\n- **Dashboards library** (New, Dashboards). The Overview row opens a library of four built-in dashboards and your own. The Cyber Defence Center stays the landing page. Read more.\n- **An audit log you can use** (Improved, Administration). Search the audit log, choose a scope, open any record in a side sheet, and export CSV or JSON Lines. Read more.\n    - Export needs the `audit:export` permission and a fresh sign-in.\n- **A sheet for every rule** (New, Detection). Press any rule name to see that rule's cases and events in one sheet, with Open all in Logs. Read more.\n- **One Runbooks feature** (New, Intelligence). Phased procedures with matching that gives its reason, a run on each case with a Next step card, and reviewed versions. Read more.\n    - The investigator reads only Published runbook text.\n- **Named severity levels** (Improved, Dashboards). Severity breakdowns use named levels, with the top rules and Split by.\n- **Docked navigation and grouped Settings** (Improved, Platform). The navigation rail docks beside every page, and Settings is grouped.\n- **More room for chat** (Improved, Chat). The default chat timeouts and capacity are three times larger.",
+   "text": "A Dashboards library, a usable audit log, rule sheets and Runbooks.\n\n- **Dashboards library** (New, Dashboards). The Overview row opens a library of four built-in dashboards and your own. The Cyber Defence Center stays the landing page. Read more.\n    - Built-in dashboards are read only. Duplicate one to change it.\n\nThe Dashboards library in this update.\n\n- **An audit log you can use** (Improved, Administration). Search the audit log, choose a scope, open any record in a side sheet, and export CSV or JSON Lines. Read more.\n    - Export needs the `audit:export` permission and a fresh sign-in.\n\nThe Audit log in this update.\n\n- **A sheet for every rule** (New, Detection). Press any rule name to see its alerts over time, its top sources and targets, and its latest alerts and cases, with Open all in Logs. Read more.\n- **One Runbooks feature** (New, Intelligence). Phased procedures with matching that gives its reason, a run on each case with a Next step card, and reviewed versions. Read more.\n    - A library of 12 built-in runbooks.\n    - The investigator reads only Published runbook text.\n\nThe Runbooks library in this update.",
+   "console": []
+  },
+  {
+   "id": "releases/whats-new#6-november-2026:1",
+   "page": "releases/whats-new.md",
+   "anchor": "6-november-2026",
+   "heading": "6 November 2026",
+   "text": "- **The Console offers only what your roles allow** (Improved, Security). Pages, panels and actions your roles cannot use are not offered, because the Console reads the server's own access check. Read more.\n- **Named severity levels** (Improved, Dashboards). Severity breakdowns use named levels, with the top rules and Split by.\n- **Docked navigation and grouped Settings** (Improved, Platform). The navigation rail docks beside every page, and Settings is grouped.\n- **More room for chat** (Improved, Chat). The default chat timeouts and capacity are three times larger.",
    "console": []
   },
   {
@@ -8521,7 +8561,7 @@
    "page": "releases/whats-new.md",
    "anchor": "24-october-2026",
    "heading": "24 October 2026",
-   "text": "Suggested questions and a neater chat.\n\n- **Suggested questions from your data** (New, Chat). A new chat offers 3 or 4 questions built from your own cases and sources, with no model call. Read more.\n    - Hide a suggestion for a day, or turn suggestions off in the composer options.\n- **Follow-up questions** (New, Chat). After an answer, up to three follow-up questions appear, chosen without a model call. Read more.\n- **Conversation titles** (Improved, Chat). A conversation takes its title from the first answer.\n- **A neater reading column** (Improved, Chat). Answers sit in a narrower reading column, with quieter block headers and the cost on the meta row.",
+   "text": "Suggested questions and a neater chat.\n\n- **Suggested questions from your data** (New, Chat). A new chat offers 3 or 4 questions built from your own cases and sources, with no model call. Read more.\n    - Each suggestion has a one-line reason, and a line says what changed since your last visit.\n    - Hide a suggestion for a day, or turn suggestions off in the composer options.\n- **Follow-up questions** (New, Chat). After an answer, up to three follow-up questions appear, each naming something the answer shows. Read more.\n\nAn answer with follow-up questions in this update.\n\n- **Conversation titles** (Improved, Chat). A conversation takes its title from the first answer.\n- **A neater reading column** (Improved, Chat). Answers sit in a narrower reading column, with quieter block headers and the cost on the meta row.",
    "console": []
   },
   {
@@ -8529,7 +8569,7 @@
    "page": "releases/whats-new.md",
    "anchor": "12-october-2026",
    "heading": "12 October 2026",
-   "text": "Chat without limits, Remember me and report downloads.\n\n- **Chat without per-question caps** (Improved, Chat). A question runs until it is answered, with loop guards instead of caps. Chat sits outside the daily and monthly AI budget. Read more.\n    - An optional chat-only daily cap is off by default.\n    - Every chat call is still recorded in the cost ledger.\n- **A working indicator you can come back to** (New, Chat). The navigation shows when chat is working. Leave the page and come back to the live answer.\n- **Remember me** (New, Security). Stay signed in on this device for a time your administrator bounds. Read more.\n- **Report downloads** (Improved, Chat). Reports download reliably, now also as Word and Excel files.\n- **Exact counts in chat and dashboards** (Improved, Dashboards). Chat and dashboards count cases exactly over any window, all time and calendar periods included.\n- **Overview and Case Manager redesigns** (Improved, Dashboards). The Overview and the Case Manager were redesigned, and a closed case shows the analyst's classification first.",
+   "text": "Chat without limits, Remember me and report downloads.\n\n- **Chat without per-question caps** (Improved, Chat). A question runs until it is answered, with loop guards instead of caps. Chat sits outside the daily and monthly AI budget. Read more.\n    - An optional chat-only daily cap is off by default.\n    - Every chat call is still recorded in the cost ledger.\n- **A working indicator you can come back to** (New, Chat). The navigation shows when chat is working. Leave the page and come back to the live answer.\n- **Remember me** (New, Security). Stay signed in on this device for a time your administrator bounds. Read more.\n- **Report downloads** (Improved, Chat). Reports download reliably, now also as Word and Excel files.\n- **Exact counts in chat and dashboards** (Improved, Dashboards). Chat counts cases exactly over any window, all time and calendar periods included. Dashboards read exact totals.\n- **Overview and Case Manager redesigns** (Improved, Dashboards). The Overview and the Case Manager were redesigned, and a closed case shows the analyst's classification first. Read more.\n\nThe Cyber Defence Center after the redesign.",
    "console": []
   },
   {
@@ -8537,7 +8577,15 @@
    "page": "releases/whats-new.md",
    "anchor": "9-october-2026",
    "heading": "9 October 2026",
-   "text": "A read-only analyst assistant.\n\n- **Workspace chat** (New, Chat). A read-only assistant that looks things up for you and answers with blocks, citations and reports. Read more.\n    - A live token meter shows what each answer costs.",
+   "text": "A read-only analyst assistant.\n\n- **Workspace chat** (New, Chat). A read-only assistant that looks things up for you and answers with blocks, citations and reports. Read more.\n    - One question can run several read-only lookups, and the page shows each one as it runs.\n    - A live token meter shows what each answer costs.\n- **Reports** (New, Chat). Collect answers into a report with your notes and an optional AI summary. The Reports library lists them. Read more.",
+   "console": []
+  },
+  {
+   "id": "releases/whats-new#9-september-2026:0",
+   "page": "releases/whats-new.md",
+   "anchor": "9-september-2026",
+   "heading": "9 September 2026",
+   "text": "KPI drill-downs, Agent health in the bell and a navy dark mode.\n\n- **A drill-down behind every KPI** (Improved, Dashboards). Press a KPI tile to see the cases behind the number. Switch metrics in place and download the rows as CSV. Read more.\n- **An Auto-closed tile** (New, Dashboards). A sixth KPI tile shows the cases the AI agent closed automatically, a part of Resolved or closed. Read more.\n- **Agent health in the notification bell** (Improved, Platform). Agent health sits at the top of the notification bell, so a problem shows on every page.\n- **A deep navy dark mode** (Improved, Platform). Dark mode moved to a deep navy palette, with every contrast pair measured again.\n- **A close records your classification** (Fixed, Cases). When you choose a disposition as you close a case, it counts as your classification. The AI's own label never counts as yours.\n- **The investigator sees the fields that matter** (Fixed, Automation). The investigator now reads alert fields such as the URL path, the HTTP method and the user agent.",
    "console": []
   },
   {
@@ -8545,7 +8593,23 @@
    "page": "releases/whats-new.md",
    "anchor": "24-august-2026",
    "heading": "24 August 2026",
-   "text": "Cyber Defence Center and required MFA.\n\n- **Cyber Defence Center** (Improved, Dashboards). The landing dashboard has a new name, and every metric shows a trendline on hover or focus. Read more.\n- **Multi-factor sign-in an administrator can require** (Security). An administrator can require multi-factor sign-in for an account. The person enrolls while signing in. Read more.\n- **Richer account creation** (Improved, Administration). Set a display name, email, phone and custom roles when you create an account, with a live summary of the role. Read more.\n- **38 enrichment providers** (New, Intelligence). 19 new enrichment providers, each with setup steps and an example on its card.\n- **Authenticator QR codes that scan** (Fixed, Security). The QR code for authenticator setup now follows the standard, so every scanner reads it.",
+   "text": "Cyber Defence Center and required MFA.\n\n- **Cyber Defence Center** (Improved, Dashboards). The landing dashboard has a new name, and every metric shows a trendline on hover or focus. Read more.\n- **Human vs AI** (New, Dashboards). A Human vs AI card shows how many cases people and the AI agent closed over time. Read more.\n- **Multi-factor sign-in an administrator can require** (Security). An administrator can require multi-factor sign-in for an account. The person enrols while signing in. Read more.\n- **Richer account creation** (Improved, Administration). Set a display name, email, phone and custom roles when you create an account, with a live summary of the role. Read more.\n\nThe Add user dialog.\n\n- **38 enrichment providers** (New, Intelligence). 19 new enrichment providers, each with setup steps and an example on its card. Read more.\n- **Authenticator QR codes that scan** (Fixed, Security). The QR code for authenticator setup now follows the standard, so every scanner reads it.",
+   "console": []
+  },
+  {
+   "id": "releases/whats-new#22-august-2026:0",
+   "page": "releases/whats-new.md",
+   "anchor": "22-august-2026",
+   "heading": "22 August 2026",
+   "text": "Background jobs, a full data export and declared-benign rules.",
+   "console": []
+  },
+  {
+   "id": "releases/whats-new#22-august-2026:1",
+   "page": "releases/whats-new.md",
+   "anchor": "22-august-2026",
+   "heading": "22 August 2026",
+   "text": "- **Background jobs** (New, Platform). Long work runs as a background job that keeps going when you leave the page. Analytics, Jobs shows its progress and lets you cancel it. Read more.\n    - A job's file downloads only after the server has verified it.\n    - Inbox tells you when a job finishes.\n- **A full data export** (New, Administration). Settings, Organization, Data export builds one verified ZIP of the scopes you choose, on the server. Read more.\n- **Declare a rule benign** (New, Automation). Declare a detection rule benign in your environment. Its alerts then close with no model call, within a risk ceiling, a scope and an expiry you set. Read more.\n    - Reinvestigating a case always overrides the declaration for that case, and a person's work is never closed over.\n- **Analyst-confirmed precedent** (New, Intelligence). When you turn it on, the investigator is told how many cases of the same rule analysts confirmed. The verdict stays the model's. Read more.\n- **Simple and Detailed noise reduction views** (Improved, Dashboards). The noise reduction flow has a Simple view of the whole alert-to-case flow and a Detailed view. Read more.\n- **A provider outage cannot empty the knowledge corpus** (Fixed, Intelligence). A rebuild that would empty the knowledge corpus is refused, and health reads Degraded while the corpus is empty.",
    "console": []
   },
   {
@@ -8562,6 +8626,30 @@
    "anchor": "earlier-release-records-folded-into-020",
    "heading": "Earlier release records folded into 0.2.0",
    "text": "- Agentic SOC 0.1.13, 5 August 2026. Unpublished candidate, folded into 0.2.0.\n- Agentic SOC 0.1.12, 5 August 2026. Bootstrap blocked. Not a supported installation source; superseded by 0.2.0.\n- Agentic SOC 0.1.11, 5 August 2026. Failed publication. Not installable; superseded by 0.2.0.\n- Agentic SOC 0.1.10, 5 August 2026. Failed publication. Not installable; superseded by 0.2.0.\n- Agentic SOC 0.1.9, 5 August 2026. Failed publication. Not installable; superseded by 0.2.0.\n- Agentic SOC 0.1.8, 5 August 2026. Bootstrap blocked. Not a supported installation source; superseded by 0.2.0.\n- Agentic SOC 0.1.7, 5 August 2026. Bootstrap blocked. Not a supported installation source; superseded by 0.2.0.\n- Agentic SOC 0.1.6, 5 August 2026. Bootstrap blocked. Not a supported installation source; superseded by 0.2.0.\n- Agentic SOC 0.1.5, 5 August 2026. Failed publication. Not installable; superseded by 0.2.0.\n- Agentic SOC 0.1.4, 5 August 2026. Failed publication. Not installable; superseded by 0.2.0.\n- Agentic SOC 0.1.3, 4 August 2026. Unpublished snapshot, folded into later releases.\n- Agentic SOC 0.1.2, 3 August 2026. Unpublished snapshot, folded into later releases.",
+   "console": []
+  },
+  {
+   "id": "releases/whats-new#agentic-soc-011:0",
+   "page": "releases/whats-new.md",
+   "anchor": "agentic-soc-011",
+   "heading": "Agentic SOC 0.1.1",
+   "text": "Released 31 July 2026. The first Stable release of the 0.1 line. Vendor-neutral ingestion, a tiered AI investigation, decisions made by code, an audit trail and a cost ledger.\n\nRead the Agentic SOC 0.1.1 release record.\n\nWhat changed in this version, newest first.",
+   "console": []
+  },
+  {
+   "id": "releases/whats-new#31-july-2026:0",
+   "page": "releases/whats-new.md",
+   "anchor": "31-july-2026",
+   "heading": "31 July 2026",
+   "text": "What the 0.1 line provides.",
+   "console": []
+  },
+  {
+   "id": "releases/whats-new#31-july-2026:1",
+   "page": "releases/whats-new.md",
+   "anchor": "31-july-2026",
+   "heading": "31 July 2026",
+   "text": "- **Pull and push sources, normalised to OCSF** (New, Platform). Elasticsearch, OpenSearch and Wazuh pull connectors, plus a broad catalog of push, queue and object store receivers. Every record is normalised to OCSF. Read more.\n    - Durable cursors, so no event is skipped or read twice.\n    - Correlation and risk scoring by code, and one case per cluster signature.\n- **A tiered AI investigation** (New, Automation). A router model and an investigator model look into each case. Every model call goes through one gateway into the cost ledger. Read more.\n- **Decisions made by code** (New, Automation). Code closes or escalates a case against the policy you set. Neither the model nor procedure text can override it. Read more.\n    - A case that needs a human never closes automatically, and closing a true positive automatically is off by default.\n    - A daily AI budget of 10 US dollars blocks further calls by default. A blocked call sends the case to a person.\n- **Case Manager** (New, Cases). A split-pane queue beside the case workspace, with traces, rationale, collaboration and feedback. Read more.\n    - Bulk work is checked against each person's permissions.\n    - The 0.1 line also brought campaigns, entity baselines, threshold tuning, detection rules and custom dashboards.\n- **Security Command Center** (New, Dashboards). The landing dashboard showed case KPIs, active risk, noise reduction and response timing, with a live refresh. Read more.\n- **Workspace Chat** (New, Chat). A personal chat with saved, searchable conversations. Case Manager chat uses the same read-only engine for one case. Read more.\n- **Sign-in, roles and single sign-on** (New, Security). Local sign-in, sessions, role-based access with custom roles, authenticator codes and single sign-on with OpenID Connect. Read more.\n- **Your choice of state store** (New, Platform). PostgreSQL with pgvector, Elasticsearch or SQLite holds the application's own state. Read more.\n- **Demo Mode and the Help Center** (New, Help). An isolated Demo Mode with five synthetic sources, and a Help Center that matches the installed version. Read more.",
    "console": []
   },
   {

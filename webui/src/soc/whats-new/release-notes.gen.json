@@ -7,41 +7,26 @@
       "version": "0.2.0",
       "status": "testing",
       "date": null,
-      "title": "Visible AI work, explainable numbers and a cleaner Case Manager",
+      "title": "Visible AI work, explainable numbers and a clearer Case Manager",
       "summary": "Everything since 0.1.1 in one release, under a new repository identity and the Apache-2.0 license.",
       "docs": "releases/0.2.0/",
       "updates": [
         {
           "id": "0.2.0.2026-12",
           "date": null,
-          "title": "What's new, explainable numbers and a cleaner Case Manager",
+          "title": "Visible AI work, explainable numbers and a clearer Case Manager",
           "highlights": [
-            {
-              "id": "case-tabs",
-              "kind": "improved",
-              "area": "cases",
-              "title": "Case tabs in a new order",
-              "summary": "Six tabs: Brief, Evidence, AI investigation, Response, Activity and Chat. Alt+2, Alt+4 and Alt+5 open new tabs, and Chat moves to Alt+6.",
-              "details": [
-                "Alt+1 to Alt+6 open the tabs in that order.",
-                "Alt+2 now opens Evidence, Alt+4 opens Response and Alt+5 opens Activity.",
-                "Chat moves from Alt+5 to Alt+6."
-              ],
-              "featured": false,
-              "requires": "cases:read",
-              "open": "case_manager",
-              "help": "analyst/case-manager/",
-              "screenshot": null
-            },
             {
               "id": "ai-working",
               "kind": "new",
               "area": "cases",
               "title": "See when the AI is working on a case",
-              "summary": "The queue, the case header and the close dialogs show when an AI investigation is running or waiting.",
+              "summary": "The queue, the case header, the navigation and the close dialogs show when an AI investigation is running or waiting.",
               "details": [
-                "The result of the run stays authoritative. A close made while it runs is replaced by its result, and the close dialogs say so first.",
-                "When a run you started finishes, your Inbox tells you."
+                "The case header shows **AI working** with the time so far, or **AI queued**. Its popover says who started the run.",
+                "The Case Manager item in the navigation counts the cases the AI is working on.",
+                "The run's result stays authoritative. A close made while it runs is replaced by its result, and the close dialogs say so before you act.",
+                "When a run you started finishes, or a run replaces your close, your Inbox tells you."
               ],
               "featured": false,
               "requires": "cases:read",
@@ -50,12 +35,52 @@
               "screenshot": null
             },
             {
-              "id": "explain-risk",
+              "id": "case-workspace",
+              "kind": "improved",
+              "area": "cases",
+              "title": "A clearer Case Manager",
+              "summary": "Each part of a case has one place. The header takes two lines, the case facts sit in their own column, and the queue folds away when you need the width.",
+              "details": [
+                "The header's second line keeps the case number, severity, status, risk, AI verdict, owner and SLA on one line.",
+                "Press **]** to show or hide the case facts. In a narrow pane they open in a side sheet.",
+                "Press **[** to fold the queue into a narrow strip. J and K still move through the cases.",
+                "The Brief opens with the case's next step and four lanes: Evidence, AI, Decision and People."
+              ],
+              "featured": false,
+              "requires": "cases:read",
+              "open": "case_manager",
+              "help": "analyst/case-manager/#read-the-workspace",
+              "screenshot": null
+            },
+            {
+              "id": "case-tabs",
+              "kind": "improved",
+              "area": "cases",
+              "title": "Case tabs in a new order",
+              "summary": "Six tabs: Brief, Evidence, AI investigation, Response, Activity and Chat. Alt+2, Alt+4 and Alt+5 now open Evidence, Response and Activity, and Chat moves to Alt+6.",
+              "details": [
+                "Alt+1 to Alt+6 open the tabs in that order.",
+                "Before, Alt+2 opened Runbook, Alt+4 opened Collaboration and Alt+5 opened Chat.",
+                "A link to the retired Timeline or Threat context tab opens Evidence at the matching section."
+              ],
+              "featured": false,
+              "requires": "cases:read",
+              "open": "case_manager",
+              "help": "analyst/case-manager/#the-six-tabs",
+              "screenshot": null
+            },
+            {
+              "id": "explain-numbers",
               "kind": "new",
               "area": "cases",
-              "title": "Every risk score shows its math",
-              "summary": "Hover a risk score for its formula with the real numbers, or press it for the inputs, the weights and the rounding.",
-              "details": [],
+              "title": "Every number shows its math",
+              "summary": "Hover a risk score, a decision or a dashboard figure for its formula with the real numbers. Press it for the inputs, the steps and the rounding.",
+              "details": [
+                "On a case: the risk score, the close or escalate decision, the priority, the SLA and the AI cost.",
+                "On dashboards and Metrics: the KPI figures, with the cases behind them.",
+                "**Copy calculation** copies the whole arithmetic.",
+                "A case scored before this version keeps its stored factors. Where its inputs were not kept, the panel says they were not recorded."
+              ],
               "featured": false,
               "requires": "cases:read",
               "open": "case_manager",
@@ -69,8 +94,8 @@
               "title": "What's new and Communication",
               "summary": "This welcome appears once after each update. The Communication group holds Inbox and What's new, the release tracker.",
               "details": [
-                "Open Communication, then What's new, to read every release.",
-                "Turn the welcome off in Settings, Appearance, with Show What's new after updates."
+                "Open **Communication**, then **What's new**, to read every release with its highlights and screenshots.",
+                "Turn the welcome off with **Show What's new after updates** in Settings, Account, Appearance."
               ],
               "featured": false,
               "requires": null,
@@ -83,12 +108,51 @@
               "kind": "improved",
               "area": "security",
               "title": "A quieter sign-in page",
-              "summary": "The sign-in page uses the Console's colours and animates once. The Remember me row shows only its name.",
-              "details": [],
+              "summary": "The sign-in page uses the Console's own colours and moves once as it opens. The Remember me row shows only its name.",
+              "details": [
+                "Checking **Remember me** opens a warning first. It says how long this device stays signed in.",
+                "When an administrator turned Remember me off, or the connection is not secure, the row stays visible and disabled, with the reason.",
+                "A single sign-on error shows a fixed sentence, never text from the address bar."
+              ],
               "featured": false,
               "requires": null,
               "open": null,
-              "help": "administration/authentication/",
+              "help": "getting-started/first-run/#sign-in-later",
+              "screenshot": null
+            },
+            {
+              "id": "case-records",
+              "kind": "new",
+              "area": "cases",
+              "title": "Every case record within reach",
+              "summary": "The Evidence tab lists the raw events behind a case. The case facts open every stored field and each AI call with its cost.",
+              "details": [
+                "Open an event for every field as a table or as JSON, then copy or download it.",
+                "**View all fields** in the case facts shows every stored field of the case.",
+                "The cost in the case facts lists each AI call with its tokens and its cost formula.",
+                "Raw events need the `sources:read` permission. AI costs need `cost:view`."
+              ],
+              "featured": false,
+              "requires": "cases:read",
+              "open": "case_manager",
+              "help": "analyst/case-manager/#case-facts",
+              "screenshot": null
+            },
+            {
+              "id": "repository-identity",
+              "kind": "improved",
+              "area": "administration",
+              "title": "A new repository identity for updates",
+              "summary": "Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater.",
+              "details": [
+                "Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact letter case.",
+                "The bootstrap refuses a missing line or the former name, prints the line to add, and never edits .env.",
+                "Releases 0.1.12 and earlier stay valid under the former name. The public Help Center moved to the new Pages address."
+              ],
+              "featured": false,
+              "requires": "system_updates:read",
+              "open": null,
+              "help": "operations/upgrades/#the-repository-was-renamed",
               "screenshot": null
             },
             {
@@ -99,15 +163,16 @@
               "summary": "Case reads, the settings read and Standup now check permissions, and account security is stricter.",
               "details": [
                 "A role without the permission now gets an Access denied answer from these reads.",
-                "An account flagged to change its password must change it before anything else.",
-                "Multi-factor sign-in locks after 10 failed codes.",
-                "A password change signs out your other sessions.",
-                "Only a Super admin with a fresh sign-in can change single sign-on settings."
+                "An account an administrator creates or resets must change its temporary password before anything else.",
+                "Ten wrong second-factor codes in a row pause second-factor checks for 5 minutes, doubling up to an hour.",
+                "Changing your own password signs out your other sessions. An administrator's reset signs the account out everywhere.",
+                "Only a Super admin with a fresh sign-in can change single sign-on settings.",
+                "Single sign-on no longer links an account created through another provider because the email matches."
               ],
               "featured": false,
               "requires": null,
               "open": null,
-              "help": "reference/permissions/",
+              "help": "administration/authentication/#sessions",
               "screenshot": null
             },
             {
@@ -115,8 +180,14 @@
               "kind": "fixed",
               "area": "platform",
               "title": "Fixes across the application",
-              "summary": "Fixes from a full review of the application, among them reinvestigation, SLA timers, Demo Mode and accessibility.",
-              "details": [],
+              "summary": "Fixes from a full review of the application, in the AI pipeline, SLA timers, metrics, settings, Demo Mode and accessibility.",
+              "details": [
+                "A case a person closed before an automatic AI run started stays closed.",
+                "The SLA response clock stops for a case the AI agent closed.",
+                "Settings refuses values that cannot work together, such as a response target longer than the resolution target.",
+                "In Demo Mode, a seeded case's cost has usage rows behind it, and its risk score matches its factors.",
+                "Focus, names and reflow work better with a keyboard, a screen reader and a phone."
+              ],
               "featured": false,
               "requires": null,
               "open": null,
@@ -129,26 +200,13 @@
               "area": "platform",
               "title": "Apache-2.0 license",
               "summary": "Agentic SOC is free software under the Apache License 2.0.",
-              "details": [],
+              "details": [
+                "The license text is in the repository and in each image."
+              ],
               "featured": false,
               "requires": null,
               "open": null,
-              "help": "releases/0.2/",
-              "screenshot": null
-            },
-            {
-              "id": "repository-identity",
-              "kind": "improved",
-              "area": "administration",
-              "title": "A new repository identity for updates",
-              "summary": "Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater.",
-              "details": [
-                "Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact case."
-              ],
-              "featured": false,
-              "requires": "system_updates:read",
-              "open": null,
-              "help": "operations/upgrades/",
+              "help": "releases/0.2.0/#license",
               "screenshot": null
             }
           ]
@@ -165,7 +223,8 @@
               "title": "Team activity",
               "summary": "Per-person, per-day work counts from the audit log, for SOC managers and auditors.",
               "details": [
-                "Counts come with their context. The page never ranks people or gives them a score."
+                "Counts come with their context. The page never ranks people or gives them a score.",
+                "A chart per day, a sheet for each person with their events, and a CSV download."
               ],
               "featured": false,
               "requires": "team:view",
@@ -180,6 +239,7 @@
               "title": "Screenshots on cases",
               "summary": "Add PNG, JPEG or WebP screenshots to a case. Their metadata is removed and they are never sent to a model.",
               "details": [
+                "Paste, drag and drop or pick a file, with an optional caption.",
                 "Up to 20 images per case, 2 MiB each and 20 MiB per case."
               ],
               "featured": false,
@@ -196,12 +256,52 @@
               "summary": "About 5% of automatic closes are picked for a person to review, at most 10 a day and 3 per rule.",
               "details": [
                 "You classify the case before you see what the AI decided.",
+                "A review never changes the case unless you reopen it.",
                 "Reviews stay out of agent statistics. Agent effectiveness shows the agreement once 30 reviews exist."
               ],
               "featured": false,
-              "requires": null,
-              "open": null,
+              "requires": "cases:read",
+              "open": "case_manager",
               "help": "automation/auto-close-review/",
+              "screenshot": null
+            },
+            {
+              "id": "calmer-case-manager",
+              "kind": "improved",
+              "area": "cases",
+              "title": "A calmer Case Manager",
+              "summary": "One control band above the queue, two-line queue rows, and one primary action for the case's state beside Take action.",
+              "details": [
+                "The queue gains a Review scope with the number of reviews waiting."
+              ],
+              "featured": false,
+              "requires": "cases:read",
+              "open": "case_manager",
+              "help": "analyst/case-manager/",
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/calmer-case-manager.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": null,
+                "alt": "Case Manager in Demo Mode with the Active, Mine, Review and All scopes above two-line queue rows, and an escalated case open with Mark resolved, Take action and five tabs, Investigation selected.",
+                "caption": "The Case Manager in this update."
+              }
+            },
+            {
+              "id": "close-case",
+              "kind": "improved",
+              "area": "cases",
+              "title": "A clearer close",
+              "summary": "Closing a case asks for the disposition once and can record the actions taken. Rate the AI starts collapsed.",
+              "details": [
+                "A note is asked for only when your classification overrides the AI."
+              ],
+              "featured": false,
+              "requires": "cases:read",
+              "open": "case_manager",
+              "help": "analyst/case-manager/#close-or-resolve-with-a-disposition",
               "screenshot": null
             },
             {
@@ -215,7 +315,16 @@
               "requires": "roles:manage",
               "open": null,
               "help": "administration/users-rbac/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/rbac-switch.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": null,
+                "alt": "Roles and permissions section of Settings with the Role-based access group at the top: its Enforcement row reads Off, every signed-in account is treated as Super admin, and the Turn on role-based access button is outlined, above the table of six built-in roles.",
+                "caption": "The Role-based access group in this update."
+              }
             },
             {
               "id": "setup-wording",
@@ -223,37 +332,153 @@
               "area": "administration",
               "title": "Truthful setup wording",
               "summary": "The setup wizard says Ready for live triage only when a source is connected and the investigation models can be called.",
-              "details": [],
+              "details": [
+                "Without a usable key it says so, and that new cases wait for a person."
+              ],
               "featured": false,
               "requires": null,
               "open": null,
               "help": "getting-started/first-run/",
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/setup-ai-runtime.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": null,
+                "alt": "Setup wizard AI runtime stage with the amber notice No usable AI provider yet, which says you can continue without a key but new cases wait for a person as Needs human review, above empty OpenAI, Anthropic and Embedding API key fields marked not set, and a Skip for now button.",
+                "caption": "The setup wizard's AI runtime stage in this update."
+              }
+            },
+            {
+              "id": "super-admin-accounts",
+              "kind": "security",
+              "area": "security",
+              "title": "Only a Super admin manages Super admin accounts",
+              "summary": "Giving an account the Super admin role, or changing one that has it, needs a Super admin with a recent sign-in.",
+              "details": [],
+              "featured": false,
+              "requires": "users:manage",
+              "open": null,
+              "help": "administration/users-rbac/",
               "screenshot": null
             },
             {
-              "id": "close-case",
-              "kind": "improved",
+              "id": "keep-human-work",
+              "kind": "fixed",
               "area": "cases",
-              "title": "A clearer close",
-              "summary": "Closing a case asks for the disposition once and records the actions taken. Rate the AI starts collapsed.",
+              "title": "Reinvestigation keeps people's work",
+              "summary": "Rebuilding a case keeps its owner, comments, grades, history and a disposition an analyst set.",
               "details": [],
               "featured": false,
-              "requires": "cases:read",
-              "open": "case_manager",
-              "help": "analyst/case-manager/",
+              "requires": null,
+              "open": null,
+              "help": null,
+              "screenshot": null
+            }
+          ]
+        },
+        {
+          "id": "0.2.0.2026-11-13",
+          "date": "2026-11-13",
+          "title": "A step-by-step install guide with real screenshots",
+          "highlights": [
+            {
+              "id": "install-guide",
+              "kind": "new",
+              "area": "help",
+              "title": "A step-by-step install guide",
+              "summary": "The Install and First-run setup pages walk through every step with real screenshots of each first-run screen.",
+              "details": [
+                "The repository's install guide covers five paths: a workstation demo, the Compose stack, production hardening, an existing Elastic stack and running from source."
+              ],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": "getting-started/install/",
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/install-create-admin.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": null,
+                "alt": "First-run screen titled Create your admin account, with the admin username, display name, password and confirm password fields filled and the Create admin and sign in button below.",
+                "caption": "One of the first-run screens the guide shows."
+              }
+            },
+            {
+              "id": "architecture-diagrams",
+              "kind": "new",
+              "area": "help",
+              "title": "Architecture diagrams",
+              "summary": "Light and dark diagrams show the system data flow and the Compose deployment.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": "concepts/architecture/",
+              "screenshot": null
+            }
+          ]
+        },
+        {
+          "id": "0.2.0.2026-11-11",
+          "date": "2026-11-11",
+          "title": "Steadier runbook guidance and audit log fixes",
+          "highlights": [
+            {
+              "id": "fallback-guidance",
+              "kind": "fixed",
+              "area": "intelligence",
+              "title": "The fallback runbook no longer guides the AI",
+              "summary": "The Generic incident fallback runbook is still attached for people, but it no longer guides the investigator. A specific runbook still does.",
+              "details": [
+                "Guidance can change the verdict the AI returns, never the close decision."
+              ],
+              "featured": false,
+              "requires": "runbooks:read",
+              "open": "runbooks",
+              "help": "intelligence/runbooks/",
               "screenshot": null
             },
             {
-              "id": "calmer-case-manager",
-              "kind": "improved",
-              "area": "cases",
-              "title": "A calmer Case Manager",
-              "summary": "One control band, two-line queue rows, one primary action beside Take action, and an eight-section facts rail.",
+              "id": "audit-control-characters",
+              "kind": "fixed",
+              "area": "administration",
+              "title": "The audit log reads every row on PostgreSQL",
+              "summary": "A stray control character in an audit row no longer breaks the Audit log, its count, its exports or chat's audit search.",
               "details": [],
               "featured": false,
-              "requires": "cases:read",
-              "open": "case_manager",
-              "help": "analyst/case-manager/",
+              "requires": "audit:view",
+              "open": "audit",
+              "help": "administration/audit-log/",
+              "screenshot": null
+            },
+            {
+              "id": "account-activity",
+              "kind": "fixed",
+              "area": "security",
+              "title": "Your account activity is back",
+              "summary": "Settings, Account, Sessions and activity shows your own events again.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": null,
+              "screenshot": null
+            },
+            {
+              "id": "rollback-safety",
+              "kind": "improved",
+              "area": "administration",
+              "title": "Safer rollbacks",
+              "summary": "This build keeps what a newer build writes, so a later release can roll back to it cleanly.",
+              "details": [],
+              "featured": false,
+              "requires": "system_updates:read",
+              "open": null,
+              "help": "operations/upgrades/#rollback-forward-compatibility",
               "screenshot": null
             }
           ]
@@ -269,12 +494,23 @@
               "area": "dashboards",
               "title": "Dashboards library",
               "summary": "The Overview row opens a library of four built-in dashboards and your own. The Cyber Defence Center stays the landing page.",
-              "details": [],
+              "details": [
+                "Built-in dashboards are read only. Duplicate one to change it."
+              ],
               "featured": false,
               "requires": "metrics:view",
               "open": "dashboards",
               "help": "analyst/dashboards/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/dashboards-library.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": null,
+                "alt": "Dashboards library with four built-in dashboards, the Cyber Defence Center marked Default, and the user's own dashboards below.",
+                "caption": "The Dashboards library in this update."
+              }
             },
             {
               "id": "audit-log",
@@ -289,14 +525,23 @@
               "requires": "audit:view",
               "open": "audit",
               "help": "administration/audit-log/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/audit-log.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": null,
+                "alt": "Audit log page with time range, scope tabs, search and filters above a table of audited events with time, outcome, event, actor, target and summary.",
+                "caption": "The Audit log in this update."
+              }
             },
             {
               "id": "rule-sheets",
               "kind": "new",
               "area": "detection",
               "title": "A sheet for every rule",
-              "summary": "Press any rule name to see that rule's cases and events in one sheet, with Open all in Logs.",
+              "summary": "Press any rule name to see its alerts over time, its top sources and targets, and its latest alerts and cases, with Open all in Logs.",
               "details": [],
               "featured": false,
               "requires": null,
@@ -311,12 +556,35 @@
               "title": "One Runbooks feature",
               "summary": "Phased procedures with matching that gives its reason, a run on each case with a Next step card, and reviewed versions.",
               "details": [
+                "A library of 12 built-in runbooks.",
                 "The investigator reads only Published runbook text."
               ],
               "featured": false,
               "requires": "runbooks:read",
               "open": "runbooks",
               "help": "intelligence/runbooks/",
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/runbooks-library.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": null,
+                "alt": "Runbooks library with run statistics and a table of twelve published built-in runbooks such as Brute force and password spray.",
+                "caption": "The Runbooks library in this update."
+              }
+            },
+            {
+              "id": "permission-aware-console",
+              "kind": "improved",
+              "area": "security",
+              "title": "The Console offers only what your roles allow",
+              "summary": "Pages, panels and actions your roles cannot use are not offered, because the Console reads the server's own access check.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": "reference/permissions/",
               "screenshot": null
             },
             {
@@ -372,6 +640,7 @@
               "title": "Suggested questions from your data",
               "summary": "A new chat offers 3 or 4 questions built from your own cases and sources, with no model call.",
               "details": [
+                "Each suggestion has a one-line reason, and a line says what changed since your last visit.",
                 "Hide a suggestion for a day, or turn suggestions off in the composer options."
               ],
               "featured": false,
@@ -385,13 +654,22 @@
               "kind": "new",
               "area": "chat",
               "title": "Follow-up questions",
-              "summary": "After an answer, up to three follow-up questions appear, chosen without a model call.",
+              "summary": "After an answer, up to three follow-up questions appear, each naming something the answer shows.",
               "details": [],
               "featured": false,
               "requires": null,
               "open": "chat",
               "help": "analyst/chat/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/chat-follow-ups.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": null,
+                "alt": "Workspace Chat at the end of an answer about new cases, showing a new-cases-by-severity table with top rules, the answer's lookups, time and simulated cost, and three suggested follow-up questions.",
+                "caption": "An answer with follow-up questions in this update."
+              }
             },
             {
               "id": "chat-titles",
@@ -465,7 +743,7 @@
               "featured": false,
               "requires": null,
               "open": null,
-              "help": "administration/authentication/",
+              "help": "administration/authentication/#remember-me",
               "screenshot": null
             },
             {
@@ -486,7 +764,7 @@
               "kind": "improved",
               "area": "dashboards",
               "title": "Exact counts in chat and dashboards",
-              "summary": "Chat and dashboards count cases exactly over any window, all time and calendar periods included.",
+              "summary": "Chat counts cases exactly over any window, all time and calendar periods included. Dashboards read exact totals.",
               "details": [],
               "featured": false,
               "requires": null,
@@ -503,9 +781,22 @@
               "details": [],
               "featured": false,
               "requires": null,
-              "open": null,
-              "help": null,
-              "screenshot": null
+              "open": "overview",
+              "help": "analyst/overview/",
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/overview-redesign-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/overview-redesign-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Cyber Defence Center dashboard with case KPIs, a noise reduction flow from alerts to cases, and a human versus AI chart.",
+                "caption": "The Cyber Defence Center after the redesign."
+              }
             }
           ]
         },
@@ -521,12 +812,111 @@
               "title": "Workspace chat",
               "summary": "A read-only assistant that looks things up for you and answers with blocks, citations and reports.",
               "details": [
+                "One question can run several read-only lookups, and the page shows each one as it runs.",
                 "A live token meter shows what each answer costs."
               ],
               "featured": false,
               "requires": null,
               "open": "chat",
               "help": "analyst/chat/",
+              "screenshot": null
+            },
+            {
+              "id": "reports",
+              "kind": "new",
+              "area": "chat",
+              "title": "Reports",
+              "summary": "Collect answers into a report with your notes and an optional AI summary. The Reports library lists them.",
+              "details": [],
+              "featured": false,
+              "requires": "cases:read",
+              "open": "reports",
+              "help": "analyst/chat/",
+              "screenshot": null
+            }
+          ]
+        },
+        {
+          "id": "0.2.0.2026-09-09",
+          "date": "2026-09-09",
+          "title": "KPI drill-downs, Agent health in the bell and a navy dark mode",
+          "highlights": [
+            {
+              "id": "kpi-drilldown",
+              "kind": "improved",
+              "area": "dashboards",
+              "title": "A drill-down behind every KPI",
+              "summary": "Press a KPI tile to see the cases behind the number. Switch metrics in place and download the rows as CSV.",
+              "details": [],
+              "featured": false,
+              "requires": "metrics:view",
+              "open": "overview",
+              "help": "analyst/overview/",
+              "screenshot": null
+            },
+            {
+              "id": "auto-closed-tile",
+              "kind": "new",
+              "area": "dashboards",
+              "title": "An Auto-closed tile",
+              "summary": "A sixth KPI tile shows the cases the AI agent closed automatically, a part of Resolved or closed.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": "analyst/kpi-glossary/#auto-closed",
+              "screenshot": null
+            },
+            {
+              "id": "agent-health-bell",
+              "kind": "improved",
+              "area": "platform",
+              "title": "Agent health in the notification bell",
+              "summary": "Agent health sits at the top of the notification bell, so a problem shows on every page.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": null,
+              "screenshot": null
+            },
+            {
+              "id": "navy-dark-mode",
+              "kind": "improved",
+              "area": "platform",
+              "title": "A deep navy dark mode",
+              "summary": "Dark mode moved to a deep navy palette, with every contrast pair measured again.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": null,
+              "screenshot": null
+            },
+            {
+              "id": "ground-truth",
+              "kind": "fixed",
+              "area": "cases",
+              "title": "A close records your classification",
+              "summary": "When you choose a disposition as you close a case, it counts as your classification. The AI's own label never counts as yours.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": null,
+              "screenshot": null
+            },
+            {
+              "id": "investigator-fields",
+              "kind": "fixed",
+              "area": "automation",
+              "title": "The investigator sees the fields that matter",
+              "summary": "The investigator now reads alert fields such as the URL path, the HTTP method and the user agent.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": null,
               "screenshot": null
             }
           ]
@@ -550,16 +940,29 @@
               "screenshot": null
             },
             {
+              "id": "human-vs-ai",
+              "kind": "new",
+              "area": "dashboards",
+              "title": "Human vs AI",
+              "summary": "A Human vs AI card shows how many cases people and the AI agent closed over time.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": "overview",
+              "help": "analyst/kpi-glossary/#human-vs-ai",
+              "screenshot": null
+            },
+            {
               "id": "required-mfa",
               "kind": "security",
               "area": "security",
               "title": "Multi-factor sign-in an administrator can require",
-              "summary": "An administrator can require multi-factor sign-in for an account. The person enrolls while signing in.",
+              "summary": "An administrator can require multi-factor sign-in for an account. The person enrols while signing in.",
               "details": [],
               "featured": false,
               "requires": null,
               "open": null,
-              "help": "administration/authentication/",
+              "help": "administration/authentication/#mfa",
               "screenshot": null
             },
             {
@@ -573,7 +976,16 @@
               "requires": "users:manage",
               "open": null,
               "help": "administration/users-rbac/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/add-user.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": null,
+                "alt": "Add user dialog with a username, full name, masked temporary password and the Analyst Tier 1 role with its permission summary.",
+                "caption": "The Add user dialog."
+              }
             },
             {
               "id": "enrichment-providers",
@@ -585,7 +997,7 @@
               "featured": false,
               "requires": null,
               "open": null,
-              "help": null,
+              "help": "intelligence/enrichment/",
               "screenshot": null
             },
             {
@@ -594,6 +1006,96 @@
               "area": "security",
               "title": "Authenticator QR codes that scan",
               "summary": "The QR code for authenticator setup now follows the standard, so every scanner reads it.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": null,
+              "screenshot": null
+            }
+          ]
+        },
+        {
+          "id": "0.2.0.2026-08-22",
+          "date": "2026-08-22",
+          "title": "Background jobs, a full data export and declared-benign rules",
+          "highlights": [
+            {
+              "id": "background-jobs",
+              "kind": "new",
+              "area": "platform",
+              "title": "Background jobs",
+              "summary": "Long work runs as a background job that keeps going when you leave the page. Analytics, Jobs shows its progress and lets you cancel it.",
+              "details": [
+                "A job's file downloads only after the server has verified it.",
+                "Inbox tells you when a job finishes."
+              ],
+              "featured": false,
+              "requires": null,
+              "open": "batchjobs",
+              "help": "operations/background-jobs/",
+              "screenshot": null
+            },
+            {
+              "id": "data-export",
+              "kind": "new",
+              "area": "administration",
+              "title": "A full data export",
+              "summary": "Settings, Organization, Data export builds one verified ZIP of the scopes you choose, on the server.",
+              "details": [],
+              "featured": false,
+              "requires": "data_export:export",
+              "open": null,
+              "help": "administration/settings/#export-portable-application-state",
+              "screenshot": null
+            },
+            {
+              "id": "declared-benign",
+              "kind": "new",
+              "area": "automation",
+              "title": "Declare a rule benign",
+              "summary": "Declare a detection rule benign in your environment. Its alerts then close with no model call, within a risk ceiling, a scope and an expiry you set.",
+              "details": [
+                "Reinvestigating a case always overrides the declaration for that case, and a person's work is never closed over."
+              ],
+              "featured": false,
+              "requires": "rules:manage",
+              "open": null,
+              "help": "automation/rules/#analyst-rule-policies",
+              "screenshot": null
+            },
+            {
+              "id": "precedent-promotion",
+              "kind": "new",
+              "area": "intelligence",
+              "title": "Analyst-confirmed precedent",
+              "summary": "When you turn it on, the investigator is told how many cases of the same rule analysts confirmed. The verdict stays the model's.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": "intelligence/knowledge-memory/#precedent-by-detection-rule",
+              "screenshot": null
+            },
+            {
+              "id": "noise-flow-views",
+              "kind": "improved",
+              "area": "dashboards",
+              "title": "Simple and Detailed noise reduction views",
+              "summary": "The noise reduction flow has a Simple view of the whole alert-to-case flow and a Detailed view.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": "overview",
+              "help": "analyst/kpi-glossary/#noise-reduction-funnel",
+              "screenshot": null
+            },
+            {
+              "id": "corpus-guard",
+              "kind": "fixed",
+              "area": "intelligence",
+              "title": "A provider outage cannot empty the knowledge corpus",
+              "summary": "A rebuild that would empty the knowledge corpus is refused, and health reads Degraded while the corpus is empty.",
               "details": [],
               "featured": false,
               "requires": null,
@@ -631,7 +1133,7 @@
               "featured": false,
               "requires": "system_updates:read",
               "open": null,
-              "help": "operations/upgrades/",
+              "help": "operations/upgrades/#the-unavoidable-first-bootstrap",
               "screenshot": null
             }
           ]
@@ -711,6 +1213,150 @@
           "docs": "releases/0.1.2/"
         }
       ]
+    },
+    {
+      "version": "0.1.1",
+      "status": "released",
+      "date": "2026-07-31",
+      "title": "The first Stable release of the 0.1 line",
+      "summary": "Vendor-neutral ingestion, a tiered AI investigation, decisions made by code, an audit trail and a cost ledger.",
+      "docs": "releases/0.1/",
+      "updates": [
+        {
+          "id": "0.1.1.2026-07-31",
+          "date": "2026-07-31",
+          "title": "What the 0.1 line provides",
+          "highlights": [
+            {
+              "id": "ingestion",
+              "kind": "new",
+              "area": "platform",
+              "title": "Pull and push sources, normalised to OCSF",
+              "summary": "Elasticsearch, OpenSearch and Wazuh pull connectors, plus a broad catalog of push, queue and object store receivers. Every record is normalised to OCSF.",
+              "details": [
+                "Durable cursors, so no event is skipped or read twice.",
+                "Correlation and risk scoring by code, and one case per cluster signature."
+              ],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": "sources/",
+              "screenshot": null
+            },
+            {
+              "id": "investigation",
+              "kind": "new",
+              "area": "automation",
+              "title": "A tiered AI investigation",
+              "summary": "A router model and an investigator model look into each case. Every model call goes through one gateway into the cost ledger.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": "concepts/architecture/",
+              "screenshot": null
+            },
+            {
+              "id": "decisions",
+              "kind": "new",
+              "area": "automation",
+              "title": "Decisions made by code",
+              "summary": "Code closes or escalates a case against the policy you set. Neither the model nor procedure text can override it.",
+              "details": [
+                "A case that needs a human never closes automatically, and closing a true positive automatically is off by default.",
+                "A daily AI budget of 10 US dollars blocks further calls by default. A blocked call sends the case to a person."
+              ],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": "concepts/deterministic-decisions/",
+              "screenshot": null
+            },
+            {
+              "id": "case-manager",
+              "kind": "new",
+              "area": "cases",
+              "title": "Case Manager",
+              "summary": "A split-pane queue beside the case workspace, with traces, rationale, collaboration and feedback.",
+              "details": [
+                "Bulk work is checked against each person's permissions.",
+                "The 0.1 line also brought campaigns, entity baselines, threshold tuning, detection rules and custom dashboards."
+              ],
+              "featured": false,
+              "requires": "cases:read",
+              "open": "case_manager",
+              "help": "analyst/case-manager/",
+              "screenshot": null
+            },
+            {
+              "id": "security-command-center",
+              "kind": "new",
+              "area": "dashboards",
+              "title": "Security Command Center",
+              "summary": "The landing dashboard showed case KPIs, active risk, noise reduction and response timing, with a live refresh.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": "overview",
+              "help": "analyst/overview/",
+              "screenshot": null
+            },
+            {
+              "id": "workspace-chat",
+              "kind": "new",
+              "area": "chat",
+              "title": "Workspace Chat",
+              "summary": "A personal chat with saved, searchable conversations. Case Manager chat uses the same read-only engine for one case.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": "chat",
+              "help": "analyst/chat/",
+              "screenshot": null
+            },
+            {
+              "id": "access-control",
+              "kind": "new",
+              "area": "security",
+              "title": "Sign-in, roles and single sign-on",
+              "summary": "Local sign-in, sessions, role-based access with custom roles, authenticator codes and single sign-on with OpenID Connect.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": "administration/authentication/",
+              "screenshot": null
+            },
+            {
+              "id": "state-backends",
+              "kind": "new",
+              "area": "platform",
+              "title": "Your choice of state store",
+              "summary": "PostgreSQL with pgvector, Elasticsearch or SQLite holds the application's own state.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": "concepts/state-audit-cost/",
+              "screenshot": null
+            },
+            {
+              "id": "demo-mode",
+              "kind": "new",
+              "area": "help",
+              "title": "Demo Mode and the Help Center",
+              "summary": "An isolated Demo Mode with five synthetic sources, and a Help Center that matches the installed version.",
+              "details": [],
+              "featured": false,
+              "requires": null,
+              "open": null,
+              "help": "getting-started/demo/",
+              "screenshot": null
+            }
+          ]
+        }
+      ],
+      "records": []
     }
   ]
 }
