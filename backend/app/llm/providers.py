@@ -1133,6 +1133,23 @@ class MockProvider(BaseProvider):
 DEMO_STREAM_DELAY_S = 0.03
 #: Words per simulated stream piece.
 DEMO_STREAM_WORDS_PER_GROUP = 4
+#: Pause before each Demo answer of an investigation a person or a job started
+#: (Reinvestigate and Investigate; durable jobs do not run while Demo Mode is on), so
+#: the Console's AI working signals show and a person can act on the case while the
+#: run goes on. The case lock is not held while it waits. A run makes three or four
+#: such calls, so it takes about 6 to 8 seconds under the default time cap; its pauses
+#: never use more than :data:`DEMO_PACE_CAP_SHARE` of the run's own cap. Never for
+#: chat, report summaries, runbook help, seeding or the automatic and detection runs
+#: of the live Demo, and never outside Demo Mode. No model call, no extra ledger row
+#: (#6); the verdict is unchanged (#3). Read at call time; the test suite sets it to 0.
+DEMO_INVESTIGATION_STEP_DELAY_S = 2.0
+#: The share of a run's time cap its Demo pauses may use in all. A short time cap set in
+#: Settings then shortens the pauses; it never turns a paced run into a timed-out one.
+DEMO_PACE_CAP_SHARE = 0.25
+#: The roles of one investigation run (router, investigator with its persona, formatter).
+_DEMO_PACED_ROLES = frozenset({"router", "investigator", "formatter"})
+#: The run triggers a person or a job starts.
+_DEMO_PACED_TRIGGERS = frozenset({"manual", "job"})
 
 #: The chat-agent answer when the Demo planner cannot be imported (it never should):
 #: a valid, block-free §4.1 final, so a broken install degrades one answer only.
@@ -1193,6 +1210,56 @@ def _demo_stream_chunks(text: str) -> list[str]:
     return [piece for piece in pieces if piece]
 
 
+def _demo_current_run() -> Any:
+    """The registry handle of the investigation running in this task (its ``trigger``
+    is ``manual``, ``job``, ``automatic``, ``drain`` or ``detection``), or ``None``
+    outside a run. Read from the pipeline's current investigation, lazily: the pipeline
+    sits far above this low-level module. Never raises."""
+    try:
+        from ..agents import pipeline as _pipeline
+
+        return _pipeline._CURRENT_INVESTIGATION.get()
+    except Exception:  # noqa: BLE001 -- no pipeline, no run
+        return None
+
+
+def _demo_pace_room(handle: Any, delay: float) -> float:
+    """How long one Demo pause of this run may last: ``delay``, cut so that the run's
+    pauses end within :data:`DEMO_PACE_CAP_SHARE` of its time cap, counted from when it
+    started. ``0`` when the run has no known start or cap, or they cannot be read, so a
+    pause can never push a run past its time cap. Never raises."""
+    try:
+        cap = float(getattr(handle, "time_cap_seconds", 0) or 0)
+        started = getattr(handle, "started_at", None)
+        if cap <= 0 or not isinstance(started, datetime):
+            return 0.0
+        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        return max(0.0, min(delay, cap * float(DEMO_PACE_CAP_SHARE) - elapsed))
+    except Exception:  # noqa: BLE001 -- an unreadable run never waits
+        return 0.0
+
+
+def _demo_cluster_block(content: str) -> str:
+    """The case's own cluster block of a ``render_cluster`` prompt, or ``content``
+    whole when it holds no cluster block.
+
+    The block runs from the cluster heading through the sample events and ends at the
+    next ``## `` heading after them (the retrieved knowledge and prior decisions), or
+    at the end of the message. Everything before the heading (memory, precedent and
+    runbook blocks) is dropped. Imported lazily: the prompt module pulls in the model
+    layer, which this low-level module must not load at import time."""
+    from ..agents.prompts import CLUSTER_CONTEXT_HEADING, SAMPLE_EVENTS_HEADING
+
+    start = content.find(CLUSTER_CONTEXT_HEADING)
+    if start < 0:
+        return content
+    body_start = start + len(CLUSTER_CONTEXT_HEADING)
+    samples = content.find("\n" + SAMPLE_EVENTS_HEADING, body_start)
+    search_from = body_start if samples < 0 else samples + 1 + len(SAMPLE_EVENTS_HEADING)
+    end = content.find("\n## ", search_from)
+    return content[start:] if end < 0 else content[start:end]
+
+
 class DemoMockProvider(MockProvider):
     """A deterministic provider whose verdict is KEYED to the storyline a cluster
     belongs to, so the SAME synthetic storyline always yields the SAME verdict /
@@ -1220,6 +1287,7 @@ class DemoMockProvider(MockProvider):
 
     async def complete(self, role, messages, model, temperature, max_tokens) -> CompletionResult:
         self.calls.append({"role": role, "messages": messages, "model": model})
+        await self._investigation_pause(role, messages)
         # A pushed script (tests) still wins, mirroring MockProvider.
         queue = self.scripts.get(role)
         if queue:
@@ -1233,6 +1301,33 @@ class DemoMockProvider(MockProvider):
             model=model,
             finish_reason="stop",
         )
+
+    async def _investigation_pause(self, role: str, messages: list[dict[str, str]]) -> None:
+        """Wait :data:`DEMO_INVESTIGATION_STEP_DELAY_S` before answering one step of an
+        investigation a person or a job started; return at once for anything else.
+
+        The run is read from the pipeline's current investigation (its ``trigger``):
+        an automatic, drain or detection run, a call outside any run (chat, report
+        summaries, runbook help, seeding) and a prompt the chat, report or runbook
+        markers route never wait. The pauses of one run stay within a share of its
+        time cap (:func:`_demo_pace_room`), so a short cap never ends a paced run as
+        timed out. Only a sleep: no model call and no ledger row, and a cancel ends it
+        like any other call."""
+        try:
+            delay = float(DEMO_INVESTIGATION_STEP_DELAY_S)
+        except (TypeError, ValueError):
+            return
+        if delay <= 0 or str(role) not in _DEMO_PACED_ROLES:
+            return
+        handle = _demo_current_run()
+        trigger = getattr(handle, "trigger", None) if handle is not None else None
+        if str(trigger or "") not in _DEMO_PACED_TRIGGERS:
+            return
+        if self._routed_system_prompt(messages):
+            return
+        delay = _demo_pace_room(handle, delay)
+        if delay > 0:
+            await asyncio.sleep(delay)
 
     async def complete_stream(
         self, role, messages, model, temperature, max_tokens, on_text: OnText
@@ -1263,6 +1358,32 @@ class DemoMockProvider(MockProvider):
     def _system_text(messages: list[dict[str, str]]) -> str:
         return "\n".join(
             str(m.get("content", "")) for m in messages if m.get("role") == "system"
+        )
+
+    @classmethod
+    def _routed_system_prompt(cls, messages: list[dict[str, str]]) -> bool:
+        """True when the system prompt carries a chat-agent, report-summary or runbook
+        marker (the prompts :meth:`_demo_chat_route` delegates). Never raises."""
+        system = cls._system_text(messages)
+        if not system:
+            return False
+        try:
+            from ..agents.chat_events import (
+                CHAT_AGENT_SYSTEM_MARKER,
+                REPORT_SUMMARY_SYSTEM_MARKER,
+            )
+            from ..agents.prompts import (
+                RUNBOOK_DRAFT_SYSTEM_MARKER,
+                RUNBOOK_SUGGEST_SYSTEM_MARKER,
+            )
+        except Exception:  # noqa: BLE001 -- unreadable markers: treat as routed, never pause
+            return True
+        return any(
+            marker in system
+            for marker in (
+                CHAT_AGENT_SYSTEM_MARKER, REPORT_SUMMARY_SYSTEM_MARKER,
+                RUNBOOK_DRAFT_SYSTEM_MARKER, RUNBOOK_SUGGEST_SYSTEM_MARKER,
+            )
         )
 
     def _demo_chat_route(self, role: str, messages: list[dict[str, str]]) -> str | None:
@@ -1375,7 +1496,16 @@ class DemoMockProvider(MockProvider):
         OPENS with an engine-written ``TOOL_CALL_HEADER`` line followed by the fenced
         observation, and a storyline rule marker inside that tool DATA must never pick
         the scenario. Only the first line is tested, so a header-shaped line inside a
-        fenced value cannot hide the original context it sits in."""
+        fenced value cannot hide the original context it sits in.
+
+        An investigation prompt (``render_cluster``) is read only from the case's own
+        cluster block: from :data:`CLUSTER_CONTEXT_HEADING` through the sample events.
+        The memory, precedent and runbook blocks above it and the retrieved knowledge
+        and prior decisions below it can name another storyline's rule, and a
+        retrieved precedent must never turn a case into another storyline. When that
+        block names no storyline the case stays benign; the rest of the message is
+        never read instead. A message without the heading (chat and every other Demo
+        prompt) is read whole, as before."""
         from ..agents.chat_events import TOOL_CALL_HEADER_RE
         from ..engine.demo_generator import _RULE_TO_STORY, _STORYLINE_BY_ID
 
@@ -1386,7 +1516,7 @@ class DemoMockProvider(MockProvider):
                 continue
             if TOOL_CALL_HEADER_RE.match(content.split("\n", 1)[0]):
                 continue
-            original_context.append(content)
+            original_context.append(_demo_cluster_block(content))
         blob = "\n".join(original_context)
         for marker, sid in _RULE_TO_STORY.items():
             if marker in blob:
