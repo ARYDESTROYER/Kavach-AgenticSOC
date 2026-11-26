@@ -1553,11 +1553,15 @@ a retelling — do not re-derive round detail from here.
   `/docs/0.1/` redirect stubs, the `ARYDESTROYER/Kavach-AgenticSOC` identity (the bootstrap
   refuses an `.env` without it), the Apache-2.0 license, Dependabot on `Testing`. Three new
   feature routers (46 in all), the cases index joins audit and config as an additive
-  Elasticsearch bootstrap exception, and the What's new process rule above. `decide()` and
+  Elasticsearch bootstrap exception, and the What's new process rule above. An acceptance
+  pass then checked each operator ask from the operator view in the seeded Demo and reported
+  66 gaps; seven fix packages, each reviewed, confirmed and fixed them, with WP17D for the
+  release tracker screenshots and FXF for the reviews' leftovers (SPEC §8.6). `decide()` and
   `engine/risk.py` byte-identical (#3); no new model call (#6); KV only, no new namespace (#12);
   no new dependency. Records: `docs/research/2026-11-round16/SPEC.md` (§8 "As built"), the
-  bug hunt in `docs/research/2026-11-round16/review/bug-hunt.md`, and the Round 16 `Journal.md`
-  entries.
+  bug hunt in `docs/research/2026-11-round16/review/bug-hunt.md`, the acceptance pass in
+  `docs/research/2026-11-round16/acceptance/acceptance-pass.md`, and the Round 16
+  `Journal.md` entries.
 
 **Auth is DEFAULT OFF** (`Secrets.auth_enabled`) so the no-auth profile and the
 offline test suite keep working unchanged; `TLSOC_AUTH_ENABLED=true` turns on the

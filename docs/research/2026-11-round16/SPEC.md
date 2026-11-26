@@ -230,6 +230,11 @@ accessible description.
 - Decision: the row is label-only. The warning dialog keeps its facts and becomes the disclosure
   (this reverses Round 14 D3 for the row only). When the administrator turned Remember me off, or
   the connection is insecure, the row stays visible and disabled with its one-line reason.
+- *Amendment (2026-11-26, FXC, §8.6):* at the operator's ask, the warning dialog states no
+  duration either. It is titled "Stay signed in on this device?" and keeps its warning about
+  shared devices: anyone who uses this browser can open the Console until they sign out or the
+  session ends, and it belongs only on a device they trust. It states no duration or limit in
+  hours, minutes or days; the administrator's limits stay in Settings and the Help Center.
 
 **D7. What's new show rule.** Shown once per newest release-notes **update id** (not the version
 string) after sign-in. Accounts created after an update start with it marked seen. The
@@ -1024,8 +1029,11 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     `stores/base.py` changes (the Elasticsearch audit store, `audit/audit_log.py`, inherits it).
   - `webui/src/lib/useEventStream.ts`: the `'case.investigation'` channel string only.
   - `webui/src/soc/investigations/aiRunText.ts`:
-    `aiRunAccessibleText(view: InvestigationView | null, now: number) => string | null` (null in
-    the stub; WP02 appends it to the queue row's accessible name, WP09 fills it).
+    `aiRunAccessibleText(view: InvestigationView | null) => string | null` (null in the stub;
+    WP02 appends it to the queue row's accessible name, WP09 fills it). *Amendment (2026-11-26,
+    FXB, §8.6):* the signature had a `now: number` argument for an elapsed time; FXB dropped
+    it, and the row's name ends "AI investigation running" or "AI investigation waiting"
+    with no elapsed time.
   - `webui/src/lib/explain/types.ts` (the `Explanation` interface, [expl] §5.3) and
     `webui/src/lib/explain/explain.contract.json`.
   - Stubs with final props and no-op bodies:
@@ -1115,9 +1123,9 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     hover, focus, any selection, a running bulk job, and always under `(pointer: coarse)`; "Risk
     N" in neutral `text-foreground/80 tabular-nums`, wrapped in `RiskExplain variant="row"` (S11);
     the `AiRunMark` stub inside the status node (or the outcome node), never in the case-chat
-    glyph slot before the age, so a row can show both signals; `aiRunAccessibleText(useAiRun(id),
-    now)` appended to the row's accessible name array (the `aria-label` overrides descendant text,
-    `CaseManager.tsx:392-405, 492`).
+    glyph slot before the age, so a row can show both signals; `aiRunAccessibleText(useAiRun(id))`
+    appended to the row's accessible name array (the `aria-label` overrides descendant text,
+    `CaseManager.tsx:392-405, 492`; the `now` argument was dropped by FXB, §8.6).
   - The bulk confirm passes `caseIds` to `BulkCloseDialog`.
   - `AiQueueNotice` mounted in the band.
   - `[` collapses the queue to a 44 px strip; J and K keep working;
@@ -1258,7 +1266,7 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
 - **Contracts.**
   - **Remember me (D6).** When available, the row is the label "Remember me" with no accessible
     description. The two unavailable states keep their one-line reason. The warning dialog keeps
-    its facts.
+    its facts. *Amendment (2026-11-26, FXC, §8.6):* the dialog states no duration (D6).
   - **SSO errors (B25).** The ten backend `sso_error` codes map to fixed sentences; anything else
     shows "Single sign-on failed. Try again." The URL is still cleaned.
   - **Appearance.** A three-button group: "Use system theme", "Light theme", "Dark theme".
@@ -1268,6 +1276,11 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   - **Heading and fields.** H1 "Sign in to {org_name}", or "Welcome back" when the device remembers
     a username; Continue always rendered; an empty submit shows "Enter your username."; OTP
     submits automatically, once, guarded by `busy`.
+  - **Column.** *Amendment (2026-11-26, FXC, §8.6):* from the small breakpoint up the column is
+    top aligned at `max(4rem, 18dvh)` instead of centred in the viewport (a phone keeps
+    `max(4rem, 12dvh)`), so a step change or an error grows the page downward and never moves
+    the heading or the field being retyped. The forced password change shows its errors under
+    its fields.
   - **Motion.** CSS only, `transform` and `opacity` only, at most 300 ms (the brand wash at most
     600 ms), `backwards` fill, inside `prefers-reduced-motion: no-preference`, no `infinite`.
   - **Order.** The What's new dialog appears only after the hand-off into the Console.
@@ -1704,9 +1717,14 @@ configuration. Contracts and tests are in §4.5 WP15E.
     fallback while a run is known and the stream is not live.
   - Announcements polite, at most one per step change and one per 10 s. Reduced motion shows a
     static ring. Every popover has an accessible name (§3.6).
+  - *Amendment (2026-11-26, FXB, §8.6):* below a 30rem strip the header chip shows its mark
+    with the word "AI" and no clock, never a bare ring, so a still ring under reduced motion
+    is never alone. A run that failed or was cancelled reads "AI stopped" with an alert mark,
+    and its popover is titled "AI investigation stopped". The end of a run is said once.
 - **Bugs fixed.** None.
 - **Tests.** The store reducer (frame, finish, expiry, reconcile); the QueueRow accessible name
-  ", AI investigation running, started 40 seconds ago" (from `aiRunAccessibleText`); the chip
+  ending ", AI investigation running" or ", AI investigation waiting", with no elapsed time
+  (from `aiRunAccessibleText`; amended by FXB, §8.6, from "started 40 seconds ago"); the chip
   timer and the popover for each of the five triggers and for the queued state; the dialog alert
   only for status-moving actions, turning into the finished note, submit enabled; the bulk count;
   the multiplexer (N hooks share one EventSource; a union change reopens with `Last-Event-ID`; the
@@ -2573,9 +2591,10 @@ Recorded by WP18B from the package reports, their independent reviews, the Journ
 as built on `claude/round16` at `9a94df2` (WP16C merged). XFD then added, on `5f00529`, WP16P
 (the entry trim and the post-integration items), WP17A, WP18B, WP18C, the cross-cutting review
 (§8.5) and the fix packages merged by then, from their reports and reviews. XFR then added
-XFCM, XFB2 and XFR itself on `f309c9c`. WP17B and WP19 land after that and add to it where the
-placeholders below say so. Where this section and §1 to
-§7 disagree, this section wins.
+XFCM, XFB2 and XFR itself on `f309c9c`. XFREC then added every package merged after XFR, the
+acceptance pass (§8.6) and its fix packages, on `ba3fc2a` (FXF merged). A11Y, the closing
+accessibility sweep, and WP19 land after that and add to it where the placeholders below say
+so. Where this section and §1 to §7 disagree, this section wins.
 
 ### 8.1 Contract resolutions
 
@@ -2679,6 +2698,42 @@ taken.
   XFDEMO, XFNUM and XFSIGN at their final full-suite gates, after their review fixes were
   committed. The orchestrator merged them and ran the full suites once on the integrated tree
   instead of once per package.
+- **Contract changes from the acceptance fixes** (§8.6), each recorded by its package and
+  amended where the contract is written:
+  - The queue row's accessible name ends "AI investigation running" or "AI investigation
+    waiting" with no elapsed time, and `aiRunAccessibleText` takes the view only (FXB; WP01,
+    WP02 and WP09 amended). The row is drawn again only when its run changes, so a time in the
+    name stayed at "1 second", and a name that ticks would make a focused row read itself
+    again; the header chip has the clock.
+  - Below a 30rem strip the header chip shows its mark with the word "AI" (FXB; WP09
+    amended), not "AI working": on the 326 px phone strip "AI working" would push the status
+    words below their floor and break the XFUI3 give-way order.
+  - The Remember me warning dialog states no duration, at the operator's ask (FXC; D6 and WP04
+    amended).
+  - The sign-in column is top aligned from the small breakpoint instead of centred (FXC; WP04
+    amended). Only the forced password change maps a 400 to fixed sentences; the first-admin
+    step still shows the server's password rule, as `ui-standard.md` records. The account
+    menu says "Sign out".
+  - The Brief's AI lane is Assessment, and a lane a person settled keeps the name Decision under
+    its Analyst tag (FXA1). The Decision lane and History share one mapping, `decisionWords`.
+    Text that matches no known template reads as a neutral sentence, which retires the XFCM rule
+    that let other text through, and a routing to a person has one phrasing, "Sent to an analyst
+    by the case policy." (FXF).
+  - An equal-end severity range is reworded in the Console only. `engine/correlation.py` still
+    writes the range, because `tools/rag.py` copies the sentence into the precedent text, so a
+    backend change would change retrieval text for new cases (FXA1).
+  - The routing score is printed with two decimals and never rounded, because the gate compares
+    it unrounded (FXD2), and `awaiting_reason` stores it with two decimals (FXF).
+  - The Cases bulk bar wraps its actions; the Round 6 single scrollable row gave way, because
+    the administrator's actions are wider than the main column at 1440 px. Entity investigation
+    drops Widen lookback, because every run already searches back 365 days (FXE).
+  - The startup seed of the built-in Admin stamps What's new as seen only on an installation
+    whose setup is complete, so the seeded Demo Admin still sees the welcome once (FXE).
+  - On an Overview range change the new figures appear at their value without counting up,
+    because a count-up passes through numbers no window holds (FXD1).
+  - Every new response field is additive: the usage route's `runbook` total (FXA2), the
+    Standup page inputs, `ack_sample_seconds` and `ack_sample_offset`, `routing_terms` and
+    `routing_weight_total` (FXD2), and `wilson_z` and the posture rate counts (FXF).
 
 ### 8.2 Per package
 
@@ -2942,24 +2997,217 @@ reverting.
   withheld, a figure stays withheld for the rest of the file. Review fixes: an end-to-end test
   that the full application export keeps those rows as stored while the same person's audit
   log export and page hide them, and the export module docstring.
-- **XFR, final follow-ups** (on `f309c9c`): the export menu and dialog say the file hides AI
-  spend for a person without `cost:view` and no longer call JSON Lines records unchanged; the
-  replay experiment's spend row (`spend_usd=`, `bound_usd=`) joins the narrow cost text rule
-  for `GET /api/audit`, the record read and the export; the two-factor card shows a fixed
-  sentence per status, never the server's text; the Standup page's empty SLA block carries
-  the server's 0.8 at-risk share; `types.ts` declares `avg_risk_case_count` and the nullable
-  `StandupResponse.cost`, and Average risk reads it without a local cast; the
-  `ThreatContextPanel` comments name the Evidence tab and the clustering links; and the What's
-  new generator's intro names Settings → Account → Appearance. Deviation: the replay job's
-  cancel message is written to no audit row (a tripped replay proves it), so it stays in the
-  job's own record, shown only to the person who ran it, beside the bound they set and the
-  report's spend. Review fixes: a turn-off on an account whose two-factor is already off
-  says "Two-factor is already off for this account." instead of calling the code wrong; the
-  CHANGELOG and `USAGE.md` name Settings → Account → Appearance for the What's new switch;
-  and the CHANGELOG says the AI run signals once, in the Added entry, instead of again as a
-  Changed entry.
+- **XFR, final follow-ups** (`50e15ea` on `f309c9c`, review `f078539`): the export menu and
+  dialog say the file hides AI spend for a person without `cost:view` and no longer call JSON
+  Lines records unchanged; the replay experiment's spend row (`spend_usd=`, `bound_usd=`) joins
+  the narrow cost text rule for `GET /api/audit`, the record read and the export; the
+  two-factor card shows a fixed sentence per status, never the server's text; the Standup
+  page's empty SLA block carries the server's 0.8 at-risk share; `types.ts` declares
+  `avg_risk_case_count` and the nullable `StandupResponse.cost`, and Average risk reads it
+  without a local cast; the `ThreatContextPanel` comments name the Evidence tab and the
+  clustering links; and the What's new generator's intro names Settings → Account →
+  Appearance. Deviation: the replay job's cancel message is written to no audit row (a tripped
+  replay proves it), so it stays in the job's own record, shown only to the person who ran it,
+  beside the bound they set and the report's spend. Review fixes: a turn-off on an account
+  whose two-factor is already off says "Two-factor is already off for this account." instead
+  of calling the code wrong; the CHANGELOG and `USAGE.md` name Settings → Account →
+  Appearance for the What's new switch; and the CHANGELOG says the AI run signals once, in the
+  Added entry, instead of again as a Changed entry.
+- **XFINT, integrated-tree test fixes** (`6f110eb` on `3242f16`, review `51628b7`): the five
+  failures of the whole backend suite on the integrated tree, with no product code changed.
+  The Round 13 SLA tests expect the shared reading (`metrics.sla_case_reading`: at risk from
+  0.8, breached only past the target), with a test that pins a case exactly at its target as
+  at risk and a check against the triage reading; a Jobs section in `docs/analyst/analytics.md`
+  makes chat's help send "Kill the export job" to Analytics → Jobs, where a three-way score tie
+  had sent it to Data export; and the registry test waits for the tracked background writers
+  before each audit count. Review fix: the Jobs section no longer suggests that a cancelled
+  export keeps a partial file. Deviation: `test_chat_golden_set.py` follows the new passage.
+- **WP16X, WP16 browser checks** (`5318fa2` on `08db702`, review `326cd29`): the receipt
+  `acceptance/wp16-browser-checks.md` for the nine checks of §4.6 WP16 and §5.4. Eight passed;
+  check 8 failed on one axe node, the Response tab's selected phase caption at 4.22:1 in light.
+  It also recorded the case header's outcome badge cut by its own item. No product code
+  changed. Review fix: the receipt gives the measured stream overlap during a topic switch
+  (9 to 46 ms, once 924 ms), which the handover opens on purpose, and the review's own rerun.
+  Deviation: check 1 ran after the account's What's new marker was made current, because the
+  measure script could not pass the welcome.
+- **XFUI2, contrast and header badge** (`be6f00b` on `f309c9c`, review `f910caa`): the
+  selected phase caption in foreground ink (12.36:1 light, 11.13:1 dark), with contrast-gate
+  bar 6 for text on a selected fill; the outcome badge gives way whole, ends in an ellipsis
+  inside its border and carries the whole outcome as its title; `measure-case-manager.mjs`
+  presses Got it on the What's new welcome. Review fix: with a long operator case number the
+  outcome item wraps onto a clipped second line, so the Analyst tag drops whole before the
+  words shorten. Deviations: the gate gained bar 6 (`gate-contrast.mjs`, its types and
+  `design-gates.test.ts`); the tag gives way at container-query widths (36rem, or 64rem beside
+  the AI run chip).
+- **WP17B, release screenshots** (`1058f85` on `08db702`; its review found nothing to fix):
+  the §5.3 captures from the seeded Demo in light and dark, 76 WebP files at device scale 2 in
+  `docs/assets/releases/0.2.0/` (the largest 219,626 B); seven featured highlights of update
+  `0.2.0.2026-12` with light and dark images and a non-featured case-records image;
+  `explain-numbers.help` repointed to `analyst/explainable-numbers/`; and
+  `acceptance/screenshots.md`. Deviations: three §5.3 items cannot be shown in the Demo and
+  were substituted (the queue band notice, "policy changed since" and the bulk-close warning);
+  the contact sheet is saved at one pixel per CSS pixel; the `docs/assets/screenshots/`
+  refresh was left to WP17C.
+- **XFUI3, polish** (`5d8e1a7` on `7b30d8c`, review `5d835f1`): the case header's AI verdict
+  gets a 5rem floor and hides below a 40rem pane, or 48rem beside the AI run chip; a case
+  number longer than twelve characters ends in a middle ellipsis down to its first five and
+  last six characters, with a 20-character cap, its whole value the hover title and the screen
+  reader text; the give-way order is the owner's name, the verdict's words, the case number,
+  then the status; the phase tab list keeps 4 px of room for the focus ring and scrolls a
+  focused tab into view; the Analytics intro names its seven pages; in the knowledge aliases
+  cancel expands to stop, kill, abort and abandon, and kill and abort to cancel;
+  `channels.md` names the Pages source as a GitHub setting; the corpus was regenerated (1,086
+  chunks). Review fixes: the default number "CASE-000046" is never cut (the floor became
+  twelve characters); the Analytics layout section names the three pages that share the time
+  range; abandon joined the aliases, so "Cancel a runbook run" keeps the case's runbook.
+  Deviations: the verdict breakpoints moved from 36 to 40rem and from 44 to 48rem; the owner's
+  shrink weight rose to 1e18 to make room for the case number's.
+- **WP17C, docs screenshots** (`2a4637a` on `817bb7f`, review `b8aa699`): fifteen README,
+  INSTALL and Help Center screenshots captured again in place for 0.2.0 (the Communication
+  group, the v0.2.0 badge, the Brief tab, the new sign-in page and Enable updates on a fresh
+  PostgreSQL install), with matching alt text and captions; the four "from 0.1.13" sentences
+  removed; the 60 review-only release captures moved to `acceptance/screenshots/`, so the Help
+  Center bundle went from 24,532,194 B to 18,018,912 B. It confirmed the WP17B Demo finding and
+  documented it in `demo.md` (§8.3). Review fix: the create-admin and second-factor images
+  were still 0.1.13 captures with the retired sign-in chrome; both were captured again, with a
+  test that fails on the old bytes. Deviations: the fresh first run used a throwaway local
+  PostgreSQL; two INSTALL lines the new images contradicted were corrected; the setup-wizard
+  images install-03 to 06 were not captured again.
+- **FXB, AI run signals** (`4072720` on `39743bd`, review `01d1ddb`): the seven ai-signals
+  gaps of §8.6. The row name without an elapsed time; the word "AI" beside the run mark below
+  30rem; "AI stopped" for a failed or cancelled run; a warning toast when a run replaced the
+  close on screen; no finish toast while a close or status dialog's run note covers the case;
+  the finished note naming the verdict ("finished with the verdict Needs human review"); and
+  the end of a run said once (`announce.ts` end marks and dialog cover marks). Review fixes:
+  the replaced-close warning follows the server's replaced close (a person's close made at or
+  after the run was queued, never a closed case reinvestigated); the dialog note for a failed
+  or cancelled run says it stopped or could not finish and that the case was not changed; a
+  dialog note's said mark is never overwritten. Deviations: the row name drops the time rather
+  than ticking, and the phone chip says "AI", not "AI working" (§8.1); the bulk dialog skips
+  the toast but does not mark the end as said (§8.3).
+- **FXA1, case page lanes, tabs, facts and history** (`ef74ad6` on `39743bd`, review
+  `59198e8`): the eleven gaps. `decisionWords` in `caseActivityText.ts`, one plain wording for
+  the Decision lane and History; the History decision reason, and Show more on long notes; the
+  Assessment lane; the person-settled lane named Decision under its Analyst tag; the People
+  lane's last status change or runbook step; equal-end severity wording; underline tab rows
+  that bring the selected tab into view, with edge fades (`ui/tabs.tsx`); the Events column
+  join points (44, 56 and 80rem); "Not classified yet" in the case facts; and Reopen reading
+  the case first. Review fixes: a count change no longer pulls a swiped tab row back; the Noise
+  reduction lineage rows use the same trigger wording; Reopen names a person's reopen ("This
+  case was already reopened."); the Activity tab count is singular for one message.
+  Deviations: the trigger wording changes in the Console only (§8.1); "Not classified yet" is
+  set in `FactsRail.tsx`, not in `caseOutcome()`, which the Cases export also reads;
+  `test_docs_round15_records.py` and `quickstart.md` follow the lane rename.
+- **FXC, sign-in polish** (`c83cc6f` on `39743bd`, review `d7aa6d4`): the thirteen sign-in gaps
+  and two orchestrator items. The column top aligned from the small breakpoint, with the forced
+  change's errors under its fields; the required two-factor heading focused without a focus box
+  (`[outline:none]`, because forced colours paint `outline-none` as a box); the required setup
+  in the sign-in grammar; a wide logo at 40 px high; the forced change's trim and fixed
+  sentences; alert icons on the text's centre line; the Remember me box's full focus ring;
+  single sign-on names by type from the public route; 44 px phone targets; enabled submits that
+  say what is missing; ghost button edges; one 16 px rhythm; "Sign out" in the neutral colour;
+  and the Remember me dialog with no duration (D6). The entry was 330,928 B, +69 B, paid for by
+  moving "Forgot password?" and the recovery-codes disclosure onto the shared link button.
+  Review fixes: in the required setup a refused code shows under the code field, and the setup
+  keeps the page's 16 px rhythm; entry 331,046 B. Deviations: the full ring is set on the
+  Remember me box only; the first-admin step keeps the server's 400 rule; the optional
+  first-run Secure your account step keeps the Settings card layout (§8.3).
+- **FXA2, trace, usage and step records** (`faafdd6` on `39743bd`, reviews `5e405fc` and
+  `45b4829`): the ten gaps. The trace leaves out `case.events_viewed`, shows its counts once
+  ("N of M steps" while filtered) and uses the shared actor labels; the decision span has no
+  cost basis and says code made the decision; seeded Demo cases with a ledger row carry the
+  investigator's prompt, one read-only log query and the verdict on one run id; the usage route
+  adds an additive `runbook` total, and the usage sheet shows Runbook AI help, each row's build
+  and its price source; a confirmed runbook step names its AI draft and can show it; the seeded
+  notification records use `type`. Review fixes: the price words have no closing period, so the
+  cache phrase joins them; the decision step always offers its Details; a failed trace no
+  longer reads "Loads when opened"; the seeded AI audit rows name their outcome at the write,
+  which the audit outcome guard checks. Deviations: a 3-line hunk in `state.py` and the
+  additive `CaseUsageTotals.runbook` in `models.py` and `types.ts`; no router prompt is seeded,
+  because the seeded ledger records only the investigator call, and the 32 seeded cases with no
+  ledger row keep no AI steps. Its one leftover, the runbook AI help prompt row read as an
+  Agent step, was fixed by FXF.
+- **FXD2, explainable numbers on Standup, Agent effectiveness and Team activity** (`931b036` on
+  `39743bd`, review `6d2e7e8`): the eight gaps. Standup strip, risk, age, SLA total, overage and
+  workload explanations from page-only report inputs (`shift_snapshot(explain=True)`; the
+  model aggregate leaves them out); the outcome tiles work both windows and the change from the
+  server's figures, with plain-word definitions; Team activity gains `ack_sample_seconds` and
+  `ack_sample_offset`, and People active is explained; the forwarding explainer gains
+  `routing_terms` and `routing_weight_total` and a two-decimal routing score, the gate
+  unchanged; in `lib/explain`, percentile operands that reproduce the result, SLA Time left
+  and Over by, "1 minute" and the confidence source with its run. Review fixes: the Standup
+  "was" figure is the count over today's open cases created before the window, not a count
+  taken when the window began; queue ages show their whole minutes and parts; a summary with
+  no prior figure says "no comparable prior figure". Deviations: additive hunks in
+  `shift_report.py`, `agents/standup.py`, `routes_standup.py`, `team_activity.py`,
+  `routes_team.py` and `agent_improvement.py`; the calculations sit in each tile figure's
+  panel, while How stays the definition; the routing score is never rounded (§8.1).
+- **FXE, entity investigation, Demo chat, Cases bar and What's new** (`f03c999` on `39743bd`,
+  review `4bc214d`): the six gaps. With no source named, entity investigation falls back to the
+  other Demo sources or to each push source's live-tail ring, read through that source's own
+  field mapping; the empty answer reads "the last 365 days" and the page drops Widen lookback;
+  Demo chat matches "closed by the AI agent"; the Cases bulk bar centres on the main column,
+  wraps its actions and puts the Demo note on its own line; `seed_users` stamps What's new as
+  seen only once setup is complete; a long code value wraps on a phone; the page switch reads
+  "Show What's new after updates". Review fixes: the push-ring read de-duplicates by event id,
+  so a retried delivery counts once (it had made a case read 2 events and scored its risk from
+  2); the named-source guard test uses a real, empty pull source; `investigation.md` no longer
+  claims that other pull sources are searched. Deviations: the cause was the default source,
+  not the field mapping the checker named; the single-row bulk bar gave way to wrapping
+  (§8.1); the environment's single administrator is not stamped; pull sources other than the
+  primary are not searched (§8.3).
+- **FXD1, explainable numbers on the dashboards** (`dd3c81f` on `39743bd`, review `e95ed6d`):
+  the nine gaps. Dashboard Explain builders (change, partition share, close share, row sum,
+  quotient, Wilson lower bound); explained change chips, Human vs AI shares, the Noisiest
+  rules FP rate, Auto-close health, spend per investigated case, strip lower bounds, Cost
+  totals and the donut hover; muted figures under "Loading 7 days" on a range change; the SLA
+  panel worded for its real population, with a link to the open breaches; the first trends
+  bucket clipped to the window (56 cases over 7 days in the seeded Demo, not 57). Review
+  fixes: the figures below the Overview strip also read Loading after a range change, and a
+  drill-down opened meanwhile shows Loading; the Cost row sum is kept beside the server's
+  separately rounded total, and the residue is stated; a total the ten listed models do not
+  reach says the list is capped; Today names the UTC calendar day; a stored tuner bound the
+  counts do not reproduce is called the stored bound; a count change written as a duration
+  names both forms; a strip lower bound's caveat reads "The true figure can be higher."; the
+  Metrics change-chip ids lost a doubled separator. Deviations: an optional `explainFigure`
+  slot on `HumanVsAiCard.tsx`; the regenerated `openapi.json` and `api-types.gen.ts` for the
+  trends docstring; the SLA widget also reads the all-time shift report where `cases:read` is
+  granted and no row-level scope applies.
+- **FXF, entry headroom and the fix-package leftovers** (`b6d223f` on `39335e5`, review
+  `eb068ea`): the two-factor setup card loads through `retryingLoader` only when an enrollment
+  starts, with a plain line if it cannot load, so the entry built stamped as CI builds it went
+  from 331,181 B (89 B over the 331,092 B budget) to 318,008 B; `PRE_REVAMP_ENTRY_BYTES` stays
+  330,068 B, and the ratchet waits for the closing gates. Leftovers: runbook AI help is a
+  `runbook_ai` trace span with its own Runbook filter and the exact cost of its own ledger row;
+  the Brief People row marks a close an AI run replaced; one routing phrasing in
+  `decisionWords`; the Branding preview logo uses the sign-in classes; `rankLineOverRun` uses
+  `interpolationOperands`; `awaiting_reason` keeps two decimals, the gate unchanged; explain
+  panels on the Agent effectiveness comparison figures, a person's median time to acknowledge
+  and the Standup action item and sign-off counts; window words through
+  `case_cluster.window_words`; the additive `wilson_z` and posture rate counts; a
+  whole-percent share panel ends on the shown figure; and the `ui-standard.md` "Case tab
+  bodies" and the `USAGE.md` Remember me sentence. Review fixes: the seven trace filters wrap
+  inside their row on a phone; the Standup sign-off explanation names the shift in words; the
+  People row reads a `set_status` move to Resolved as a close; a mount test for the Agent
+  effectiveness explanations. The stamped entry stayed 318,008 B. Deviations: an optional
+  `countExplain` prop on `design-system/panel.tsx`, and additive hunks in `engine/metrics.py`,
+  `lib/explain/builders.ts`, `ComparisonMetric.tsx` and `routes.py`.
+- **WP17D, release tracker screenshots** (`2c147cc` on `39335e5`, review `0707b0a`): 26
+  highlights gained light and dark figures, among them the fourteen the acceptance pass named,
+  so Communication, What's new shows 44 figures for 0.2.0, up from 18; seven images of update
+  `0.2.0.2026-12` (ai-working, case-workspace, case-tabs, explain-numbers, case-records,
+  sign-in and whats-new) and `docs/assets/screenshots/case-manager.webp` were captured again
+  under the same name and size; 22 highlights stay text only, each with its reason in
+  `acceptance/screenshots.md`; `test_round16_wp17d_records.py` holds the figure-or-reason rule.
+  Review fixes: chat-titles was captured again so the whole first question shows; the README
+  and quickstart Case Manager screenshot was captured again with the All queue and no search;
+  the data-export alt text says the button is unavailable in Demo Mode. The Help Center bundle
+  is 22,128,003 B in 333 files. Deviations: twelve visible highlights beyond the fourteen got
+  figures; the Brief captures use the auto-closed CASE-000040, which keeps FXF's routing
+  sentence out of them.
+- **A11Y, closing accessibility and phone sweep.** Recorded with the closing gates.
 
-WP17B and WP19 are recorded with the closing gates.
+WP19 is recorded with the release preparation.
 
 ### 8.3 Known limitations
 
@@ -2995,7 +3243,13 @@ WP17B and WP19 are recorded with the closing gates.
   Triage and Specialist tick at once, the run sits on Looking up evidence, and Verdict and
   Deciding pass in its last instant, because every Demo model call falls in the evidence phase.
   Durable jobs refuse to run in Demo Mode, so only Reinvestigate and Entity investigation's
-  Run investigation (both `trigger="manual"`) are paced.
+  Run investigation (both `trigger="manual"`) are paced. The Demo runs without the
+  investigation gate, so "AI queued", the slot line and the queue band notice never show
+  there. A Settings change to the auto-close policy moves the Brief's Decision lane sentence,
+  which reads the stored settings, but not the Demo's decision, which uses the Demo's own
+  policy (`execution_prefs`), so the two disagree until the change is undone. Seeded decisions
+  carry no recorded gate, so their explanations use today's thresholds until a case is
+  reinvestigated.
 - **What's new with sign-in off** is per installation: every caller shares the `default`
   preferences bucket. The welcome can open over the What's new page itself after the badge
   link; that is harmless.
@@ -3025,6 +3279,31 @@ WP17B and WP19 are recorded with the closing gates.
 - **Search matches hidden spend.** A person without `cost:view` can still search
   `GET /api/audit`, or an audit log export, by free text such as a cost figure, so a matching
   row shows that the hidden figure exists.
+- **Entity investigation** with no source named searches the primary pull source, then the
+  other Demo sources or the push sources' live tails; other enabled pull sources are not
+  searched. The first source with any match builds the case, even when a later source matches
+  in a narrower window.
+- **The end of a run in the bulk dialogs.** A bulk close or status dialog skips the finish toast
+  for the case on screen, but its note ("The AI investigations on the selected cases
+  finished.") does not mark the run's end as said, so the header chip says that case's end
+  too.
+- **Two-factor setup.** The optional first-run Secure your account step keeps the Settings card
+  layout: the QR code beside the text, a cut-off secret and a 36 px code field. In the required
+  setup on the sign-in page, the recovery-codes checkbox and the Copy, Copy all and Download
+  buttons are under 44 px on a phone. A generic OIDC provider with no display name shows its id
+  on its button.
+- **Months in a lookback.** `utils.relative_to_millis` lowercases its unit, so a non-default
+  lookback written with `M` (months), such as `now-1M`, is queried as minutes, while
+  `case_cluster.window_words` words it as a month. The default and the widening windows
+  (`now-24h`, `now-7d`, `now-30d`, `now-365d`) agree.
+- **Stored trigger sentences.** Chat answers and the knowledge text show a trigger sentence as
+  stored, with an equal-end severity range; only the Console reads it as one value.
+- **More explanations with no worked figure.** The auto-close review module's medians and the
+  review medians on Agent effectiveness print no worked median, and the forwarding
+  explanation's sentences still name the feed setting `severity_floor` as the engine spells it.
+- **The case facts at 1440 px.** With the navigation expanded, the acceptance pass measured the
+  detail pane at 819 px, 13 px short of the 52rem the case facts column needs, so the facts
+  open as a sheet until the navigation is collapsed or the queue folded.
 
 ### 8.4 Verification record
 
@@ -3110,6 +3389,89 @@ before it, and each package was reviewed independently (§8.2):
 - **XFR, final follow-ups.** The review leftovers of XFD and XFB2: the export dialog's wording,
   the replay spend row, the two-factor card's sentences, the Standup at-risk share, two client
   type fields, a stale panel comment and the What's new intro, with the XFCM and XFB2 records.
+
+### 8.6 Acceptance pass
+
+After XFUI3 merged, an acceptance pass checked each operator ask from the operator's point of
+view, not the implementer's, in the seeded Demo on `9343312` ("Journal: WP17C merged"). Eight
+checkers ran, one per ask, each in its own worktree with its own Demo, in light and dark at
+1440 and 390 px (some also at 1024 and 768). Each reported whether its ask was delivered, every
+gap with its repro and the smallest fix, and the known limitations that undercut the ask. Items
+already in §8.3 or §7 were not reported as gaps. The record is
+[`acceptance/acceptance-pass.md`](acceptance/acceptance-pass.md).
+
+Every checker that reported judged its ask partly delivered. 66 gaps, 23 medium and 43 low,
+none high:
+
+- **AI investigating signals, 8 gaps.** Delivered: the chip ticking "AI working · m:ss" from
+  the `202`, the popover with its five steps and who started the run, the queue mark, the
+  navigation count and its hidden description, Reinvestigate unavailable during a run, the
+  close warning that never blocks, the run's result kept over a close made during it, the Inbox
+  items and the `case.close_replaced` audit row.
+- **Case Manager, 12 gaps.** Delivered: frame 72, band 92, header 119 and first content 207 in
+  all 192 states (4 cases, 4 widths, 2 themes and 6 tabs), Alt+1 to Alt+6, the `[` fold, the
+  `]` inspector, the counted empty pane and every key in the shortcuts sheet.
+- **Sign-in, 13 gaps.** Delivered: a Remember me row with no duration, motion that runs once
+  and stops (nothing runs 3 s after the page settles, and nothing under reduced motion), every
+  fixed error sentence, contrast in both themes, no sideways scroll at 390 px and the
+  organization default theme button.
+- **Explainable numbers, 15 gaps.** Delivered: the risk, severity, priority, SLA and confidence
+  of ten cases recomputed by hand to the cent, and the Overview, Executive summary, noise flow,
+  Metrics and timing figures reproduced exactly.
+- **Every record reachable, 9 gaps.** Delivered: View all fields with all 67 Case fields, the
+  Evidence events table and sheet, the usage popover, trace Details with the recorded gate,
+  history reasons, gradings, runbook steps, files, tasks and the thread.
+- **What's new, 4 gaps.** Delivered: the welcome once per update with the update count, the
+  hero image in the theme, the deferral on a deep link and the audited acknowledgement; the
+  Communication tracker with 66 highlights, its filter, search and links; the Help Center page
+  agreeing with the notes.
+- **Regressions outside the Case Manager, 5 gaps.** Delivered: all 59 routes and Settings
+  sections swept at both widths with no crash, error toast or unexpected failed call and no
+  sideways scroll at 390 px, and every flow of the ask exercised (Logs, rule sheets, Runbooks,
+  Chat and Reports, Users and roles with RBAC on and off, Settings, Jobs and the Audit log).
+- **Accessibility and phone.** Its axe sweep ran, but its report was not collected before the
+  pass was stopped; the check was folded into the closing sweep, A11Y.
+
+The workflow gave each gap to an independent skeptic told to refute it. One verdict ran:
+`decision-lane-raw-engine-record` was confirmed (medium), with a corrected fix (change the
+Console only, and name who settled the case instead of saying the reason again). The
+orchestrator then stopped the workflow and sent the gaps to seven fix packages instead, each
+told to confirm every gap in the code and, for a Console gap, live in the seeded Demo before
+fixing it, and each reviewed independently (§8.2):
+
+| Package | Gaps it took |
+|---|---|
+| FXB | the 7 other AI signal gaps |
+| FXA1 | 8 Case Manager, 2 records and 1 AI signal gap (the stale Reopen) |
+| FXA2 | 4 Case Manager and 7 records gaps (two of them one defect, the seeded trace) |
+| FXC | the 13 sign-in gaps, with the D6 amendment and the Sign out wording |
+| FXD1 | 7 explainable-number gaps on the dashboards and 2 regressions |
+| FXD2 | the 8 other explainable-number gaps |
+| FXE | 3 regressions and 3 What's new gaps |
+
+The fourth What's new gap, most 0.2.0 highlights without a screenshot, went to WP17D. FXF then
+took what the fix-package reviews left, and A11Y runs the closing sweep. The sign-in checker's
+one limitation, the warning dialog's duration, was resolved by the D6 amendment; three others
+are now in §8.3 (the case facts at 1440 px, "AI queued" in the Demo, and seeded decisions
+without a recorded gate).
+
+No package judged a gap not real: each confirmed every gap it took. Five corrected the
+checker's cause or fix:
+
+- **FXE.** The push-source miss came from the default source, not the field mapping the checker
+  named: with no source named, the route searched only the primary pull source.
+- **FXC.** `outline-none` paints a box in forced colours, so the heading uses `[outline:none]`;
+  and the empty recovery-code field says "Enter a recovery code.", not the checker's six-digit
+  sentence.
+- **FXA1.** A lane a person settled is named Decision, not Analyst, which would read "Analyst
+  Analyst" beside its tag; and the Events columns join at 44, 56 and 80rem, so the Message
+  column keeps its room at every width.
+- **FXD2.** The routing score is printed with two decimals, not rounded half up to 33,
+  because the gate compares it unrounded.
+- **FXB.** The phone chip says "AI", not "AI working", which would not fit the phone strip; and
+  the replaced-close warning uses the Inbox's words.
+
+A11Y, the closing accessibility and phone sweep, is recorded with the closing gates.
 
 ---
 

@@ -10,8 +10,9 @@
 - **Round 16 (newest, 2026-11):** ten operator asks on `claude/round16` (from `3cfd5c0`),
   heading to `Testing` through a pull request and then to the 0.2.0 release. It is built as
   the SPEC's work packages, each in its own worktree and independently reviewed; the
-  integration, the cross-cutting review, the screenshots and the frozen release preparation
-  follow. What it changes:
+  integration, the cross-cutting review, an acceptance pass of every operator ask from the
+  operator view with its seven fix packages (SPEC §8.6), the screenshots and the frozen
+  release preparation follow. What it changes:
   - **The AI agent's work is visible.** The server tracks queued and running AI runs in a
     process-local registry (`GET /api/investigations/active`, `case.investigation` frames on
     a new `investigations` topic). The case header shows "AI working · m:ss" or "AI queued"

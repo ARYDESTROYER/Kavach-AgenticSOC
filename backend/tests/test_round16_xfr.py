@@ -239,7 +239,9 @@ def test_the_changelog_says_the_ai_run_signals_once() -> None:
     assert changelog.count('"N AI steps"') == 1
     assert changelog.count('"Needs human review", as the case does') == 1
     added = changelog[changelog.index("#### Added"):changelog.index("#### Changed")]
-    for fact in ("at every queue width", "shows the ring alone on a phone",
+    # FXB: on a phone the chip shows the ring with the word "AI", never the ring alone.
+    assert "shows the ring alone on a phone" not in changelog
+    for fact in ("at every queue width", 'On a phone it shows the ring with the word "AI" and no clock',
                  "the same number as the trace's \"N AI steps\"",
                  "The notices name the needs-human verdict \"Needs human review\""):
         assert fact in added, fact

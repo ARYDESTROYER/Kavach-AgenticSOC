@@ -155,7 +155,10 @@ as a completed observation. Only completion of every configured query group make
 run `measured`; a completed zero-hit result is then an honest measured empty result.
 
 The trace marks people's steps, case chat and automatic code steps apart from the AI's
-steps, and its filter offers All, Agent, Tool, Code, People and Chat. The step counts
+steps, and its filter offers All, Agent, Tool, Code, People, Chat and Runbook. Runbook
+shows the runbook AI help a person asked for on a runbook step, each named after that
+person with the cost of its own call. On a narrow screen the filters wrap onto a second
+row. The step counts
 show once, beside the **Investigation trace** heading; while a filter is on, the trace
 also says how many steps it shows, for example "3 of 12 steps". Opening the Evidence tab
 is not a step of the investigation, so the trace leaves it out; it stays in Activity and

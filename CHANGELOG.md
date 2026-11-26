@@ -30,21 +30,27 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
 
 - **See the AI working on a case.** While the AI investigates a case:
   - the case header shows "AI working · m:ss", or "AI queued" while the run waits for an
-    investigation slot, then "AI finished". The chip keeps its words on any strip 30rem
-    wide or wider, where the AI verdict's label, the owner's name and the SLA make room
-    first and the status words always stay on the line, and shows the ring alone on a
-    phone. Select it for the five steps, who or what started the run ("You started it",
-    "Started by a person", or the automatic origin), the time against the investigation
-    cap, and a link to its steps in the Audit log;
+    investigation slot, then "AI finished". A run that failed or was stopped ends as "AI
+    stopped", in a neutral colour with an alert mark, and its popover is titled "AI
+    investigation stopped". The chip keeps its words on any strip 30rem wide or wider,
+    where the AI verdict's label, the owner's name and the SLA make room first and the
+    status words always stay on the line. On a phone it shows the ring with the word "AI"
+    and no clock, so a still ring under reduced motion is never alone. Select it for the
+    five steps, who or what started the run ("You started it", "Started by a person", or
+    the automatic origin), the time against the investigation cap, and a link to its steps
+    in the Audit log;
   - queue rows show "AI working" or "AI queued" in place of the status mark, at every queue
     width. In a narrow queue the status words, the outcome badge and the severity word step
     aside for it; the row's accessible name, the leading glyph and the case header keep all
-    of them;
+    of them. The row's accessible name ends "AI investigation running" or "AI investigation
+    waiting", with no elapsed time; the header chip has the clock;
   - the Case Manager navigation item counts the cases the AI is investigating, and the queue
     band says how many new alerts it is investigating;
   - close, resolve, the bulk close and the bulk Acknowledge and Set status dialogs say that
-    the run's result will replace what you set now. Nothing is blocked, and the note changes
-    to "finished" when the run ends;
+    the run's result will replace what you set now. Nothing is blocked. When the run ends,
+    the note names the verdict ("The AI investigation finished with the verdict Needs human
+    review. Check it before you close."), or says the run stopped or could not finish and
+    the case was not changed. No finish message covers the dialog while its note shows;
   - Take action shows Reinvestigate as unavailable while a run is queued or running and says
     why, and the header dims the verdict the run will replace;
   - W opens the AI investigation tab at the live trace while a run is under way, and the
@@ -54,8 +60,15 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
 - **Notices when a run ends.** The person who started a manual run (Reinvestigate, or the
   Investigate page) gets a toast and an Inbox item when it finishes. A person whose close an
   AI run replaced gets an Inbox item, and the change is recorded as a `case.close_replaced`
-  audit row. The notices name the needs-human verdict "Needs human review", as the case
-  does.
+  audit row. When that close was made on the case you are looking at, while the run was
+  queued or running, the page says so in a warning: "The AI investigation replaced your
+  close of CASE-0042. Status: Open · awaiting analyst. Your disposition and note are kept."
+  A close made before you reinvestigated the case is not replaced, so the finish message
+  gives the new status. The Brief's People lane then adds "The AI investigation then
+  replaced the close.", also after a move to Resolved from the status menu. The end of a
+  run is said once: when the finish message or the close dialog says it, the header chip
+  does not say it again. The notices name the needs-human verdict "Needs human review", as
+  the case does.
 - **Every number explains itself.** Hover a risk score, verdict, severity, priority, SLA,
   cost or dashboard figure for a one-line formula with the real numbers. Click it, press
   Enter or Space, or tap it for the full calculation: inputs, each step, rounding, where the
@@ -78,6 +91,37 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     Posture SLA strip open their inputs, and so do the cells of a dashboard KPI strip and
     the Team activity median. Every calculation an explanation prints gives the result it
     prints.
+  - A dashboard change chip names both values and both windows. A chip beside a rate or a
+    time is a relative change, (now - before) / before x 100, and says it is not percentage
+    points; a rate chip also prints the counts behind both windows, such as "69.64% (39 of
+    56 verdicted cases)". A chip beside a count is the difference of the two counts.
+  - Human vs AI counts and shares explain their base, the closed cases of the window, and
+    the whole-percent rule: each share is rounded down and the points left go to the
+    largest fractions, so 45 of 62 is 72.58%, shown 73%. The donut snapshots add the
+    severity counts to the centre number and give each legend share.
+  - The Noisiest rules FP rate is the lower end of the Wilson range for the analyst-graded
+    cases, with the z the tuner uses, so 30 of 30 reads 89%, not 100%. Auto-close health,
+    spend per investigated case, SLA attainment and the strip cells that read "at least"
+    open their calculation. Cost explains Total cost, Tokens and LLM calls as the sums of
+    the per-model rows, and Today as the spend since midnight UTC.
+  - The Standup explains every figure: the strip counts and their change, each queue row's
+    risk and age, the SLA totals per priority, each breached line's overage, the workload
+    counts, the action items and the handoff sign-off. The report sends these inputs to the
+    page only; the summary sent to the AI model leaves them out.
+  - On Agent effectiveness, each outcome tile works both windows from their counts and the
+    change from the figures the server compared; the agreement, correction and turnaround
+    figures explain themselves when the server sends their counts, and a figure with no
+    prior window says "no comparable prior figure". The definitions use plain words.
+  - On Team activity, the median time to acknowledge lists the times it is taken from (up
+    to 200 around the middle) and works the median from them, a person's own median says how
+    many cases it covers, and People active names each person it counted (a sign-in
+    counts).
+  - "Why was this investigated?" prints the routing score with two decimals and its
+    weighted sum, for example (0.25 x 58.56 + 0.20 x 9.69 + 0.15 x 20) / 0.60 = 32.63, and
+    says the reading uses today's settings.
+  - The SLA panel adds Time left (rounded down, as the due line shows it) and Over by, and
+    the AI confidence says it was reported by the AI with its verdict, naming the run when
+    the decision recorded its gate.
 - **Dashboard figures show the cases behind them.** `GET /api/metrics/explain` returns the
   cases behind MTTA, MTTR, dwell, MTTD, the Active risk index, the AI-verdict false positive
   rate and SLA attainment, computed from the same population with the same code as the
@@ -96,17 +140,25 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   - The investigation cost in the case facts opens every AI call behind it
     (`GET /api/cases/{id}/usage`, needs `cases:read` and `cost:view`): role, model, tier
     (Standard, Flex or Batch), tokens, latency, attempts and an Estimated mark, with each
-    call's cost formula in its own numbers and where its price came from. A call whose
-    recorded cost differs from its rates says so. Case chat spend has its own line.
+    call's cost formula in its own numbers, where its price came from and the build that
+    wrote it. A price estimated from the model family, or the default price for a model not
+    in the price table, says so. A call whose recorded cost differs from its rates says so.
+    Case chat and runbook AI help each have their own line, so runbook AI help is no longer
+    counted as case chat; the route adds a `runbook` total beside `pipeline`, `chat` and
+    `other`.
   - **View all fields** shows every stored field of a case in a searchable tree, with Copy
     JSON and Download; costs are left out without `cost:view`.
   - A finding shows its whole text with More, and Cites N events opens the events table
     narrowed to those events. A case waiting for an investigation says why and opens the
     gates behind it; a case on hold shows its recorded reason; History shows status reasons,
-    resolution notes and events attached later; trace steps open Details (model, latency,
-    tokens, cost, tool input, query and tool output, marked untrusted); gradings open their
+    resolution notes, events attached later and the reason each automatic decision
+    recorded, and a long note shows three lines with Show more; trace steps open Details
+    (model, latency, tokens, cost, tool input, query and tool output, marked untrusted), and
+    the decision step says "No model call. Code made this decision."; gradings open their
     full record; indicator reputation lists each provider and how the scores were combined,
     beside the reading at investigation.
+  - A confirmed runbook step that started from an AI draft says so, with the model and the
+    time, and **Show the AI draft** shows the draft as the AI wrote it.
   - Every new usage ledger row records the rates behind its cost (input, output, cache read
     and cache write per million tokens, the cache-write TTL and the price basis: catalog, an
     operator override, a self-hosted model, the mock provider or Demo Mode). Older rows have
@@ -121,7 +173,8 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   preferences change. The release badge links to What's new for the running version, and the
   Help Center has a What's new page generated from the same notes, which chat's product help
   reads. It lists every change since 0.1.1: twelve dated updates for 0.2.0 and an entry for
-  the 0.1 line, and older updates show screenshots of the interface they describe.
+  the 0.1 line. 44 of the 66 highlights of 0.2.0 have a screenshot, up from 18, each new one
+  in a light and a dark capture.
 - **AI runs on the server.** `GET /api/investigations/active` (needs `cases:read`) lists the
   queued and running runs, the runs that finished in the last two minutes, how many runs on
   new events have no case yet and the investigation slots in use; the requester's name is
@@ -137,9 +190,14 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   SLA reading (the same clock rules as SLA attainment) and, for a holder of `settings:read`,
   the internal network range that holds the entity. `GET /api/cases/{id}/rationale` adds
   `returned`, `rows_total`, `rows_total_relation` and `truncated`, and the
-  `GET /api/cases/{id}/forwarding` explanation adds the routing score and the floor.
+  `GET /api/cases/{id}/forwarding` explanation adds the routing score and the floor, with
+  its weighted terms and weight sum (`routing_terms`, `routing_weight_total`).
 - `GET /api/metrics` adds `avg_risk_case_count`, how many scored cases Average risk
-  divides by.
+  divides by, and the posture comparison of a rate adds `numerator`, `denominator`,
+  `prev_numerator` and `prev_denominator`. `GET /api/tuning/recommendations` adds
+  `wilson_z`, the Team activity read adds `ack_sample_seconds` and `ack_sample_offset` (at
+  most 200 sorted times around the median), and the Standup report's rows carry the inputs
+  their explanations need. All of these are additive.
 - Release checks: `scripts/check_version.py` requires the What's new notes file for the
   current version (`docs/releases/notes/<VERSION>.json`) and the license label on all three
   images. On `main`, a `v*` tag or a pull request into `main` it also requires an empty
@@ -171,9 +229,11 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   Response, Activity and Chat, on Alt+1 to Alt+6. Alt+2, Alt+4 and Alt+5 now open Evidence,
   Response and Activity, and Chat moves to Alt+6. Old links to the Timeline and Threat context
   tabs, and to the what happened, threat context and related cases sections, open Evidence.
-  The Brief opens with the runbook's next step and four lanes (Evidence, AI, Decision and
-  People) that never repeat the header's facts; Response holds the runbook and the case's
-  tasks for everyone.
+  The Brief opens with the runbook's next step and four lanes (Evidence, Assessment, Decision
+  and People) that never repeat the header's facts; Response holds the runbook and the case's
+  tasks for everyone. The AI lane is called Assessment, so it no longer reads "AI AI", and
+  the People lane names the newest status change or runbook step a person made ("Runbook
+  step done by asha.iyer, 12m ago"), or says "No status change by a person yet."
 - **A compact case header.** It is 118 px for every case: a title row with the primary
   action, Take action, Ask AI, More options, the case facts toggle (`]`) and Back, and a
   one-line meta strip with the case number, severity, status or outcome, risk, AI verdict,
@@ -182,10 +242,13 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
 - **Case facts are an inspector** beside the tabs from a 52rem pane, or a side sheet below
   that, shown or hidden with `]`, with six sections that open and close (each viewer's
   choices are kept; Record starts closed). It replaces the facts rail.
-- **The Brief's Decision lane** says in plain words who settled the case and how
-  ("Escalated by the system."). The raw decision record is in Policy inputs. On a case a
-  person closed, the lane shows what the policy recorded before them and no longer repeats
-  the person or the outcome.
+- **The Brief's Decision lane and the case History** say in plain words who settled the case
+  and how, from one set of sentences ("Escalated by the system.", or "Sent to an analyst by
+  the case policy. Auto-close is off for this verdict."), and never show the engine's raw
+  rationale. The raw decision record is in Policy inputs, word for word. On a case a person
+  closed, the lane keeps the name Decision under its Analyst tag, shows what the policy
+  recorded before them and no longer repeats the person or the outcome. In the case facts,
+  the Outcome of a case nobody has classified reads "Not classified yet".
 - **A quiet sign-in page.** One column on the Console's own colours with a soft wash in the
   organization accent and one short entrance; nothing moves after the page settles. The
   heading names the organization ("Sign in to Acme SOC"); "Welcome back" appears only on a
@@ -197,9 +260,26 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   password?" says to ask an administrator. The spinner between the sign-in page and the
   Console appears only when loading takes longer than 300 ms. The Branding preview matches
   the new page.
-- **Remember me** shows only "Remember me". The confirmation the first time you tick it still
-  states how long you stay signed in. When an administrator turned it off or the connection
-  is insecure, the row stays visible, disabled, with its reason.
+  - The column is top aligned, so a step change or an error grows the page downward and
+    never moves the heading or the field you are retyping. The forced password change shows
+    its errors under its fields.
+  - Every phone target is at least 44 px tall, Back and Use line up with the column's right
+    edge, and every step keeps one 16 px rhythm.
+  - "Verify and continue" and "Set password & continue" stay enabled, and an empty submit
+    says what is missing under the field: "Enter the 6-digit code.", "Enter a recovery
+    code." or "Enter a new password.".
+  - The required two-factor setup uses the page's field and button grammar: the QR code sits
+    above the steps, the secret wraps instead of being cut off, the code field and "Verify
+    and sign in" are 44 px, and a code that does not work shows under the code field.
+  - A wide organization logo keeps its 40 px height, up to 192 px wide, on the page and in
+    the Branding preview. An alert's icon is centred on a one-line message.
+- **Remember me** shows only "Remember me". The warning the first time you tick it asks "Stay
+  signed in on this device?", keeps its advice about shared devices and states no duration.
+  The limits stay in Settings and the Help Center. When an administrator turned it off or the
+  connection is insecure, the row stays visible, disabled, with its reason. The box draws the
+  page's full-strength focus ring.
+- **Sign out.** The account menu says "Sign out", in the neutral menu colour, on desktop and
+  in the phone controls sheet; it said "Log out", in red.
 - **Reinvestigate no longer waits for the run.** The dialog closes at once and the header
   shows the run; `POST /api/cases/{id}/reinvestigate` with `{"wait": false}` answers `202`
   with the run id. Reinvestigating a closed case updates that case instead of opening a second
@@ -240,6 +320,11 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   section of each case's Evidence tab.
 - Dependabot: the four action bumps from `main` are applied on `Testing`, version updates
   target `Testing`, and the Python base image stays on 3.11.
+- **Screenshots.** The README, INSTALL and Help Center screenshots were captured again for
+  0.2.0, among them the create-admin and second-factor pages and the Case Manager Brief with
+  its Assessment lane, and their alt text and captions match. The pages no longer say their
+  images come from 0.1.13. The 60 review-only release captures moved under `docs/research/`,
+  out of the Help Center bundle.
 
 #### Fixed
 
@@ -334,11 +419,40 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     screenshots than a case has room for lists each file that was not added [B31].
   - On the Evidence tab, How this case was clustered lists each related case by its case
     number, and selecting one opens that case.
-  - The case header keeps the status words whole: on a short line the owner's name and then
-    the AI verdict's words give way first.
+  - The case header keeps the status words whole: on a short line the owner's name, then the
+    AI verdict's words, then the start of a long case number give way first. The AI verdict
+    keeps at least its glyph and confidence and hides where it no longer fits (below a 40rem
+    pane, or 48rem beside the AI run chip), so it never leaves an empty box that takes
+    keyboard focus. A case number longer than twelve characters ends in a middle ellipsis
+    that keeps its first five and last six characters ("CASE-…000041"); pointing at it shows
+    the whole number, screen readers read it in full, and default numbers ("CASE-000046")
+    stay whole. The outcome's Analyst tag drops whole before the outcome words end in an
+    ellipsis, the badge keeps its whole border, and hovering shows the whole outcome.
+  - On a phone the case tab row brings the selected tab into view, Alt+5 and Alt+6 included,
+    and fades at an edge that has more tabs past it; a live count no longer pulls a row you
+    swiped back to the selected tab. Every underline tab row that scrolls does the same.
+  - The Events table no longer squeezes the Message column at the default 1440 layout:
+    Severity, Source IP, User and Host appear as the pane gets wider.
+  - Reopen in the close notice reads the case first. It no longer reopens a case an AI run
+    already reopened, which wrote a false reason; it says so, or "This case was already
+    reopened." when a person did it, and the notice goes once the case is no longer closed.
+  - A screen reader reads the Activity tab count as "1 message", not "1 messages".
+  - A trigger sentence whose severity range has the same number at both ends reads as one
+    value ("severity 75") in the Brief, Evidence, the clustering card and the Noise reduction
+    lineage rows. The stored sentence is not changed.
   - The AI investigation tab says when its rationale was built from the newest records
     only.
-  - The AI run note in the close dialog writes the new verdict in lower case.
+  - The AI investigation trace no longer counts or lists opening the Evidence tab; those rows
+    stay in Activity and the audit log. It shows its step counts once, beside its heading,
+    and while a filter is on says how many steps it shows ("3 of 12 steps"); a trace that
+    could not load shows only its error. Steps name the product Agentic SOC and people by
+    their names, as Activity does.
+  - Runbook AI help is its own trace actor with its own Runbook filter. Each call is named
+    after the person who asked and shows the cost of its own call, and case chat steps no
+    longer carry that spend. On a phone the seven trace filters wrap inside their row, so
+    the tab never scrolls sideways.
+  - The Response tab's phase tabs show their whole focus ring, and a tab reached with the
+    arrow keys scrolls fully into view, clear of the fade.
   - In Cases, a case whose close a later AI investigation replaced no longer says "no
     analyst has classified this case yet". Its Outcome note reads "Classified by an analyst
     before a later AI investigation set the status".
@@ -350,6 +464,31 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   measured: partial coverage" [B64]. The Respond and MTTD descriptions name the real clock and
   the median [B66]. Latest cases labels closed cases Closed and resolved cases Resolved [B67].
   A cases reset clears the cached dashboard figures straight away.
+  - Changing the Cyber Defence Center range no longer shows the old range's figures under
+    the new caption. The strip and the figures below it turn grey under "Loading 7 days",
+    their explanations are withheld, a drill-down opened meanwhile shows Loading, and the
+    new range's figures replace them without counting up from the old ones.
+  - The trends chart's first bucket counts only the part inside the window, so the 7-day
+    total matches the other panels (56, not 57, in the seeded Demo).
+    `GET /api/metrics/trends` clips that bucket; its shape is unchanged.
+  - SLA breaches and at risk says it counts the cases opened in the window. With none, it
+    says how many open cases from earlier are past their response target, with a link to
+    them.
+- **Cases and Entity investigation.**
+  - The Cases bulk bar keeps every action on screen. It is centred on the page beside the
+    navigation rail and never covers it, its actions wrap onto a second row instead of
+    scrolling Close and Clear out of view, and in Demo Mode "Bulk changes are off in Demo
+    Mode." sits on its own line above them.
+  - Entity investigation finds addresses, users and hosts that only a push source holds.
+    When no source is named and the main log source holds nothing, the run looks further,
+    one source at a time: in Demo Mode the other Demo sources, otherwise the recent events
+    each push source delivered (its live tail, up to the last 500 events, held in memory).
+    Other pull sources are not searched. Each source is read through its own field mapping,
+    so the address in a QRadar LEEF record's `src` is found. A push source set to ignore is
+    never read, suppressed events stay out, and a record delivered twice counts once. The
+    case is built from the first source with matching events. When nothing matches, the
+    answer says "the last 365 days" instead of `now-365d`, and the page no longer offers a
+    wider lookback, because every run already searches back 365 days.
 - **Explanations.**
   - The risk Velocity step is written from the recorded event count and window, so its
     expression gives its result.
@@ -368,6 +507,15 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     counts of sources and alerts no longer say they were counted over cases, and Average
     risk names the scored cases it divides by.
   - An indicator that no provider checked reads "Not checked" instead of a 0% reputation.
+  - A percentile step, on the case clocks and on the dashboard timing panels, prints
+    operands that give its printed result; time to detect reads "1 minute" for one minute;
+    and a whole-percent share panel such as Auto-close rate or Incident yield ends on the
+    figure the tile shows.
+  - The routing score is no longer cut to a whole number: "Why was this investigated?" and
+    a waiting case's reason keep two decimals (69.5 no longer reads 69). The gate is
+    unchanged.
+  - A manual case's trigger sentence and the "no events remain" refusal name the window in
+    words ("in the last 24 hours"), never a raw token such as `now-24h`.
 - **Setup, settings and administration.**
   - In Demo Mode the setup wizard shows the Demo sources as "Managed by Demo Mode" with no
     actions, and the server refuses a change to a Demo source with `409
@@ -407,12 +555,22 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     investigation) takes a few seconds, so the AI working chip, the queue mark, the Case
     Manager count and the close warning show while it runs. Its pauses stay within a quarter of the run's time cap. Chat, report summaries,
     runbook help and automatic runs are not slowed.
+  - Seeded cases with an investigation cost show that investigation in the trace: the
+    investigator's prompt, one read-only log query and the verdict, on one run, matching
+    the ledger. Seeded notification records show their channel, for example Email, instead
+    of the word "Channel".
+  - Demo chat reads "closed by the AI agent" as the AI's closes: "How many cases were closed
+    by the AI agent in the last 24 hours?" answers with the automatic closes beside the
+    analysts' closes, not every closed case.
 - **Chat and local models.** Exported conversations name a log source under "Sources queried"
   only when a lookup read it [B38]. Deleting a conversation says "Its report stays in
   Reports" only when it has a report [B40]. A case cited under an answer's Sources shows its
   case number, and an Add to case comment uses it too [B42]. A local model URL typed with a
   trailing `/v1` works for chat, streamed chat and embeddings instead of calling
-  `/v1/v1/...`.
+  `/v1/v1/...`. Chat's product help sends "Kill the export job", "Cancel the export" and
+  "Abort the export" to Analytics → Jobs and says how to cancel, and "Cancel a runbook run"
+  to the case's runbook. The Help Center's Analytics page has a Jobs section and names all
+  seven pages the Analytics group opens, and which three share the time range.
 - **Release and Help Center.** The top bar no longer offers "Enable updates" on SQLite or
   Elasticsearch deployments, which show "Updates unavailable" [B52]. The Help Center always
   links the published Stable documentation [B54]. Closing the System update panel returns
@@ -426,8 +584,13 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   username or password is not correct.", "Could not reach the server. Try again." or "Too
   many attempts. Wait a few minutes, then try again.", and a wrong code reads "That code is
   not correct. Try again.". The page never shows the server's raw text, a browser network
-  message or a proxy error page. Setting a first admin or a new password still shows the
-  password rule the server names. While Branding sets a light or dark default theme, the
+  message or a proxy error page. Setting a first admin still shows the password rule the
+  server names. The forced password change counts the new password without its outer
+  spaces, as the server does, and a refused change reads "New password must be at least 8
+  characters." or "Could not change the password.". Single sign-on buttons for an unnamed
+  Google or Microsoft provider read "Sign in with Google" or "Sign in with Microsoft", never
+  the internal id: `GET /api/auth/sso/providers` returns the stored display name, empty when
+  none is set, and a long provider name wraps. While Branding sets a light or dark default theme, the
   first appearance button is named "Use the organization default theme", and the pressed
   button always matches the theme on screen. Setting up two-factor, at sign-in or in
   Settings, and turning it off show a fixed sentence too, such as "That code did not work.
@@ -435,7 +598,11 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
 - **What's new.** After See all changes the tracker marks the changes that were new to you,
   and closing the reopened welcome or an enlarged screenshot returns focus to what opened it.
   The Help Center's What's new page says the welcome is turned off in Settings → Account →
-  Appearance, where the switch is.
+  Appearance, where the switch is. On the page the switch has the same name as in
+  Settings, **Show What's new after updates**. A long code value, such as the `.env` line
+  the 0.2.0 notes ask for, wraps on a phone. The built-in Admin account the backend creates
+  when sign-in is turned on after setup is complete starts with What's new marked seen; the
+  local demo creates it before setup completes, so it still shows the welcome once.
 - **Accessibility.**
   - "Skip to main content", and the setup wizard's skip link, move focus to the page content
     without changing the address, so an open case is no longer lost to Overview [B71].
@@ -455,6 +622,9 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     mid-word [B80].
   - On touch screens text fields use 16 px text, so iOS Safari no longer zooms in on focus
     [B81; a device check is maintainer action M6].
+  - The selected phase tab on a case's Response tab shows its progress caption in full ink.
+    The muted caption was 4.22:1 on the selected fill in light, below the 4.5:1 bar. The
+    contrast gate now measures text on a selected fill in both themes.
 
 #### Removed
 
@@ -481,6 +651,10 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   near ties included. On PostgreSQL with pgvector, only a very large corpus is ranked in the
   database.
 - The first page load no longer carries the case page's investigation narration.
+- The sign-in page loads the two-factor setup card only when an enrollment starts, so the
+  first page load is 13,173 B smaller (331,181 B to 318,008 B, built as CI builds it). If
+  the card cannot load, the page says "Two-factor setup could not load. Reload the page to
+  try again."
 
 #### Security
 
