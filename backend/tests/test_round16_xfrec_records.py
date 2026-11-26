@@ -185,7 +185,11 @@ def test_the_spec_records_every_package_after_xfr_and_the_acceptance_pass() -> N
         for sha in shas:
             assert f"`{sha}`" in line, (package, sha)
     assert "318,008 B" in per_package[per_package.index("- **FXF,"):]
-    assert "- **A11Y, closing accessibility and phone sweep.** Recorded with the closing gates." in per_package
+    # The closing records wrote the A11Y line with its build and review commits.
+    a11y = per_package[per_package.index("- **A11Y, closing accessibility and phone sweep**"):]
+    for sha in ("a34c056", "5e5fb08"):
+        assert f"`{sha}`" in a11y, sha
+    assert "Recorded with the closing gates." not in per_package
     assert "WP19 is recorded with the release preparation." in per_package
     assert "WP17B and WP19 are recorded with the closing gates." not in per_package
 

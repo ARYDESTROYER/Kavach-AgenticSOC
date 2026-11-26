@@ -138,7 +138,10 @@ recipe (or `materialThick` for large floating panes, or `MaterialBar` from
 `@/design-system`); never a page-local `bg-*/95 backdrop-blur`. Content — tables,
 charts, transcripts, evidence — always sits on an opaque canvas or card, and menus,
 popovers, dialogs and sheets are solid, so translucent never stacks on translucent (a
-material nested in another material, or in the glass top bar, is painted solid). The
+material nested in another material, or in the glass top bar, is painted solid). Coloured
+text on a material (the top bar's Demo and release chips, a status badge in a sticky header)
+uses the grouped panel's stronger semantic inks, `--panel-<axis>-text`, which clear 4.5:1
+with any content scrolled beneath (`material-chip-contrast.test.ts`). The
 fill hides what scrolls beneath on its own, in every engine: 0.97 for bars and the top
 bar, 0.98 for thick panes. The backdrop blur is decoration that cannot be relied on, and
 it stops at a backdrop root: never put a filling animation (`both`/`forwards`), `opacity`

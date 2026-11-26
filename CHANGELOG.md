@@ -627,6 +627,17 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   - The selected phase tab on a case's Response tab shows its progress caption in full ink.
     The muted caption was 4.22:1 on the selected fill in light, below the 4.5:1 bar. The
     contrast gate now measures text on a selected fill in both themes.
+  - A disabled number field uses the muted fill and text colours instead of fading, so its
+    unit ("min", "%") keeps 4.5:1 in both themes.
+  - In a case's usage sheet, the list of AI calls is a named region a keyboard can focus and
+    scroll while it scrolls. The percentile table on Metrics, Performance is one too.
+  - Coloured chips on the top bar and on sticky bars, such as the Demo chip, the release badge
+    and status badges, keep 4.5:1 with any content scrolled beneath them.
+  - On Metrics, Posture, each MITRE heatmap cell prints its technique id and count on a 90%
+    opaque chip, so the count keeps 4.5:1 over every shade in both themes.
+  - Settings, Sessions & activity shows one plain sentence for each sign-in, password,
+    two-factor and session event, never the raw audit text, and its Activity table fits a
+    phone screen without cutting off the When column.
 
 #### Removed
 

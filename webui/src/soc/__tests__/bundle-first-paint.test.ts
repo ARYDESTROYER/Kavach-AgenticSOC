@@ -208,10 +208,16 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * plain line if the chunk cannot load. Measured the same way: 318,008 B (-13,173 B), per
  * file MfaSetupCard.tsx -10,094, ui/card.tsx -1,589, lib/clipboard.ts -1,146,
  * ui/checkbox.tsx -902, Login.tsx +349, registry.tsx +131 and under 10 B of drift elsewhere.
- * The baseline stays at 330,068 B: the round's records hold that figure, and the ratchet
- * belongs to the round's records package, not to a fix package.
+ * The baseline stayed at 330,068 B until the closing records: the ratchet belongs to the
+ * round's records, not to a fix package.
+ *
+ * Round 16 closing records (its SPEC §8.1 "Entry bundle"). A11Y, the last package, left the
+ * entry unchanged. The final tree 16ea902 measured 317,962 B with `npm run build:app` (318,008 B
+ * stamped as CI builds it), so the baseline is lowered to it: 11,118 B below the Round 15
+ * baseline of 329,080 B, and the 12,106 B that FXF and the round freed below 330,068 B cannot be
+ * spent unseen. The +1,024 B budget and the 400,000 B ceiling are unchanged.
  */
-const PRE_REVAMP_ENTRY_BYTES = 330_068;
+const PRE_REVAMP_ENTRY_BYTES = 317_962;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
 
 function readHtml(): string {

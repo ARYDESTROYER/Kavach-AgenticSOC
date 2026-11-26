@@ -2592,19 +2592,28 @@ as built on `claude/round16` at `9a94df2` (WP16C merged). XFD then added, on `5f
 (the entry trim and the post-integration items), WP17A, WP18B, WP18C, the cross-cutting review
 (§8.5) and the fix packages merged by then, from their reports and reviews. XFR then added
 XFCM, XFB2 and XFR itself on `f309c9c`. XFREC then added every package merged after XFR, the
-acceptance pass (§8.6) and its fix packages, on `ba3fc2a` (FXF merged). A11Y, the closing
-accessibility sweep, and WP19 land after that and add to it where the placeholders below say
-so. Where this section and §1 to §7 disagree, this section wins.
+acceptance pass (§8.6) and its fix packages, on `ba3fc2a` (FXF merged). The closing records
+then added A11Y, the closing accessibility sweep, the second entry ratchet (§8.1) and the
+verification record (§8.4), on `16ea902` (A11Y merged). WP19 lands after that and adds to it
+where the placeholder below says so. Where this section and §1 to §7 disagree, this section
+wins.
 
 ### 8.1 Contract resolutions
 
 Decisions taken during the build, each recorded by the orchestrator in the Journal when it was
 taken.
 
-- **Entry bundle.** The first-paint baseline is now `PRE_REVAMP_ENTRY_BYTES = 330_068`
-  (330,068 B) in `webui/src/soc/__tests__/bundle-first-paint.test.ts`, with the unchanged
+- **Entry bundle.** The first-paint baseline is now `PRE_REVAMP_ENTRY_BYTES = 317_962`
+  (317,962 B) in `webui/src/soc/__tests__/bundle-first-paint.test.ts`, with the unchanged
   +1,024 B budget over it and the unchanged 400,000 B ceiling; this item is the one record of
-  the current value. The integrated tree `9a94df2` measured 330,279 B with `npm run build:app`,
+  the current value. It was set twice, each time to the merged measurement with `npm run
+  build:app`. First, WP16P set it to 330,068 B, as below. Then the closing records lowered it to
+  the final tree `16ea902`, 317,962 B (318,008 B stamped as CI builds it), after FXF moved the
+  two-factor setup card out of first paint (MfaSetupCard.tsx -10,094 B, ui/card.tsx -1,589 B,
+  lib/clipboard.ts -1,146 B, ui/checkbox.tsx -902 B) and A11Y left the entry unchanged. That is
+  11,118 B below the Round 15 baseline, so the room the round freed cannot be spent unseen. §3.1
+  asked for one ratchet at WP16; the second follows the same rule, and the orchestrator took it
+  at the closing gates. The integrated tree `9a94df2` measured 330,279 B with `npm run build:app`,
   175 B over the Round 15 budget of 330,104 B: +1,199 B over 329,080 B. Per file, through the
   source map: useEventStream.ts +2,346 (WP09's one stream per page), Login.tsx +1,404 with
   LoginAuthBackdrop.tsx -5,380, ThemeModePill.tsx -1,350 and ShineButton.tsx -436 (WP04),
@@ -2616,10 +2625,11 @@ taken.
   `appendAgentStep`, `useAgentSteps`) out of the shell's event stream module into
   `lib/agentSteps.ts`, which only the lazy case activity feed imports (useEventStream.ts -461),
   and the confirm provider gained its focus return (ConfirmDialog.tsx +259, main.tsx -9). The
-  result, **330,068 B**, is 36 B inside the Round 15 budget, so the baseline was set to it: 988 B
-  above the Round 15 baseline, the round's measured growth. `motion`, the Explain kit, the
-  What's new page and dialog, the notes JSON and the agent-step narration stay off the entry
-  path (`bundle-first-paint.test.ts`). A CI build stamps the SHA and date, about +46 B.
+  result, **330,068 B**, was 36 B inside the Round 15 budget, so the baseline was first set to it:
+  988 B above the Round 15 baseline, the round's measured growth at that point. `motion`, the
+  Explain kit, the What's new page and dialog, the notes JSON, the agent-step narration and the
+  two-factor setup card stay off the entry path (`bundle-first-paint.test.ts`). A CI build stamps
+  the SHA and date, about +46 B.
 - **What's new entry growth.** WP07 added 807 B to the entry against the 700 B package figure
   of §3.1 (the gate alone is 359 B, inside its 450 B). Accepted: the overrun is Vite preload
   bookkeeping for the two lazy chunks the design needs (the What's new page and the shared
@@ -3205,7 +3215,29 @@ reverting.
   is 22,128,003 B in 333 files. Deviations: twelve visible highlights beyond the fourteen got
   figures; the Brief captures use the auto-closed CASE-000040, which keeps FXF's routing
   sentence out of them.
-- **A11Y, closing accessibility and phone sweep.** Recorded with the closing gates.
+- **A11Y, closing accessibility and phone sweep** (`a34c056` on `ba3fc2a`, review `5e5fb08`):
+  axe-core 4.12.1, read from disk with its default rules, on 75 surfaces of the seeded Demo (the
+  navigation pages, the 31 Settings sections, the What's new welcome, the six case tabs, the
+  case facts inspector, the risk Explain panel, the usage sheet, the close and Reinvestigate
+  dialogs, and the AI run popover and the close dialog during a real Reinvestigate run) in light
+  and dark at 1440 by 900 and 390 by 844, plus a scrolled pass with content under the top bar.
+  Before: 2 serious runs in every combination. After: none, with no sideways scroll at 390, no
+  theme mismatch and no console error. Fixes, each with a regression test that failed first: a
+  disabled `NumberField` draws from the muted tokens instead of `opacity-50` (its unit read
+  2.18:1); the usage sheet's call list is a focusable region named "AI calls" while it scrolls;
+  `.glass-surface` and `.material-surface` point the seven `--<axis>-text` tints at
+  `--panel-<axis>-text` (the top bar chips read 4.49:1 with content scrolled beneath); and
+  Sessions & activity shows a plain sentence per known action, never the raw audit detail. The
+  review re-checked the four fixes live and opened the 13 in-page tabs per combination that the
+  sweep did not open. It found three more serious runs, all already on the base tree, each fixed
+  with a regression test that failed first: the Sessions & activity Activity table uses a fixed
+  layout (Where 30%, When 6rem) instead of scrolling with nothing focusable at 390; the Metrics
+  percentile table passes `scrollLabel`; and the MITRE heatmap chip is `bg-background/90` in
+  every engine (its muted count read 3.12:1 in dark and 3.54:1 in light under the 70% fill).
+  Left, each a change across several pages or a shared primitive: `empty-table-header` (minor,
+  7 tables), `heading-order` from `AlertTitle`'s `h5` (moderate, 3 places), and `region` on
+  hover content opened by scrolling (moderate). The entry stays 318,008 B stamped. Receipt:
+  `acceptance/a11y-closing-sweep.md`.
 
 WP19 is recorded with the release preparation.
 
@@ -3471,7 +3503,11 @@ checker's cause or fix:
 - **FXB.** The phone chip says "AI", not "AI working", which would not fit the phone strip; and
   the replaced-close warning uses the Inbox's words.
 
-A11Y, the closing accessibility and phone sweep, is recorded with the closing gates.
+A11Y, the closing accessibility and phone sweep, then ran the check the accessibility checker
+had not finished: 75 surfaces in both themes at both widths, then 13 more in-page tabs per
+combination in its review. It fixed all six serious runs it found (two in every combination,
+one in the scrolled pass and three in the review's tab pass) and left three moderate or minor
+findings that span several pages (§8.2).
 
 ---
 
