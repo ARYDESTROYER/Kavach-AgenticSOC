@@ -16,7 +16,7 @@ import type { Case, SlaPolicy } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
 import { caseOutcome } from '@/soc/components/outcome';
 
-import { CaseHeaderMeta, META_RUN_ROOM, META_SHRINK } from '../CaseHeaderMeta';
+import { CaseHeaderMeta, META_OUTCOME, META_RUN_ROOM, META_SHRINK } from '../CaseHeaderMeta';
 
 const LONG_OWNER = 'maximilian.alexander-worthington@soc.example.org';
 
@@ -168,5 +168,139 @@ describe('the meta strip makes room for the AI run chip (XFCM)', () => {
         '@[64rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline-flex',
       ]),
     );
+  });
+});
+
+describe('the outcome of an ended case gives way cleanly (XFUI2)', () => {
+  // The seeded Demo showed the badge cut by its own item at 390 and 768: "True positive"
+  // lost its right border with the Analyst tag half out of view, and "Auto-closed as false
+  // positive" was cut mid word, with no ellipsis. jsdom does no layout, so this pins the
+  // contract the seeded Demo check measures: the element that holds the words is a
+  // truncating block that may shrink, the tag never shrinks and goes first, and the whole
+  // outcome stays on hover and for assistive technology.
+  const CLASSIFIED = {
+    status: 'closed',
+    verdict: 'TRUE_POSITIVE',
+    decision_by: 'analyst',
+    disposition: 'true_positive',
+    history: [
+      {
+        event: 'analyst_action',
+        action: 'set_disposition',
+        classified_disposition: 'true_positive',
+        analyst: 'asha',
+        ts: '2026-11-20T10:00:00Z',
+      },
+    ],
+  } as unknown as Partial<Case>;
+  const AUTO_CLOSED = { status: 'closed', decision_by: 'agent', verdict: 'FALSE_POSITIVE' } as Partial<Case>;
+  const POLICY = { status: 'closed', decision_by: 'analyst_policy', verdict: 'FALSE_POSITIVE' } as Partial<Case>;
+  const UNRECORDED = { status: 'closed', decision_by: 'analyst', disposition: 'false_positive' } as Partial<Case>;
+
+  /** Its own classes plus what its parent sets on its children (`[&>*]:x`). */
+  function effectiveClasses(el: Element): string[] {
+    const inherited = classesOf(el.parentElement)
+      .filter((c) => c.startsWith('[&>*]:'))
+      .map((c) => c.slice('[&>*]:'.length));
+    return [...classesOf(el), ...inherited];
+  }
+
+  /** The element whose own text node holds the outcome's words. */
+  function wordsHolder(item: Element, words: string): Element {
+    const holder = Array.from(item.querySelectorAll('*')).find((el) =>
+      Array.from(el.childNodes).some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? '').trim() === words),
+    );
+    if (!holder) throw new Error(`No element holds "${words}".`);
+    return holder;
+  }
+
+  function expectTruncates(words: string) {
+    const item = document.querySelector('[data-meta-item="outcome"]');
+    expect(item).not.toBeNull();
+    const badge = wordsHolder(item!, words);
+    // A block that may shrink below its words and ends them in an ellipsis.
+    expect(effectiveClasses(badge)).toEqual(expect.arrayContaining(['block', 'min-w-0', 'truncate']));
+    // Every box between the badge and the item may shrink too, so the badge gets the room
+    // the item has, never more.
+    for (let node = badge.parentElement; node && node !== item; node = node.parentElement) {
+      expect(classesOf(node)).toContain('min-w-0');
+    }
+    return { item: item!, badge };
+  }
+
+  it('truncates an automatic close with an ellipsis, the whole outcome on hover', () => {
+    renderMeta(AUTO_CLOSED);
+    const { item } = expectTruncates('Auto-closed as false positive');
+    expect(item).toHaveAttribute('title', 'Auto-closed as false positive');
+  });
+
+  it('drops the Analyst tag first, whole, then truncates the classification', () => {
+    renderMeta(CLASSIFIED);
+    const { item, badge } = expectTruncates('True positive');
+    expect(item).toHaveAttribute('title', 'Closed as true positive by an analyst');
+    const tag = item.querySelector('[data-provenance="analyst"]');
+    expect(tag).not.toBeNull();
+    // The tag is not inside the truncating badge, never shrinks, and gives way below a
+    // 36rem pane (with the verdict and the long severity label).
+    expect(badge.contains(tag)).toBe(false);
+    expect(classesOf(tag)).toEqual(expect.arrayContaining(['hidden', 'shrink-0', '@[36rem]/case:inline-flex']));
+    // Its word stays for assistive technology wherever the tag is hidden.
+    const word = within(item as HTMLElement)
+      .getAllByText('Analyst')
+      .find((el) => classesOf(el).includes('sr-only'));
+    expect(word).toBeDefined();
+    expect(classesOf(word!)).toContain('@[36rem]/case:hidden');
+  });
+
+  it('lets the Analyst tag make room for the AI run chip below a 64rem pane', () => {
+    renderMeta(CLASSIFIED);
+    const item = document.querySelector('[data-meta-item="outcome"]');
+    expect(classesOf(item?.querySelector('[data-provenance="analyst"]') ?? null)).toEqual(
+      expect.arrayContaining([
+        'group-has-[[data-meta-item=ai-run]]/meta:hidden',
+        '@[64rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline-flex',
+      ]),
+    );
+    expect(META_OUTCOME.tagWord).toMatch(/@\[36rem\]\/case:group-has-\[\[data-meta-item=ai-run\]\]\/meta:inline/);
+  });
+
+  it('truncates a declared-benign close and an outcome not recorded the same way', () => {
+    const { unmount } = renderMeta(POLICY);
+    expectTruncates('Declared benign');
+    expect(document.querySelector('[data-meta-item="outcome"] [data-provenance="analyst"]')).not.toBeNull();
+    unmount();
+    renderMeta(UNRECORDED);
+    expectTruncates('Outcome not recorded');
+    expect(document.querySelector('[data-meta-item="outcome"] [data-provenance]')).toBeNull();
+  });
+
+  it('drops the Analyst tag whole on any short line, not only in a narrow pane', () => {
+    // A long case number (an operator's template, "CASE-crowdstrike-2026-000041") leaves
+    // the item short on a 36rem pane or wider, where the tag shows. Live, the badge's
+    // words shrank to an ellipsis beside a whole tag, and at the item's floor the tag was
+    // cut by the item. The item is one clipped 20px line that wraps, so the tag, after the
+    // badge and beside it on that line, moves to the hidden second line first.
+    renderMeta({ ...CLASSIFIED, case_number: 'CASE-crowdstrike-2026-000041' });
+    const item = document.querySelector('[data-meta-item="outcome"]');
+    expect(item).not.toBeNull();
+    expect(classesOf(item)).toEqual(expect.arrayContaining(['h-5', 'flex-wrap', 'content-start', 'overflow-hidden']));
+    // No row gap: the second line starts where the clip ends.
+    expect(classesOf(item).some((c) => c === 'gap-1' || c.startsWith('gap-y-'))).toBe(false);
+    const flexChildren = Array.from(item!.children).filter((el) => !classesOf(el).includes('sr-only'));
+    const tag = item!.querySelector('[data-provenance="analyst"]');
+    // The badge and the tag are the line's two items, the badge first.
+    expect(flexChildren).toHaveLength(2);
+    expect(flexChildren[0]).toHaveAttribute('data-testid', 'case-outcome');
+    expect(flexChildren[1]).toBe(tag);
+    // The tag never shrinks, so it wraps whole; the badge keeps the line and truncates.
+    expect(classesOf(tag)).toContain('shrink-0');
+  });
+
+  it('keeps the XFCM priority: the outcome keeps the status floor and shrinks last', () => {
+    renderMeta(CLASSIFIED);
+    const item = document.querySelector('[data-meta-item="outcome"]');
+    expect(classesOf(item)).toEqual(expect.arrayContaining(['min-w-14', 'overflow-hidden']));
+    expect(shrinkWeight(item)).toBe(1);
+    expect(shrinkWeight(screen.getByTestId('case-detail-owner'))).toBeGreaterThanOrEqual(1e12);
   });
 });

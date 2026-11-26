@@ -7,7 +7,7 @@ export interface ContrastResult {
   theme: string;
   /** Human-readable axis name (e.g. 'critical-text (text)'). */
   name: string;
-  /** 'text' | 'text-wash' | 'on-fill' | 'nontext' | 'panel-text' | 'panel-text-wash' | 'panel-nontext' | 'separation' | 'sign-in-text' | 'sign-in-nontext'. */
+  /** 'text' | 'text-wash' | 'on-fill' | 'nontext' | 'panel-text' | 'panel-text-wash' | 'panel-nontext' | 'separation' | 'sign-in-text' | 'sign-in-nontext' | 'selected-text'. */
   kind: string;
   /** The bar this axis must clear (4.5 or 3.0; a grouped-panel separation's own floor). */
   bar: number;
@@ -46,3 +46,7 @@ export const KPI_HOVER_WASH_ALPHA: number;
 export const SIGN_IN_TEXT_AXES: string[];
 /** The sign-in page's field edges and focus ring, with the surface each is measured on. */
 export const SIGN_IN_NON_TEXT_AXES: Array<{ name: string; fg: string; bg: string }>;
+/** The ink a selected tab or pressed tile raises its muted text to. */
+export const SELECTED_TEXT_AXES: string[];
+/** The selected fills that ink is measured on (`--accent`, `--panel-accent`). */
+export const SELECTED_FILLS: string[];

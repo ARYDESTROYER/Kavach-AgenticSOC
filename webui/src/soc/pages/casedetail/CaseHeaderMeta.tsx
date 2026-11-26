@@ -19,7 +19,8 @@
  *
  * On a short line the status words (or the outcome) give way last (WP16): the owner's name
  * truncates first, down to its disk, then the verdict chip's words, and the status words
- * only once both are at their minimum (`META_SHRINK`).
+ * only once both are at their minimum (`META_SHRINK`). The outcome's `Analyst` tag goes
+ * before its words, and its words truncate with an ellipsis, never cut (`META_OUTCOME`).
  *
  * While an AI run is under way the verdict chip is dimmed ("Previous verdict. The running
  * investigation replaces it." leads its hover line). The run chip keeps its words, "AI
@@ -55,7 +56,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 
 import { AiVerdictChip, OutcomeBadge, SeverityBadge, severityBand } from '@/soc/components/badges';
 import { OwnerMonogram, assignedToLabel } from '@/soc/components/OwnerMonogram';
-import type { CaseOutcome } from '@/soc/components/outcome';
+import { outcomeCellText, type CaseOutcome } from '@/soc/components/outcome';
+import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
 import { scoreBand, semanticIcon } from '@/soc/components/palette';
 import { AiRunChip } from '@/soc/investigations/AiRunChip';
 import { useAiRun, useAiRunFinished } from '@/soc/investigations/useAiRun';
@@ -117,6 +119,34 @@ export const META_SHRINK = {
   // A small floor: the status words truncate, but never vanish from the line.
   status: 'min-w-14 shrink',
   statusWords: 'min-w-0 truncate',
+} as const;
+
+/**
+ * How the outcome of an ended case gives way (XFUI2), so its badge is never cut: the
+ * `Analyst` tag goes first (below a 36rem pane, with the verdict and the long severity
+ * label, and below 64rem while the AI run chip shows), and its word stays for assistive
+ * technology; then the badge's words truncate with an ellipsis, last, as the status words
+ * do (`META_SHRINK.status` on the item). The item's hover title holds the whole outcome.
+ *
+ * The pane width is not the only limit: a long case number (an operator's template) leaves
+ * the item short on a wide pane too. So the item is one 20px line that wraps: when the tag
+ * does not fit beside the badge it moves to a second line, which the item clips, and the
+ * badge keeps the line. The tag drops whole, never cut, and its word is still read.
+ *
+ * `badge` styles a badge that is the outcome's root (an automatic close, its review, an
+ * outcome not recorded); `wrapped` the root that holds a classified outcome's badge (its
+ * one child). The badge is a block, so its words can end in an ellipsis, at the strip's
+ * 20px chip height; its glyph keeps its place before the words.
+ */
+export const META_OUTCOME = {
+  item: 'h-5 flex-wrap content-start gap-x-1',
+  badge:
+    'block h-5 min-w-0 max-w-full truncate py-px leading-4 [&>svg]:mr-1 [&>svg]:inline-block [&>svg]:align-[-2px]',
+  wrapped:
+    'flex min-w-0 max-w-full [&>*]:block [&>*]:h-5 [&>*]:min-w-0 [&>*]:max-w-full [&>*]:truncate [&>*]:py-px [&>*]:leading-4 [&>*>svg]:mr-1 [&>*>svg]:inline-block [&>*>svg]:align-[-2px]',
+  tag: 'hidden shrink-0 @[36rem]/case:inline-flex group-has-[[data-meta-item=ai-run]]/meta:hidden @[64rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline-flex',
+  tagWord:
+    'sr-only @[36rem]/case:hidden @[36rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline @[64rem]/case:group-has-[[data-meta-item=ai-run]]/meta:hidden',
 } as const;
 
 /** While the run chip is on the strip (its `data-meta-item`), keyed with CSS `:has`. */
@@ -276,6 +306,9 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
   const risk = riskValue(c.risk_score);
   // Once the case ended, its outcome of record replaces the status (never both).
   const showOutcome = outcome.terminal && outcome.source !== 'pending';
+  // A person's classification carries the `Analyst` tag beside its badge.
+  const classified = outcome.source === 'analyst' || outcome.source === 'analyst_policy';
+  const outcomeFit = classified ? META_OUTCOME.wrapped : META_OUTCOME.badge;
   const sla = outcome.terminal ? null : caseSlaReading(c, slaPolicy, serverSla);
   // The SLA's priority is the matrix lookup the triage read explains only when the two
   // name the same level (a case can carry a stored level of its own).
@@ -357,8 +390,18 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
       {/* The status or outcome gives way last: on a short line the owner's name and then
           the verdict chip's words go first (META_SHRINK). */}
       {showOutcome ? (
-        <span className={cn('inline-flex items-center overflow-hidden', META_SHRINK.status)} data-meta-item="outcome">
-          <OutcomeBadge outcome={outcome} className="max-w-full" />
+        <span
+          className={cn('inline-flex items-center overflow-hidden', META_OUTCOME.item, META_SHRINK.status)}
+          data-meta-item="outcome"
+          title={outcomeCellText(outcome)?.full}
+        >
+          <OutcomeBadge outcome={outcome} showProvenance={false} className={outcomeFit} />
+          {classified ? (
+            <>
+              <ProvenanceTag kind="analyst" className={META_OUTCOME.tag} />
+              <span className={META_OUTCOME.tagWord}>Analyst</span>
+            </>
+          ) : null}
         </span>
       ) : (
         <span

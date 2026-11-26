@@ -30,6 +30,10 @@
  *
  * Without `--case` the queue's first row is measured. `--review-case` adds a second
  * measurement for a case in the auto-close review sample (its header carries a review chip).
+ *
+ * The What's new welcome opens once per update on a landing page such as `#/case_manager`,
+ * and while it is open its modal hides the page from the accessibility tree. The script
+ * presses Got it whenever the dialog shows, so it runs on a fresh account too.
  */
 import { createRequire } from 'node:module';
 import process from 'node:process';
@@ -81,7 +85,10 @@ async function signIn(page, args) {
   const ready = page.locator('[data-testid="case-manager"]');
   const username = page.locator('input[autocomplete="username"]:visible').first();
   await Promise.race([ready.waitFor({ timeout: 30_000 }), username.waitFor({ timeout: 30_000 })]);
-  if (await ready.isVisible().catch(() => false)) return;
+  if (await ready.isVisible().catch(() => false)) {
+    await dismissWhatsNew(page);
+    return;
+  }
   await username.fill(args.user);
   const password = page.locator('input[autocomplete="current-password"]:visible').first();
   if (!(await password.isVisible().catch(() => false))) {
@@ -91,6 +98,24 @@ async function signIn(page, args) {
   await password.fill(args.password);
   await password.press('Enter');
   await ready.waitFor({ timeout: 30_000 });
+  await dismissWhatsNew(page);
+}
+
+/**
+ * Close the What's new welcome when it shows, pressing Got it (the account's marker is then
+ * current, so it does not show again). Waits up to `waitMs` for the dialog, which opens a
+ * moment after the page, and answers whether it closed one.
+ */
+async function dismissWhatsNew(page, waitMs = 2_500) {
+  const dialog = page.locator('[data-testid="whats-new-dialog"]');
+  try {
+    await dialog.waitFor({ state: 'visible', timeout: waitMs });
+  } catch {
+    return false;
+  }
+  await dialog.getByRole('button', { name: 'Got it', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden', timeout: 15_000 });
+  return true;
 }
 
 async function box(page, selector) {
@@ -124,6 +149,7 @@ async function measureCase(page, args, viewport, caseId) {
     waitUntil: 'domcontentloaded',
   });
   await page.locator('[data-testid="case-manager-split-frame"]').waitFor({ timeout: 30_000 });
+  await dismissWhatsNew(page, 1_000);
   const frame = await box(page, '[data-testid="case-manager-split-frame"]');
   // The queue opens its first case on arrival; open it by hand if it did not.
   const header = page.locator('[data-testid="case-detail-header"]').first();
@@ -141,6 +167,7 @@ async function measureCase(page, args, viewport, caseId) {
   const content = await firstContent(page);
   // The band, on the queue's own screen below xl (there the queue and the case are two).
   if (viewport.width < 1280) {
+    await dismissWhatsNew(page, 500);
     await page.getByRole('button', { name: 'Back to case queue' }).click();
     await page.locator('[data-testid="case-queue-controls"]').first().waitFor({ timeout: 15_000 });
   }
