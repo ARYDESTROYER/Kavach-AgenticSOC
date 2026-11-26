@@ -211,11 +211,14 @@ says this before you submit ("An AI investigation is running on this case. When 
 finishes, its result replaces a close you make now."), and never stops you. If the run
 finishes while the dialog is open, the dialog says so and names the verdict, for example
 "The AI investigation finished with the verdict Needs human review. Check it before you
-close.", and no finish message covers the dialog. A bulk close or status change says how
-many of the selected cases have a run in progress. When the AI's result replaces your
-close, a warning on the case page says so ("The AI investigation replaced your close of
-CASE-0042. Status: Open · awaiting analyst. Your disposition and note are kept."), and you
-also get an Inbox notice.
+close.", and no finish message covers the dialog. If the run stopped or could not
+finish, the dialog says so and that the case was not changed. A bulk close or status
+change says how many of the selected cases have a run in progress. When the AI's result
+replaces a close you made while the run was in progress, a warning on the case page says
+so ("The AI investigation replaced your close of CASE-0042. Status: Open · awaiting
+analyst. Your disposition and note are kept."), and you also get an Inbox notice. A close
+made before you reinvestigated the case is not replaced: the finish message gives the new
+status.
 
 **Reinvestigate** starts a fresh run and its dialog closes at once, so you can keep
 working. When the run finishes, the case shows the result, a short message appears, and

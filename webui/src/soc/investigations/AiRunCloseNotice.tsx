@@ -11,7 +11,7 @@
  * header chip does not say it again (FXB, `announce.ts`).
  */
 import * as React from 'react';
-import { Bot, CheckCircle2 } from 'lucide-react';
+import { Bot, CheckCircle2, CircleAlert } from 'lucide-react';
 
 import type { InvestigationView } from '@/lib/types';
 import { verdictWords } from '@/soc/components/outcome';
@@ -24,8 +24,12 @@ import { useInvestigations } from './store';
  * The finished note for one case: "The AI investigation finished with the verdict Needs
  * human review. Check it before you close." The verdict keeps its own words, and the
  * sentence names it without saying it changed: it may be the verdict the case had before.
+ * A run that failed or was cancelled never reads as finished: it did not change the case,
+ * so the note says that instead (FXB review).
  */
 export function aiRunFinishedNoteText(ended: InvestigationView, closes: boolean): string {
+  if (ended.outcome === 'cancelled') return 'The AI investigation stopped before it finished. The case was not changed.';
+  if (ended.outcome === 'failed') return 'The AI investigation could not finish. The case was not changed.';
   const verdict = ended.verdict_after ? ` with the verdict ${verdictWords(ended.verdict_after)}` : '';
   return `The AI investigation finished${verdict}. Check it before you ${closes ? 'close' : 'change the status'}.`;
 }
@@ -118,9 +122,10 @@ export const AiRunCloseNotice: React.FC<AiRunCloseNoticeProps> = ({ caseIds, ope
     const text = ended
       ? aiRunFinishedNoteText(ended, closes)
       : `The AI investigations on the selected cases finished. Check them before you ${closes ? 'close' : 'change the status'}.`;
+    const stopped = ended?.outcome === 'failed' || ended?.outcome === 'cancelled';
     return (
       <Alert variant="info" data-testid="ai-run-close-finished" className={className}>
-        <CheckCircle2 className="h-4 w-4" aria-hidden />
+        {stopped ? <CircleAlert className="h-4 w-4" aria-hidden /> : <CheckCircle2 className="h-4 w-4" aria-hidden />}
         <AlertDescription>{text}</AlertDescription>
       </Alert>
     );

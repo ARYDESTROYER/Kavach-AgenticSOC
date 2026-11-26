@@ -30,6 +30,8 @@ vi.mock('@/soc/components/announcer', () => ({ useAnnouncer: () => h.announce })
 import { aiRunAccessibleText, elapsedClock, spokenDuration } from '../aiRunText';
 import { AiRunMark } from '../AiRunMark';
 import { AiQueueNotice, newRunsText } from '../AiQueueNotice';
+import { AiRunCloseNotice, aiRunFinishedNoteText } from '../AiRunCloseNotice';
+import { resetRunEndMarksForTests, runEndSaid } from '../announce';
 import { HOLD_OFF_MS, resetInvestigationsForTests } from '../store';
 
 const T0 = Date.parse('2026-11-25T10:00:00Z');
@@ -243,5 +245,40 @@ describe('the store and its readers', () => {
     act(() => h.onEvent?.({ type: 'case.investigation', data: { run_id: 'x', state: 'thinking', case_id: 'case-1' }, lastEventId: '20' }));
     await settle(HOLD_OFF_MS);
     expect(screen.queryByTestId('ai-run-mark')).toBeNull();
+  });
+});
+
+describe('the close dialog note for a run that ended (FXB review)', () => {
+  it.each([
+    ['failed', 'The AI investigation could not finish. The case was not changed.'],
+    ['cancelled', 'The AI investigation stopped before it finished. The case was not changed.'],
+  ] as const)('never says a %s run finished: it did not change the case', async (outcome, text) => {
+    resetRunEndMarksForTests();
+    h.read.mockResolvedValue(body({ items: [view({ queued_at: new Date(T0 - 5_000).toISOString() })] }));
+    render(<AiRunCloseNotice caseIds={['case-1']} open action="close" />);
+    await settle();
+    expect(screen.getByTestId('ai-run-close-notice')).toBeInTheDocument();
+    act(() =>
+      h.onEvent?.({
+        type: 'case.investigation',
+        data: { ...view({ state: 'finished', phase: 'decision', outcome }), active: 0, new_runs: 0 },
+        lastEventId: '30',
+      }),
+    );
+    const note = screen.getByTestId('ai-run-close-finished');
+    expect(note).toHaveTextContent(text);
+    expect(note).not.toHaveTextContent(/investigation finished|Check it/);
+    // The note says how the run ended, so the header chip does not say it again.
+    expect(runEndSaid('inv-1')).toBe('said');
+  });
+
+  it('names the verdict of a run that finished, for a close or a status change', () => {
+    const ended = view({ state: 'finished', outcome: 'decided', verdict_after: 'NEEDS_HUMAN' });
+    expect(aiRunFinishedNoteText(ended, true)).toBe(
+      'The AI investigation finished with the verdict Needs human review. Check it before you close.',
+    );
+    expect(aiRunFinishedNoteText({ ...ended, verdict_after: null }, false)).toBe(
+      'The AI investigation finished. Check it before you change the status.',
+    );
   });
 });

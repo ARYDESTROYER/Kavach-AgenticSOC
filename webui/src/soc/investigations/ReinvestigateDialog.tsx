@@ -11,13 +11,15 @@
  * When a run on this case finishes while the case is open (this one or any other), the
  * dialog reads the case again and hands it to `onReinvestigated`, so the case shows the
  * run's result. A toast says so for your own run, or when the status changed under you:
- * "AI investigation finished on CASE-0042: <status words>." When the case on screen was
- * closed or resolved and the run left it open, the toast is a warning that says the run
- * replaced the close (FXB). No toast shows while a close or status dialog's run note
- * covers the case: the note already says the run finished, and a toast would sit over the
- * dialog's buttons. The toast's end is marked as said (`announce.ts`), so the header chip
- * does not say it again. Nothing here decides anything: the run's result comes from the
- * server (#3).
+ * "AI investigation finished on CASE-0042: <status words>." When a person closed or
+ * resolved the case on screen while the run was queued or running, and the run left it
+ * open, the toast is a warning that says the run replaced the close (FXB). That is the
+ * server's replaced close (`agents/pipeline.py` `replaced_close`, the Inbox notice): a
+ * close made before the run was asked for, or made by the AI or the system, is not one.
+ * No toast shows while a close or status dialog's run note covers the case: the note
+ * already says the run finished, and a toast would sit over the dialog's buttons. The
+ * toast's end is marked as said (`announce.ts`), so the header chip does not say it
+ * again. Nothing here decides anything: the run's result comes from the server (#3).
  */
 import * as React from 'react';
 import { AlertTriangle, LoaderCircle, Play, Zap } from 'lucide-react';
@@ -106,22 +108,38 @@ export function finishedToastText(run: InvestigationView, caseLabel: string): st
     : `AI investigation finished on ${caseLabel}.`;
 }
 
+/** Status-history actors that are not a person (`agents/pipeline.py` `_MACHINE_STATUS_ACTORS`). */
+const MACHINE_ACTORS = new Set(['', 'agent', 'system', 'analyst_policy', 'pipeline']);
+
 /**
- * Who closed the case on screen, from its last status change into a closed or resolved
- * status (null when the record does not say).
+ * The person whose close of the case on screen `run` replaced, as the server counts it
+ * (`agents/pipeline.py` `replaced_close`): the newest move into the case's closed or
+ * resolved status, made by a person at or after the run was queued. A close made before
+ * the run was asked for (a closed case reinvestigated) or by the AI or the system is not
+ * a replaced close: `null`, as when the record does not say.
  */
-export function closedBy(c: Case | null | undefined): string | null {
-  const history = Array.isArray(c?.status_history) ? c.status_history : [];
+export function replacedCloseBy(c: Case | null | undefined, run: InvestigationView): string | null {
+  if (!c || !isTerminalStatus(c.status)) return null;
+  const status = String(c.status).toLowerCase();
+  const history = Array.isArray(c.status_history) ? c.status_history : [];
   for (let i = history.length - 1; i >= 0; i -= 1) {
     const entry = history[i];
-    if (isTerminalStatus(entry?.to_status)) return typeof entry.by === 'string' && entry.by.trim() ? entry.by.trim() : null;
+    if (String(entry?.to_status ?? '').toLowerCase() !== status) continue;
+    const by = typeof entry.by === 'string' ? entry.by.trim() : '';
+    const at = Date.parse(entry.at || '');
+    const since = Date.parse(run.queued_at || '');
+    if (MACHINE_ACTORS.has(by.toLowerCase()) || !Number.isFinite(at) || !Number.isFinite(since) || at < since) {
+      return null;
+    }
+    return by;
   }
   return null;
 }
 
 /**
- * The warning for a run that replaced a close: the case on screen was closed or resolved,
- * and the run left it open. "your close" when the record says you closed it.
+ * The warning for a run that replaced a close: a person closed or resolved the case on
+ * screen while the run was queued or running, and the run left it open. "your close" when
+ * the record says you closed it.
  */
 export function replacedCloseToastText(caseLabel: string, statusAfter: unknown, yours: boolean): string {
   return `The AI investigation replaced ${yours ? 'your' : 'the'} close of ${caseLabel}. Status: ${statusWords(statusAfter)}. ${
@@ -213,11 +231,11 @@ export const ReinvestigateDialog: React.FC<ReinvestigateDialogProps> = ({
     const entry = t;
     const label = shownRef.current?.case_number || 'this case';
     const changed = CHANGED.has(run.outcome || '');
-    /** `replaced`: who made the close on screen that the run's result replaced, and the status now. */
+    /** `replaced`: the person whose close on screen the run's result replaced, and the status now. */
     const tell = (
       latest: InvestigationView,
       moved: boolean,
-      replaced: { by: string | null; status: unknown } | null = null,
+      replaced: { by: string; status: unknown } | null = null,
     ) => {
       if (entry.told || !(moved || (latest.run_id === entry.runId && latest.requested_by_you))) return;
       entry.told = true;
@@ -226,7 +244,7 @@ export const ReinvestigateDialog: React.FC<ReinvestigateDialogProps> = ({
       if (runNoticeOpen(caseId)) return;
       noteRunEnd(entry.runId, 'said');
       if (replaced) {
-        const yours = Boolean(replaced.by && username && replaced.by.toLowerCase() === username.toLowerCase());
+        const yours = Boolean(username && replaced.by.toLowerCase() === username.toLowerCase());
         toast.warning(replacedCloseToastText(label, replaced.status, yours));
         return;
       }
@@ -244,7 +262,8 @@ export const ReinvestigateDialog: React.FC<ReinvestigateDialogProps> = ({
     }
     entry.state = 'reading';
     // A toast may follow the read: the header chip waits for it before it says the end.
-    noteRunEnd(entry.runId, 'pending');
+    // Never over an end already said: a close dialog's note may have marked it first.
+    if (runEndSaid(entry.runId) !== 'said') noteRunEnd(entry.runId, 'pending');
     const shown = shownRef.current;
     void api
       .getCase(caseId)
@@ -255,11 +274,10 @@ export const ReinvestigateDialog: React.FC<ReinvestigateDialogProps> = ({
         }
         entry.state = 'read';
         onDoneRef.current?.(next);
-        // The case on screen was closed or resolved, and the run left it open.
-        const replaced =
-          isTerminalStatus(shown?.status) && !isTerminalStatus(next.status)
-            ? { by: closedBy(shown), status: next.status }
-            : null;
+        // A person closed or resolved the case on screen while the run went on, and the
+        // run left it open.
+        const by = isTerminalStatus(next.status) ? null : replacedCloseBy(shown, run);
+        const replaced = by ? { by, status: next.status } : null;
         tell(latestRef.current ?? run, Boolean(shown?.status) && next.status !== shown?.status, replaced);
         if (runEndSaid(entry.runId) === 'pending') noteRunEnd(entry.runId, null);
       })

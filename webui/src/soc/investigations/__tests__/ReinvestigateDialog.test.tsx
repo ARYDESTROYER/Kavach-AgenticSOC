@@ -335,24 +335,35 @@ describe('ReinvestigateDialog', () => {
   });
 
   describe('a run that replaced a close on screen (FXB)', () => {
-    const closedBy = (by: string) =>
+    // The run was queued 5 s before T0; by default the close on screen was made at T0,
+    // while the run went on.
+    const QUEUED = new Date(T0 - 5_000).toISOString();
+    const closedBy = (by: string, at = T0) =>
       ({
         ...CASE,
         status: 'closed',
         disposition: 'false_positive',
         status_history: [
-          { from_status: 'investigating', to_status: 'closed', by, at: new Date(T0).toISOString() },
+          { from_status: 'investigating', to_status: 'closed', by, at: new Date(at).toISOString() },
         ],
       }) as Case;
     const runEnds = async (id: string) => {
       act(() =>
-        h.onEvent?.({ type: 'case.investigation', data: { ...view({ trigger: 'automatic' }), active: 1, new_runs: 0 }, lastEventId: `${id}a` }),
+        h.onEvent?.({
+          type: 'case.investigation',
+          data: { ...view({ trigger: 'automatic', queued_at: QUEUED }), active: 1, new_runs: 0 },
+          lastEventId: `${id}a`,
+        }),
       );
       await settle(1_000);
       act(() =>
         h.onEvent?.({
           type: 'case.investigation',
-          data: { ...view({ trigger: 'automatic', state: 'finished', outcome: 'routed_to_person', status_after: 'needs_human' }), active: 0, new_runs: 0 },
+          data: {
+            ...view({ trigger: 'automatic', queued_at: QUEUED, state: 'finished', outcome: 'routed_to_person', status_after: 'needs_human' }),
+            active: 0,
+            new_runs: 0,
+          },
           lastEventId: `${id}b`,
         }),
       );
@@ -382,6 +393,28 @@ describe('ReinvestigateDialog', () => {
       expect(h.toastWarning).toHaveBeenCalledWith(
         'The AI investigation replaced the close of CASE-0042. Status: Open · awaiting analyst. The disposition and note are kept.',
       );
+    });
+
+    it('never warns for a close made before the run was asked for, as the server counts it (FXB review)', async () => {
+      // A closed case reinvestigated: the run left it open, but it replaced no close made
+      // while it ran (no `case.close_replaced` row, no Inbox notice). The case changed under
+      // you, so the plain finish toast says the new status.
+      h.username = 'alice';
+      h.getCase.mockResolvedValue({ ...CASE, status: 'needs_human' } as Case);
+      renderDialog({ caseRecord: closedBy('alice', T0 - 60_000) });
+      await settle();
+      await runEnds('r4');
+      expect(h.toastWarning).not.toHaveBeenCalled();
+      expect(h.toastSuccess).toHaveBeenCalledWith('AI investigation finished on CASE-0042: Open · awaiting analyst.');
+    });
+
+    it('never warns for a close the AI or the system made (FXB review)', async () => {
+      h.getCase.mockResolvedValue({ ...CASE, status: 'needs_human' } as Case);
+      renderDialog({ caseRecord: closedBy('agent') });
+      await settle();
+      await runEnds('r5');
+      expect(h.toastWarning).not.toHaveBeenCalled();
+      expect(h.toastSuccess).toHaveBeenCalledTimes(1);
     });
 
     it('keeps the success toast when the run closed the case again', async () => {
@@ -429,6 +462,42 @@ describe('ReinvestigateDialog', () => {
     expect(screen.getByTestId('ai-run-close-finished')).toHaveTextContent(
       'The AI investigation finished with the verdict Needs human review. Check it before you close.',
     );
+    expect(runEndSaid('inv-9')).toBe('said');
+  });
+
+  it('keeps the end said when a close dialog note marked it before the page read the case (FXB review)', async () => {
+    // The note may sit before the Reinvestigate dialog in the tree, so its effect marks the
+    // end first; the page must not turn "said" back into "pending", which the read then
+    // clears, so the header chip would say the end a second time.
+    h.request.mockResolvedValue({ run_id: 'inv-9', case_id: 'case-1', state: 'queued' });
+    h.getCase.mockResolvedValue({ ...CASE, status: 'needs_human' } as Case);
+    const onReinvestigated = vi.fn();
+    const tree = (notice: boolean) => (
+      <>
+        <AiRunCloseNotice caseIds={['case-1']} open={notice} action="close" />
+        <AiRunChip caseId="case-1" />
+        <ReinvestigateDialog caseRecord={CASE} open={!notice} onOpenChange={vi.fn()} models={null} onReinvestigated={onReinvestigated} />
+      </>
+    );
+    const { rerender } = render(tree(false));
+    await settle();
+    reinvestigate();
+    await settle();
+    act(() => h.onEvent?.({ type: 'case.investigation', data: { ...view(), active: 1, new_runs: 0 }, lastEventId: 'o1' }));
+    await settle(1_000);
+    rerender(tree(true));
+    await settle();
+    act(() =>
+      h.onEvent?.({
+        type: 'case.investigation',
+        data: { ...view({ state: 'finished', outcome: 'decided', status_after: 'needs_human', verdict_after: 'NEEDS_HUMAN' }), active: 0, new_runs: 0 },
+        lastEventId: 'o2',
+      }),
+    );
+    await settle();
+    expect(onReinvestigated).toHaveBeenCalled();
+    expect(screen.getByTestId('ai-run-close-finished')).toBeInTheDocument();
+    expect(h.toastSuccess).not.toHaveBeenCalled();
     expect(runEndSaid('inv-9')).toBe('said');
   });
 

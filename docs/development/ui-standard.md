@@ -859,17 +859,21 @@ a viewer who may manage users sees it.
   says the investigation finished, names its verdict in the verdict's own words when there
   is one, never as a change ("The AI investigation finished with the verdict Needs human
   review. Check it before you close."), and asks you to check it before you close (or
-  change the status). While a close or status dialog's note covers a case, the case page
+  change the status). A run that failed or was cancelled never reads as finished: the note
+  says it stopped (or could not finish) and that the case was not changed, with the alert
+  mark. While a close or status dialog's note covers a case, the case page
   shows no finish toast for it: the note already says so, and a toast would sit over the
   dialog's buttons.
 - **Reinvestigate** never blocks: the dialog closes on the `202` and the header chip shows
   at once. A second request while a run is queued or running answers with a toast, and the
   case is read again when its run finishes. The finish toast shows for your own run or a
-  status that changed under you. When the case on screen was closed or resolved and the
-  run left it open, it is a warning that names the replaced close: "The AI investigation
-  replaced your close of CASE-0042. Status: Open · awaiting analyst. Your disposition and
-  note are kept." ("the close" and "The disposition" when the record does not show it was
-  yours).
+  status that changed under you. When a person closed or resolved the case on screen while
+  the run was queued or running, and the run left it open, it is a warning that names the
+  replaced close, the same close the server records as replaced and the Inbox notice names
+  (a close made before the run was asked for, or by the AI or the system, is not one):
+  "The AI investigation replaced your close of CASE-0042. Status: Open · awaiting analyst.
+  Your disposition and note are kept." ("the close" and "The disposition" when the record
+  does not show it was yours).
 - **Announcements and Inbox.** Each change is announced politely through the app's one
   live region, at most once every 10 s, and the last state is never dropped. The end of a
   run is said once on a console: when the finish toast or a close dialog's finished note
