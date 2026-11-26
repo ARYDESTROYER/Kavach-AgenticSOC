@@ -260,6 +260,31 @@ async def test_a_precedent_ratification_keeps_a_tag_saved_after_its_candidate_wa
     assert "person-tag" in candidate.tags  # the caller's copy is what was saved
 
 
+async def test_a_precedent_ratification_holds_the_case_lock_while_it_writes(app_state, monkeypatch) -> None:
+    """Review (WP16B): the re-read alone is not enough. A person's tag saved between the
+    ratification's read and its save must wait for the case lock, not be erased."""
+    from app.api.routes_rag import perform_precedent_candidate
+
+    await app_state.cases.save(_case(status=CaseStatus.CLOSED, verdict=Verdict.FALSE_POSITIVE,
+                                     confidence=0.9, decision_by=DecisionBy.AGENT))
+    candidate = await app_state.cases.get(CASE_ID)
+
+    async def index(items, **_k):
+        return len(items)
+
+    monkeypatch.setattr(app_state.rag_service, "index_precedent_items", index)
+    # Read 1 is the ratification's re-read under the lock: a person tags meanwhile.
+    tasks = _tag_during_read(app_state, monkeypatch, CASE_ID, call=1)
+    out = await perform_precedent_candidate(candidate, {"metadata": {"outcome": "benign"}},
+                                            app_state, actor="ops", batch_id="b2")
+    await asyncio.gather(*tasks)
+    assert out["ratified"] is True
+    stored = await app_state.cases.get(CASE_ID)
+    assert "person-tag" in stored.tags
+    events = [e.get("event") for e in stored.history if isinstance(e, dict)]
+    assert "precedent_projection_ack" in events
+
+
 def _policy_prefs(app_state):
     prefs = app_state.prefs.model_copy(deep=True)
     prefs.enrichment.enabled = False
