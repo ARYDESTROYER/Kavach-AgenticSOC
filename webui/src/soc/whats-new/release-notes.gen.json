@@ -28,11 +28,24 @@
                 "The run's result stays authoritative. A close made while it runs is replaced by its result, and the close dialogs say so before you act.",
                 "When a run you started finishes, or a run replaces your close, your Inbox tells you."
               ],
-              "featured": false,
+              "featured": true,
               "requires": "cases:read",
               "open": "case_manager",
               "help": "analyst/case-manager/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/ai-working-light.webp",
+                  "width": 1950,
+                  "height": 882
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/ai-working-dark.webp",
+                  "width": 1950,
+                  "height": 882
+                },
+                "alt": "Case header with the AI working chip and its popover open, titled AI investigation running, saying You started it, with the time the run has taken so far.",
+                "caption": "The AI working chip and its popover."
+              }
             },
             {
               "id": "case-workspace",
@@ -46,11 +59,54 @@
                 "Press **[** to fold the queue into a narrow strip. J and K still move through the cases.",
                 "The Brief opens with the case's next step and four lanes: Evidence, AI, Decision and People."
               ],
-              "featured": false,
+              "featured": true,
               "requires": "cases:read",
               "open": "case_manager",
               "help": "analyst/case-manager/#read-the-workspace",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/case-workspace-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/case-workspace-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Case Manager with the queue on the left, one row marked AI working, and an open case with its two-line header, the six tabs and the case facts column on the right.",
+                "caption": "The Case Manager in this update."
+              }
+            },
+            {
+              "id": "repository-identity",
+              "kind": "improved",
+              "area": "administration",
+              "title": "A new repository identity for updates",
+              "summary": "Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater.",
+              "details": [
+                "Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact letter case.",
+                "The bootstrap refuses a missing line or the former name, prints the line to add, and never edits .env.",
+                "Releases 0.1.12 and earlier stay valid under the former name. The public Help Center moved to the new Pages address."
+              ],
+              "featured": true,
+              "requires": "system_updates:read",
+              "open": null,
+              "help": "operations/upgrades/#the-repository-was-renamed",
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/repository-identity-light.webp",
+                  "width": 2016,
+                  "height": 1070
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/repository-identity-dark.webp",
+                  "width": 2016,
+                  "height": 1070
+                },
+                "alt": "Updates and releases settings with the Public repository field set to the ARYDESTROYER/Kavach-AgenticSOC GitHub address and the Stable and Testing branch fields below it.",
+                "caption": "The new repository identity in Settings."
+              }
             },
             {
               "id": "case-tabs",
@@ -63,11 +119,24 @@
                 "Before, Alt+2 opened Runbook, Alt+4 opened Collaboration and Alt+5 opened Chat.",
                 "A link to the retired Timeline or Threat context tab opens Evidence at the matching section."
               ],
-              "featured": false,
+              "featured": true,
               "requires": "cases:read",
               "open": "case_manager",
               "help": "analyst/case-manager/#the-six-tabs",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/case-tabs-light.webp",
+                  "width": 1950,
+                  "height": 1322
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/case-tabs-dark.webp",
+                  "width": 1950,
+                  "height": 1322
+                },
+                "alt": "Brief tab of a case under the six tabs Brief, Evidence, AI investigation, Response, Activity and Chat, with the Next step row above the Evidence, AI, Decision and People lanes.",
+                "caption": "The six case tabs, with the Brief open."
+              }
             },
             {
               "id": "explain-numbers",
@@ -81,11 +150,24 @@
                 "**Copy calculation** copies the whole arithmetic.",
                 "A case scored before this version keeps its stored factors. Where its inputs were not kept, the panel says they were not recorded."
               ],
-              "featured": false,
+              "featured": true,
               "requires": "cases:read",
               "open": "case_manager",
-              "help": "analyst/kpi-glossary/#risk-score",
-              "screenshot": null
+              "help": "analyst/explainable-numbers/",
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/explain-numbers-light.webp",
+                  "width": 1950,
+                  "height": 1664
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/explain-numbers-dark.webp",
+                  "width": 1950,
+                  "height": 1664
+                },
+                "alt": "Risk score panel for one case listing each factor, its weight and its value, the weighted sum, the rounding and the total, with a Copy calculation button.",
+                "caption": "The risk score with its math."
+              }
             },
             {
               "id": "whats-new",
@@ -97,11 +179,24 @@
                 "Open **Communication**, then **What's new**, to read every release with its highlights and screenshots.",
                 "Turn the welcome off with **Show What's new after updates** in Settings, Account, Appearance."
               ],
-              "featured": false,
+              "featured": true,
               "requires": null,
               "open": "whats_new",
               "help": "releases/whats-new/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/whats-new-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/whats-new-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Communication, What's new page with the version rail listing 0.2.0 and 0.1.1, the 0.2.0 release summary, area filters and the newest update's highlights.",
+                "caption": "The release tracker in Communication."
+              }
             },
             {
               "id": "sign-in",
@@ -114,11 +209,24 @@
                 "When an administrator turned Remember me off, or the connection is not secure, the row stays visible and disabled, with the reason.",
                 "A single sign-on error shows a fixed sentence, never text from the address bar."
               ],
-              "featured": false,
+              "featured": true,
               "requires": null,
               "open": null,
               "help": "getting-started/first-run/#sign-in-later",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/sign-in-light.webp",
+                  "width": 1600,
+                  "height": 900
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/sign-in-dark.webp",
+                  "width": 1600,
+                  "height": 900
+                },
+                "alt": "Sign-in page at the password step with the masked password field, a Remember me checkbox with no duration, and the Sign in button.",
+                "caption": "The sign-in page."
+              }
             },
             {
               "id": "case-records",
@@ -136,24 +244,20 @@
               "requires": "cases:read",
               "open": "case_manager",
               "help": "analyst/case-manager/#case-facts",
-              "screenshot": null
-            },
-            {
-              "id": "repository-identity",
-              "kind": "improved",
-              "area": "administration",
-              "title": "A new repository identity for updates",
-              "summary": "Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater.",
-              "details": [
-                "Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact letter case.",
-                "The bootstrap refuses a missing line or the former name, prints the line to add, and never edits .env.",
-                "Releases 0.1.12 and earlier stay valid under the former name. The public Help Center moved to the new Pages address."
-              ],
-              "featured": false,
-              "requires": "system_updates:read",
-              "open": null,
-              "help": "operations/upgrades/#the-repository-was-renamed",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/case-records-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/case-records-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Case facts with the View all fields sheet open, showing every stored field of the case as a searchable tree with Copy JSON and Download buttons.",
+                "caption": null
+              }
             },
             {
               "id": "access-fixes",
