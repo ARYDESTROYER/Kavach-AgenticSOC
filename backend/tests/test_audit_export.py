@@ -1782,3 +1782,49 @@ def test_an_auditor_without_cost_view_downloads_the_export_without_spend_figures
         assert page() == _SPEND_HIDDEN
         assert export("csv", "xfb2-hidden-csv") == _SPEND_HIDDEN
         assert export("jsonl", "xfb2-hidden-jsonl") == _SPEND_HIDDEN
+
+
+def test_the_admin_data_export_keeps_spend_figures_as_stored(tmp_path):
+    """The application data export (``data_export:export``) is an administrator backup:
+    its audit scope keeps every row as stored, spend figures included, for a person
+    without ``cost:view``, while that person's audit log export withholds them."""
+    import zipfile
+
+    with _auth_client(tmp_path) as client:
+        _seed(client, _spend_rows())
+        state = _state(client)
+
+        async def deny_cost_view() -> None:
+            prefs = state.prefs.model_copy(deep=True)
+            prefs.rbac.denies.setdefault("soc_manager", {})["cost"] = ["view"]
+            await state.update_prefs(prefs)
+
+        client.portal.call(deny_cost_view)
+        _as(client, "soc_manager")
+        listed = client.get("/api/audit", params={
+            "case_id": "case-xfb2", "from": FROM, "to": TO, "order": "asc", "limit": "50"})
+        assert listed.status_code == 200, listed.text
+        assert [r.get("result_summary") for r in listed.json()["records"]] == _SPEND_HIDDEN
+
+        accepted = client.post("/api/jobs", json={
+            "kind": "data_export_archive", "idempotency_key": "xfb2-admin-archive",
+            "params": {"scopes": ["audit"]}})
+        assert accepted.status_code == 202, accepted.text
+        final = _wait(client, accepted.json()["job_id"])
+        assert final["status"] == "succeeded", final
+        download = client.get(f"/api/jobs/{final['job_id']}/artifact")
+        assert download.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+            lines = archive.read("audit.ndjson").splitlines()
+        records = [json.loads(line)["record"] for line in lines if line]
+        kept = [r["result_summary"] for r in records if r.get("case_id") == "case-xfb2"]
+        # The data export keeps its own row order; the set of texts is what is pinned.
+        assert sorted(kept) == sorted(_SPEND_SHOWN)
+
+        accepted = _submit(client, _params(format="jsonl"), key="xfb2-manager-jsonl")
+        assert accepted.status_code == 202, accepted.text
+        final = _wait(client, accepted.json()["job_id"])
+        assert final["status"] == "succeeded", final
+        download = client.get(f"/api/jobs/{final['job_id']}/artifact")
+        assert download.status_code == 200
+        assert _exported_summaries(download.content, "jsonl")[0] == _SPEND_HIDDEN

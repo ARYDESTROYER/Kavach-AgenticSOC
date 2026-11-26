@@ -49,18 +49,18 @@ submit route and the durable job share:
   ``webui/src/lib/csv-formula.contract.json``, which the Console's own CSV exports read
   too. A lone UTF-16 surrogate, which UTF-8 cannot encode, is written as U+FFFD.
 
-  JSON Lines: each stored row exactly as the store returned it, one JSON object per
-  line, UTF-8 (a row holding a lone surrogate is written with ASCII escapes instead,
-  which is the same JSON value).
+  JSON Lines: each stored row exactly as the store returned it (apart from a withheld
+  spend figure, below), one JSON object per line, UTF-8 (a row holding a lone
+  surrogate is written with ASCII escapes instead, which is the same JSON value).
 
 * **Spend figures.** The file follows ``cost:view`` as ``GET /api/audit`` does
   (Round 16, :mod:`app.api.cost_text`). For a person without it at run time, the spend
   figure a timeout, budget refusal, case manager or runbook AI row put into its
-  ``result_summary`` reads ``hidden`` in both formats; every other field, and every
-  other row, is written as stored, so evidence such as ``amount=$5000`` is never
-  changed. The job checks the grant before the read and again at every page boundary;
-  once withheld, a figure stays withheld for the rest of the file. The stored rows
-  never change (#2).
+  ``result_summary`` reads ``cost=hidden`` or ``(amount hidden)`` in both formats;
+  every other field, and every other row, is written as stored, so evidence such as
+  ``amount=$5000`` is never changed. The job checks the grant before the read and
+  again at every page boundary; once withheld, a figure stays withheld for the rest of
+  the file. The stored rows never change (#2).
 
 Every value is written as stored, never interpreted (#9): ``prompt_excerpt`` and
 ``tool_output_summary`` keep their untrusted-data fences, and the formula defusal only
