@@ -13266,3 +13266,38 @@
 - Tests: on the merged tree, the XFR, records, docs, knowledge, golden set, What's new, release notes, audit export and read, and the Round 13 SLA and chat starter modules: 1,437 passed, 2 skipped, 0 failed. The XFR Console tests (8 files, 133 passed) and tsc pass.
 - Status: done.
 - Next: XFUI3 and WP17C after their reviews, then the closing gates.
+
+
+### 2026-11-26 10:55Z - WP17C sub-agent - docs screenshots refreshed for 0.2.0, review captures moved out of the Help Center
+- Context: SPEC WP17 docs screenshots half (4.7, 5.3 refresh list), the XFD 0.1.13 sentences, the 60 review-only release captures, and the WP17B Demo Decision lane finding.
+- Did: Recaptured 15 docs screenshots at 2880 by 1800 WebP, same names and themes. Twelve came from the seeded Demo, with amber highlights on users-rbac and users-add-user. install-02a, install-02 and install-07 came from a fresh first run on a throwaway local PostgreSQL, so the top bar shows Enable updates as on Compose; it was removed afterwards. Updated alt text and captions in README, INSTALL, first-run and quickstart. Removed the four 0.1.13 sentences. Fixed two INSTALL lines the new images contradicted: Continue is always shown, and the seeded-admin note names the Demo credentials hint. Moved the 60 review-only captures from docs/assets/releases/0.2.0/ to docs/research/2026-11-round16/acceptance/screenshots/ and updated screenshots.md. The Help Center bundle went from 24,532,194 to 18,046,412 bytes (341 to 281 files). Confirmed the Demo Decision lane finding live and wrote it as one Demo limitation sentence in demo.md. Added test_round16_wp17c_records.py (7 checks) and regenerated the corpus (1085 chunks).
+- Tests: the new checks pass, and 6 of 7 fail on the base docs. A selection of docs, records, knowledge, golden, release-notes, What's new and spine-guard tests: 969 passed. All pass: the docs bundle and release notes script tests (14 and 16), build_release_notes --check, check_docs (90 pages), check_version, check_ci_contract, build_app_knowledge --check, docs:check and ruff fatal. No banned characters were added. decide() and risk.py are untouched.
+- Status: done, r16-wp17c at 2a4637a, worktree detached.
+- Next: WP18 or XFR records the CHANGELOG line and the Demo limitation (known-limitations.md, SPEC 8.3). The setup-wizard screenshots install-01, 01b and 03 to 06 are 0.1.13 captures whose content still matches 0.2.0; the pages no longer date them. The seeded Demo Admin sees the What's new welcome on first sign-in because the startup-seeded account gets no creation stamp; it is worth a look by the What's new owner.
+
+### 2026-11-26 11:20Z - WP17C reviewer - docs screenshots review, two stale sign-in images recaptured
+- Context: Independent review of WP17C (docs screenshots refresh, 0.1.13 sentences, review captures moved out of the Help Center, Demo Decision lane limitation) on r16-wp17c from 817bb7f.
+- Did:
+  - Checked every refreshed image against its 0.1.13 capture: size, theme, content, privacy, alt text and captions.
+  - Confirmed in code the Demo limitation: CaseDetail reads the tenant settings; the triage route reads the Demo's own snapshot.
+  - Confirmed the 60 moved captures are unreferenced.
+  - Found install-01-create-admin and install-01b-secure-account still showing the retired sign-in chrome (gradient Light mode pill, grid backdrop), though Login.tsx draws them and the pages no longer date their images. Captured both again from a fresh first run (auth on, no account yet), light, 2880 by 1800 WebP. The What's new copy keeps the old capture.
+  - Added two checks to test_round16_wp17c_records.py: refreshed screenshots are new 2880 by 1800 captures under 250 KB, and the What's new copies keep the pre-refresh bytes.
+  - Clarified one sentence in acceptance/screenshots.md.
+- Tests:
+  - Records test 9 passed. Revert proofs: my image check fails on the old files, and the builder's checks fail 6 of 7 on the base docs.
+  - Docs, records, knowledge and spine-guard selection: 381 passed. Docs bundle script tests 14 OK; release notes script tests 16 OK.
+  - These all pass: build_release_notes --check, check_docs (90 pages), check_version, check_ci_contract, build_app_knowledge --check (1085 chunks), docs:bundle and docs:check (18,018,912 B, 281 files), and ruff fatal. No banned characters in the added lines.
+  - decide() and risk.py untouched.
+- Status: done, r16-wp17c at b8aa699, worktree detached.
+- Next:
+  - WP18 or XFR records the CHANGELOG line and the Demo limitation in known-limitations.md.
+  - The What's new owner decides whether the startup-seeded Demo Admin should start with the welcome marked seen.
+  - The wizard screenshots install-03 to 06 and 04a to 04d are 0.1.13 captures whose layout still matches 0.2.0.
+
+### 2026-11-26 11:00Z - orchestrator - WP17C merged
+- Context: the docs screenshots half of WP17, reviewed independently.
+- Did: merged r16-wp17c (build 2a4637a, review b8aa699). Took the incoming knowledge manifest and regenerated the corpus (1,085 chunks). Every image the notes and docs reference under docs/assets/releases/0.2.0/ is present.
+- Tests: the WP17C, XFR, XFD and WP18B records, Help Center, hidden characters, release notes content, What's new and distribution contract modules: 109 passed. Corpus and release notes --check pass.
+- Status: done.
+- Next: XFUI3 after its review; then an acceptance pass of every operator ask on the integrated tree, its fixes, the records and the closing gates.
