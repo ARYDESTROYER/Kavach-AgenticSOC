@@ -214,6 +214,40 @@ describe('Metrics posture (Round 3 / F5)', () => {
     expect(screen.getByText(/with the window just before it/)).toBeInTheDocument();
   });
 
+  it('explains every Triage quality share with its counts (numbers review)', async () => {
+    const user = userEvent.setup();
+    render(<Metrics tab="performance" />);
+    const quality = await screen.findByTestId('performance-quality');
+    // In strip order: FP rate, Incident yield, Escalation rate, Containment, Automation rate.
+    const cases: Array<[number, string]> = [
+      [1, '2 true positive verdicts of 10 cases = 20%, the last 7 days.'],
+      [2, '1 escalated case of 10 cases = 10%, the last 7 days.'],
+      [3, '6 resolved or closed cases of 10 cases = 60%, the last 7 days.'],
+    ];
+    for (const [index, summary] of cases) {
+      const trigger = within(quality).getAllByRole('button', { name: /, explain$/ })[index];
+      await user.click(trigger);
+      const panel = await screen.findByRole('dialog');
+      expect(panel).toHaveTextContent(summary);
+      expect(panel).toHaveTextContent('analyst rule policy closed are left out');
+      await user.keyboard('{Escape}');
+    }
+    // FP rate, Incident yield, Escalation rate, Containment and Automation rate: five shares.
+    expect(within(quality).getAllByRole('button', { name: /, explain$/ })).toHaveLength(5);
+  });
+
+  it('explains the Posture SLA strip: attainment, the counts and the at-risk sum', async () => {
+    const user = userEvent.setup();
+    render(<Metrics tab="posture" />);
+    const sla = await screen.findByTestId('posture-sla');
+    const triggers = within(sla).getAllByRole('button', { name: /, explain$/ });
+    expect(triggers).toHaveLength(5);
+    await user.click(triggers[4]);
+    const panel = await screen.findByRole('dialog');
+    expect(panel).toHaveTextContent('1 response + 0 resolve clocks at risk = 1, the last 7 days.');
+    expect(panel).toHaveTextContent('1 + 0');
+  });
+
   it('says the posture rollup is unavailable instead of drawing zeros', async () => {
     fetchPostureMock.mockRejectedValue(new Error('down'));
     render(<Metrics tab="performance" />);

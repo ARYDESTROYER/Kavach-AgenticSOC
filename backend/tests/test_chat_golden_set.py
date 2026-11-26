@@ -2748,8 +2748,9 @@ def test_a_case_closed_after_its_card_was_made_is_answered_as_closed(starter_cli
 _ME, _MY_OPEN = "Admin", 3
 #: Ages (minutes) of the open cases the signed-in Demo app adds close to their response
 #: target: risk 50 on an unmapped host projects to P3, a 120-minute target (Round 16
-#: B60), and "close" is the last quarter of it (Round 13 polish).
-_NEAR_AGES = (91, 95, 98, 101, 104, 107, 110)
+#: B60), and "close" is the posture "at risk" rule: at least 0.8 of it, so from 96
+#: minutes (Round 16 numbers review; it was the last quarter before).
+_NEAR_AGES = (97, 99, 101, 103, 105, 107, 109)
 
 
 def _near_target_cases(numbered: list[Any]) -> list[Any]:

@@ -33,8 +33,18 @@ import {
   type KpiStripContextValue,
 } from '@/soc/components/KpiTile';
 
+import { ExplainTrigger } from '@/design-system/explain';
 import type { Explanation } from '@/lib/explain/types';
+import {
+  explainAlertReduction,
+  explainCount,
+  explainKpiShare,
+  explainServerFigure,
+  slaAttainmentInitial,
+} from '@/soc/components/metrics-explain/builders';
 import { MetricExplain } from '@/soc/components/metrics-explain/MetricExplain';
+import { TimingExplain } from '@/soc/components/metrics-explain/TimingExplain';
+import type { StatBlock } from '@/soc/pages/Metrics.posture.api';
 
 import { useDashboardData, useDashboardRequests, type DashboardReader } from '../DashboardDataProvider';
 import { kpiStripCells, type KpiStripBinding, type KpiStripPreset } from '../kpi-bindings';
@@ -319,24 +329,144 @@ export function stripFailureText(
   return parts.length ? parts.join(' ') : null;
 }
 
+// SLA attainment's first reading lives with the other figure builders, so the Analytics
+// Posture tab and this strip say the same thing (Round 16 numbers review).
+export { slaAttainmentInitial };
+
+/** What one unit of a count cell counts, plural. */
+const CELL_NOUN: Readonly<Record<string, string>> = {
+  sources_reporting: 'sources',
+  silent_sources: 'sources',
+  alerts_ingested: 'alerts',
+  techniques_seen: 'techniques',
+};
+
+/** What a count cell leaves out, where its definition does not say it. */
+const CELL_CAVEATS: Readonly<Record<string, readonly string[]>> = {
+  sla_breached: [
+    "A case counts when the time to a person's first response is over its priority's response target, the rule the Posture tab and the case page use. A case whose priority has no target is not counted.",
+  ],
+};
+
 /**
- * SLA attainment before its explanation is read: the figure on screen and what it
- * divides (`MetricExplain` replaces it with the counts on open).
+ * The explanation of a measured cell (Round 16 numbers review): its inputs and, where
+ * the Console holds them, its arithmetic. Null for a cell with no figure, a lower bound
+ * or an approximation (their help popover already says what they are).
  */
-export function slaAttainmentInitial(shown: string, window: string): Explanation {
-  return {
-    metric: 'sla_attainment',
-    title: 'SLA attainment',
-    value: shown,
-    display: shown,
-    summary: `${shown} of the cases scored against a target met them, ${window}.`,
-    formula: 'cases that met every target / cases scored against a target',
-    inputs: [{ key: 'window', label: 'Window', value: window, source: 'The time range above' }],
-    steps: [],
-    provenance: 'server_computed',
-    provenanceNote: 'Computed by the server over the cases in the window.',
-    caveats: [],
-  };
+export function stripCellExplanation(view: StripCellView, read: DashboardReader, phrase: string): Explanation | null {
+  const { binding, result } = view;
+  if (view.gate !== 'ok' || !result || result.status !== 'value' || result.qualifier || result.value == null) return null;
+  const stock = binding.window === 'all';
+  const window = stock ? 'right now' : `the ${phrase}`;
+  const windowSource = stock ? 'Not limited by the time range above' : undefined;
+  const data = (key: Parameters<DashboardReader>[0]['key']) => read({ key, window: binding.window }).data;
+  switch (binding.cell) {
+    case 'closed_by_agent': {
+      const decided = getPath(data('autoClose'), 'current.decided');
+      return explainKpiShare({
+        metric: 'closed_by_agent',
+        title: binding.label,
+        numerator: result.value,
+        denominator: typeof decided === 'number' ? decided : null,
+        numeratorLabel: 'closed by the AI agent',
+        denominatorLabel: 'decided cases',
+        window,
+        dividedBy: 'server',
+        tileRounding: 'The tile shows the count; the share beside it is a whole percent.',
+        caveats: [binding.definition],
+      });
+    }
+    case 'alert_reduction': {
+      const noise = data('noise');
+      const ingested = getPath(noise, 'stages[key=ingested].total');
+      const cases = getPath(noise, 'stages[key=cases].total');
+      return explainAlertReduction(
+        typeof ingested === 'number' ? ingested : null,
+        typeof cases === 'number' ? cases : null,
+        window,
+        // The tile shows a whole percent: the explanation ends on that figure.
+        result.text,
+      );
+    }
+    case 'events_per_minute':
+      return explainServerFigure({
+        metric: 'events_per_minute',
+        title: binding.label,
+        display: result.text,
+        value: result.value,
+        summary: `${result.text} events per minute, ${window}: the alerts the counters tallied over the whole hours they measured.`,
+        formula: 'alerts ingested in the measured hours / the minutes from the first measured hour to now',
+        window,
+        windowSource,
+        caveats: [
+          binding.definition,
+          'When the counters began inside the window, the hour they began in is left out, so the rate can cover less than the window.',
+        ],
+      });
+    default:
+      if (binding.format !== 'count') return null;
+      return explainCount({
+        metric: binding.cell,
+        title: binding.label,
+        value: result.value,
+        noun: CELL_NOUN[binding.cell] ?? 'cases',
+        window,
+        windowSource,
+        // "Over the cases in the window" only for a count of cases: sources and alerts
+        // are not cases.
+        provenanceNote: stock
+          ? 'Counted by the server for this reading.'
+          : binding.caseDerived
+            ? undefined
+            : 'Counted by the server for this window.',
+        summary: `${result.text} ${CELL_NOUN[binding.cell] ?? 'cases'}, ${window}. ${binding.definition}`,
+        formula: binding.definition,
+        caveats: [...(CELL_CAVEATS[binding.cell] ?? [])],
+      });
+  }
+}
+
+/** The cell's explain slot: the figure's own explanation on hover and click. */
+function stripCellExplain(
+  view: StripCellView,
+  read: DashboardReader,
+  windowHours: number,
+  phrase: string,
+): ((numeral: React.ReactNode) => React.ReactNode) | undefined {
+  const measured = view.gate === 'ok' && view.result?.status === 'value' ? view.result : null;
+  if (!measured) return undefined;
+  if (view.binding.cell === 'sla_attainment') {
+    return (numeral) => (
+      // Opening it reads the figure's own explanation (metric=sla_attainment).
+      <MetricExplain
+        metric="sla_attainment"
+        title={view.binding.label}
+        windowHours={windowHours}
+        initial={slaAttainmentInitial(measured.text, phrase)}
+      >
+        {numeral}
+      </MetricExplain>
+    );
+  }
+  if (view.binding.cell === 'mttd_p50' || view.binding.cell === 'mttr_p50') {
+    const metric = view.binding.cell === 'mttd_p50' ? 'mttd' : 'mttr';
+    const block = getPath(read({ key: 'posture' }).data, `lifecycle.${metric}_minutes`) as StatBlock | undefined;
+    if (!block || typeof block !== 'object') return undefined;
+    return (numeral) => (
+      <TimingExplain
+        metric={metric}
+        title={view.binding.label}
+        block={block}
+        windowHours={windowHours}
+        window={`the ${phrase}`}
+      >
+        {numeral}
+      </TimingExplain>
+    );
+  }
+  const explanation = stripCellExplanation(view, read, phrase);
+  if (!explanation) return undefined;
+  return (numeral) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger>;
 }
 
 export function KpiStripWidget(props: WidgetProps) {
@@ -403,21 +533,7 @@ export function KpiStripWidget(props: WidgetProps) {
         roll={false}
         size="fluid"
         numeral="hero"
-        explain={
-          view.binding.cell === 'sla_attainment' && measuredValue
-            ? (numeral) => (
-                // Opening it reads the figure's own explanation (metric=sla_attainment).
-                <MetricExplain
-                  metric="sla_attainment"
-                  title={view.binding.label}
-                  windowHours={windowHours}
-                  initial={slaAttainmentInitial(measuredValue.text, windowInfo.phrase)}
-                >
-                  {numeral}
-                </MetricExplain>
-              )
-            : undefined
-        }
+        explain={stripCellExplain(view, read, windowHours, windowInfo.phrase)}
       />
     );
   });

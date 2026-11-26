@@ -29,6 +29,16 @@ export function summaryWithoutHint(summary: string): string {
   return summary.replace(CLICK_HINT, '');
 }
 
+/**
+ * One step as copied text. A calculation reads "expression = result". A step written as a
+ * sentence (it ends with a full stop, such as the risk Total "Recorded at scoring from the
+ * unrounded factors. The stored factors give 20.82.") is not an equation, so its result
+ * follows as "Result: 20.81", never "20.82. = 20.81".
+ */
+function stepText(expression: string, result: string): string {
+  return /\.\s*$/.test(expression) ? `${expression} Result: ${result}` : `${expression} = ${result}`;
+}
+
 /** The whole explanation as plain text lines. */
 export function explanationText(explanation: Explanation): string {
   const lines: string[] = [];
@@ -41,7 +51,7 @@ export function explanationText(explanation: Explanation): string {
   }
   if (explanation.steps.length) {
     lines.push('Steps:');
-    for (const step of explanation.steps) lines.push(`- ${step.label}: ${step.expression} = ${step.result}`);
+    for (const step of explanation.steps) lines.push(`- ${step.label}: ${stepText(step.expression, step.result)}`);
   }
   if (explanation.rounding) lines.push(`Rounding: ${explanation.rounding}`);
   lines.push(`Provenance: ${explanation.provenanceNote ?? PROVENANCE_WORDS[explanation.provenance]}`);

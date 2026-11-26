@@ -15,7 +15,7 @@
  */
 import type { TriageChips } from '@/soc/pages/CaseDetail.api';
 
-import { trimmed } from './rounding';
+import { displayScore, trimmed } from './rounding';
 import type { Explanation, ExplanationInput } from './types';
 
 /** The three-band cuts shared by impact and urgency (contract `priority.band_cuts`). */
@@ -31,11 +31,38 @@ export function triageBand(value: number): 'high' | 'medium' | 'low' {
   return 'low';
 }
 
-function cutSentence(band: string, value: number, what: string): string {
-  const v = trimmed(value);
+/**
+ * `value` printed with enough decimals that the printed number is in `band` by `bandOf`:
+ * 47.996 in the medium band prints "47.996", never "48", which would read as high.
+ */
+function bandSafe(value: number, band: string, bandOf: (v: number) => string): string {
+  for (let digits = 2; digits <= 6; digits += 1) {
+    const text = trimmed(value, digits);
+    if (bandOf(Number(text.replace(/,/g, ''))) === band) return text;
+  }
+  return trimmed(value, 6);
+}
+
+/**
+ * The band's cut as a sentence that is true for the printed value. A value that is not a
+ * whole number is never said to sit in "22 to 47": the medium band is "at least 22 and
+ * under 48".
+ */
+function cutSentence(band: string, value: number, what: string, shown?: string): string {
+  const v = shown ?? bandSafe(value, band, triageBand);
   if (band === 'high') return `${what} ${v} >= ${TRIAGE_BAND_CUTS.high}`;
-  if (band === 'medium') return `${what} ${v} is from ${TRIAGE_BAND_CUTS.medium} to ${TRIAGE_BAND_CUTS.high - 1}`;
+  if (band === 'medium') return `${what} ${v} is at least ${TRIAGE_BAND_CUTS.medium} and under ${TRIAGE_BAND_CUTS.high}`;
   return `${what} ${v} < ${TRIAGE_BAND_CUTS.medium}`;
+}
+
+/**
+ * The risk score as urgency reads it: the shown integer (rounded half up), the same
+ * integer the risk chip bands, with the unrounded score beside it when they differ.
+ */
+function shownRisk(value: number, display: unknown): { shown: number; text: string } {
+  const shown = finite(display) ?? displayScore(value) ?? 0;
+  const text = shown === value ? String(shown) : `${shown} (${trimmed(value)} rounded half up)`;
+  return { shown, text };
 }
 
 const finite = (value: unknown): number | null =>
@@ -52,13 +79,16 @@ export function explainPriority(chips: TriageChips | null | undefined): Explanat
   const entity = String(chips?.impact?.entity || chips?.impact?.inputs?.entity_value || '');
   const urgencyValue = finite(priority.urgency?.value) ?? 0;
   const escalated = priority.urgency?.escalated === true;
+  // Urgency bands the shown risk integer (Round 16 D4, R7), so "Risk 48" High beside
+  // the chip never reads "Urgency medium: Risk 47.74".
+  const risk = shownRisk(urgencyValue, (priority.urgency as { display?: unknown } | undefined)?.display);
 
   const impactLine = `${cutSentence(impact, criticality, 'Asset criticality')}${
     entity ? ` for ${entity}` : ''
   }${criticality === 0 ? ' (no asset entry)' : ''}`;
-  const urgencyLine = escalated && triageBand(urgencyValue) !== 'high'
-    ? `The case is escalated, so urgency is at least high (risk ${trimmed(urgencyValue)})`
-    : cutSentence(urgency, urgencyValue, 'Risk');
+  const urgencyLine = escalated && triageBand(risk.shown) !== 'high'
+    ? `The case is escalated, so urgency is at least high (risk ${risk.text})`
+    : cutSentence(urgency, risk.shown, 'Risk', risk.text);
 
   const inputs: ExplanationInput[] = [
     { key: 'impact', label: 'Impact', value: `${impact || 'unknown'}: ${impactLine}`, source: 'Asset criticality map' },
@@ -70,7 +100,7 @@ export function explainPriority(chips: TriageChips | null | undefined): Explanat
     formula: 'priority = matrix[impact / urgency]',
     inputs,
     provenance: 'server_computed' as const,
-    rounding: `Impact and urgency are high from ${TRIAGE_BAND_CUTS.high}, medium from ${TRIAGE_BAND_CUTS.medium}, otherwise low.`,
+    rounding: `Impact and urgency are high from ${TRIAGE_BAND_CUTS.high}, medium from ${TRIAGE_BAND_CUTS.medium}, otherwise low. Urgency reads the risk score as shown, rounded half up.`,
   };
 
   if (enabled === false || priority.level === null || priority.level === undefined) {
@@ -111,6 +141,24 @@ const SEVERITY_WORDS: Record<string, string> = {
   info: `Info (below ${SEVERITY_CUTS.low})`,
 };
 
+/** The same ladder for a value that is not a whole number (no "22 to 47" for 47.6). */
+const SEVERITY_RANGE_WORDS: Record<string, string> = {
+  critical: `Critical (at least ${SEVERITY_CUTS.critical})`,
+  high: `High (at least ${SEVERITY_CUTS.high} and under ${SEVERITY_CUTS.critical})`,
+  medium: `Medium (at least ${SEVERITY_CUTS.medium} and under ${SEVERITY_CUTS.high})`,
+  low: `Low (at least ${SEVERITY_CUTS.low} and under ${SEVERITY_CUTS.medium})`,
+  info: `Info (below ${SEVERITY_CUTS.low})`,
+};
+
+/** The five-band severity reading of a 0 to 100 magnitude. */
+function severityBand(value: number): string {
+  if (value >= SEVERITY_CUTS.critical) return 'critical';
+  if (value >= SEVERITY_CUTS.high) return 'high';
+  if (value >= SEVERITY_CUTS.medium) return 'medium';
+  if (value >= SEVERITY_CUTS.low) return 'low';
+  return 'info';
+}
+
 /** The severity chip: source-asserted or derived from the risk score. */
 export function explainSeverity(chips: TriageChips | null | undefined): Explanation | null {
   const severity = chips?.severity;
@@ -127,20 +175,26 @@ export function explainSeverity(chips: TriageChips | null | undefined): Explanat
   const ladder = SEVERITY_WORDS[band] ?? word;
 
   if (source === 'derived' || raw === null) {
+    // A derived severity bands the shown risk integer, as the risk chip does.
+    const risk = shownRisk(value, (severity as { display?: unknown }).display);
     return {
       metric: 'severity',
       title: 'Severity',
       value: band,
       display,
-      summary: `${word} severity: the source reported none, so it is derived from the risk score ${trimmed(value)}, in the ${ladder} band.`,
-      formula: 'band of the risk score when the source asserts no severity',
+      summary: `${word} severity: the source reported none, so it is derived from the risk score ${risk.text}, in the ${ladder} band.`,
+      formula: 'band of the shown risk score when the source asserts no severity',
       inputs: [{ key: 'risk', label: 'Risk score', value: trimmed(value), source: 'The case' }],
-      steps: [{ label: 'Band', expression: `risk ${trimmed(value)}`, result: ladder }],
+      steps: [{ label: 'Band', expression: `risk ${risk.text}`, result: ladder }],
       provenance: 'server_computed',
       caveats: ['Severity rates the alert type; risk scores this case. Derived severity follows the risk score.'],
     };
   }
   const projected = Math.min(100, (raw / scaleMax) * 100);
+  const projectedText = bandSafe(projected, band, severityBand);
+  const projectedLadder = Number.isInteger(Number(projectedText.replace(/,/g, '')))
+    ? ladder
+    : SEVERITY_RANGE_WORDS[band] ?? ladder;
   const caveats: string[] = [];
   if (source === 'source_out_of_range') {
     caveats.push(
@@ -152,15 +206,15 @@ export function explainSeverity(chips: TriageChips | null | undefined): Explanat
     title: 'Severity',
     value: band,
     display,
-    summary: `${word} severity: the source reported ${trimmed(raw)} on a 0 to ${trimmed(scaleMax)} scale; ${trimmed(raw)} / ${trimmed(scaleMax)} x 100 = ${trimmed(projected)}, in the ${ladder} band.`,
+    summary: `${word} severity: the source reported ${trimmed(raw)} on a 0 to ${trimmed(scaleMax)} scale; ${trimmed(raw)} / ${trimmed(scaleMax)} x 100 = ${projectedText}, in the ${projectedLadder} band.`,
     formula: 'min(100, source severity / scale ceiling x 100), then the severity band',
     inputs: [
       { key: 'raw', label: 'Source severity', value: trimmed(raw), source: 'Highest severity on the member events' },
       { key: 'scale_max', label: 'Scale ceiling', value: trimmed(scaleMax), source: "The source's declared ceiling" },
     ],
     steps: [
-      { label: 'Projection', expression: `min(100, ${trimmed(raw)} / ${trimmed(scaleMax)} x 100)`, result: trimmed(projected) },
-      { label: 'Band', expression: trimmed(projected), result: ladder },
+      { label: 'Projection', expression: `min(100, ${trimmed(raw)} / ${trimmed(scaleMax)} x 100)`, result: projectedText },
+      { label: 'Band', expression: projectedText, result: projectedLadder },
     ],
     provenance: 'server_computed',
     caveats,

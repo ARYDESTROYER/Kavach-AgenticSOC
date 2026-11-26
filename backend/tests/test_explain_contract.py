@@ -99,10 +99,13 @@ def test_percentile_vectors(vector: dict) -> None:
     assert percentile([float(v) for v in vector["values"]], 90) == pytest.approx(vector["p90"], abs=1e-9)
 
 
-@pytest.mark.parametrize("vector", CONTRACT["priority"]["vectors"], ids=lambda v: f"{v['impact']}/{v['urgency']}")
+@pytest.mark.parametrize(
+    "vector", CONTRACT["priority"]["vectors"], ids=lambda v: f"{v['asset']}/{v['risk']}/{v['level']}",
+)
 def test_priority_vectors(vector: dict) -> None:
     impact = _band_from_magnitude(float(vector["asset"]))
-    urgency = _band_from_magnitude(float(vector["risk"]))
+    # Urgency bands the shown risk integer, rounded half up (Round 16 D4, R7).
+    urgency = _band_from_magnitude(float(round_half_up(float(vector["risk"]))))
     assert (impact, urgency) == (vector["impact"], vector["urgency"])
     assert derive_priority(impact, urgency, PriorityMatrix())["level"] == vector["level"]
 

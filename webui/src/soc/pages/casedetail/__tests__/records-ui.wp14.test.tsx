@@ -185,6 +185,15 @@ describe('indicator providers', () => {
     expect(screen.getByTestId('threat-ioc-when')).toHaveTextContent(
       'No provider was asked when you opened this case. At investigation: 0.',
     );
+    // ioc-confidence-zero-unchecked: the placeholder 0 is never a measured score.
+    const label = screen.getByText('Reputation');
+    const value = label.nextElementSibling as HTMLElement;
+    expect(value).toHaveTextContent(/^Not checked$/);
+    expect(value).toHaveAttribute('title', 'No provider was asked, so there is no reputation score.');
+    const row = label.closest('li') as HTMLElement;
+    expect(row).not.toHaveTextContent('0%');
+    expect(within(row).queryByText('0')).toBeNull();
+    expect(within(row).queryByText('Confidence')).toBeNull();
   });
 
   it('says when no provider result was recorded', async () => {

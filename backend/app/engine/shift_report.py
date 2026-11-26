@@ -69,7 +69,8 @@ _SEVERITY_WEIGHT: dict[str, float] = {
 }
 
 # Default SLA *response* target (minutes) when a case has no priority or the SLA
-# policy is disabled — only used to derive a smooth age-urgency curve, never to gate.
+# policy is disabled: only used to derive a smooth age-urgency curve, never to gate
+# and never to count a breach (``sla_aging`` skips a case with no target).
 _DEFAULT_RESPONSE_MINUTES = 120
 
 
@@ -267,16 +268,28 @@ def _sla_level(case: Case, prefs: Any) -> str:
         return str(getattr(case, "priority_level", None) or "")
 
 
-def _response_instants(case: Case) -> tuple[Any, Any]:
-    """``(clock start, first human response)`` from ``metrics._CaseTimings`` and
-    ``metrics.first_human_response`` (the posture rules); ``(None, None)`` when the
-    case cannot be read. Never raises."""
+def _sla_target(sla: SlaPolicy | None, level: str) -> Any:
+    """The ``SlaTarget`` configured for ``level``, or ``None`` when the level is empty or
+    has no target (the posture rule of ``metrics.sla_metrics``: such a case is not
+    SLA-scored). Never raises."""
+    if not level:
+        return None
     try:
-        timings = _metrics._CaseTimings(case)
-        responded, _source = _metrics.first_human_response(timings)
-        return timings.created, responded
-    except Exception:  # noqa: BLE001 - advisory; fall back to the live clock
-        return None, None
+        return (getattr(sla, "targets", None) or {}).get(level)
+    except Exception:  # noqa: BLE001 - advisory; an unreadable policy scores nothing
+        return None
+
+
+def _response_clock(case: Case, target: Any, now: Any) -> Any:
+    """The case's response clock from the ONE shared rule,
+    ``metrics.sla_case_reading(...).response``: breached when the elapsed time is over
+    the target, at risk when it still runs and at least ``metrics.SLA_AT_RISK_FRACTION``
+    of the target has passed. ``None`` when there is no clock (a response target of 0
+    or less, or no readable start). Never raises."""
+    try:
+        return _metrics.sla_case_reading(case, target, None, now=now).response
+    except Exception:  # noqa: BLE001 - advisory; an unreadable case is not classified
+        return None
 
 
 def sla_aging(
@@ -284,29 +297,35 @@ def sla_aging(
     sla: SlaPolicy | None,
     *,
     now: Any = None,
-    warn_fraction: float = 0.75,
+    warn_fraction: float = _metrics.SLA_AT_RISK_FRACTION,
     prefs: Any = None,
 ) -> dict[str, Any]:
     """Roll OPEN cases up against their per-priority RESPONSE-SLA target.
 
     Returns ``{enabled, warn_fraction, by_priority: {P1: {...}}, totals, breached[],
-    about_to_breach[]}``. A case nobody has responded to is *breached* when its age
-    exceeds the response target, *about_to_breach* when it is within
-    ``warn_fraction`` of it. When the SLA policy is disabled (or absent) the rollup
-    is reported with ``enabled: false`` and empty breach lists (we don't invent a
-    target). Advisory only (#3). Never raises.
+    about_to_breach[]}``. When the SLA policy is disabled (or absent) the rollup is
+    reported with ``enabled: false`` and empty breach lists. Advisory only (#3). Never
+    raises.
 
-    Round 16 B60, so Standup agrees with posture ``metrics.sla_metrics``:
+    Every open case is counted in its priority bucket's ``open``. It is classified only
+    when its priority has a response target, by the SAME rule posture
+    (``metrics.sla_metrics``) and the case page (``engine.sla_reading``) use,
+    ``metrics.sla_case_reading``:
 
     * the P-level is resolved by ``metrics._sla_priority``: the persisted
-      ``priority_level``, else, with ``prefs``, the read-time projection the case
-      list shows (no production path persists the level). Without ``prefs`` only the
-      persisted level is read, as before;
-    * the response clock stops at the first human response
-      (``metrics.first_human_response``: an acknowledgement, a first response or a
-      person's status move). A case that responded in time is not breached; one that
-      responded late is breached by a fixed amount that never grows, and is never
-      about to breach."""
+      ``priority_level``, else, with ``prefs``, the read-time projection the case list
+      shows. Without ``prefs`` only the persisted level is read;
+    * a case whose level has no target (the matrix is off, the target is removed, or
+      it is 0) is not classified. No default target is invented;
+    * *breached* when the elapsed time is over the target; a response stops the clock,
+      so a late response is breached by a fixed amount that never grows;
+    * *about_to_breach* when the clock still runs and at least
+      ``metrics.SLA_AT_RISK_FRACTION`` (0.8) of the target has passed, the posture
+      "at risk" rule.
+
+    ``warn_fraction`` is kept as a parameter and a payload key for older readers. The
+    payload always reports the shared fraction the rule used; a value passed in no
+    longer changes the rule, so it is not echoed."""
     enabled = bool(sla is not None and getattr(sla, "enabled", False))
     ref = now or now_utc()
     by_priority: dict[str, dict[str, int]] = {}
@@ -324,35 +343,30 @@ def sla_aging(
         bucket["open"] += 1
         if not enabled:
             continue
-        target = _response_target_minutes(case, sla, level)
-        if target <= 0:
+        target = _sla_target(sla, level)
+        if target is None:
             continue
-        age = case_age_minutes(case, now=ref)
-        start, responded = _response_instants(case)
-        if responded is not None and start is not None:
-            # Responded: the clock stopped then. Only a late response is a breach.
-            elapsed = max(0.0, (responded - start).total_seconds() / 60.0)
-            overdue = round(elapsed - target, 1) if elapsed > target else 0.0
-            late = elapsed > target
-            warn = False
-        else:
-            overdue = round(age - target, 1) if age > target else 0.0
-            late = age >= target
-            warn = not late and age >= target * warn_fraction
+        clock = _response_clock(case, target, ref)
+        if clock is None or clock.state not in ("breached", "at_risk"):
+            continue
+        overdue = (
+            round(clock.elapsed_minutes - clock.target_minutes, 1)
+            if clock.state == "breached" else 0.0
+        )
         row = {
             "case_id": getattr(case, "case_id", "") or "",
             "display_id": _display_id(case),
             "priority_level": level,
-            "age_minutes": round(age, 1),
-            "target_minutes": target,
+            "age_minutes": round(case_age_minutes(case, now=ref), 1),
+            "target_minutes": int(clock.target_minutes),
             "overdue_minutes": overdue,
             # Who has it (Round 13 polish): the "close to their target" question asks.
             "assignee": str(getattr(case, "assignee", "") or ""),
         }
-        if late:
+        if clock.state == "breached":
             bucket["breached"] += 1
             breached.append(row)
-        elif warn:
+        else:
             bucket["about_to_breach"] += 1
             about_to.append(row)
 
@@ -360,7 +374,8 @@ def sla_aging(
     about_to.sort(key=lambda r: r["age_minutes"], reverse=True)
     return {
         "enabled": enabled,
-        "warn_fraction": warn_fraction,
+        # The fraction the rule used, never a caller's value it ignored.
+        "warn_fraction": _metrics.SLA_AT_RISK_FRACTION,
         "by_priority": by_priority,
         "totals": {
             "open": total_open,

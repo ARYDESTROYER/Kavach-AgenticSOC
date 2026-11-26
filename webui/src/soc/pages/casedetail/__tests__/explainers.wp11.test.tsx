@@ -57,7 +57,7 @@ describe('RiskExplain', () => {
     const steps = screen.getByTestId('explain-steps');
     for (const text of [
       'min(100, 100 x ln(1 + 40) / ln(1 + 50))94.45',
-      'min(100, 100 x 20 / 10)100 (capped from 200)',
+      'min(100, 100 x 40 / (120 / 60) / 10)100 (capped from 200)',
       'clamp(75, 0, 100)75',
       'min(100, 100 x 3 / 5)60',
       'clamp(60, 0, 100)60',

@@ -98,7 +98,8 @@ describe('metric explanation builders', () => {
       dividedBy: 'console',
     })!;
     expect(e.summary).toBe('312 false positive verdicts of 1,204 verdicted cases = 25.9%, the last 7 days.');
-    expect(e.steps.map((s) => `${s.expression} = ${s.result}`)).toEqual(['312 / 1,204 = 0.2591', '0.2591 x 100 = 25.9%']);
+    // The percent step reads the counts, not the rounded ratio (review of XFNUM).
+    expect(e.steps.map((s) => `${s.expression} = ${s.result}`)).toEqual(['312 / 1,204 = 0.2591', '312 / 1,204 x 100 = 25.9%']);
     expect(e.provenanceNote).toMatch(/^The Console divided two counts/);
     expect(explainKpiShare({ ...base(), numerator: 0, denominator: 0 })!.summary).toMatch(/no share/);
   });

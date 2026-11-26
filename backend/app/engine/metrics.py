@@ -348,6 +348,9 @@ def compute_metrics(
 
     risks = [c.risk_score for c in cases if isinstance(c.risk_score, (int, float))]
     avg_risk = round(sum(risks) / len(risks), 1) if risks else 0.0
+    # How many scored cases the mean divides by (Round 16 numbers review): the Console
+    # explains Average risk as "sum / N", and N was nowhere on the wire. Advisory only.
+    avg_risk_case_count = len(risks)
 
     # Active Risk Index: the mean deterministic risk_score over LIVE (non-terminal)
     # cases only — the single "how hot is the board right now?" instrument (the UI's
@@ -418,6 +421,7 @@ def compute_metrics(
         "runbook_usage": dict(by_runbook),
         "playbook_usage": dict(by_playbook),
         "avg_risk_score": avg_risk,
+        "avg_risk_case_count": avg_risk_case_count,
         "active_risk_index": active_risk_index,
         "active_risk_case_count": active_risk_case_count,
         "mttr_minutes": mttr,
@@ -628,7 +632,8 @@ def lifecycle_intervals(
 LIFECYCLE_MISSING: dict[str, str] = {
     "mtta": "no case has been acknowledged yet",
     "mttr": "no case has been resolved/closed yet",
-    "dwell": "no case has received a first response yet",
+    # Dwell counts a person's response only: an automatic close is not one.
+    "dwell": "no case has received a first response from a person yet",
     "mttd": "detection latency not available yet",
 }
 
@@ -1762,7 +1767,11 @@ EXPLAIN_MAX_SAMPLES = 200
 _EXPLAIN_POPULATION: dict[str, str] = {
     "mtta": "Cases created in {window} that a person acknowledged, or moved to investigating, escalated or on hold.",
     "mttr": "Cases created in {window} that are resolved or closed now.",
-    "dwell": "Cases created in {window} that received a first response (investigating, escalated, on hold, resolved or closed).",
+    "dwell": (
+        "Cases created in {window} that a person responded to: acknowledged, or moved to "
+        "investigating, escalated, on hold, resolved or closed. Automatic and analyst rule "
+        "policy closes are not counted."
+    ),
     "mttd": "Cases created in {window} whose first event time is recorded.",
     "active_risk_index": "Every case that is not resolved or closed, all time.",
     "fp_rate": "Cases created in {window} with an AI verdict, without the cases an analyst rule policy closed.",

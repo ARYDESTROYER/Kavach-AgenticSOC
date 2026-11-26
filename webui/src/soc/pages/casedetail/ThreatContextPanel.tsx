@@ -528,15 +528,28 @@ export const ThreatContextPanel: React.FC<{
                       </dd>
                     </div>
                     <div className="flex gap-1">
-                      <dt className="text-muted-foreground">Confidence</dt>
-                      <dd
-                        className={cn(
-                          'tabular-nums',
-                          typeof score === 'number' && score >= 50 ? 'font-medium text-critical-text' : 'text-foreground',
-                        )}
-                      >
-                        {typeof score === 'number' ? `${Math.round(score)}%` : 'Unavailable'}
-                      </dd>
+                      {/* The fused reputation score, the number "At investigation: N" and
+                          the fusion line show, not a provider's confidence. A placeholder 0
+                          for an indicator no provider was asked about is never shown as a
+                          measured score (numbers review). */}
+                      <dt className="text-muted-foreground">Reputation</dt>
+                      {ioc.providers_status === 'skipped' ? (
+                        <dd
+                          className="text-muted-foreground"
+                          title="No provider was asked, so there is no reputation score."
+                        >
+                          Not checked
+                        </dd>
+                      ) : (
+                        <dd
+                          className={cn(
+                            'tabular-nums',
+                            typeof score === 'number' && score >= 50 ? 'font-medium text-critical-text' : 'text-foreground',
+                          )}
+                        >
+                          {typeof score === 'number' ? String(Math.round(score)) : 'Unavailable'}
+                        </dd>
+                      )}
                     </div>
                     {ioc.country ? (
                       <div className="flex gap-1">

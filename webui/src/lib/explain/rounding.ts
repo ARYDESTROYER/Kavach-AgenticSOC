@@ -39,6 +39,17 @@ export function trimmed(value: number, digits = 2): string {
   return rounded.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: 0 });
 }
 
+/**
+ * `trimmed` without thousands separators, for a number inside a formula whose arguments
+ * are separated by commas: "min(100, 100 x 8 / (1234.5 / 60) / 10)" reads one way only.
+ */
+export function plain(value: number, digits = 2): string {
+  if (!Number.isFinite(value)) return 'not a number';
+  const factor = 10 ** digits;
+  const rounded = Math.round(value * factor) / factor;
+  return rounded.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: 0, useGrouping: false });
+}
+
 /** A number with exactly `digits` decimals: 1 is "1.00", 0.2 is "0.20". */
 export function fixed(value: number, digits = 2): string {
   if (!Number.isFinite(value)) return 'not a number';

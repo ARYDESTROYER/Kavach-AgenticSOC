@@ -130,7 +130,10 @@
       { "asset": 0, "risk": 81.11, "impact": "low", "urgency": "high", "level": "P3" },
       { "asset": 30, "risk": 30, "impact": "medium", "urgency": "medium", "level": "P3" },
       { "asset": 60, "risk": 10, "impact": "high", "urgency": "low", "level": "P3" },
-      { "asset": 0, "risk": 10, "impact": "low", "urgency": "low", "level": "P4" }
+      { "asset": 0, "risk": 10, "impact": "low", "urgency": "low", "level": "P4" },
+      { "asset": 0, "risk": 47.5, "impact": "low", "urgency": "high", "level": "P3" },
+      { "asset": 0, "risk": 47.74, "impact": "low", "urgency": "high", "level": "P3" },
+      { "asset": 0, "risk": 21.5, "impact": "low", "urgency": "medium", "level": "P4" }
     ]
   },
   "sla": {

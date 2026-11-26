@@ -192,7 +192,10 @@ describe('ThreatContextPanel: the flat sections layout', () => {
 
     expect(within(ioc).getByText('198.51.100.45')).toBeInTheDocument();
     expect(within(ioc).getByText('AbuseIPDB')).toBeInTheDocument();
-    expect(within(ioc).getByText('100%')).toBeInTheDocument();
+    // The fused reputation score, labelled as such, with no percent sign.
+    expect(within(ioc).getByText('Reputation')).toBeInTheDocument();
+    expect(within(ioc).getByText('100')).toBeInTheDocument();
+    expect(within(ioc).queryByText('100%')).toBeNull();
     expect(within(ioc).getByText('Malicious')).toBeInTheDocument();
 
     const criticalityRow = screen.getByText('Criticality').parentElement;
