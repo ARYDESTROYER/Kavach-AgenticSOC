@@ -35,7 +35,7 @@ Environment: `backend/.venv` (Python 3.11.18), SQLite file stores built in the s
 | Same with a cached, normalised numpy matrix | prototype in the scratchpad | 0.20 ms warm; 1.9 ms change-fingerprint query; 1,117 ms one-off cold load |
 | Plain indexed reads | `SqlCaseRepository.list(limit=50)`, `get`, `count_created_since` | 14.9 / 2.0 / 4.1 ms |
 
-The benchmark scripts are in `/tmp/claude-0/-home-user-Kavach-AgenticSOC/2fc24c44-3228-5bc2-8fb3-56e1bc548beb/scratchpad/round16/bench/` (`bench_pop.py`, `bench_lag.py`, `bench_queue.py`, `bench_getmany.py`, `bench_vec.py`, `bench_vec_np.py`, `bench_ledger_kv.py`). Elasticsearch and PostgreSQL could not run here because container registries are blocked. The ES figures are therefore not measured. The PostgreSQL claims rest on code reading and pgvector's documentation.
+The benchmark scripts ran from a scratch folder outside the repository and are not kept (`bench_pop.py`, `bench_lag.py`, `bench_queue.py`, `bench_getmany.py`, `bench_vec.py`, `bench_vec_np.py`, `bench_ledger_kv.py`). Elasticsearch and PostgreSQL could not run here because container registries are blocked. The ES figures are therefore not measured. The PostgreSQL claims rest on code reading and pgvector's documentation.
 
 ## 3. Bugs and mismatches found
 

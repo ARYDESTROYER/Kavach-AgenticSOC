@@ -1,6 +1,6 @@
 # Round 16 research: data visibility audit (data-model side)
 
-Report key: `data-visibility`. Repository: `/home/user/Kavach-AgenticSOC`, branch `claude/round16`
+Report key: `data-visibility`. Repository: `Kavach-AgenticSOC`, branch `claude/round16`
 (HEAD `3cd362c`, "Journal: Round 16 start", on top of `3cfd5c0`). Read-only: nothing in the
 repository was edited. Five throwaway probe tests were written to the scratchpad
 (`.../scratchpad/round16/dv-probe/test_dv_probe*.py`) and run against the existing offline test

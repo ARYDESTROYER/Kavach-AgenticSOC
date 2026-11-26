@@ -1,6 +1,6 @@
 # Case Manager: a cleaner, segregated workspace (Round 16 research, key `case-manager-ux`)
 
-Repository: `/home/user/Kavach-AgenticSOC`, branch `claude/round16`, read at `3cd362c` ("Journal: Round 16 start",
+Repository: `Kavach-AgenticSOC`, branch `claude/round16`, read at `3cd362c` ("Journal: Round 16 start",
 the tree that follows `3cfd5c0`). Read only. Screenshots read: `round15/shots/FINAL/case-manager-queue-*.png`,
 `case-investigation-*.png`, `case-collaboration-files-*.png`, `close-dialog-*.png`, `review-card-*.png`,
 `review-pending-*.png`, `phone-case-light.png` (desktop shots are 2880x1800 at device pixel ratio 2, so a

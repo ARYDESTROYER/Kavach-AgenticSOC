@@ -1,6 +1,6 @@
 # Showing when the AI is investigating a case (report key: ai-investigating)
 
-Research agent report for Round 16. Repository `/home/user/Kavach-AgenticSOC`, branch
+Research agent report for Round 16. Repository `Kavach-AgenticSOC`, branch
 `claude/round16` (HEAD `3cd362c`, "Journal: Round 16 start"). I worked read-only. The only
 code I ran was a throwaway pytest probe and an ASGI disconnect simulation, both kept in the
 scratchpad (`.../scratchpad/exp/`). Nothing in the repository was edited.
@@ -127,7 +127,7 @@ Storage is unchanged, with no KV namespace, index or table (#12).
 | F8 | Naming collision. `CaseStatus.INVESTIGATING` is the human "acknowledged" status (Round 4). An AI chip that says "Investigating" next to the status would read as the same thing. | `constants.py:540`; `caseFacts.ts:191` | Copy risk |
 | F9 | New clusters run with no case, and their `agent.step` frames go to a room nobody can subscribe to. The queue cannot show them. | `pipeline.py:875`, `:931` | Low (by design); handled by a count |
 
-Probe file: `/tmp/claude-0/-home-user-Kavach-AgenticSOC/2fc24c44-3228-5bc2-8fb3-56e1bc548beb/scratchpad/exp/t/test_probe_inflight.py`.
+Probe file: `test_probe_inflight.py`, a throwaway test kept outside the repository.
 I ran it from `backend/` with
 `python -m pytest -q -s -p tests.conftest -c pyproject.toml --rootdir=. -p no:cacheprovider <file>`.
 All three probe tests passed, which confirms F1, F5 and F6.

@@ -1,6 +1,6 @@
 # Round 16 research: the sign-in page ("login")
 
-Research agent report, read-only. Repository `/home/user/Kavach-AgenticSOC`, branch `claude/round16`
+Research agent report, read-only. Repository `Kavach-AgenticSOC`, branch `claude/round16`
 (HEAD `3cd362c`, "Journal: Round 16 start", on top of `3cfd5c0`). Nothing in the repository was edited.
 A throwaway prototype was built in the scratchpad copy only, to measure the entry-byte impact.
 

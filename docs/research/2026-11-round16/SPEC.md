@@ -694,9 +694,9 @@ everything on the integrated tree.
   the two router-count tests.
 - **Gates per package before hand-off:**
   - `cd backend && python -m pytest -q` (from a worktree:
-    `/home/user/Kavach-AgenticSOC/backend/.venv/bin/python -m pytest -q -p no:cacheprovider`);
+    the main checkout's `backend/.venv/bin/python -m pytest -q -p no:cacheprovider`);
   - `cd webui && npm run typecheck && npm run lint && npm run gates && npm run test:strict && npm run check:types && npm run build`
-    (worktree: `ln -s /home/user/Kavach-AgenticSOC/webui/node_modules webui/node_modules`);
+    (worktree: link `webui/node_modules` to the main checkout's `webui/node_modules`);
   - `python3 scripts/check_version.py`, `python3 scripts/check_ci_contract.py`,
     `python3 scripts/check_docs.py`,
     `backend/.venv/bin/python scripts/build_app_knowledge.py --check`;

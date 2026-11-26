@@ -1,6 +1,6 @@
 # Round 16 synthesis: scope, work packages, backlog and open questions
 
-Synthesis agent report. Repository `/home/user/Kavach-AgenticSOC`, branch `claude/round16`, HEAD
+Synthesis agent report. Repository `Kavach-AgenticSOC`, branch `claude/round16`, HEAD
 `3cd362c` ("Journal: Round 16 start", on top of `3cfd5c0`, the Round 15 merge into Testing). Read-only:
 nothing in the repository was edited.
 

@@ -1,6 +1,6 @@
 # Round 16 research: explainability audit ("every number explainable")
 
-Report key: `explainability`. Repository: `/home/user/Kavach-AgenticSOC`, branch `claude/round16`
+Report key: `explainability`. Repository: `Kavach-AgenticSOC`, branch `claude/round16`
 (HEAD `3cd362c`, "Journal: Round 16 start", on top of the Round 15 merge). Work was read-only: no
 file in the repository was edited. Commands run: `grep`/`sed` reads, and a few one-off Python calls
 into the real pure functions (`compute_risk`, `compute_routing_risk`, `derive_triage`,
