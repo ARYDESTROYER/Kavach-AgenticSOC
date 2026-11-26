@@ -27,6 +27,7 @@ from .base import (
     DEFERRED_REASON_PREFIX,
     PERSON_DECIDER,
     CaseRepository,
+    DeferredCandidates,
     is_deferred_candidate,
     status_group_statuses,
     window_bounds_proven,
@@ -229,16 +230,24 @@ class CaseStore(CaseRepository):
         total = int(resp.get("hits", {}).get("total", {}).get("value", len(cases)))
         return cases, total
 
-    async def list_deferred_candidates(self, *, older_than: str, limit: int) -> list[Case]:
+    async def list_deferred_candidates(
+        self, *, older_than: str, limit: int, after: Any = None,
+    ) -> list[Case]:
         """The cap-deferred candidates, oldest created first, in ONE search (Round 16
         B11) instead of paging every OPEN case each tick, which also stopped at the
         first 10,000 on a real cluster. ``awaiting_reason`` is mapped text with a
         ``keyword`` sub-field (``es/indices.CASES_MAPPING``); the prefix is asked of
         both, as the audit read does for a field either mapping may hold, and a prefix
-        with a colon matches no analysed token."""
+        with a colon matches no analysed token.
+
+        Round 16 CDX1: the page is a :class:`DeferredCandidates` whose ``next_after``
+        is the last hit's sort values (``created_at``, then ``case_id``), passed back
+        as ``search_after`` to read the next page. A keyset, never ``from``, so there
+        is no result-window cliff. A full page has a marker; a short page is the end
+        of the queue. A marker that is not two sort values reads from the head."""
         if limit <= 0:
-            return []
-        body = {
+            return DeferredCandidates()
+        body: dict[str, Any] = {
             "size": int(limit),
             "query": {
                 "bool": {
@@ -265,9 +274,19 @@ class CaseStore(CaseRepository):
             },
             "sort": case_sort_clause("created_at", "asc"),
         }
+        if isinstance(after, (list, tuple)) and len(after) == 2:
+            body["search_after"] = list(after)
         resp = await self._es.search(CASES_READ_PATTERN, body)
-        cases = [Case.model_validate(h["_source"]) for h in resp.get("hits", {}).get("hits", [])]
-        return [case for case in cases if is_deferred_candidate(case, older_than=older_than)]
+        raw_hits = resp.get("hits", {}).get("hits", [])
+        cases = [Case.model_validate(h["_source"]) for h in raw_hits]
+        # The marker comes from the last HIT, not the last case kept below, so a row
+        # the shared rule drops is never read again.
+        marker = raw_hits[-1].get("sort") if len(raw_hits) >= int(limit) else None
+        next_after = list(marker) if isinstance(marker, (list, tuple)) and len(marker) == 2 else None
+        return DeferredCandidates(
+            [case for case in cases if is_deferred_candidate(case, older_than=older_than)],
+            next_after=next_after,
+        )
 
     async def list_window(
         self,
