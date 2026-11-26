@@ -1596,3 +1596,189 @@ def test_the_inbox_line_speaks_in_events_in_every_state():
     assert _summary(cancelled) == "Export cancelled. No file was kept."
     for job in (queued, running, too_large, uncoded, cancelled):
         assert "completed" not in _summary(job)
+
+
+# --------------------------------------------------------------------------- #
+# Spend figures follow cost:view, as GET /api/audit shows them (Round 16, XFB2)
+# --------------------------------------------------------------------------- #
+#: The rows whose writers put a spend figure into ``result_summary`` (api.cost_text),
+#: and one evidence row that holds a ``$`` and a ``cost=`` of its own.
+_TIMEOUT = "investigation timed out after 120s; capped to NEEDS_HUMAN (partial cost=0.0213)"
+_REFUSAL = ("pipeline error: budget ceiling exceeded: daily spend $1.2345 + est $0.0100 "
+            "would exceed the $10.00 daily ceiling")
+_DECISION = "verdict=TRUE_POSITIVE status=needs_human risk=40.0 cost=0.0213 confidence=0.9"
+_RUNBOOK = "runbook suggest model call tokens=420 cost=0.004000"
+_EVIDENCE = "wire amount=$5000 cost=3"
+_SPEND_SHOWN = [_TIMEOUT, _REFUSAL, _DECISION, _RUNBOOK, _EVIDENCE]
+_SPEND_HIDDEN = [
+    "investigation timed out after 120s; capped to NEEDS_HUMAN (partial cost=hidden)",
+    "pipeline error: budget ceiling exceeded: daily spend (amount hidden) + est (amount hidden) "
+    "would exceed the (amount hidden) daily ceiling",
+    "verdict=TRUE_POSITIVE status=needs_human risk=40.0 cost=hidden confidence=0.9",
+    "runbook suggest model call tokens=420 cost=hidden",
+    _EVIDENCE,
+]
+
+
+def _spend_rows() -> list[dict[str, Any]]:
+    return [
+        {"ts": _ts(1), "actor": "pipeline", "action_type": "error", "case_id": "case-xfb2",
+         "result_summary": _TIMEOUT},
+        {"ts": _ts(2), "actor": "pipeline", "action_type": "error", "case_id": "case-xfb2",
+         "result_summary": _REFUSAL},
+        {"ts": _ts(3), "actor": "case_manager", "action_type": "decision", "case_id": "case-xfb2",
+         "result_summary": _DECISION, "tool_output_summary": "cost=0.0213 $0.02"},
+        {"ts": _ts(4), "actor": "analyst", "action_type": "prompt", "case_id": "case-xfb2",
+         "result_summary": _RUNBOOK},
+        {"ts": _ts(5), "actor": "investigator", "action_type": "tool_call", "case_id": "case-xfb2",
+         "tool_name": "es_query", "result_summary": _EVIDENCE,
+         "tool_output_summary": "wire amount=$5000 cost=3"},
+    ]
+
+
+def _exported_summaries(body: bytes, fmt: str) -> tuple[list[str], list[str | None]]:
+    """The ``result_summary`` and ``tool_output_summary`` of every exported row, in file
+    order (oldest first)."""
+    if fmt == "csv":
+        table = list(csv.reader(io.StringIO(body.decode("utf-8-sig"), newline="")))
+        rows = [dict(zip(CSV_COLUMNS, line)) for line in table[1:]]
+        return [r["result_summary"] for r in rows], [r["tool_output_summary"] or None for r in rows]
+    docs = [json.loads(line) for line in body.split(b"\n") if line]
+    return [d.get("result_summary") for d in docs], [d.get("tool_output_summary") for d in docs]
+
+
+def _deny_cost_view(runner: Any, monkeypatch: pytest.MonkeyPatch, revoked: dict[str, bool]) -> None:
+    """The runner's live grant check, with ``cost:view`` refused while ``revoked["now"]``
+    is set; every other grant (``audit:export``) is the real check."""
+    original = runner._permission_alive  # noqa: SLF001
+
+    async def alive(job: Job) -> bool:
+        if any((g.resource, g.action) == ("cost", "view") for g in job.required_permissions):
+            return not revoked["now"]
+        return await original(job)
+
+    monkeypatch.setattr(runner, "_permission_alive", alive)
+
+
+def test_the_line_writers_withhold_only_a_spend_writers_summary():
+    from app.engine.audit_export import csv_line, withheld_cost
+
+    rows = _spend_rows()
+    for row, hidden in zip(rows, _SPEND_HIDDEN):
+        before = json.dumps(row, sort_keys=True)
+        out = withheld_cost(row)
+        assert out["result_summary"] == hidden
+        # The stored row is never changed, and nothing but the summary moves.
+        assert json.dumps(row, sort_keys=True) == before
+        assert list(out) == list(row)
+        assert {k: v for k, v in out.items() if k != "result_summary"} == {
+            k: v for k, v in row.items() if k != "result_summary"}
+        assert json.loads(jsonl_line(row, show_cost=False)) == dict(out)
+        assert json.loads(jsonl_line(row)) == row
+        cells = next(csv.reader(io.StringIO(csv_line(row, "mem:1", demo=False, show_cost=False))))
+        assert dict(zip(CSV_COLUMNS, cells))["result_summary"] == hidden
+        shown = next(csv.reader(io.StringIO(csv_line(row, "mem:1", demo=False))))
+        assert dict(zip(CSV_COLUMNS, shown))["result_summary"] == row["result_summary"]
+    # Every other row is returned as it is: evidence and an ordinary status row.
+    status = {"ts": _ts(9), "actor": "user1", "action_type": "status", "result_summary": "cost=4 $9"}
+    assert withheld_cost(rows[-1]) is rows[-1]
+    assert withheld_cost(status) is status
+
+
+async def _stored_spend_rows(state: AppState) -> list[dict[str, Any]]:
+    page = await state.control_audit.search_page(
+        build_predicate(AuditFilters(case_id="case-xfb2")), order="asc", limit=10)
+    return [hit.doc for hit in page.hits]
+
+
+@pytest.mark.parametrize("fmt", ["csv", "jsonl"])
+@pytest.mark.parametrize("cost_view", [True, False])
+async def test_the_job_withholds_spend_figures_from_an_exporter_without_cost_view(
+    store_state, monkeypatch, fmt, cost_view
+):
+    """The grant is the job actor's at run time, and the narrow rule of GET /api/audit
+    applies: only the spend writers' ``result_summary``; tool output and the evidence
+    row stay as recorded."""
+    rows = _spend_rows()
+    await _write_rows(store_state, rows)
+    _deny_cost_view(store_state.job_runner, monkeypatch, {"now": not cost_view})
+    final = await _run(store_state, _job(_params(format=fmt), count=len(rows)))
+    assert final.status == JobStatus.SUCCEEDED, final.failures
+    path = await store_state.job_runner.verify_artifact(final.artifact)
+    summaries, outputs = _exported_summaries(path.read_bytes(), fmt)
+    assert summaries == (_SPEND_SHOWN if cost_view else _SPEND_HIDDEN)
+    assert outputs == [None, None, "cost=0.0213 $0.02", None, "wire amount=$5000 cost=3"]
+    stored = await _stored_spend_rows(store_state)
+    if fmt == "jsonl":
+        # Every other field of a withheld row is the stored row's.
+        docs = [json.loads(line) for line in path.read_bytes().split(b"\n") if line]
+        assert [{k: v for k, v in d.items() if k != "result_summary"} for d in docs] == [
+            {k: v for k, v in s.items() if k != "result_summary"} for s in stored]
+    # Display only: the stored rows keep the recorded figures.
+    assert [doc["result_summary"] for doc in stored] == _SPEND_SHOWN
+
+
+async def test_a_cost_grant_removed_while_the_export_runs_hides_figures_from_the_next_page(
+    store_state, monkeypatch
+):
+    """The grant is checked again at every page boundary; once withheld, a figure stays
+    withheld for the rest of the file."""
+    monkeypatch.setattr(audit_export, "EXPORT_PAGE_SIZE", 2)
+    rows = _spend_rows()
+    await _write_rows(store_state, rows)
+    runner = store_state.job_runner
+    revoked = {"now": False}
+    _deny_cost_view(runner, monkeypatch, revoked)
+    original_checkpoint = runner.checkpoint
+
+    async def checkpoint(job_id: str, token: str, **kwargs: Any) -> Job:
+        # The grant is removed once the first page (two rows) is written.
+        if (kwargs.get("done") or 0) >= 2:
+            revoked["now"] = True
+        return await original_checkpoint(job_id, token, **kwargs)
+
+    monkeypatch.setattr(runner, "checkpoint", checkpoint)
+    final = await _run(store_state, _job(_params(), count=len(rows)))
+    assert final.status == JobStatus.SUCCEEDED, final.failures
+    path = await runner.verify_artifact(final.artifact)
+    summaries, _outputs = _exported_summaries(path.read_bytes(), "csv")
+    assert summaries == _SPEND_SHOWN[:2] + _SPEND_HIDDEN[2:]
+
+
+def test_an_auditor_without_cost_view_downloads_the_export_without_spend_figures(tmp_path):
+    """End to end with sign-in and RBAC: the auditor's export follows ``cost:view`` as the
+    audit log page does, in both formats; with the grant, the figures are in the file."""
+    with _auth_client(tmp_path) as client:
+        _seed(client, _spend_rows())
+        _as(client, "auditor")
+        state = _state(client)
+
+        def export(fmt: str, key: str) -> list[str]:
+            accepted = _submit(client, _params(format=fmt), key=key)
+            assert accepted.status_code == 202, accepted.text
+            final = _wait(client, accepted.json()["job_id"])
+            assert final["status"] == "succeeded", final
+            download = client.get(f"/api/jobs/{final['job_id']}/artifact")
+            assert download.status_code == 200
+            return _exported_summaries(download.content, fmt)[0]
+
+        def page() -> list[str]:
+            listed = client.get("/api/audit", params={
+                "case_id": "case-xfb2", "from": FROM, "to": TO, "order": "asc", "limit": "50"})
+            assert listed.status_code == 200, listed.text
+            return [r.get("result_summary") for r in listed.json()["records"]]
+
+        assert page() == _SPEND_SHOWN
+        assert export("csv", "xfb2-shown-csv") == _SPEND_SHOWN
+        assert export("jsonl", "xfb2-shown-jsonl") == _SPEND_SHOWN
+
+        async def deny_cost_view() -> None:
+            prefs = state.prefs.model_copy(deep=True)
+            prefs.rbac.denies.setdefault("auditor", {})["cost"] = ["view"]
+            await state.update_prefs(prefs)
+
+        client.portal.call(deny_cost_view)
+        # The file holds what the audit log page shows the same person.
+        assert page() == _SPEND_HIDDEN
+        assert export("csv", "xfb2-hidden-csv") == _SPEND_HIDDEN
+        assert export("jsonl", "xfb2-hidden-jsonl") == _SPEND_HIDDEN
