@@ -13722,3 +13722,39 @@
 - Tests: built stamped the way CI builds it, the entry chunk is 318,008 B (13,084 B inside the 331,092 B budget); bundle-first-paint with the built dist: 30 passed. The FXF, trace, case detail, sign-in, Standup and Agent effectiveness Console tests: 801 passed; tsc clean. The FXF, engine extraction and app knowledge backend modules: 273 passed.
 - Status: done.
 - Next: XFREC (the records for every package after XFR) and A11Y (the closing accessibility and phone sweep) together; then the closing gates, SPEC 8.4 and the pull request into Testing.
+
+
+### 2026-11-26 00:00Z - XFREC (records sub-agent) - Records for every Round 16 package after XFR and the acceptance pass
+- Context: Round 16 SPEC records were last written by XFR. XFINT, WP16X, XFUI2, WP17B, XFUI3, WP17C, the acceptance pass, FXB, FXA1, FXC, FXA2, FXD2, FXE, FXD1, FXF and WP17D were unrecorded.
+- Did: CHANGELOG Round 16 fold-in: phone chip ring with "AI", row name with no elapsed time, Remember me with no duration, Sign out, decision lane sentence, trace Runbook actor and filter, explain additions, sign-in, Demo and record fixes, screenshots (44 of 66), lazy two-factor card (318,008 B). Removed the stale lower-case verdict line. SPEC: 8.1 amendments (D6, top-aligned column, aiRunAccessibleText(view), phone chip word, fix-package contract changes), 8.2 lines with commits, an A11Y placeholder line and the WP19 line, 8.3 limitations, new 8.6 Acceptance pass. 8.4 left for the closing gates. New acceptance/acceptance-pass.md. wp16-browser-checks.md check 8 note. known-limitations.md mirror. Help Center pages case-manager, investigation and explainable-numbers updated. models.py TraceSpan.kind comment names runbook_ai. AGENTS.md and HANDOFF name the acceptance pass. Knowledge corpus regenerated (1,105 chunks). New test_round16_xfrec_records.py; test_round16_xfr.py follows the phone chip wording.
+- Tests: docs/records/knowledge/version selection 1108 passed, 1 skipped; records and xfr tests 112 passed; app knowledge and chat golden set pass; check_docs (90 pages), build_app_knowledge --check, check_version, build_release_notes --check and docs:check pass; dash scan clean.
+- Status: done; commit 2b2e9c2 on r16-xfrec, HEAD detached.
+- Next: orchestrator writes SPEC 8.4 and the Round 16 figures after the closing gates, records A11Y in 8.2 and 8.6, and owns the PRE_REVAMP_ENTRY_BYTES ratchet and WP19.
+
+### 2026-11-26 21:30Z - XFREC reviewer - Records review: Entity investigation naming, export help, phone targets, demo banner
+- Context: Independent review of XFREC (r16-xfrec at 2b2e9c2, base ba3fc2a), the records for every Round 16 package after XFR and the acceptance pass. I checked it against the brief, SPEC section 8, late-parts.md, acceptance-raw.json, the fix briefs and reports, and the merged code.
+- Did:
+  - Verified every 8.2 build, review and base commit, the 66 acceptance gaps (23 medium, 43 low) and where each went, and the code facts behind the CHANGELOG, SPEC 8.1, 8.3 and 8.6 and known-limitations.md.
+  - Reverted the docs to the base: all 13 builder records tests failed, then passed after restore.
+  - Fixed in 6950a30:
+    - Entity investigation is named as in the Console in four CHANGELOG lines (they said Investigate page or Investigate).
+    - "Abort the export" is no longer claimed to reach Analytics > Jobs; it cites Data export first.
+    - The CHANGELOG lists the sign-in phone targets FXC raised to 44 px instead of "every phone target".
+    - The SLA widget's link is said to open the Standup.
+    - The People lane note sits next to the replaced-close warning, the end-of-run line names the case's own dialogs, and the screenshot refresh says seventeen images.
+    - The run-demo.sh banner's unescaped $0 is escaped.
+  - Five new regression tests in test_round16_xfrec_records.py, each failing before its fix.
+- Tests:
+  - The docs, records, knowledge, version, changelog, release_notes and whats_new selection: green.
+  - The records, xfr, app knowledge, chat golden set and build identity files: 964 collected, exit 0.
+  - check_docs (90 pages), build_app_knowledge --check (1105 chunks), check_version, build_release_notes --check, check_ci_contract and docs:bundle plus docs:check: all pass.
+  - Dash scan clean. decide() and risk.py untouched.
+- Status: done; r16-xfrec at 6950a30, HEAD detached.
+- Next: orchestrator owns the PRE_REVAMP_ENTRY_BYTES ratchet, SPEC 8.4, the A11Y lines in 8.2 and 8.6, and WP19. If A11Y raises the two-factor setup's Copy and Download buttons to 44 px, test_the_sign_in_phone_target_record_matches_the_setup_card fails until that limit is removed from known-limitations.md and SPEC 8.3.
+
+### 2026-11-26 21:00Z - orchestrator - XFREC merged; a container restart recovered
+- Context: XFREC, the records for every package after XFR (CHANGELOG, SPEC 8.1, 8.2, 8.3 and the new 8.6 Acceptance pass, the Help Center limits, the acceptance pass record), reviewed independently. A container restart stopped its first review and the A11Y build; both were resumed (A11Y from a saved work-in-progress commit and its surviving sweep results).
+- Did: merged r16-xfrec (build 2b2e9c2, review 6950a30) cleanly. The knowledge corpus (1,105 chunks) and the release notes are current.
+- Tests: on the merged tree, the XFREC, XFR, XFD, WP18B, WP17C and WP17D records, Help Center, hidden characters, app knowledge and golden set modules: 913 passed. check_docs (90 pages) and check_version pass.
+- Status: done.
+- Next: A11Y after its review; then the entry baseline decision, the closing gates, SPEC 8.4 and the baselines, and the pull request into Testing.
