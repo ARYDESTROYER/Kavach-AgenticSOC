@@ -383,6 +383,7 @@ async def test_a_policy_close_keeps_the_automation_record(app_state) -> None:
     # Round 16 cross-cutting review: the close keeps the cross-source links and the
     # sent-notification record too, so a linked candidate never leaves the link one-sided.
     stored = await app_state.cases.get(existing.case_id)
+    assert existing.notifications_sent  # the record the close must keep is not empty
     for closed in (case, stored):
         _assert_links_carried(closed)
         assert closed.notifications_sent == existing.notifications_sent

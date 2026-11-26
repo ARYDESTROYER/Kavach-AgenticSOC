@@ -250,10 +250,10 @@ class CaseLocks:
     from erasing the other's work. A ``WeakValueDictionary`` bounds it, as the signature
     locks are bounded: a lock exists only while someone holds a reference to it.
 
-    Lock order: the pipeline (and ``engine.ingest.attach_cluster`` and post-decision
-    threshold automation) takes a case lock only INSIDE the cluster's signature lock; a
-    person's action, a cross-source link write and the detached notifier take the case
-    lock alone. No path holds a case lock while it waits for a signature lock, and no
+    Lock order: the pipeline (and ``engine.ingest.attach_cluster`` and a run's
+    post-decision threshold automation) takes a case lock only INSIDE the cluster's
+    signature lock; a person's action, a cross-source link write, the detached notifier
+    and the Demo seed's automation take the case lock alone. No path holds a case lock while it waits for a signature lock, and no
     path holds one case lock while it waits for another."""
 
     def __init__(self) -> None:
