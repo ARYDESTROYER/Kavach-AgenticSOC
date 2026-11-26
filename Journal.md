@@ -13193,3 +13193,45 @@
 - Tests: the packages' affected tests and static gates pass; the whole backend suite runs on the integrated tree now.
 - Status: in progress.
 - Next: XFR, WP17B, the polish package and the docs screenshot refresh; then the closing gates.
+
+
+### 2026-11-26 09:40Z - WP17B (subagent) - release screenshots for 0.2.0 and What's new images
+- Context: SPEC WP17, screenshots half. Capture the SPEC 5.3 screenshot list in light and dark from the seeded Demo, wire the newest What's new update (0.2.0.2026-12) per the WP17A capture plan, and record every capture.
+- Did:
+  - Captured 76 WebP files into docs/assets/releases/0.2.0/: Chromium at 1440 by 900 and 390 by 844, device scale 2, each at most 250 KB. Themes were set with the top-bar toggle and checked by luminance and by eye.
+  - docs/releases/notes/0.2.0.json: seven featured highlights with light and dark images, alt text and captions (ai-working, case-workspace, repository-identity moved to third, case-tabs, explain-numbers, whats-new, sign-in). case-records got a non-featured image, and explain-numbers.help now points to analyst/explainable-numbers/. No update id changed.
+  - Regenerated release-notes.gen.json, docs/releases/whats-new.md and the app knowledge corpus.
+  - Wrote docs/research/2026-11-round16/acceptance/screenshots.md: every capture with its item, bytes and pixels, the method, the live checks, the limitations and the findings.
+- Tests:
+  - All pass: build_release_notes --check, check_version, test_build_release_notes (16), build_app_knowledge --check (1079 chunks), check_docs (90 pages), check_ci_contract, docs:check, typecheck, build:app with bundle-first-paint (28 passed, 1 skipped), and the What's new Vitest files (71).
+  - Knowledge, notes and What's new backend tests: 237 passed, 1 failed. The failure (test_app_help_tool_keeps_a_destination_the_console_labels_confirm) also fails at base 08db702.
+  - Live in both themes: the welcome showed once for an upgraded account with its images loaded, Got it cleared it, and the What's new page loaded all 18 figures.
+- Status: done on r16-wp17b, 1058f85.
+- Next:
+  - Decide whether the 60 review-only captures (about 6 MB) should leave the Help Center bundle; that needs a mkdocs.yml exclude_docs entry.
+  - Look at the Demo mismatch between the Brief's Decision lane, which reads stored settings, and the server's decision reading, which uses the sandbox policy.
+  - The SPEC 5.3 refresh of docs/assets/screenshots/ is still open.
+
+### 2026-11-26 09:55Z - WP17B review (subagent) - release screenshots and What's new images checked
+- Context: Independent review of WP17B (r16-wp17b, 1058f85 on 08db702), the screenshots half of SPEC WP17: the SPEC 5.3 captures, the newest What's new update's images, and acceptance/screenshots.md.
+- Did:
+  - Read the diff against SPEC 4.7, 4.10 and 5.3 and the WP17A capture plan. The edits stay within the notes, the generated outputs, the new release assets and the acceptance record.
+  - decide(), engine/risk.py, docs/assets/screenshots/ and WP17A's older-update copies are untouched, and no update id changed.
+  - Looked at all 76 images in both themes: each covers its item, each theme matches its name, and none shows a secret, real email or real name. No file carries EXIF, XMP or ICC metadata.
+  - Cross-checked the acceptance table against the files: 76 rows, 0 mismatches.
+  - Live seeded Demo checks: an upgraded Admin saw the welcome once per theme with the right-theme hero, and Got it cleared it. The What's new page rendered 0.2.0 (66 highlights, 18 figures, none broken) and 0.1.1 (9) at 1440 by 900 and 390 by 844, with no overflow and no console errors.
+  - No defects confirmed, so no commit.
+- Tests:
+  - All pass: build_release_notes --check, check_version, test_build_release_notes (16), build_app_knowledge --check (1079 chunks), check_docs (90 pages), check_ci_contract, the spine and version guards, the What's new Vitest files (71), typecheck, check:types, gates, lint, the full docs and app build, bundle-first-paint (28 passed, 1 skipped) and docs:check.
+  - test_app_help_tool_keeps_a_destination_the_console_labels_confirm fails, but also with the 08db702 corpus, so it predates this package.
+- Status: done; r16-wp17b unchanged at 1058f85, worktree detached.
+- Next:
+  - The mkdocs.yml owner decides whether the 60 review-only captures (about 6.0 MiB) leave the Help Center bundle and Console image.
+  - The refresh of docs/assets/screenshots/ and a recapture after XFUI2, XFINT and XFR land are still open.
+
+### 2026-11-26 11:15Z - orchestrator - WP17B merged; whole backend suite green on the integrated tree
+- Context: the release screenshots and the What's new images (SPEC WP17, section 5.3), and the closing backend run.
+- Did: merged r16-wp17b (1058f85; its review found nothing to fix); regenerated the knowledge corpus on the merged tree (1,085 chunks).
+- Tests: the whole backend suite on the integrated tree at 7fb4d1c (every backend change of the round; proxy and AWS variables unset, as CI runs): 13,901 passed, 29 skipped, 0 failed, in 30 min 49 s. After the WP17B merge: test_app_knowledge, test_chat_golden_set and the release notes and What's new tests 829 passed; build_app_knowledge --check and build_release_notes --check pass.
+- Status: in progress.
+- Next: the docs screenshot refresh (and the 60 review-only captures moved out of the Help Center bundle), XFR, XFUI3; then test:strict and every gate once more; SPEC section 8.4; the pull request into Testing.
