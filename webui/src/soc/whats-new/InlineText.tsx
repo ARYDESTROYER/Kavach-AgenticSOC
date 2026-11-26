@@ -11,8 +11,13 @@ export function InlineText({ text }: { text: string }): React.ReactElement {
     <>
       {parts.map((part, index) => {
         if (part.length > 2 && part.startsWith('`') && part.endsWith('`')) {
+          // A long value (an .env line) wraps inside the column instead of running off a
+          // phone-width screen.
           return (
-            <code key={index} className="rounded border border-border bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
+            <code
+              key={index}
+              className="rounded border border-border bg-muted px-1 py-0.5 font-mono text-xs text-foreground [overflow-wrap:anywhere]"
+            >
               {part.slice(1, -1)}
             </code>
           );

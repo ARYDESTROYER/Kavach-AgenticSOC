@@ -145,7 +145,7 @@ export default function WhatsNew(): React.ReactElement {
                 onCheckedChange={(on) => void patchMisc({ whats_new_auto: on })}
               />
               <Label htmlFor="whats-new-page-auto" className="text-sm font-normal text-foreground">
-                Show after updates
+                Show What&apos;s new after updates
               </Label>
             </div>
             <Button type="button" variant="outline" size="sm" onClick={() => setWelcome(true)}>

@@ -80,7 +80,8 @@ def test_investigate_neutral_400_when_truly_empty(client, mock_provider):
     # NEUTRAL + specific so the FE can render an empty-state, not a scary error.
     assert "No events found" in detail
     assert "198.51.100.77" in detail
-    assert "now-365d" in detail  # widest rung was tried (~1 year)
+    # The widest rung was tried (~1 year), named in words, never the raw token (FXE).
+    assert "the last 365 days" in detail and "now-365d" not in detail
 
 
 def test_investigate_respects_requested_lookback_override(client, mock_provider):

@@ -85,7 +85,11 @@ decision was the agent's automatic close): "Cases the AI agent closed are left o
 them instead." The menus say how many of the selected cases that is, the confirmation
 repeats it, and when every selected case is one of them nothing is queued; review such a
 case on its own (see [Cases the agent closed](case-manager.md#cases-the-agent-closed)).
-Bulk changes are unavailable in Demo Mode. Long-running Case
+The bulk bar sits at the foot of the screen, centred on the page beside the navigation
+rail and never over it. When its actions do not fit on one row they wrap onto a second,
+so every action stays in view.
+Bulk changes are unavailable in Demo Mode; the bar says so on its own line above its
+actions. Long-running Case
 Manager operations snapshot the
 selected case IDs and submit one server-owned background job. The dialog closes after
 `202 Accepted`; work continues across navigation or reload and reports progress in

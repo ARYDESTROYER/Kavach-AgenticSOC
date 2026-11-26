@@ -2984,6 +2984,15 @@ class AppState:
                         "Seeded demo super_admin '%s' (change the password!)",
                         created.username,
                     )
+                    # What's new (SPEC D7): on an installation whose setup is already
+                    # complete, this account is new and never ran the update, so it
+                    # starts with the newest update marked seen. Before setup completes
+                    # (a fresh install, or the local demo, which seeds before it posts
+                    # setup/complete) nothing is stamped and the welcome shows once.
+                    if self.prefs.setup_complete:
+                        from .whats_new import stamp_new_account
+
+                        await stamp_new_account(self, created.username)
         except Exception as exc:  # noqa: BLE001 — seeding is best-effort
             logger.warning("User seeding failed (%s); continuing", exc)
 
