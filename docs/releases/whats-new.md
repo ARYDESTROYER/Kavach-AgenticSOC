@@ -34,36 +34,91 @@ Visible AI work, explainable numbers and a clearer Case Manager.
     - The Case Manager item in the navigation counts the cases the AI is working on.
     - The run's result stays authoritative. A close made while it runs is replaced by its result, and the close dialogs say so before you act.
     - When a run you started finishes, or a run replaces your close, your Inbox tells you.
+
+<figure markdown="span">
+[![Case header with the AI working chip and its popover open, titled AI investigation running, saying You started it, with the time the run has taken so far.](../assets/releases/0.2.0/ai-working-light.webp#only-light) ](../assets/releases/0.2.0/ai-working-light.webp)
+[![Case header with the AI working chip and its popover open, titled AI investigation running, saying You started it, with the time the run has taken so far.](../assets/releases/0.2.0/ai-working-dark.webp#only-dark) ](../assets/releases/0.2.0/ai-working-dark.webp)
+<figcaption>The AI working chip and its popover.</figcaption>
+</figure>
+
 - **A clearer Case Manager** (Improved, Cases). Each part of a case has one place. The header takes two lines, the case facts sit in their own column, and the queue folds away when you need the width. [Read more](../analyst/case-manager.md#read-the-workspace).
     - The header's second line keeps the case number, severity, status, risk, AI verdict, owner and SLA on one line.
     - Press **]** to show or hide the case facts. In a narrow pane they open in a side sheet.
     - Press **[** to fold the queue into a narrow strip. J and K still move through the cases.
     - The Brief opens with the case's next step and four lanes: Evidence, AI, Decision and People.
+
+<figure markdown="span">
+[![Case Manager with the queue on the left, one row marked AI working, and an open case with its two-line header, the six tabs and the case facts column on the right.](../assets/releases/0.2.0/case-workspace-light.webp#only-light) ](../assets/releases/0.2.0/case-workspace-light.webp)
+[![Case Manager with the queue on the left, one row marked AI working, and an open case with its two-line header, the six tabs and the case facts column on the right.](../assets/releases/0.2.0/case-workspace-dark.webp#only-dark) ](../assets/releases/0.2.0/case-workspace-dark.webp)
+<figcaption>The Case Manager in this update.</figcaption>
+</figure>
+
+- **A new repository identity for updates** (Improved, Administration). Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater. [Read more](../operations/upgrades.md#the-repository-was-renamed).
+    - Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact letter case.
+    - The bootstrap refuses a missing line or the former name, prints the line to add, and never edits .env.
+    - Releases 0.1.12 and earlier stay valid under the former name. The public Help Center moved to the new Pages address.
+
+<figure markdown="span">
+[![Updates and releases settings with the Public repository field set to the ARYDESTROYER/Kavach-AgenticSOC GitHub address and the Stable and Testing branch fields below it.](../assets/releases/0.2.0/repository-identity-light.webp#only-light) ](../assets/releases/0.2.0/repository-identity-light.webp)
+[![Updates and releases settings with the Public repository field set to the ARYDESTROYER/Kavach-AgenticSOC GitHub address and the Stable and Testing branch fields below it.](../assets/releases/0.2.0/repository-identity-dark.webp#only-dark) ](../assets/releases/0.2.0/repository-identity-dark.webp)
+<figcaption>The new repository identity in Settings.</figcaption>
+</figure>
+
 - **Case tabs in a new order** (Improved, Cases). Six tabs: Brief, Evidence, AI investigation, Response, Activity and Chat. Alt+2, Alt+4 and Alt+5 now open Evidence, Response and Activity, and Chat moves to Alt+6. [Read more](../analyst/case-manager.md#the-six-tabs).
     - Alt+1 to Alt+6 open the tabs in that order.
     - Before, Alt+2 opened Runbook, Alt+4 opened Collaboration and Alt+5 opened Chat.
     - A link to the retired Timeline or Threat context tab opens Evidence at the matching section.
-- **Every number shows its math** (New, Cases). Hover a risk score, a decision or a dashboard figure for its formula with the real numbers. Press it for the inputs, the steps and the rounding. [Read more](../analyst/kpi-glossary.md#risk-score).
+
+<figure markdown="span">
+[![Brief tab of a case under the six tabs Brief, Evidence, AI investigation, Response, Activity and Chat, with the Next step row above the Evidence, AI, Decision and People lanes.](../assets/releases/0.2.0/case-tabs-light.webp#only-light) ](../assets/releases/0.2.0/case-tabs-light.webp)
+[![Brief tab of a case under the six tabs Brief, Evidence, AI investigation, Response, Activity and Chat, with the Next step row above the Evidence, AI, Decision and People lanes.](../assets/releases/0.2.0/case-tabs-dark.webp#only-dark) ](../assets/releases/0.2.0/case-tabs-dark.webp)
+<figcaption>The six case tabs, with the Brief open.</figcaption>
+</figure>
+
+- **Every number shows its math** (New, Cases). Hover a risk score, a decision or a dashboard figure for its formula with the real numbers. Press it for the inputs, the steps and the rounding. [Read more](../analyst/explainable-numbers.md).
     - On a case: the risk score, the close or escalate decision, the priority, the SLA and the AI cost.
     - On dashboards and Metrics: the KPI figures, with the cases behind them.
     - **Copy calculation** copies the whole arithmetic.
     - A case scored before this version keeps its stored factors. Where its inputs were not kept, the panel says they were not recorded.
+
+<figure markdown="span">
+[![Risk score panel for one case listing each factor, its weight and its value, the weighted sum, the rounding and the total, with a Copy calculation button.](../assets/releases/0.2.0/explain-numbers-light.webp#only-light) ](../assets/releases/0.2.0/explain-numbers-light.webp)
+[![Risk score panel for one case listing each factor, its weight and its value, the weighted sum, the rounding and the total, with a Copy calculation button.](../assets/releases/0.2.0/explain-numbers-dark.webp#only-dark) ](../assets/releases/0.2.0/explain-numbers-dark.webp)
+<figcaption>The risk score with its math.</figcaption>
+</figure>
+
 - **What's new and Communication** (New, Help). This welcome appears once after each update. The Communication group holds Inbox and What's new, the release tracker.
     - Open **Communication**, then **What's new**, to read every release with its highlights and screenshots.
     - Turn the welcome off with **Show What's new after updates** in Settings, Account, Appearance.
+
+<figure markdown="span">
+[![Communication, What's new page with the version rail listing 0.2.0 and 0.1.1, the 0.2.0 release summary, area filters and the newest update's highlights.](../assets/releases/0.2.0/whats-new-light.webp#only-light) ](../assets/releases/0.2.0/whats-new-light.webp)
+[![Communication, What's new page with the version rail listing 0.2.0 and 0.1.1, the 0.2.0 release summary, area filters and the newest update's highlights.](../assets/releases/0.2.0/whats-new-dark.webp#only-dark) ](../assets/releases/0.2.0/whats-new-dark.webp)
+<figcaption>The release tracker in Communication.</figcaption>
+</figure>
+
 - **A quieter sign-in page** (Improved, Security). The sign-in page uses the Console's own colours and moves once as it opens. The Remember me row shows only its name. [Read more](../getting-started/first-run.md#sign-in-later).
     - Checking **Remember me** opens a warning first. It says how long this device stays signed in.
     - When an administrator turned Remember me off, or the connection is not secure, the row stays visible and disabled, with the reason.
     - A single sign-on error shows a fixed sentence, never text from the address bar.
+
+<figure markdown="span">
+[![Sign-in page at the password step with the masked password field, a Remember me checkbox with no duration, and the Sign in button.](../assets/releases/0.2.0/sign-in-light.webp#only-light) ](../assets/releases/0.2.0/sign-in-light.webp)
+[![Sign-in page at the password step with the masked password field, a Remember me checkbox with no duration, and the Sign in button.](../assets/releases/0.2.0/sign-in-dark.webp#only-dark) ](../assets/releases/0.2.0/sign-in-dark.webp)
+<figcaption>The sign-in page.</figcaption>
+</figure>
+
 - **Every case record within reach** (New, Cases). The Evidence tab lists the raw events behind a case. The case facts open every stored field and each AI call with its cost. [Read more](../analyst/case-manager.md#case-facts).
     - Open an event for every field as a table or as JSON, then copy or download it.
     - **View all fields** in the case facts shows every stored field of the case.
     - The cost in the case facts lists each AI call with its tokens and its cost formula.
     - Raw events need the `sources:read` permission. AI costs need `cost:view`.
-- **A new repository identity for updates** (Improved, Administration). Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater. [Read more](../operations/upgrades.md#the-repository-was-renamed).
-    - Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact letter case.
-    - The bootstrap refuses a missing line or the former name, prints the line to add, and never edits .env.
-    - Releases 0.1.12 and earlier stay valid under the former name. The public Help Center moved to the new Pages address.
+
+<figure markdown="span">
+[![Case facts with the View all fields sheet open, showing every stored field of the case as a searchable tree with Copy JSON and Download buttons.](../assets/releases/0.2.0/case-records-light.webp#only-light) ](../assets/releases/0.2.0/case-records-light.webp)
+[![Case facts with the View all fields sheet open, showing every stored field of the case as a searchable tree with Copy JSON and Download buttons.](../assets/releases/0.2.0/case-records-dark.webp#only-dark) ](../assets/releases/0.2.0/case-records-dark.webp)
+</figure>
+
 - **Access and account security fixes** (Security). Case reads, the settings read and Standup now check permissions, and account security is stricter. [Read more](../administration/authentication.md#sessions).
     - A role without the permission now gets an Access denied answer from these reads.
     - An account an administrator creates or resets must change its temporary password before anything else.

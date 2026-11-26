@@ -26,7 +26,14 @@
           ],
           "requires": "cases:read",
           "open": {"page": "case_manager"},
-          "help": "analyst/case-manager/"
+          "help": "analyst/case-manager/",
+          "featured": true,
+          "screenshot": {
+            "light": "ai-working-light.webp",
+            "dark": "ai-working-dark.webp",
+            "alt": "Case header with the AI working chip and its popover open, titled AI investigation running, saying You started it, with the time the run has taken so far.",
+            "caption": "The AI working chip and its popover."
+          }
         },
         {
           "id": "case-workspace",
@@ -42,7 +49,35 @@
           ],
           "requires": "cases:read",
           "open": {"page": "case_manager"},
-          "help": "analyst/case-manager/#read-the-workspace"
+          "help": "analyst/case-manager/#read-the-workspace",
+          "featured": true,
+          "screenshot": {
+            "light": "case-workspace-light.webp",
+            "dark": "case-workspace-dark.webp",
+            "alt": "Case Manager with the queue on the left, one row marked AI working, and an open case with its two-line header, the six tabs and the case facts column on the right.",
+            "caption": "The Case Manager in this update."
+          }
+        },
+        {
+          "id": "repository-identity",
+          "kind": "improved",
+          "area": "administration",
+          "title": "A new repository identity for updates",
+          "summary": "Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater.",
+          "details": [
+            "Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact letter case.",
+            "The bootstrap refuses a missing line or the former name, prints the line to add, and never edits .env.",
+            "Releases 0.1.12 and earlier stay valid under the former name. The public Help Center moved to the new Pages address."
+          ],
+          "requires": "system_updates:read",
+          "help": "operations/upgrades/#the-repository-was-renamed",
+          "featured": true,
+          "screenshot": {
+            "light": "repository-identity-light.webp",
+            "dark": "repository-identity-dark.webp",
+            "alt": "Updates and releases settings with the Public repository field set to the ARYDESTROYER/Kavach-AgenticSOC GitHub address and the Stable and Testing branch fields below it.",
+            "caption": "The new repository identity in Settings."
+          }
         },
         {
           "id": "case-tabs",
@@ -57,7 +92,14 @@
           ],
           "requires": "cases:read",
           "open": {"page": "case_manager"},
-          "help": "analyst/case-manager/#the-six-tabs"
+          "help": "analyst/case-manager/#the-six-tabs",
+          "featured": true,
+          "screenshot": {
+            "light": "case-tabs-light.webp",
+            "dark": "case-tabs-dark.webp",
+            "alt": "Brief tab of a case under the six tabs Brief, Evidence, AI investigation, Response, Activity and Chat, with the Next step row above the Evidence, AI, Decision and People lanes.",
+            "caption": "The six case tabs, with the Brief open."
+          }
         },
         {
           "id": "explain-numbers",
@@ -73,7 +115,14 @@
           ],
           "requires": "cases:read",
           "open": {"page": "case_manager"},
-          "help": "analyst/kpi-glossary/#risk-score"
+          "help": "analyst/explainable-numbers/",
+          "featured": true,
+          "screenshot": {
+            "light": "explain-numbers-light.webp",
+            "dark": "explain-numbers-dark.webp",
+            "alt": "Risk score panel for one case listing each factor, its weight and its value, the weighted sum, the rounding and the total, with a Copy calculation button.",
+            "caption": "The risk score with its math."
+          }
         },
         {
           "id": "whats-new",
@@ -86,7 +135,14 @@
             "Turn the welcome off with **Show What's new after updates** in Settings, Account, Appearance."
           ],
           "open": {"page": "whats_new"},
-          "help": "releases/whats-new/"
+          "help": "releases/whats-new/",
+          "featured": true,
+          "screenshot": {
+            "light": "whats-new-light.webp",
+            "dark": "whats-new-dark.webp",
+            "alt": "Communication, What's new page with the version rail listing 0.2.0 and 0.1.1, the 0.2.0 release summary, area filters and the newest update's highlights.",
+            "caption": "The release tracker in Communication."
+          }
         },
         {
           "id": "sign-in",
@@ -99,7 +155,14 @@
             "When an administrator turned Remember me off, or the connection is not secure, the row stays visible and disabled, with the reason.",
             "A single sign-on error shows a fixed sentence, never text from the address bar."
           ],
-          "help": "getting-started/first-run/#sign-in-later"
+          "help": "getting-started/first-run/#sign-in-later",
+          "featured": true,
+          "screenshot": {
+            "light": "sign-in-light.webp",
+            "dark": "sign-in-dark.webp",
+            "alt": "Sign-in page at the password step with the masked password field, a Remember me checkbox with no duration, and the Sign in button.",
+            "caption": "The sign-in page."
+          }
         },
         {
           "id": "case-records",
@@ -115,21 +178,12 @@
           ],
           "requires": "cases:read",
           "open": {"page": "case_manager"},
-          "help": "analyst/case-manager/#case-facts"
-        },
-        {
-          "id": "repository-identity",
-          "kind": "improved",
-          "area": "administration",
-          "title": "A new repository identity for updates",
-          "summary": "Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater.",
-          "details": [
-            "Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact letter case.",
-            "The bootstrap refuses a missing line or the former name, prints the line to add, and never edits .env.",
-            "Releases 0.1.12 and earlier stay valid under the former name. The public Help Center moved to the new Pages address."
-          ],
-          "requires": "system_updates:read",
-          "help": "operations/upgrades/#the-repository-was-renamed"
+          "help": "analyst/case-manager/#case-facts",
+          "screenshot": {
+            "light": "case-records-light.webp",
+            "dark": "case-records-dark.webp",
+            "alt": "Case facts with the View all fields sheet open, showing every stored field of the case as a searchable tree with Copy JSON and Download buttons."
+          }
         },
         {
           "id": "access-fixes",
