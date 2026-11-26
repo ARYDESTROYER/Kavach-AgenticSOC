@@ -26,7 +26,8 @@
  * credentials. When auth is disabled this component is never mounted, so the
  * no-auth experience is untouched. All branding text is operator-set and rendered as
  * PLAIN text (#9). Nothing from the query string is ever rendered: a single sign-on
- * callback error is a code mapped to a fixed sentence (`ssoErrors.ts`, B25).
+ * callback error is a code mapped to a fixed sentence (`ssoErrors.ts`, B25). A refused
+ * request shows a fixed sentence too (`failText`), never the server's own text.
  *
  * a11y: WCAG 2.2 §3.3.8 Accessible Authentication (Round-5 W0-E): every credential
  * field carries the correct `autocomplete` for password-manager autofill
@@ -65,6 +66,7 @@ import {
 import { api, ApiError } from '@/lib/api';
 import type { LoginResult, SetupStatus, SsoProviderPublic } from '@/lib/types';
 import { useTheme } from '@/soc/theme';
+import { effectiveBrandingTheme, type BrandingLike } from '@/soc/theme-tokens';
 import { useOptionalAuth } from '@/soc/auth';
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
@@ -87,7 +89,8 @@ const loadRememberControls = () => import('@/soc/components/auth/RememberMeContr
 const loadRememberDevice = () => import('@/soc/components/auth/rememberMe');
 // The single sign-on error sentences (B25): a small lazy chunk, loaded only for a
 // callback error. The fallback is `SSO_ERROR_FALLBACK` in that module, repeated here
-// for a chunk that fails to load (login.sso-errors.test.tsx keeps the two equal).
+// for a chunk that fails to load (login.sso-errors.test.tsx keeps the two equal). It is
+// also the sentence for a provider button whose start request failed.
 const loadSsoErrors = () => import('@/soc/components/auth/ssoErrors');
 const SSO_ERROR_FALLBACK = 'Single sign-on failed. Try again.';
 type RememberUi = Awaited<ReturnType<typeof loadRememberControls>>;
@@ -100,6 +103,22 @@ const ACTION_BUTTON = 'h-11 w-full';
 const ERROR_ID = 'login-error';
 /** Why the code step went back to the password: its pending token is spent or lapsed. */
 export const MFA_PENDING_SPENT_TEXT = 'Too many wrong codes, or the sign-in step timed out. Sign in again.';
+/**
+ * The sentence for a refused request. This page never shows the server's own text (a
+ * proxy answers with an HTML page, a failed fetch with the browser's words). A step that
+ * sets a password (`setsPassword`: the first admin, a forced change) shows a 400 as the
+ * rule the server names and any other refusal as `wrong`; a sign-in step shows `wrong`
+ * for a 401 and one fixed sentence for anything else.
+ */
+function failText(err: unknown, wrong: string, setsPassword?: boolean): string {
+  const status = err instanceof ApiError ? err.status : 0;
+  if (!status || status >= 500) return 'Could not reach the server. Try again.';
+  // A 429 is the rate limiter or, on the code step, a second-factor lock of 5 to 60
+  // minutes (B19), so it never promises a minute.
+  if (status === 429) return 'Too many attempts. Wait a few minutes, then try again.';
+  if (setsPassword) return status === 400 ? (err as ApiError).message : wrong;
+  return status === 401 ? wrong : 'Sign in failed. Try again.';
+}
 /**
  * Focus a field once the next render has committed: the step that holds it may only
  * just be mounting, or the field may still be disabled by the request that just ended.
@@ -131,55 +150,22 @@ type SigninStep = 'identity' | 'password';
 /** Which way the form last moved, for the one step transition (null: no move yet). */
 type StepMotion = 'forward' | 'back' | null;
 
-const APPEARANCE: ReadonlyArray<{ mode: LoginThemeMode; label: string; Icon: LucideIcon }> = [
-  { mode: 'system', label: 'Use system theme', Icon: Monitor },
+/**
+ * The three appearance buttons. `system` follows a light or dark organization default
+ * before the device, as in the Console, so its button is named for that default while
+ * Branding sets one (`orgDefault`).
+ */
+const appearance = (
+  orgDefault: boolean,
+): ReadonlyArray<{ mode: LoginThemeMode; label: string; Icon: LucideIcon }> => [
+  {
+    mode: 'system',
+    label: orgDefault ? 'Use the organization default theme' : 'Use system theme',
+    Icon: Monitor,
+  },
   { mode: 'light', label: 'Light theme', Icon: Sun },
   { mode: 'dark', label: 'Dark theme', Icon: Moon },
 ];
-
-/**
- * The appearance control: three icon buttons, each pressed while its mode is the
- * stored one. `system` is the default and stays one press away. It delegates to
- * `ThemeProvider.setTheme`; signed-in pages use the preference layer instead.
- */
-function LoginThemeControl({
-  value,
-  onChange,
-}: {
-  value: LoginThemeMode;
-  onChange: (mode: LoginThemeMode) => void;
-}) {
-  return (
-    <div
-      data-login-theme-control
-      role="group"
-      aria-label="Appearance"
-      className="inline-flex items-center gap-0.5 rounded-full border border-border bg-card p-0.5"
-    >
-      {APPEARANCE.map(({ mode, label, Icon }) => (
-        <button
-          key={mode}
-          type="button"
-          title={label}
-          aria-label={label}
-          aria-pressed={value === mode}
-          onClick={() => onChange(mode)}
-          className={cn(
-            'inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors sm:h-7 sm:w-7',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card',
-            // The pressed state is an inverted fill: `bg-muted` alone would be about
-            // 1.1:1 on the card, a difference nobody can see (WCAG 1.4.11).
-            value === mode
-              ? 'bg-foreground text-background'
-              : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-          )}
-        >
-          <Icon className="h-4 w-4 sm:h-3.5 sm:w-3.5" aria-hidden />
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /**
  * The inline error under the field it belongs to: one line in the critical text
@@ -544,8 +530,8 @@ export default function Login({ onAuthenticated }: LoginProps) {
         rememberChecked ? { remember: true } : undefined,
       );
       window.location.assign(res.auth_url);
-    } catch (err) {
-      setPageError(err instanceof ApiError ? err.message : 'Could not start single sign-on.');
+    } catch {
+      setPageError(SSO_ERROR_FALLBACK);
       setSsoBusy(null);
     }
   };
@@ -609,7 +595,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
       }
       handOff();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not create the admin account.');
+      setError(failText(err, 'Could not create the admin account.', true));
       setBusy(false);
       focusSoon(setupPasswordRef);
     }
@@ -672,17 +658,8 @@ export default function Login({ onAuthenticated }: LoginProps) {
       handOff();
     } catch (err) {
       signinAttemptsRef.current += 1;
-      if (err instanceof ApiError) {
-        // A 429 is the per-IP rate limiter; surface the "slow down" message rather
-        // than the raw backend detail so the copy matches the throttle behaviour.
-        setError(
-          err.status === 429
-            ? 'Too many attempts. Please try again in a minute.'
-            : err.message || `Sign in failed (${err.status}).`,
-        );
-      } else {
-        setError('Could not reach the backend. Please try again.');
-      }
+      // A fixed sentence, never the server's detail (a 429 is the per-IP rate limiter).
+      setError(failText(err, 'The username or password is not correct.'));
       // Honest client-side count of failed attempts this session (see the ref note).
       setErrorDetail(
         signinAttemptsRef.current >= 2
@@ -728,7 +705,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
         returnToPassword(MFA_PENDING_SPENT_TEXT);
         return;
       }
-      setError(err instanceof ApiError ? err.message : 'Verification failed. Please try again.');
+      setError(failText(err, 'That code is not correct. Try again.'));
       // A fresh, empty set of cells with the first one focused.
       setOtpAttempt((n) => n + 1);
       setBusy(false);
@@ -797,7 +774,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
       await api.auth.changePassword(password, newPassword);
       handOff();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not change the password.');
+      setError(failText(err, 'Could not change the password.', true));
       setBusy(false);
       focusSoon(changePasswordRef);
     }
@@ -856,9 +833,40 @@ export default function Login({ onAuthenticated }: LoginProps) {
     return p.id;
   };
 
+  // The appearance control: three icon buttons, each pressed while its mode is the
+  // stored one. `system` is the default and stays one press away. It sets the mode on
+  // `ThemeProvider`; signed-in pages use the preference layer instead.
+  const orgDefault = /^(light|dark)$/.test(effectiveBrandingTheme(brandingBase as BrandingLike));
   const themeControl = (
     <div className="absolute right-4 top-4 z-10 sm:right-6 sm:top-6">
-      <LoginThemeControl value={theme} onChange={setTheme} />
+      <div
+        data-login-theme-control
+        role="group"
+        aria-label="Appearance"
+        className="inline-flex items-center gap-0.5 rounded-full border border-border bg-card p-0.5"
+      >
+        {appearance(orgDefault).map(({ mode, label, Icon }) => (
+          <button
+            key={mode}
+            type="button"
+            title={label}
+            aria-label={label}
+            aria-pressed={theme === mode}
+            onClick={() => setTheme(mode)}
+            className={cn(
+              'inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors sm:h-7 sm:w-7',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card',
+              // The pressed state is an inverted fill: `bg-muted` alone would be about
+              // 1.1:1 on the card, a difference nobody can see (WCAG 1.4.11).
+              theme === mode
+                ? 'bg-foreground text-background'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+            )}
+          >
+            <Icon className="h-4 w-4 sm:h-3.5 sm:w-3.5" aria-hidden />
+          </button>
+        ))}
+      </div>
     </div>
   );
   // One column for every mode: full width with 24px gutters on phones, top aligned so

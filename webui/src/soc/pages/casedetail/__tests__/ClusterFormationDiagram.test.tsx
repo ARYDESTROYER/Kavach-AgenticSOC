@@ -3,8 +3,14 @@
  * with a plain sentence-case label (no overline prop), uses the radius scale (no arbitrary
  * radius) and keeps its copy free of dashes used as punctuation.
  */
-import { render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const navigate = vi.fn();
+vi.mock('@/soc/router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/soc/router')>()),
+  useNavigateOptional: () => navigate,
+}));
 
 import { ClusterFormationDiagram, type ClusterExplanation } from '../ClusterFormationDiagram';
 
@@ -41,6 +47,40 @@ describe('ClusterFormationDiagram', () => {
   it('renders nothing when the explanation is unavailable', () => {
     const { container } = render(<ClusterFormationDiagram data={{ available: false }} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('names each related case by its case number and opens it (cross-cutting review)', () => {
+    navigate.mockReset();
+    render(
+      <ClusterFormationDiagram
+        data={{
+          ...data,
+          related_cases: [
+            {
+              case_id: 'demo-tune-00000049-0001',
+              case_number: 'CASE-000049',
+              relationship: 'same_entity_history',
+              verdict: 'false_positive',
+            },
+            { case_id: 'legacy-id-without-number', relationship: 'cross_source' },
+          ],
+        }}
+      />,
+    );
+    const list = screen.getByTestId('cluster-related-cases');
+    const link = within(list).getByRole('link', { name: 'Open case CASE-000049' });
+    // The number is the label; the internal id stays only in the tooltip.
+    expect(link).toHaveTextContent(/^CASE-000049$/);
+    expect(link).toHaveAttribute('title', 'demo-tune-00000049-0001');
+    expect(link).toHaveAttribute('href', '#/case_manager?caseId=demo-tune-00000049-0001');
+    expect(link).toHaveClass('font-mono', 'text-primary');
+    expect(list.textContent).not.toMatch(/demo-tune/);
+    fireEvent.click(link);
+    expect(navigate).toHaveBeenCalledWith('case_manager', { caseId: 'demo-tune-00000049-0001' });
+    // A row without a number still opens its case, named by the full id (never cut).
+    expect(
+      within(list).getByRole('link', { name: 'Open case legacy-id-without-number' }),
+    ).toHaveTextContent(/^legacy-id-without-number$/);
   });
 
   it('keeps the visible flow free of dashes used as punctuation', () => {
