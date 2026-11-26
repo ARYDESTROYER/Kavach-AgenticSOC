@@ -1247,7 +1247,7 @@ export interface paths {
         };
         /**
          * Get Case Activity
-         * @description The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed
+         * @description The case ACTIVITY timeline: the authoritative audit rows for the case UNIONed
          *     with the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays
          *     the source of truth (#2); the friendly feed adds human-readable collaboration
          *     events. All text is returned plain (#9). For a caller without ``cost:view`` the

@@ -22138,7 +22138,7 @@
     },
     "/api/cases/{case_id}/activity": {
       "get": {
-        "description": "The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed\nwith the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays\nthe source of truth (#2); the friendly feed adds human-readable collaboration\nevents. All text is returned plain (#9). For a caller without ``cost:view`` the\ncost figures a spend writer put into a row's ``result_summary`` are replaced, as\non the trace (Round 16, WP16: ``api.cost_text``).",
+        "description": "The case ACTIVITY timeline: the authoritative audit rows for the case UNIONed\nwith the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays\nthe source of truth (#2); the friendly feed adds human-readable collaboration\nevents. All text is returned plain (#9). For a caller without ``cost:view`` the\ncost figures a spend writer put into a row's ``result_summary`` are replaced, as\non the trace (Round 16, WP16: ``api.cost_text``).",
         "operationId": "get_case_activity_api_cases__case_id__activity_get",
         "parameters": [
           {

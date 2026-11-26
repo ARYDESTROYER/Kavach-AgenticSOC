@@ -416,7 +416,7 @@ async def get_case_activity(
     _=Depends(require_permission("cases", "read")),
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
-    """The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed
+    """The case ACTIVITY timeline: the authoritative audit rows for the case UNIONed
     with the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays
     the source of truth (#2); the friendly feed adds human-readable collaboration
     events. All text is returned plain (#9). For a caller without ``cost:view`` the
