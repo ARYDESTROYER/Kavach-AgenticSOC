@@ -13781,7 +13781,7 @@
 - Status: done. Every Round 16 code and records package is merged.
 - Next: the closing records (the A11Y lines, the entry ratchet), the closing gates once on the final tree, SPEC 8.4 and the baselines, an independent review of the closing records, and the pull request into Testing.
 
-### 2026-11-27 00:30Z - orchestrator - Round 16 closing gates and records
+### 2026-11-26 23:10Z - orchestrator - Round 16 closing gates and records
 - Context: every Round 16 package was merged (A11Y last). The closing records and the closing gates, run once on the final tree.
 - Did:
   - Closing records, part 1: the A11Y lines in SPEC 8.2 and 8.6 and the CHANGELOG, the material's semantic inks in ui-standard.md, and the second entry ratchet: PRE_REVAMP_ENTRY_BYTES 330,068 B to 317,962 B, the final tree measured with build:app (318,008 B stamped), 11,118 B below the Round 15 baseline, recorded in SPEC 8.1 and AGENTS.md.
