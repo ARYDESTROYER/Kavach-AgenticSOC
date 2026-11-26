@@ -63,6 +63,7 @@ from ..models import (
     TraceSpanDetail,
 )
 from ..utils import round_half_up
+from .cost_text import withhold_cost_text
 from .deps import get_state, has_permission, require_permission
 
 router = APIRouter(prefix="/api")
@@ -354,7 +355,7 @@ async def case_timeline(
             call = exact_calls[actor][index]
         span = _row_to_span(case_id, row, step, include_prompts,
                             usage.cost_by_role, usage.tokens_by_role, audit_llm_rows_by_role,
-                            call=call)
+                            call=call, show_cost=show_usage)
         spans.append(span)
         step += 1
 
@@ -589,6 +590,7 @@ def _row_to_span(
     llm_rows_by_role: dict[str, int],
     *,
     call: dict[str, Any] | None = None,
+    show_cost: bool = True,
 ) -> TraceSpan:
     """Project one audit row into a typed TraceSpan.
 
@@ -600,7 +602,11 @@ def _row_to_span(
     ``call`` is this row's own ledger row when the role has exactly one call per row
     (``cost_basis: exact``, with the call's latency); otherwise the row takes its even
     slice (``cost_basis: split``). The ``summary`` carries SHORT prose only; the
-    bounded record behind it is the span's ``detail``."""
+    bounded record behind it is the span's ``detail``.
+
+    ``show_cost`` false (a caller without ``cost:view``, Round 16 WP16) replaces every
+    cost figure a writer put into the row's text (``partial cost=``, ``cost=``, a ``$``
+    amount) in the summary and the detail (:func:`withhold_cost_text`)."""
     actor = str(_get(row, "actor", "") or "")
     at = str(_get(row, "action_type", "") or "")
     kind, actor_type = _span_kind(row)
@@ -653,6 +659,13 @@ def _row_to_span(
         tokens = int(tokens_by_role.get(actor, 0) / n)
         cost_basis = "split"
 
+    detail = _span_detail(row, include_prompts)
+    if not show_cost:
+        summary = withhold_cost_text(summary)
+        detail = detail.model_copy(update={
+            "result_summary": withhold_cost_text(detail.result_summary),
+            "tool_output_summary": withhold_cost_text(detail.tool_output_summary),
+        })
     return TraceSpan(
         case_id=case_id,
         step_index=step,
@@ -672,7 +685,7 @@ def _row_to_span(
             "model": model,
             "tool_name": tool_name or None,
         },
-        detail=_span_detail(row, include_prompts),
+        detail=detail,
         cost_basis=cost_basis,
     )
 

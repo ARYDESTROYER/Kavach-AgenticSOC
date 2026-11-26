@@ -2127,14 +2127,16 @@ def _guard_sso_settings_change(current: Preferences, validated: Preferences, *,
     on the role values is not enough, because repointing the issuer of a provider a
     Super admin is linked to would sign the editor in as that Super admin. Once the
     authority is held, every role value of a changed or added provider must be a
-    built-in role or a known custom role, otherwise 422."""
+    built-in role, otherwise 422. A custom role name is refused too (Round 16, WP16):
+    single sign-on gives a new account its built-in role, so mapping a group to a
+    custom role is not supported in 0.2.0."""
     before = current.sso.model_dump(mode="json")
     after = validated.sso.model_dump(mode="json")
     if before == after:
         return
     if not authority.get("checked"):
         raise _SsoEditAuthorityNeeded()
-    known: frozenset[str] = authority.get("roles") or frozenset()
+    known = SSO_ROLE_VALUES
     stored = {p.get("id"): p for p in before.get("providers") or []}
     for prov in after.get("providers") or []:
         if stored.get(prov.get("id")) == prov:
@@ -2151,23 +2153,14 @@ def _guard_sso_settings_change(current: Preferences, validated: Preferences, *,
                     status_code=422,
                     detail=(
                         f"Invalid settings: sso provider {pid!r} {field} must be a built-in "
-                        f"role or a custom role (received {value!r})"
+                        f"role (received {value!r})"
                     ),
                 )
 
 
-async def _known_role_ids(state: AppState) -> frozenset[str]:
-    """The built-in role values and every custom role name the matrix resolves."""
-    from ..rbac.policy import resolve_matrix
-
-    from .deps import _rbac_config_with_custom_roles
-
-    names = {r.value for r in UserRole}
-    try:
-        names |= {str(k) for k in resolve_matrix(await _rbac_config_with_custom_roles(state))}
-    except Exception as exc:  # noqa: BLE001 (built-in roles still validate)
-        logger.warning("Resolving custom roles for an SSO save failed: %s", exc)
-    return frozenset(names)
+#: The role values a single sign-on provider may give (Round 16, WP16): the built-in
+#: roles only. A custom role is a grant set added to an account, not an account role.
+SSO_ROLE_VALUES: frozenset[str] = frozenset(r.value for r in UserRole)
 
 
 def _sla_timezone_ok(name: str) -> bool:
@@ -2335,7 +2328,7 @@ async def put_settings(
     changed = sorted(str(k) for k in body.keys()) if isinstance(body, dict) else []
     body_sources = body.get("sources") if isinstance(body, dict) else None
     rbac_authority = {"checked": False}
-    sso_authority: dict[str, Any] = {"checked": False, "roles": None}
+    sso_authority: dict[str, Any] = {"checked": False}
     while True:
         try:
             old_prefs, prefs = await audited_prefs_write(
@@ -2364,7 +2357,6 @@ async def put_settings(
             if sso_authority["checked"]:  # pragma: no cover - the guard never asks twice
                 raise
             await _require_super_admin_for(request, state, message=SSO_SUPER_ADMIN_MESSAGE)
-            sso_authority["roles"] = await _known_role_ids(state)
             sso_authority["checked"] = True
     # #10 / G6 R5: record an immutable version snapshot for every rule this save CHANGED
     # (detection / correlation / case-automation) so DetectionRulesHome edits populate the
@@ -2618,9 +2610,12 @@ async def chat(
 @router.post("/investigate")
 async def investigate(
     body: InvestigateRequest, state: AppState = Depends(get_state),
-    _=Depends(require_permission("cases", "reinvestigate")),
+    principal=Depends(require_permission("cases", "reinvestigate")),
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
+    """The Investigate page: a person asks for one investigation. The run is a manual
+    run of that person (Round 16, WP16), so the AI run popover names who asked and the
+    finish notice reaches them, as Investigate on a case does."""
     query_source = state.active_source_for_id(body.source_id)
     if body.source_id and query_source is None:
         raise HTTPException(
@@ -2632,8 +2627,10 @@ async def investigate(
         # NEUTRAL, specific detail so the FE shows an empty-state, not a scary error.
         detail = _no_events_detail(body, widest)
         raise HTTPException(status_code=400, detail=detail)
+    requested_by = str(getattr(principal, "username", "") or "") or None
     case = await state.pipeline.investigate_cluster(
-        cluster, body.source_surface, state.execution_prefs, query_source=query_source
+        cluster, body.source_surface, state.execution_prefs, query_source=query_source,
+        trigger="manual", requested_by=requested_by,
     )
     return _case_view(case, state, spend=await _case_spend_visible(request))
 
@@ -9048,17 +9045,27 @@ async def case_trace(
     case_id: str,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Ordered agent-pipeline trace for a case (C3-3).
 
     Projects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator
     → tool calls → verdict → formatter → case-manager decision) into a timeline.
-    Read-only on the management-scoped audit index. NEVER 404s — an unknown or
+    Read-only on the management-scoped audit index. NEVER 404s: an unknown or
     not-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is
-    omitted when ``prefs.trace.include_prompts`` is false."""
+    omitted when ``prefs.trace.include_prompts`` is false. For a caller without
+    ``cost:view`` the cost figures a writer put into a row's text are replaced
+    (Round 16, WP16: ``api.cost_text``)."""
     rows = await state.audit.records_for_case(case_id)
     include_prompts = state.prefs.trace.include_prompts
     steps = [_trace_step(row, include_prompts) for row in rows]
+    if not await _case_spend_visible(request):
+        from .cost_text import withhold_cost_text
+
+        steps = [step.model_copy(update={
+            "result_summary": withhold_cost_text(step.result_summary),
+            "tool_output_summary": withhold_cost_text(step.tool_output_summary),
+        }) for step in steps]
     return {
         "case_id": case_id,
         "steps": [s.model_dump(mode="json") for s in steps],
@@ -9071,20 +9078,41 @@ async def case_rationale(
     case_id: str,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Case EXPLAINABILITY: a clean, human-readable "why" object assembled from the
-    case + its audit records — WITHOUT calling the LLM.
+    case + its audit records, WITHOUT calling the LLM.
 
     Surfaces exactly how a case reached its verdict: the persona/playbook chosen, the
     operator MEMORY facts consulted, the RAG knowledge retrieved (source + snippet),
     the IP enrichment/reputation, the read-only tools/queries the agent ran, the
     investigator's reasoning excerpt, the deterministic close/escalate rationale, the
     MITRE techniques, and the evidence. Every piece is parsed DEFENSIVELY from the
-    audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields — a
-    missing piece degrades to an empty value, never an error. NEVER 404s."""
+    audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields; a
+    missing piece degrades to an empty value, never an error. NEVER 404s.
+
+    Round 16 (WP16, [dv] R14): additive ``returned``, ``rows_total``,
+    ``rows_total_relation`` and ``truncated``, as the timeline answers them, say when
+    the rationale was read from only the newest audit records of a long-lived case.
+    For a caller without ``cost:view`` the cost figure in ``decision_rationale`` (the
+    case manager's DECISION row text) is replaced (``api.cost_text``)."""
+    from .routes_triage import _audit_row_total, _trace_truncated
+
     case = await state.cases.get(case_id)
     rows = await state.audit.records_for_case(case_id)
-    return _build_rationale(case_id, case, rows)
+    rows_total, rows_relation = await _audit_row_total(state, case_id)
+    rationale = _build_rationale(case_id, case, rows)
+    if not await _case_spend_visible(request):
+        from .cost_text import withhold_cost_text
+
+        rationale["decision_rationale"] = withhold_cost_text(rationale.get("decision_rationale"))
+    rationale.update({
+        "returned": len(rows),
+        "rows_total": rows_total,
+        "rows_total_relation": rows_relation,
+        "truncated": _trace_truncated(len(rows), rows_total),
+    })
+    return rationale
 
 
 @router.get("/cases/{case_id}/forwarding")
@@ -9124,6 +9152,11 @@ async def case_forwarding(
             "source_id": case.source_id,
             "is_alert": False,
             "notes": [],
+            # Round 16 (WP16): the same keys as a reconstructed answer. Nothing was
+            # walked, so there is no routing score or floor to report.
+            "routing_total": None,
+            "risk_floor": None,
+            "routing_gate_applied": False,
         }
     explanation = explain_forwarding(cluster, state.prefs)
     return {"case_id": case_id, **explanation.to_dict()}

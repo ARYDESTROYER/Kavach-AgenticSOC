@@ -167,6 +167,9 @@ async def reset_service(
         cleared.append(f"cases:{n}")
     else:
         failed.append("cases")
+    # Round 16 (WP16): the dashboards keep the all-time case population for up to two
+    # minutes, so drop it now; otherwise they show the cases this reset just removed.
+    _invalidate_case_caches()
     # A factory reset default-deletes the complete KV surface later. Avoid writing
     # empty placeholders first: doing so creates more stale-writer windows and makes
     # a transient per-store error falsely fail a boundary the strict wholesale purge
@@ -336,6 +339,9 @@ async def reset_service(
         except Exception as exc:  # noqa: BLE001 — refresh is best-effort
             logger.warning("post-reset user refresh failed (%s); continuing", exc)
 
+    # Again at the end: a read made while the stores were being cleared is dropped too,
+    # and a factory reset has also cleared the usage ledger the cost tiles read.
+    _invalidate_case_caches()
     logger.info("RESET scope=%s cleared=%s", scope.value, cleared)
     return {
         "scope": scope.value,
@@ -356,6 +362,18 @@ async def reset_service(
             )
         ),
     }
+
+
+def _invalidate_case_caches() -> None:
+    """Drop the shared case page, case population and ledger caches the dashboards and
+    chat read (``api.metrics_shared``), so no figure outlives the cases a reset removed.
+    Never raises: a reset never fails on a cache."""
+    try:
+        from ..api.metrics_shared import invalidate_case_page_cache
+
+        invalidate_case_page_cache()  # also drops the populations and the ledger memo
+    except Exception as exc:  # noqa: BLE001 (best-effort, like the rest of a reset)
+        logger.warning("metric cache invalidation after reset failed (%s)", exc)
 
 
 # --------------------------------------------------------------------------- #

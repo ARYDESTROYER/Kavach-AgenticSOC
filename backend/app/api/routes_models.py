@@ -709,7 +709,7 @@ def _validate_base_url(raw: str) -> str:
     if parts.scheme not in ("http", "https") or not parts.netloc:
         raise HTTPException(
             status_code=400,
-            detail="base_url must be an http(s) URL (e.g. http://localhost:4000/v1)",
+            detail="base_url must be an http(s) URL (e.g. http://host.docker.internal:4000/v1)",
         )
     return url
 

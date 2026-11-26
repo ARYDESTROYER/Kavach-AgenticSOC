@@ -22867,7 +22867,7 @@
     },
     "/api/cases/{case_id}/rationale": {
       "get": {
-        "description": "Case EXPLAINABILITY: a clean, human-readable \"why\" object assembled from the\ncase + its audit records — WITHOUT calling the LLM.\n\nSurfaces exactly how a case reached its verdict: the persona/playbook chosen, the\noperator MEMORY facts consulted, the RAG knowledge retrieved (source + snippet),\nthe IP enrichment/reputation, the read-only tools/queries the agent ran, the\ninvestigator's reasoning excerpt, the deterministic close/escalate rationale, the\nMITRE techniques, and the evidence. Every piece is parsed DEFENSIVELY from the\naudit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields — a\nmissing piece degrades to an empty value, never an error. NEVER 404s.",
+        "description": "Case EXPLAINABILITY: a clean, human-readable \"why\" object assembled from the\ncase + its audit records, WITHOUT calling the LLM.\n\nSurfaces exactly how a case reached its verdict: the persona/playbook chosen, the\noperator MEMORY facts consulted, the RAG knowledge retrieved (source + snippet),\nthe IP enrichment/reputation, the read-only tools/queries the agent ran, the\ninvestigator's reasoning excerpt, the deterministic close/escalate rationale, the\nMITRE techniques, and the evidence. Every piece is parsed DEFENSIVELY from the\naudit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields; a\nmissing piece degrades to an empty value, never an error. NEVER 404s.\n\nRound 16 (WP16, [dv] R14): additive ``returned``, ``rows_total``,\n``rows_total_relation`` and ``truncated``, as the timeline answers them, say when\nthe rationale was read from only the newest audit records of a long-lived case.\nFor a caller without ``cost:view`` the cost figure in ``decision_rationale`` (the\ncase manager's DECISION row text) is replaced (``api.cost_text``).",
         "operationId": "case_rationale_api_cases__case_id__rationale_get",
         "parameters": [
           {
@@ -24388,7 +24388,7 @@
     },
     "/api/cases/{case_id}/trace": {
       "get": {
-        "description": "Ordered agent-pipeline trace for a case (C3-3).\n\nProjects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator\n→ tool calls → verdict → formatter → case-manager decision) into a timeline.\nRead-only on the management-scoped audit index. NEVER 404s — an unknown or\nnot-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is\nomitted when ``prefs.trace.include_prompts`` is false.",
+        "description": "Ordered agent-pipeline trace for a case (C3-3).\n\nProjects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator\n→ tool calls → verdict → formatter → case-manager decision) into a timeline.\nRead-only on the management-scoped audit index. NEVER 404s: an unknown or\nnot-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is\nomitted when ``prefs.trace.include_prompts`` is false. For a caller without\n``cost:view`` the cost figures a writer put into a row's text are replaced\n(Round 16, WP16: ``api.cost_text``).",
         "operationId": "case_trace_api_cases__case_id__trace_get",
         "parameters": [
           {
@@ -26632,6 +26632,7 @@
     },
     "/api/investigate": {
       "post": {
+        "description": "The Investigate page: a person asks for one investigation. The run is a manual\nrun of that person (Round 16, WP16), so the AI run popover names who asked and the\nfinish notice reaches them, as Investigate on a case does.",
         "operationId": "investigate_api_investigate_post",
         "requestBody": {
           "content": {
@@ -29184,7 +29185,7 @@
         "summary": "Prefs Org Get"
       },
       "put": {
-        "description": "Replace the ORG customization defaults (admin-only). Validated/bounded by\nCustomizationConfig. All free-text is plain data (#9).",
+        "description": "Replace the ORG customization defaults (admin-only). Validated/bounded by\nCustomizationConfig. All free-text is plain data (#9).\n\nRound 16 (WP16): the new settings are validated as a whole ``Preferences``, so its\nafter-validators run on this write as on every other: a legacy\n``customization.default_theme`` other than ``system`` is moved into Branding (B45)\nand is never stored here.",
         "operationId": "prefs_org_put_api_prefs_org_put",
         "requestBody": {
           "content": {

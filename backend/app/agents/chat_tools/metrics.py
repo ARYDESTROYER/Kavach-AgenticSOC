@@ -1178,27 +1178,31 @@ class SocMetricsTool(ChatTool):
                            basis="exact" if exact else "sample", coverage=_partial_share(observation, None, agg, trend))
 
     # -- noise funnel (exact case population + counters) ------------------- #
-    async def _noise_population(self, ctx: ChatToolContext, mw: MetricWindow) -> tuple[list[Any], int, bool, bool]:
-        """``(cases, scope_total, load_ok, complete)``: every case the window reaches,
-        from the SAME exact population (and cache) the Noise Reduction dashboard reads."""
+    async def _noise_population(
+        self, ctx: ChatToolContext, mw: MetricWindow,
+    ) -> tuple[list[Any], int, bool, bool, str | None]:
+        """``(cases, scope_total, load_ok, complete, read_at)``: every case the window
+        reaches, from the SAME exact population (and cache) the Noise Reduction dashboard
+        reads, and when that population was read (``None`` when nothing was read)."""
         from ...api.metrics_shared import fetch_case_population
 
         if ctx.cases is None:
-            return [], 0, False, False
+            return [], 0, False, False, None
         span = None if mw.all_time else max(1, math.ceil((mw.now - mw.start).total_seconds() / 3600))
         try:
             population = await fetch_case_population(ctx.cases, span_hours=span, limit=_POPULATION_LIMIT)
         except Exception as exc:  # noqa: BLE001 — degrade to "not measured"
             logger.warning("noise funnel population read failed: %s", exc)
-            return [], 0, False, False
+            return [], 0, False, False, None
         if not population.load_ok:
-            return [], 0, False, False
-        return list(population.cases), int(population.scope_total), True, bool(population.complete)
+            return [], 0, False, False, None
+        return (list(population.cases), int(population.scope_total), True,
+                bool(population.complete), population.generated_at)
 
     async def _noise_funnel(self, ctx, args, mw: MetricWindow) -> ToolOutcome:
         from ...engine.noise_counters import build_noise_reduction
 
-        cases, store_total, load_ok, complete = await self._noise_population(ctx, mw)
+        cases, store_total, load_ok, complete, read_at = await self._noise_population(ctx, mw)
         hours = mw.hours
         counters: dict[str, Any] = {"available": False}
         if ctx.noise is not None:
@@ -1221,7 +1225,11 @@ class SocMetricsTool(ChatTool):
             hours = max(1, math.ceil((mw.end - mw.exact_start).total_seconds() / 3600))
         n = build_noise_reduction(
             bounded, counters, window_hours=hours, store_total=max(len(bounded), store_total - dropped),
-            fetched_count=len(bounded), prefs=ctx.prefs, generated_at=iso_now(), now=mw.end,
+            fetched_count=len(bounded), prefs=ctx.prefs,
+            # Round 16 (WP16): the all-time population can be served from a cache for up
+            # to two minutes, so the funnel says when its cases were read, as the Noise
+            # Reduction dashboard does, never the time this answer was built.
+            generated_at=(read_at if mw.all_time and read_at else iso_now()), now=mw.end,
         )
         stages = {s.get("key"): s for s in (n.get("stages") or []) if isinstance(s, dict)}
         if not load_ok:

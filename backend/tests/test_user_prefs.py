@@ -239,7 +239,10 @@ def test_org_terminology_routes_roundtrip(client) -> None:
     assert client.get("/api/prefs/effective").json()["terminology"]["case"] == "incident"
 
     r = client.put("/api/prefs/org", json={"default_theme": "dark", "terminology": {"cases": "incidents"}})
-    assert r.status_code == 200 and r.json()["default_theme"] == "dark"
+    # Round 16 (B45, WP16): Branding holds the one organization theme default, so a
+    # legacy value sent here is moved into Branding and this field reads "system".
+    assert r.status_code == 200 and r.json()["default_theme"] == "system"
+    assert client.app.state.tlsoc.prefs.branding.default_theme == "dark"
     assert client.get("/api/prefs/org").json()["terminology"]["cases"] == "incidents"
 
 
