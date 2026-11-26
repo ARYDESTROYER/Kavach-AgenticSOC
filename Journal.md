@@ -13356,3 +13356,52 @@
 - Tests: on the merged tree, the XFUI3, XFD, WP17C and XFR records, app knowledge, golden set, Help Center, Round 15 records, spine guards and chat knowledge modules: 901 passed. The case detail, runbook run, close and structure Console tests: 741 passed; tsc clean.
 - Status: in progress.
 - Next: fix packages for the confirmed acceptance gaps, each reviewed; then the records, the closing gates and the pull request into Testing.
+
+
+### 2026-11-26 13:00Z - FXB sub-agent - AI run signals: acceptance fixes
+- Context: Acceptance fix package FXB (ai-signals gaps), on base 39743bd after the XFUI3 merge. All seven gaps were confirmed in code and live in the seeded Demo before fixing.
+- Did:
+  - The queue row name says "AI investigation running" or "AI investigation waiting" with no elapsed time (aiRunText.ts, QueueRow hunk).
+  - The header chip below 30rem keeps its mark with the word "AI" (AiRunChip compact, CaseHeaderMeta run-fit comments).
+  - "AI stopped", in the neutral tint with an alert mark, for failed or cancelled runs; the popover is titled "AI investigation stopped".
+  - A warning toast when a run replaced the close on screen (ReinvestigateDialog).
+  - No finish toast while a close or status dialog's run note covers the case (holdRunNotice in announce.ts, registered by AiRunCloseNotice).
+  - The finished note reads "The AI investigation finished with the verdict Needs human review. Check it before you close."
+  - The end of a run is announced once: noteRunEnd and runEndSaid in announce.ts; the chip waits and skips an end that was already said.
+  - Docs: ui-standard.md AI run lines, case-manager.md AI run sections; knowledge corpus regenerated.
+- Tests:
+  - Touched vitest set: 320 passed.
+  - Backend knowledge and records tests: 856 passed.
+  - typecheck, lint, gates, check:types, build:app: clean.
+  - Entry chunk 330,859 B, within the 331,092 B budget.
+  - check_docs, build_app_knowledge --check, check_version, check_ci_contract: passed.
+  - Nine revert proofs, each failing its test.
+- Status: done; commit 4072720 on r16-fxb, worktree detached.
+- Next: Change the CHANGELOG phrase "shows the ring alone on a phone" and the test that pins it (backend/tests/test_round16_xfr.py:242) together. FXA1: the Brief People row still reads "Closed as false positive by Admin" after a run reopened the case. Update the SPEC WP09 Tests line about the row name.
+
+### 2026-11-26 14:20Z - FXB reviewer - AI run signals: review fixes
+- Context: Independent adversarial review of acceptance fix package FXB (r16-fxb at 4072720, base 39743bd). Checked against the brief, SPEC 4.1 and WP09, and ui-standard. Checked live in the seeded Demo with real Reinvestigate runs at 1440x900 and 390x844 in both themes, including reduced motion.
+- Did:
+  - Confirmed all seven gap fixes, in code and live.
+  - Reverted 8 of the builder's fixes one at a time; each made its tests fail.
+  - Fixed three defects (01d1ddb):
+    - The replaced-close warning now follows the server's replaced close: a person's close made at or after the run was queued (replacedCloseBy). It no longer fires for a closed case that is reinvestigated, or for a close by the AI or the system. Confirmed live before and after.
+    - The close dialog note for a run that failed or was cancelled says it stopped or could not finish and that the case was not changed. It never says finished.
+    - The page never overwrites a dialog note's 'said' end mark with 'pending', so the end is said once whatever the tree order.
+  - Updated the AI run lines in ui-standard.md and case-manager.md; regenerated the knowledge corpus (1088 chunks).
+- Tests:
+  - Touched Vitest set: 254 passed.
+  - Full test:strict: 9,779 passed, 1 skipped, 1 failed. The failure is a 5 s timeout under load in the Account page test, which passes alone.
+  - Full pytest: about 13,930 passed, 29 skipped, 6 failed. Five are the known sandbox environment failures and one is a starters test that timed out under load; all six pass on rerun.
+  - typecheck, lint, gates, check:types and the full build: clean. Entry chunk 330,859 B, inside the 331,092 B budget.
+  - check_docs, build_app_knowledge --check, check_version, check_ci_contract: passed.
+  - New regression tests: 3 of 3 fail when their fix is reverted.
+- Status: done; r16-fxb at 01d1ddb, worktree detached.
+- Next: The orchestrator changes the CHANGELOG phrase "shows the ring alone on a phone" and backend/tests/test_round16_xfr.py:242 together. Update the SPEC WP09 Tests line and the WP01 aiRunAccessibleText signature. FXA1 owns the Brief People row that still says "Closed as ... by Admin" after a run reopened the case.
+
+### 2026-11-26 14:25Z - orchestrator - FXB merged
+- Context: the acceptance fix package for the AI run signals (FXB), reviewed independently.
+- Did: merged r16-fxb (build 4072720, review 01d1ddb) cleanly. The knowledge corpus is current (1,088 chunks).
+- Tests: on the merged tree, the investigations, case detail AI run and case detail Console tests: 678 passed; tsc clean.
+- Status: done.
+- Next: FXA1, FXA2, FXC, FXD1, FXD2 and FXE as their reviews finish.
