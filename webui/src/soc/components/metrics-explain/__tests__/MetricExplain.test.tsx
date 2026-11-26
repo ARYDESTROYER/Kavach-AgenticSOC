@@ -113,6 +113,8 @@ describe('the Active risk index explained', () => {
   it('builds the mean from the server numbers, and says when nothing is open', () => {
     const exp = explainActiveRisk(response({ value: 58.3, numerator: 699.6 }));
     expect(exp?.steps).toEqual([{ label: 'Mean', expression: '699.6 / 12', result: '58.3' }]);
+    // The gauge shows 58: the panel says why its figure has a decimal.
+    expect(exp?.rounding).toBe('The server rounds the mean to one decimal. The gauge shows it to the nearest whole number.');
     expect(exp?.caveats).toContain('Cases counted: Every case that is not resolved or closed, all time.');
     const none = explainActiveRisk(response({ value: null, numerator: 0, denominator: 0, available: false, reason: 'no case is open, so there is no index' }));
     expect(none?.summary).toBe('No case is open, so there is no index.');

@@ -69,7 +69,8 @@ export function explainActiveRisk(data: MetricExplainResponse | null, title = 'A
       { key: 'window', label: 'Window', value: data.window || 'all time', source: 'Every case open now' },
     ],
     steps: measured ? [{ label: 'Mean', expression: `${trimmed(sum, 2)} / ${count(open)}`, result: trimmed(value, 1) }] : [],
-    rounding: 'The server rounds the mean to one decimal.',
+    // The gauge on screen reads the nearest whole number (20 for a mean of 19.9).
+    rounding: 'The server rounds the mean to one decimal. The gauge shows it to the nearest whole number.',
     provenance: 'server_computed',
     provenanceNote: 'Computed by the server over the cases open now.',
     caveats: populationCaveats(data),

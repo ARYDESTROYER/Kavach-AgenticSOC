@@ -21,6 +21,7 @@
  * dimmed and drops its label word ("Previous verdict. The running investigation replaces
  * it." leads its hover line), below a 56rem strip the run chip shows the ring and the time
  * only, and below 30rem the items sit closer and the status glyph gives way to the ring.
+ * The "AI finished" chip of the next few seconds fits the strip the same way.
  *
  * SECURITY (#9): every case-derived value (id, owner) renders as a plain text node. #3:
  * the owner edit is the existing collaboration route; nothing here changes status,
@@ -51,7 +52,7 @@ import { OwnerMonogram, assignedToLabel } from '@/soc/components/OwnerMonogram';
 import type { CaseOutcome } from '@/soc/components/outcome';
 import { scoreBand, semanticIcon } from '@/soc/components/palette';
 import { AiRunChip } from '@/soc/investigations/AiRunChip';
-import { useAiRun } from '@/soc/investigations/useAiRun';
+import { useAiRun, useAiRunFinished } from '@/soc/investigations/useAiRun';
 import type { PickableUser, TriageChips } from '@/soc/pages/CaseDetail.api';
 
 import { AssigneePicker } from './AssigneePicker';
@@ -99,6 +100,13 @@ export const PREVIOUS_VERDICT_NOTE = 'Previous verdict. The running investigatio
  */
 export const META_COMPACT_RUN_PX = 896;
 export const META_RING_RUN_PX = 480;
+
+/**
+ * The strip's spacing: closer on a phone-width strip while it holds the run chip
+ * (`data-meta-item="ai-run"`), running or just finished.
+ */
+export const META_RUN_GAP =
+  'gap-x-2.5 has-[[data-meta-item=ai-run]]:gap-x-1.5 @[30rem]/case:has-[[data-meta-item=ai-run]]:gap-x-2.5';
 
 /** How much of the run chip a strip of `width` px shows (`width` null: not measured). */
 export function runChipFit(width: number | null): boolean | 'ring' {
@@ -232,8 +240,11 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
   // takes room on the line, so the status words keep priority (WP16).
   const run = useAiRun(c.case_id);
   const aiRunning = run !== null && run.state !== 'finished';
+  // The chip also shows for a few seconds after a run this console saw ends ("AI
+  // finished"), so the strip is measured then too and the finished chip fits the same way.
+  const ended = useAiRunFinished(c.case_id);
   const stripRef = React.useRef<HTMLDivElement | null>(null);
-  const runFit = runChipFit(useWidth(stripRef, aiRunning));
+  const runFit = runChipFit(useWidth(stripRef, aiRunning || Boolean(ended?.shown)));
 
   const assignToMe = React.useCallback(async () => {
     if (!currentUser) return;
@@ -254,9 +265,10 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
       data-testid="case-detail-meta"
       className={cn(
         'flex h-6 min-w-0 flex-nowrap items-center overflow-x-auto whitespace-nowrap text-xs text-muted-foreground',
-        // A phone-width strip with an AI run under way spaces its items closer, so the
-        // status words keep their room beside the run chip.
-        aiRunning ? 'gap-x-1.5 @[30rem]/case:gap-x-2.5' : 'gap-x-2.5',
+        // A phone-width strip that holds the run chip (a run under way, or the few seconds
+        // of "AI finished" after one) spaces its items closer, so the status words keep
+        // their room beside it. Keyed on the chip itself, so the spacing follows it exactly.
+        META_RUN_GAP,
         // Never a visible scrollbar: in a very narrow pane the line scrolls sideways.
         '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
       )}
@@ -349,8 +361,10 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
         </span>
       ) : null}
       {/* The AI working on this case right now (WP09); renders nothing otherwise. On a
-          narrow strip it drops its words, so the status words keep their place. */}
-      <AiRunChip caseId={c.case_id} compact={runFit} />
+          narrow strip it drops its words, so the status words keep their place. The
+          "AI finished" chip has no clock to keep and the verdict beside it has its label
+          back, so below 56rem it keeps its mark alone. */}
+      <AiRunChip caseId={c.case_id} compact={aiRunning ? runFit : runFit ? 'ring' : false} />
 
       <Popover open={ownerOpen} onOpenChange={onOwnerOpenChange}>
         <PopoverTrigger asChild>

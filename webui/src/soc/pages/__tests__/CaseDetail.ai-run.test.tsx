@@ -13,12 +13,15 @@
  * - the Signal section's event count opens the Evidence tab.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import type { InvestigationView } from '@/lib/types';
 
-const h = vi.hoisted(() => ({ run: null as InvestigationView | null }));
+const h = vi.hoisted(() => ({
+  run: null as InvestigationView | null,
+  finished: null as { view: InvestigationView; at: number; active: boolean; shown: boolean } | null,
+}));
 
 const CASE = {
   case_id: 'c-run-1',
@@ -62,12 +65,18 @@ vi.mock('@/soc/auth', () => ({
 // The run on the case, as the investigation store would hand it over.
 vi.mock('@/soc/investigations/useAiRun', () => ({
   useAiRun: (caseId: string | null | undefined) => (caseId && h.run?.case_id === caseId ? h.run : null),
-  useAiRunFinished: () => null,
+  useAiRunFinished: (caseId: string | null | undefined) => (caseId && h.finished?.view.case_id === caseId ? h.finished : null),
   useAiRunCount: () => 0,
 }));
 
 import { CaseDetail, REINVESTIGATE_RUNNING_HINT } from '@/soc/pages/CaseDetail';
-import { META_COMPACT_RUN_PX, META_RING_RUN_PX, PREVIOUS_VERDICT_NOTE, runChipFit } from '@/soc/pages/casedetail/CaseHeaderMeta';
+import {
+  META_COMPACT_RUN_PX,
+  META_RING_RUN_PX,
+  META_RUN_GAP,
+  PREVIOUS_VERDICT_NOTE,
+  runChipFit,
+} from '@/soc/pages/casedetail/CaseHeaderMeta';
 
 function running(state: InvestigationView['state'] = 'running'): InvestigationView {
   const now = Date.now();
@@ -102,7 +111,20 @@ async function openTakeAction() {
 beforeEach(() => {
   window.localStorage.clear();
   h.run = null;
+  h.finished = null;
 });
+
+/** Give the header's meta strip a measured width (jsdom lays nothing out). */
+function stripWidth(width: number): () => void {
+  const real = HTMLElement.prototype.getBoundingClientRect;
+  const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute('data-testid') === 'case-detail-meta') {
+      return { x: 0, y: 0, top: 0, left: 0, bottom: 24, right: width, width, height: 24, toJSON: () => ({}) } as DOMRect;
+    }
+    return real.call(this);
+  });
+  return () => spy.mockRestore();
+}
 
 describe('Take action while an AI investigation runs', () => {
   it('offers Reinvestigate when no run is under way', async () => {
@@ -166,6 +188,58 @@ describe('the header verdict while an AI investigation runs', () => {
     expect(verdict).not.toHaveAttribute('data-previous-verdict');
     expect(within(verdict).getByTestId('case-ai-verdict')).not.toHaveClass('border-dashed');
     expect(within(verdict).queryByText('Previous verdict:')).toBeNull();
+  });
+
+  it('fits the running chip to a measured phone-width strip: the ring alone', async () => {
+    h.run = running();
+    const restore = stripWidth(326);
+    try {
+      await renderLoaded();
+      const chip = await screen.findByTestId('ai-run-chip');
+      await waitFor(() => expect(chip).toHaveTextContent(/^$/));
+      expect(chip).toHaveAttribute('data-run-state', 'running');
+      // The closer spacing follows the chip itself (running or just finished), never a
+      // run the chip does not show.
+      expect(screen.getByTestId('case-detail-meta')).toHaveClass(...META_RUN_GAP.split(' '));
+    } finally {
+      restore();
+    }
+  });
+
+  it('fits the "AI finished" chip of the next seconds to the strip too, so the status words stay (review)', async () => {
+    // The run just ended on this console: the chip shows its success tint for a few
+    // seconds. On a 390px phone the full "AI finished" squeezed the status words to "E".
+    h.finished = { view: { ...running(), state: 'finished', outcome: 'decided' } as InvestigationView, at: Date.now(), active: true, shown: true };
+    const restore = stripWidth(326);
+    try {
+      await renderLoaded();
+      const chip = await screen.findByTestId('ai-run-chip');
+      expect(chip).toHaveAttribute('data-run-state', 'finished');
+      await waitFor(() => expect(chip).toHaveTextContent(/^$/));
+      expect(chip).toHaveAttribute('aria-label', 'AI finished. Show the AI investigation');
+    } finally {
+      restore();
+    }
+    // In Case Manager at 1440 by 900 (a 779px strip) the verdict beside it has its label
+    // back, so the finished chip keeps its mark alone there too.
+    cleanup();
+    const desk = stripWidth(779);
+    try {
+      await renderLoaded();
+      const chip = await screen.findByTestId('ai-run-chip');
+      await waitFor(() => expect(chip).toHaveTextContent(/^$/));
+    } finally {
+      desk();
+    }
+    // A strip with room for its words keeps them.
+    cleanup();
+    const wide = stripWidth(1100);
+    try {
+      await renderLoaded();
+      expect(await screen.findByTestId('ai-run-chip')).toHaveTextContent('AI finished');
+    } finally {
+      wide();
+    }
   });
 
   it('fits the run chip to the strip so the status words keep their room', () => {
