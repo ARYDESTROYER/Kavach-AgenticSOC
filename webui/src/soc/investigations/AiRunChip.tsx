@@ -9,7 +9,8 @@
  *
  * One polite announcement per change, at most one every 10 s: "AI investigation running",
  * "AI investigation waiting", then "AI investigation finished: <status words>". The ring
- * stands still under reduced motion. `compact` drops the words for a narrow pane.
+ * stands still under reduced motion. `compact` drops the words for a narrow pane, and
+ * `compact="ring"` keeps the ring alone for a phone-width line (its name still says it).
  */
 import * as React from 'react';
 import { CheckCircle2 } from 'lucide-react';
@@ -26,7 +27,7 @@ import { useAiRun, useAiRunFinished } from './useAiRun';
 
 export interface AiRunChipProps {
   caseId: string;
-  compact?: boolean;
+  compact?: boolean | 'ring';
 }
 
 /** How long the success tint stays after a run ends. */
@@ -101,7 +102,8 @@ export const AiRunChip: React.FC<AiRunChipProps> = ({ caseId, compact = false })
   const ended = !run;
   const label = ended ? 'AI finished' : run.state === 'running' ? 'AI working' : 'AI queued';
   const time = run?.state === 'running' ? elapsedClock(run.started_at, now) : null;
-  const visible = compact ? (time ?? (ended ? 'Finished' : 'Queued')) : time ? `${label} · ${time}` : label;
+  const visible =
+    compact === 'ring' ? null : compact ? (time ?? (ended ? 'Finished' : 'Queued')) : time ? `${label} · ${time}` : label;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -125,9 +127,11 @@ export const AiRunChip: React.FC<AiRunChipProps> = ({ caseId, compact = false })
           ) : (
             <ActivityGlyph status="running" className="size-3 border-[1.5px]" />
           )}
-          <span aria-hidden className="whitespace-nowrap">
-            {visible}
-          </span>
+          {visible ? (
+            <span aria-hidden className="whitespace-nowrap">
+              {visible}
+            </span>
+          ) : null}
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" collisionPadding={12} className="w-80" aria-labelledby={titleId}>

@@ -98,6 +98,8 @@ const LINK_BUTTON =
 const ACTION_BUTTON = 'h-11 w-full';
 /** The inline error region's id: the field it belongs to points `aria-describedby` here. */
 const ERROR_ID = 'login-error';
+/** Why the code step went back to the password: its pending token is spent or lapsed. */
+export const MFA_PENDING_SPENT_TEXT = 'Too many wrong codes, or the sign-in step timed out. Sign in again.';
 /**
  * Focus a field once the next render has committed: the step that holds it may only
  * just be mounting, or the field may still be disabled by the request that just ended.
@@ -717,8 +719,16 @@ export default function Login({ onAuthenticated }: LoginProps) {
       }
       handOff();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Verification failed. Please try again.');
       setMfaCode('');
+      // The pending token is spent (five wrong codes) or lapsed: no code can work now,
+      // so go back to the password step, as an expired enrollment does (WP16).
+      // (The next password step opens the code step without the recovery field.)
+      if (err instanceof ApiError && err.status === 401 && /pending/i.test(err.message)) {
+        setBusy(false);
+        returnToPassword(MFA_PENDING_SPENT_TEXT);
+        return;
+      }
+      setError(err instanceof ApiError ? err.message : 'Verification failed. Please try again.');
       // A fresh, empty set of cells with the first one focused.
       setOtpAttempt((n) => n + 1);
       setBusy(false);
@@ -752,7 +762,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
   // The short-lived pending token lapsed mid-enrollment (401). Return to the
   // password step (identity preserved) with a clear, non-alarming explanation:
   // signing in again simply restarts the 5-minute enrollment window.
-  const expireEnrollLogin = () => {
+  // The second-factor code step's way back to the password step (identity kept), with the
+  // sentence that says why.
+  function returnToPassword(message: string) {
     setMode('signin');
     setSigninStep('password');
     setStepMotion('back');
@@ -760,10 +772,11 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setPassword('');
     setError(null);
     setErrorDetail(null);
-    setPageError(
-      'Your setup session expired. Sign in again to continue setting up two-factor authentication.',
-    );
+    setPageError(message);
     focusSoon(signinPasswordRef);
+  }
+  const expireEnrollLogin = () => {
+    returnToPassword('Your setup session expired. Sign in again to continue setting up two-factor authentication.');
   };
 
   // --- Mode 3: set a new password (forced change) --------------------------- //

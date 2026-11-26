@@ -53,6 +53,8 @@ vi.mock('@/lib/api', () => {
   const target: Record<string, unknown> = {
     getCase: vi.fn(() => Promise.resolve(CASE)),
     get: vi.fn(() => Promise.resolve({ case_id: CASE.case_id, stages: [], spans: [], total: 0, messages: [] })),
+    // The lazy case chat reads the viewer's chat preferences when it mounts.
+    prefs: { getUser: vi.fn(() => Promise.resolve({})), putUser: vi.fn(() => Promise.resolve({})) },
   };
   return {
     ApiError,
@@ -181,6 +183,11 @@ describe('Alt+N names the same tab for every viewer', () => {
     await waitFor(() => expect(tab(/^Activity/)).toHaveAttribute('data-state', 'active'));
     pressAlt(6);
     await waitFor(() => expect(tab(/^Chat/)).toHaveAttribute('data-state', 'active'));
+    // The lazy chat arrives and reads the viewer's chat preferences without throwing.
+    await waitFor(() => expect(screen.queryByText('Loading chat')).toBeNull(), { timeout: 5000 });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
     pressAlt(4);
     await waitFor(() => expect(tab(/^Response/)).toHaveAttribute('data-state', 'active'));
     pressAlt(3);

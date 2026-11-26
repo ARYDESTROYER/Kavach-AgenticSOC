@@ -33,6 +33,9 @@ import {
   type KpiStripContextValue,
 } from '@/soc/components/KpiTile';
 
+import type { Explanation } from '@/lib/explain/types';
+import { MetricExplain } from '@/soc/components/metrics-explain/MetricExplain';
+
 import { useDashboardData, useDashboardRequests, type DashboardReader } from '../DashboardDataProvider';
 import { kpiStripCells, type KpiStripBinding, type KpiStripPreset } from '../kpi-bindings';
 import { bindingRequests, evaluateBinding, getPath, type KpiCellResult } from './kpi-eval';
@@ -316,6 +319,26 @@ export function stripFailureText(
   return parts.length ? parts.join(' ') : null;
 }
 
+/**
+ * SLA attainment before its explanation is read: the figure on screen and what it
+ * divides (`MetricExplain` replaces it with the counts on open).
+ */
+export function slaAttainmentInitial(shown: string, window: string): Explanation {
+  return {
+    metric: 'sla_attainment',
+    title: 'SLA attainment',
+    value: shown,
+    display: shown,
+    summary: `${shown} of the cases scored against a target met them, ${window}.`,
+    formula: 'cases that met every target / cases scored against a target',
+    inputs: [{ key: 'window', label: 'Window', value: window, source: 'The time range above' }],
+    steps: [],
+    provenance: 'server_computed',
+    provenanceNote: 'Computed by the server over the cases in the window.',
+    caveats: [],
+  };
+}
+
 export function KpiStripWidget(props: WidgetProps) {
   const preset = optionChoice(props.options, 'preset', PRESETS, 'operations');
   // The strip's accessible name: the operator's title, else what the preset shows.
@@ -380,6 +403,21 @@ export function KpiStripWidget(props: WidgetProps) {
         roll={false}
         size="fluid"
         numeral="hero"
+        explain={
+          view.binding.cell === 'sla_attainment' && measuredValue
+            ? (numeral) => (
+                // Opening it reads the figure's own explanation (metric=sla_attainment).
+                <MetricExplain
+                  metric="sla_attainment"
+                  title={view.binding.label}
+                  windowHours={windowHours}
+                  initial={slaAttainmentInitial(measuredValue.text, windowInfo.phrase)}
+                >
+                  {numeral}
+                </MetricExplain>
+              )
+            : undefined
+        }
       />
     );
   });

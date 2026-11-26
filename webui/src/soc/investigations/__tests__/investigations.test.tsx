@@ -130,6 +130,15 @@ describe('the queue row mark', () => {
     expect(mark.querySelector('[data-activity="running"]')).not.toBeNull();
   });
 
+  it('takes classes for its words, so a narrow row keeps the ring alone (WP16)', async () => {
+    h.read.mockResolvedValue(body({ items: [view({ queued_at: new Date(T0 - 5_000).toISOString() })] }));
+    render(<AiRunMark caseId="case-1" wordsClassName="hidden @[30rem]/queue:inline" />);
+    await settle();
+    const words = screen.getByTestId('ai-run-mark-words');
+    expect(words).toHaveTextContent('AI working');
+    expect(words).toHaveClass('hidden', '@[30rem]/queue:inline');
+  });
+
   it('says "AI queued" for a run waiting for a slot, and goes when the run ends', async () => {
     h.read.mockResolvedValue(body({ items: [view({ state: 'queued', phase: 'queued', started_at: null, queued_at: new Date(T0 - 5_000).toISOString() })] }));
     render(<AiRunMark caseId="case-1" />);

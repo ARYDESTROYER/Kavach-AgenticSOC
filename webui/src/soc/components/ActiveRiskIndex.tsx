@@ -27,7 +27,9 @@ import { RiskGauge } from '@/soc/components/RiskGauge';
 import { HelpTip } from '@/soc/components/HelpTip';
 import { AskAboutThis } from './AskAboutThis';
 import { KPI_TOPICS } from './ask-topics';
-import { ACTIVE_RISK_HELP_TEXT } from '@/soc/components/riskCopy';
+import { activeRiskHelpText, type RiskWeightSet } from '@/soc/components/riskCopy';
+import { MetricExplain } from '@/soc/components/metrics-explain/MetricExplain';
+import { activeRiskInitial } from '@/soc/dashboard/widgets/risk';
 
 /** Comfortable instrument-size bounds for the responsive gauge (bug #5). */
 export const MIN_GAUGE_SIZE = 140;
@@ -47,6 +49,11 @@ export interface ActiveRiskIndexProps {
    * [MIN_GAUGE_SIZE, MAX_GAUGE_SIZE].
    */
   size?: number;
+  /**
+   * The risk weights in force (`prefs.risk_weights`), for the help's per-factor shares
+   * (research explainability D7). Omitted: the defaults.
+   */
+  weights?: Partial<RiskWeightSet> | null;
   /** `flat` removes card chrome for the integrated command-center instrument band. */
   variant?: 'card' | 'flat';
   className?: string;
@@ -56,13 +63,13 @@ export interface ActiveRiskIndexProps {
  * A compact caption + HelpTip that heads both states, so the affordance stays put
  * whether or not there are open cases to gauge.
  */
-const Caption: React.FC = () => (
+const Caption: React.FC<{ weights?: Partial<RiskWeightSet> | null }> = ({ weights }) => (
   <div className="flex items-center gap-1">
     <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">
       Active Risk Index
     </h2>
     <HelpTip
-      text={ACTIVE_RISK_HELP_TEXT}
+      text={activeRiskHelpText(weights)}
       label="What the Active Risk Index means"
       footer={<AskAboutThis topic={KPI_TOPICS['active-risk-index']} subject="Active Risk Index" className="pt-1" />}
     />
@@ -74,6 +81,7 @@ export const ActiveRiskIndex: React.FC<ActiveRiskIndexProps> = ({
   count,
   loading,
   size = 180,
+  weights,
   variant = 'card',
   className,
 }) => {
@@ -113,7 +121,7 @@ export const ActiveRiskIndex: React.FC<ActiveRiskIndexProps> = ({
         className,
       )}
     >
-      <Caption />
+      <Caption weights={weights} />
       {/* Bug #5 fix (2/2) — `flex-1` + `justify-center` so any EXTRA height the grid's
           `items-stretch` hands this card (to match the taller SnapshotCard siblings) is
           used to vertically CENTER the instrument, instead of collapsing into dead space
@@ -135,7 +143,16 @@ export const ActiveRiskIndex: React.FC<ActiveRiskIndexProps> = ({
             {/* `notch={74}` marks the critical auto-escalate boundary on the track so
                 the gauge reads active pressure AGAINST the escalation threshold, not in
                 a vacuum. */}
-            <RiskGauge score={score as number} size={gaugeSize} notch={74} />
+            {/* Hover for the mean over the open cases; click for the server's sum and
+                count (`GET /api/metrics/explain?metric=active_risk_index`). */}
+            <MetricExplain
+              metric="active_risk_index"
+              title="Active risk index"
+              windowHours={0}
+              initial={activeRiskInitial(score as number, count ?? null)}
+            >
+              <RiskGauge score={score as number} size={gaugeSize} notch={74} />
+            </MetricExplain>
             {/* Bug #5 — a small mini-legend using the freed card space: names the sample
                 size + the escalation threshold the notch marks (both already known to the
                 component, previously unused/undisplayed here). */}

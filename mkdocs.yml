@@ -83,7 +83,10 @@ extra:
     stable_branch: main
     testing_branch: Testing
   version:
-    provider: mike
+    # The published site lists its versions through Mike. The Console's bundled Help
+    # Center holds one installed line and has no version list, so its build sets
+    # TLSOC_DOCS_VERSION_PROVIDER empty and the page never asks for versions.json.
+    provider: !ENV [TLSOC_DOCS_VERSION_PROVIDER, mike]
     default: stable
     alias: true
   social:

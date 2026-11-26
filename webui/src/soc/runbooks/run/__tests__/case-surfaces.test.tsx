@@ -34,11 +34,9 @@ import { FactsRail } from '@/soc/pages/casedetail/FactsRail';
 import { OverviewPanel } from '@/soc/pages/casedetail/OverviewPanel';
 import { AutomationApplied } from '@/soc/pages/casedetail/AutomationApplied';
 
-import { OverviewNextStep } from '../NextStepCard';
 import { OtherTasks, OtherTasksLoader, taskAuthors } from '../OtherTasks';
 import { RunbookProgressChip, RunbookTabCount } from '../ProgressChip';
-import { RunbookRail } from '../RunbookRail';
-import { completedRun, makeData, makeRun, progress } from './fixtures';
+import { makeRun, progress } from './fixtures';
 
 // The inspector keeps each section's open state per viewer: start every test afresh.
 afterEach(() => {
@@ -72,43 +70,7 @@ const TASK: CaseTask = {
   logs: [],
 } as unknown as CaseTask;
 
-describe('Overview Next step card', () => {
-  it('offers Review draft when an AI draft waits, and opens the Runbook tab on that step', async () => {
-    const onOpen = vi.fn();
-    const run = makeRun();
-    render(<OverviewNextStep run={run} progress={progress()} onOpenRunbook={onOpen} />);
-    const card = screen.getByRole('region', { name: 'Next step' });
-    expect(card).toHaveTextContent('Investigate · step 3 of 6');
-    expect(card).toHaveTextContent('Did any sign-in succeed after the failures?');
-    await userEvent.click(within(card).getByRole('button', { name: 'Review draft' }));
-    expect(onOpen).toHaveBeenCalledWith('success');
-  });
-
-  it('says when every required step is done (the server has completed the run by then)', async () => {
-    const onOpen = vi.fn();
-    const run = completedRun();
-    render(<OverviewNextStep run={run} progress={progress({ done: 5, required_open: 0 })} onOpenRunbook={onOpen} />);
-    expect(screen.getByText('All required steps are done.')).toBeInTheDocument();
-    // Open runbook lands on the tab's card, which a completed run keeps (it has its own heading).
-    await userEvent.click(screen.getByRole('button', { name: 'Open runbook' }));
-    expect(onOpen).toHaveBeenCalledWith(null);
-  });
-
-  it('says when the rest wait for approval, and when the run was abandoned', () => {
-    const waiting = makeRun({}, {
-      success: { status: 'done', ai_draft: null },
-      confirmed: { status: 'done' },
-      reset: { status: 'in_progress', approval: { required_role: 'incident_lead', status: 'pending', by: null, at: null, reason: null } },
-    });
-    const { unmount } = render(
-      <OverviewNextStep run={waiting} progress={progress({ done: 4, required_open: 1, waiting: 1 })} onOpenRunbook={vi.fn()} />,
-    );
-    expect(screen.getByText('The remaining required steps wait for approval.')).toBeInTheDocument();
-    unmount();
-    render(<OverviewNextStep run={makeRun({ status: 'abandoned' })} progress={progress()} onOpenRunbook={vi.fn()} />);
-    expect(screen.getByText('This runbook was abandoned.')).toBeInTheDocument();
-  });
-
+describe('the Brief Next step row', () => {
   it('sits first on the Brief, as one row, when the case has a run', () => {
     const onOpenRunbook = vi.fn();
     const { container } = render(
@@ -140,11 +102,11 @@ describe('Automation and facts rail labels', () => {
         <FactsRail c={legacy} outcome={caseOutcome(legacy)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
       </TooltipProvider>,
     );
-    expect(screen.getByText('Runbook automation (before Round 14)')).toBeInTheDocument();
+    expect(screen.getByText('Older runbook automation')).toBeInTheDocument();
     // The investigator's stored runbook id is a fact of the record (Round 15, D8.4), in
     // the Record section, which starts closed (Round 16).
     fireEvent.click(screen.getByRole('button', { name: 'Record' }));
-    expect(screen.getByTestId('facts-record')).toHaveTextContent('Runbook (before Round 14)pb-ssh');
+    expect(screen.getByTestId('facts-record')).toHaveTextContent('Older runbookpb-ssh');
     expect(document.body.textContent).not.toMatch(/Queued playbook|Playbook pb-ssh/);
   });
 
@@ -160,14 +122,7 @@ describe('Automation and facts rail labels', () => {
     expect(screen.getByTestId('facts-record')).toHaveTextContent('Investigator runbookbrute-force v4');
   });
 
-  it('RunbookRail: a phase opens the runbook on that phase', () => {
-    const onOpenPhase = vi.fn();
-    render(<RunbookRail data={makeData()} onOpenPhase={onOpenPhase} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Contain, 0 of 2 done. Open the Runbook tab on this phase' }));
-    expect(onOpenPhase).toHaveBeenCalledWith('contain');
-  });
-
-  it('leaves the facts rail Runbook section out for a viewer with no Runbook tab', () => {
+  it('leaves the facts rail Runbook section out for a viewer who cannot read runbooks', () => {
     render(
       <TooltipProvider>
         <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
@@ -176,14 +131,6 @@ describe('Automation and facts rail labels', () => {
     expect(screen.queryByTestId('facts-runbook')).toBeNull();
   });
 
-  it('words the rail when nothing is attached or the read failed', () => {
-    const { rerender } = render(<RunbookRail data={makeData([])} />);
-    expect(screen.getByText('No runbook is attached to this case.')).toBeInTheDocument();
-    rerender(<RunbookRail data={null} failed />);
-    expect(screen.getByText('The runbook could not be read.')).toBeInTheDocument();
-    rerender(<RunbookRail data={null} loading />);
-    expect(screen.getByText('Loading the runbook.')).toBeInTheDocument();
-  });
 });
 
 describe('tab count and queue chip', () => {

@@ -38,7 +38,13 @@ import { WhyPanel } from './WhyPanel';
 import { InvestigationInputs } from './InvestigationInputs';
 import { GradingHistory } from './grading';
 import { FindingsList } from './records/FindingsList';
-import { TraceTimeline } from '@/soc/components/TraceTimeline';
+import {
+  TRACE_FILTERS,
+  TraceTimeline,
+  filterSpans,
+  traceCountsText,
+  type TraceActor as TraceSpanActor,
+} from '@/soc/components/TraceTimeline';
 import { CodeBlock } from '@/soc/components/CodeBlock';
 import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
@@ -47,13 +53,11 @@ import { CASE_MANAGER_PANEL_PADDING, PanelSection } from './shared';
 
 /* --------------------------------------------------------- the Investigation tab -- */
 
-type TraceActor = 'all' | 'agent' | 'tool' | 'code';
-
-const TRACE_ACTOR_KINDS: Record<Exclude<TraceActor, 'all'>, ReadonlySet<string>> = {
-  agent: new Set(['invoke_agent', 'chat']),
-  tool: new Set(['execute_tool']),
-  code: new Set(['decision']),
-};
+/**
+ * The trace filter: the one actor model of `TraceTimeline` (`spanActor`), so Agent never
+ * counts a person's step or a chat turn, and People and Chat have their own choices.
+ */
+type TraceActor = TraceSpanActor | 'all';
 
 const DisclosureTrigger: React.FC<{
   open: boolean;
@@ -105,12 +109,10 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
   const reproduce = (c.reproduce_query || '').trim();
 
   const spans = timeline?.spans ?? [];
-  const toolCount = spans.filter((span) => span.kind === 'execute_tool').length;
   const hasDecisionStep = spans.some((span) => span.kind === 'decision');
   const filteredTimeline = React.useMemo<TimelineResponse | null>(() => {
     if (!timeline || actor === 'all') return timeline;
-    const kinds = TRACE_ACTOR_KINDS[actor];
-    return { ...timeline, spans: timeline.spans.filter((span) => kinds.has(span.kind)) };
+    return { ...timeline, spans: filterSpans(timeline.spans, actor) };
   }, [timeline, actor]);
 
   const handleTraceToggle = React.useCallback(
@@ -240,7 +242,7 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
             </h2>
             <span className="text-xs tabular-nums text-muted-foreground" data-testid="investigation-trace-counts">
               {timeline
-                ? `${spans.length} step${spans.length === 1 ? '' : 's'} · ${toolCount} tool${toolCount === 1 ? '' : 's'}`
+                ? traceCountsText(spans)
                 : timelineLoading
                   ? 'Loading…'
                   : 'Loads when opened'}
@@ -267,12 +269,7 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
                 aria-label="Show trace steps by"
                 value={actor}
                 onValueChange={setActor}
-                options={[
-                  { value: 'all', label: 'All' },
-                  { value: 'agent', label: 'Agent' },
-                  { value: 'tool', label: 'Tool' },
-                  { value: 'code', label: 'Code' },
-                ]}
+                options={[...TRACE_FILTERS]}
               />
             ) : null}
             <div ref={traceRef}>

@@ -8,7 +8,7 @@
  *
  * Round 14 (SPEC §4.10.9): the runbook whose Published guidance the investigator
  * received is "Runbook" (selected and consulted kept apart); a run from before Round 14
- * keeps its stored procedure id under "Runbook (before Round 14)". Runbook passages found
+ * keeps its stored procedure id under "Older runbook". Runbook passages found
  * through retrieval are "Runbook references".
  */
 import * as React from 'react';
@@ -184,14 +184,14 @@ export const InvestigationInputs: React.FC<{
     const reason = procedure?.playbook?.selection_reason?.trim() || playbook?.reason?.trim();
     items.push({
       key: 'playbook',
-      label: 'Runbook (before Round 14)',
+      label: 'Older runbook',
       value: playbookConsulted
         ? `${selectedPlaybook}${version} · Consulted`
         : `${selectedPlaybook} · Selected only`,
       icon: Workflow,
       detail: playbookConsulted
-        ? `The latest run, from before Round 14, received and consulted this procedure.${reason ? ` Selected because: ${reason}` : ''}`
-        : `The latest run, from before Round 14, selected this procedure but did not receive or consult it.${reason ? ` Selected because: ${reason}` : ''}`,
+        ? `The latest run, made by an older version, received and consulted this procedure.${reason ? ` Selected because: ${reason}` : ''}`
+        : `The latest run, made by an older version, selected this procedure but did not receive or consult it.${reason ? ` Selected because: ${reason}` : ''}`,
       informed: playbookConsulted,
     });
   }

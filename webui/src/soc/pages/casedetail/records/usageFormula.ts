@@ -7,12 +7,16 @@
  * formula, over the undiscounted per-million rates the row recorded. A row written before
  * the rates were stored shows its stored cost and says so.
  *
- * `recomputeCost` has the signature of the Explain kit's `recomputeCost`
- * (`lib/explain/cost.ts`, WP11), so the usage popover can switch to the kit's helper when
- * it lands; this local copy keeps the popover independent of it until then. Pure.
+ * The recompute and the formula's terms are the Explain kit's (`lib/explain/cost.ts`
+ * `recomputeCost` and `costStep`), so the usage popover and a cost explanation print the
+ * same arithmetic. This module adds what the popover needs on top: the amount to the
+ * ledger's 8 decimals (`exactMoney`) and the discount tier by name (Batch or Flex). Pure.
  */
 import type { CaseUsageRow } from '@/lib/types';
 import { fmtMoney } from '@/lib/format';
+import { costStep, recomputeCost } from '@/lib/explain/cost';
+
+export { recomputeCost };
 
 const rate = (value: unknown): number | null =>
   typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -22,30 +26,9 @@ export function hasRates(row: CaseUsageRow): boolean {
   return rate(row.input_rate_per_million) !== null && rate(row.output_rate_per_million) !== null;
 }
 
-/** The recompute of one row's cost from its recorded rates, or null when they are absent. */
-export function recomputeCost(row: CaseUsageRow): number | null {
-  const input = rate(row.input_rate_per_million);
-  const output = rate(row.output_rate_per_million);
-  if (input === null || output === null) return null;
-  const read = rate(row.cache_read_rate_per_million) ?? 0;
-  const write = rate(row.cache_write_rate_per_million) ?? 0;
-  const raw =
-    ((row.prompt_tokens || 0) * input +
-      (row.completion_tokens || 0) * output +
-      (row.cache_read_tokens || 0) * read +
-      (row.cache_write_tokens || 0) * write) /
-    1e6;
-  return Math.round(raw * (row.batch ? 0.5 : 1) * 1e8) / 1e8;
-}
-
 /** A count with thousands separators: 1240 is "1,240". */
 export function tokens(value: number | null | undefined): string {
   return Math.round(Number(value) || 0).toLocaleString('en-US');
-}
-
-/** A per-million rate with no trailing zeros: 1.25 is "$1.25/M", 0.3 is "$0.3/M". */
-export function perMillion(value: number): string {
-  return `$${value.toLocaleString('en-US', { maximumFractionDigits: 4, minimumFractionDigits: 0 })}/M`;
 }
 
 /**
@@ -76,27 +59,20 @@ export function discountTier(row: Pick<CaseUsageRow, 'batch' | 'processing_tier'
 }
 
 /**
- * The formula line with the row's own numbers, for example
- * `1,240 in x $1.25/M + 310 out x $10/M = $0.00465`. A cache term shows only when the
- * row used the cache; a half-price row ends with `x 0.5 (Batch)` or `x 0.5 (Flex)`. The
- * result is the recompute to the ledger's 8 decimals. Null when the row recorded no
- * rates.
+ * The formula line with the row's own numbers: the Explain kit's expression for the row,
+ * for example `(1,240 x $1.25 + 310 x $10) / 1,000,000 = $0.00465`. A cache term shows
+ * only when the row used the cache; a half-price row ends with `x 0.5 (Batch)` or
+ * `x 0.5 (Flex)`. The result is the recompute to the ledger's 8 decimals. Null when the
+ * row recorded no rates.
  */
 export function costFormula(row: CaseUsageRow): string | null {
-  const input = rate(row.input_rate_per_million);
-  const output = rate(row.output_rate_per_million);
-  if (input === null || output === null) return null;
-  const terms = [`${tokens(row.prompt_tokens)} in x ${perMillion(input)}`, `${tokens(row.completion_tokens)} out x ${perMillion(output)}`];
-  if (row.cache_read_tokens) {
-    terms.push(`${tokens(row.cache_read_tokens)} cache read x ${perMillion(rate(row.cache_read_rate_per_million) ?? 0)}`);
-  }
-  if (row.cache_write_tokens) {
-    terms.push(`${tokens(row.cache_write_tokens)} cache write x ${perMillion(rate(row.cache_write_rate_per_million) ?? 0)}`);
-  }
-  const sum = terms.join(' + ');
-  const total = recomputeCost(row) ?? row.cost;
+  if (!hasRates(row)) return null;
+  const { expression } = costStep(row);
+  // The kit names any half-price row Batch; the ledger tells a Flex call apart.
   const half = discountTier(row);
-  return `${half ? `(${sum}) x 0.5 (${half})` : sum} = ${exactMoney(total, row.currency)}`;
+  const base = expression.replace(/ x 0\.5 \(Batch\)$/, '');
+  const total = recomputeCost(row) ?? row.cost;
+  return `${base}${half ? ` x 0.5 (${half})` : ''} = ${exactMoney(total, row.currency)}`;
 }
 
 /** Where a row's rates came from, in words. */

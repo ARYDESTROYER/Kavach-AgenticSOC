@@ -1,8 +1,7 @@
 /**
  * The Next step card (Round 14, SPEC §4.10.11, C10 B): the first open step, ready to act
- * on, pinned on top of the Runbook tab; and its short twin at the top of the case
- * Overview, which sends the analyst to the Runbook tab ("Review draft" when an AI draft
- * waits, otherwise "Open runbook").
+ * on, pinned on top of the runbook on the Response tab (the Brief's Next step row is its
+ * short twin since Round 16).
  *
  * The pinned card: a 3px primary rail and a neutral border; the step's phase and kind; its
  * title as an `h3` that takes focus after Confirm, Mark done or Record decision (the polite
@@ -29,8 +28,8 @@ import { ArrowRight, CheckCircle2, ChevronDown, Clock } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
-import type { RunbookProgress, RunbookRun } from '@/lib/types-runbooks';
-import { KindChip, PersonMark, PHASE_LABEL, ProvenanceChip } from '@/soc/runbooks/shared';
+import type { RunbookRun } from '@/lib/types-runbooks';
+import { KindChip, PersonMark, PHASE_LABEL } from '@/soc/runbooks/shared';
 
 import { useRunbookRun } from './context';
 import { LookupEvidence } from './LookupEvidence';
@@ -44,7 +43,6 @@ import {
   runWorkable,
   type NumberedStep,
 } from './model';
-import { ProgressLine } from './RunbookStrip';
 import { StepActions } from './StepActions';
 import { ActionRecordBlock, StepNote, useLookupRun } from './StepRow';
 import { ActionRecordForm, AiDraftBox, DecisionPicker, FocusLine, FrameworkRefs, Implications, NoteField, noteKey } from './StepParts';
@@ -381,7 +379,7 @@ function NothingNext({ run, onCloseCase }: { run: RunbookRun; onCloseCase?: () =
   );
 }
 
-/** The pinned Next step card of the Runbook tab (needs the run context). */
+/** The pinned Next step card of the runbook on the Response tab (needs the run context). */
 export function NextStepCard({
   compact = false,
   onCloseCase,
@@ -414,97 +412,6 @@ export function NextStepCard({
         <NothingNext run={run} onCloseCase={onCloseCase} />
       )}
     </CardFrame>
-  );
-}
-
-/**
- * The short Next step card at the top of the case Overview. It needs no run context: it
- * shows the step and sends the analyst to the Runbook tab, it never confirms what it does
- * not show.
- */
-export function OverviewNextStep({
-  run,
-  progress,
-  onOpenRunbook,
-  nameOf,
-}: {
-  run: RunbookRun;
-  progress: RunbookProgress;
-  /** Open the Runbook tab (on the step, when one is named). */
-  onOpenRunbook: (stepId: string | null) => void;
-  nameOf?: (username: string) => string;
-}) {
-  const item = nextStep(run);
-  const total = run.snapshot.steps.length;
-  const draft = item?.state.ai_draft && !item.state.ai_draft.confirmed;
-  const titleId = React.useId();
-  const allRequired = progress.required_open <= 0;
-  return (
-    <section aria-labelledby={titleId} data-overview-runbook="" className="space-y-2">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h3 id={titleId} className="text-sm font-semibold text-foreground">
-          Runbook
-        </h3>
-        <span className="min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]">
-          {run.title}, version {run.version.toLocaleString()}
-        </span>
-      </div>
-      <CardFrame aria-label="Next step" data-next-step-card="overview">
-        <div className="px-4 py-3 @[40rem]/overview:px-5">
-          {item ? (
-            <>
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary">
-                  <ArrowRight className="size-3.5" aria-hidden />
-                  Next step
-                </span>
-                <span className="text-xs tabular-nums text-muted-foreground">
-                  {PHASE_LABEL[item.step.phase]} · step {item.number} of {total}
-                </span>
-                <KindChip kind={item.step.kind} />
-                <span className="text-xs text-muted-foreground">{item.step.required ? 'Required' : 'Optional'}</span>
-                {item.state.assignee ? (
-                  <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <PersonMark name={actorName(item.state.assignee, nameOf)} />
-                    {actorName(item.state.assignee, nameOf)}
-                  </span>
-                ) : null}
-              </div>
-              <p className="mt-1.5 text-md font-semibold text-foreground">{item.step.title}</p>
-              <FocusLine step={item.step} className="mt-1" />
-              <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
-                <Button size="sm" onClick={() => onOpenRunbook(item.step.id)}>
-                  {draft ? 'Review draft' : 'Open runbook'}
-                </Button>
-                {draft ? (
-                  <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <ProvenanceChip kind="ai" />
-                    A draft note is waiting for you on the Runbook tab
-                  </span>
-                ) : null}
-              </div>
-            </>
-          ) : (
-            <>
-              <p className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                <CheckCircle2 className={cn('size-4', allRequired ? 'text-success-text' : 'text-warning-text')} aria-hidden />
-                {run.status === 'abandoned'
-                  ? 'This runbook was abandoned.'
-                  : run.status === 'completed' || allRequired
-                    ? 'All required steps are done.'
-                    : 'The remaining required steps wait for approval.'}
-              </p>
-              <div className="mt-2.5">
-                <Button size="sm" variant="outline" onClick={() => onOpenRunbook(null)}>
-                  Open runbook
-                </Button>
-              </div>
-            </>
-          )}
-        </div>
-      </CardFrame>
-      <ProgressLine progress={progress} />
-    </section>
   );
 }
 

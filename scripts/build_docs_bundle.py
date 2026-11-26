@@ -213,6 +213,31 @@ def validate_legacy_redirects(output: Path, *, docs_version: str) -> None:
         )
 
 
+#: Material's page configuration, the JSON its scripts read on load.
+_MATERIAL_CONFIG = re.compile(
+    r'<script id="__config" type="application/json">(.*?)</script>', re.S
+)
+
+
+def version_provider(page: str) -> str:
+    """The version provider a built page's scripts use, or ``""`` for none.
+
+    Material's scripts fetch ``../versions.json`` when the provider is ``mike``. A
+    page without the configuration block (a test fixture) has none.
+    """
+
+    found = _MATERIAL_CONFIG.search(page)
+    if not found:
+        return ""
+    try:
+        config = json.loads(found.group(1))
+    except json.JSONDecodeError:
+        return ""
+    version = config.get("version") if isinstance(config, dict) else None
+    provider = version.get("provider") if isinstance(version, dict) else None
+    return provider if isinstance(provider, str) else ""
+
+
 def validate_bundle(
     output: Path,
     *,
@@ -236,6 +261,13 @@ def validate_bundle(
     canonical_index = (output / docs_version / "index.html").read_text(encoding="utf-8")
     if 'name="generator" content="mkdocs-' not in canonical_index:
         raise RuntimeError("documentation landing page is not a generated MkDocs artifact")
+
+    provider = version_provider(canonical_index)
+    if provider:
+        raise RuntimeError(
+            f"documentation bundle asks for a version list ({provider!r} provider); "
+            "the installed Help Center has one line and no versions.json"
+        )
 
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     expected = {
@@ -303,6 +335,9 @@ def build(output: Path) -> None:
                     "edit/main/docs/" if channel == "Stable" else "edit/Testing/docs/"
                 ),
                 "TLSOC_DOCS_STABLE_URL": "/docs/installed/",
+                # One installed line has no version list: without a provider the
+                # page never asks for /docs/versions.json (a 404 in the Console).
+                "TLSOC_DOCS_VERSION_PROVIDER": "",
             }
         )
         command = [

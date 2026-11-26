@@ -39,6 +39,7 @@ import { AllFieldsSheet } from '../AllFieldsSheet';
 import { FindingsList } from '../FindingsList';
 import { AwaitingReason, awaitingWords } from '../AwaitingReason';
 import { costFormula, exactMoney, recomputeCost } from '../usageFormula';
+import { costStep, recomputeCost as kitRecomputeCost } from '@/lib/explain/cost';
 import { NotificationsSent } from '../NotificationsSent';
 
 expect.extend(toHaveNoViolations);
@@ -278,14 +279,25 @@ describe('the usage formula', () => {
     expect(recomputeCost(usageRow({ batch: true }))).toBe(0.00275);
     expect(recomputeCost(usageRow({ cache_read_tokens: 4000 }))).toBe(0.006);
     expect(recomputeCost(usageRow({ input_rate_per_million: null }))).toBeNull();
-    expect(costFormula(usageRow())).toBe('2,000 in x $1.25/M + 300 out x $10/M = $0.0055');
-    expect(costFormula(usageRow({ batch: true }))).toBe('(2,000 in x $1.25/M + 300 out x $10/M) x 0.5 (Batch) = $0.00275');
+    expect(costFormula(usageRow())).toBe('(2,000 x $1.25 + 300 x $10) / 1,000,000 = $0.0055');
+    expect(costFormula(usageRow({ batch: true }))).toBe('(2,000 x $1.25 + 300 x $10) / 1,000,000 x 0.5 (Batch) = $0.00275');
     expect(costFormula(usageRow({ input_rate_per_million: undefined }))).toBeNull();
+  });
+
+  it('prints the Explain kit arithmetic, with the ledger precision and the tier by name (WP16)', () => {
+    // One recompute and one expression for the popover and a cost explanation.
+    expect(recomputeCost).toBe(kitRecomputeCost);
+    const cached = usageRow({ cache_read_tokens: 4000, cache_read_rate_per_million: 0.125 });
+    expect(costFormula(cached)).toBe(`${costStep(cached).expression} = $0.0060`);
+    // The kit names any half-price row Batch; the popover names a Flex call Flex.
+    const flex = usageRow({ batch: true, processing_tier: 'flex' });
+    expect(costStep(flex).expression).toMatch(/x 0\.5 \(Batch\)$/);
+    expect(costFormula(flex)).toMatch(/\) \/ 1,000,000 x 0\.5 \(Flex\) = \$0\.00275$/);
   });
 
   it('ends the formula in the amount to the ledger precision, never $0.0000 for a call that cost something', () => {
     const tiny = usageRow({ prompt_tokens: 100, completion_tokens: 0, input_rate_per_million: 0.15, cost: 0.000015 });
-    expect(costFormula(tiny)).toBe('100 in x $0.15/M + 0 out x $10/M = $0.000015');
+    expect(costFormula(tiny)).toBe('(100 x $0.15 + 0 x $10) / 1,000,000 = $0.000015');
     expect(exactMoney(1.5)).toBe('$1.50');
     expect(exactMoney(0.00465)).toBe('$0.00465');
     expect(exactMoney(0)).toBe('$0.0000');
@@ -307,7 +319,7 @@ describe('CaseUsageButton', () => {
     const dialog = await screen.findByRole('dialog', { name: 'AI usage on this case' });
     const rows = await within(dialog).findAllByTestId('case-usage-row');
     expect(rows).toHaveLength(3);
-    expect(within(rows[0]).getByTestId('case-usage-formula')).toHaveTextContent('2,000 in x $1.25/M + 300 out x $10/M = $0.0055');
+    expect(within(rows[0]).getByTestId('case-usage-formula')).toHaveTextContent('(2,000 x $1.25 + 300 x $10) / 1,000,000 = $0.0055');
     expect(within(rows[0]).getByText('Catalog price')).toBeInTheDocument();
     expect(within(rows[1]).getByText('Estimated')).toBeInTheDocument();
     expect(within(rows[1]).getByText('Case chat')).toBeInTheDocument();
@@ -340,7 +352,7 @@ describe('CaseUsageButton', () => {
     expect(tierWords(flex)).toBe('Flex');
     expect(tierWords(usageRow({ batch: true, processing_tier: 'batch' }))).toBe('Batch');
     expect(tierWords(usageRow())).toBe('Standard tier');
-    expect(costFormula(flex)).toBe('(2,000 in x $1.25/M + 300 out x $10/M) x 0.5 (Flex) = $0.00275');
+    expect(costFormula(flex)).toBe('(2,000 x $1.25 + 300 x $10) / 1,000,000 x 0.5 (Flex) = $0.00275');
     render(<CaseUsageButton caseId="case-1" totalCost={0.00275} load={vi.fn(async () => usagePage([flex]))} />);
     fireEvent.click(screen.getByRole('button', { name: /show the AI calls behind it/ }));
     const [row] = await screen.findAllByTestId('case-usage-row');

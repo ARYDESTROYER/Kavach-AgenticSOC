@@ -254,6 +254,11 @@ describe('Preview as analyst', () => {
       />,
     );
     expect(screen.getByText('Investigator guidance: 2,140 of 3,000 characters')).toBeInTheDocument();
+    // The case tab is named as the case shows it (Response), never the retired Runbook tab.
+    expect(
+      screen.getByText('How the runbook on the Response tab of a matching case will look before anyone starts.'),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('Runbook tab');
     fireEvent.click(screen.getByRole('button', { name: 'Fill with CASE-000214' }));
     expect(await screen.findByText('203.0.113.7')).toBeInTheDocument();
     expect(screen.getByText(/This case has no value for \{\{entity\.user\}\}/)).toBeInTheDocument();

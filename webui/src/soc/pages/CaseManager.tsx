@@ -53,7 +53,6 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
   ChevronUp,
   Circle,
   CircleSlash,
@@ -135,6 +134,7 @@ import { CASE_TABS } from '@/soc/case-tabs';
 import { useDemo } from '@/soc/demo';
 import { useMediaQuery } from '@/soc/hooks/useMediaQuery';
 import { AiQueueNotice } from '@/soc/investigations/AiQueueNotice';
+import { AiRunCloseNotice } from '@/soc/investigations/AiRunCloseNotice';
 import { AiRunMark } from '@/soc/investigations/AiRunMark';
 import { aiRunAccessibleText } from '@/soc/investigations/aiRunText';
 import { useAiRun } from '@/soc/investigations/useAiRun';
@@ -380,11 +380,19 @@ function queueStatusIcon(status: string) {
 }
 
 /** A quiet separator between meta facts; decorative, so screen readers skip it. */
-const MetaDot = () => (
-  <span aria-hidden className="shrink-0 text-muted-foreground/60">
+const MetaDot = ({ className }: { className?: string }) => (
+  <span aria-hidden className={cn('shrink-0 text-muted-foreground/60', className)}>
     ·
   </span>
 );
+
+/**
+ * Where a queue row shows the AI run's words beside the ring: only in a queue wide enough
+ * for them and the status words both. Narrower, the ring alone stands in the status
+ * glyph's place, so the status words keep their room (WP16); the row's accessible name
+ * carries the run in words either way.
+ */
+export const RUN_MARK_WORDS = 'hidden @[30rem]/queue:inline';
 
 interface RowJobState {
   /** The case is in a bulk job that is still running. */
@@ -495,8 +503,8 @@ const QueueRow: React.FC<{
   ) : null;
   const runMark = run ? (
     <>
-      <AiRunMark caseId={item.case_id} />
-      <MetaDot />
+      <AiRunMark caseId={item.case_id} wordsClassName={RUN_MARK_WORDS} />
+      <MetaDot className={RUN_MARK_WORDS} />
     </>
   ) : null;
   const statusNode = (
@@ -709,8 +717,9 @@ export function canSelectCases(can: (resource: string, action: string) => boolea
  * C `cases:close`, R `cases:reinvestigate`, M `cases:assign`), and the selection keys
  * follow {@link canSelectCases}. A key the role cannot use does nothing, so it is not
  * promised; nor is a key the layout cannot use: `[` folds the queue only where the queue
- * and the case sit side by side (`splitShown`). The case tab keys count the case's own
- * tabs, so the line stays true when the tabs change.
+ * and the case sit side by side (`splitShown`). `]` (the case details) and W (the live AI
+ * run) need no grant: the open case handles both for every viewer. The case tab keys
+ * count the case's own tabs, so the line stays true when the tabs change.
  */
 export function caseManagerShortcuts(
   can: (resource: string, action: string) => boolean,
@@ -723,6 +732,7 @@ export function caseManagerShortcuts(
   const rows: Array<{ keys: string; action: string } | false> = [
     { keys: '↑ ↓  or  K J', action: 'Move through the queue and open the case' },
     Boolean(opts.splitShown) && { keys: '[', action: 'Hide or show the queue' },
+    { keys: ']', action: 'Show or hide the case details' },
     { keys: 'Home  End', action: 'First or last loaded case' },
     select && { keys: 'X  or  Space', action: 'Select or clear the focused case' },
     select && { keys: 'Shift + ↑ ↓  or  Shift + X', action: 'Extend the selection' },
@@ -736,6 +746,7 @@ export function caseManagerShortcuts(
         ? { keys: 'A  E  H', action: 'Acknowledge, escalate or hold the open case' }
         : close && { keys: 'C', action: 'Close the open case' },
     can('cases', 'reinvestigate') && { keys: 'R', action: 'Reinvestigate the open case' },
+    { keys: 'W', action: 'Watch the AI run, while one is under way' },
     assign && write
       ? { keys: 'M  T', action: 'Change the owner or edit tags' }
       : assign
@@ -1784,6 +1795,13 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const bulkTerminalIds = React.useMemo(
     () => (bulkTerminal ? Array.from(selectedIds).sort() : undefined),
     [bulkTerminal, selectedIds],
+  );
+  // The selection a status-moving bulk dialog covers (Acknowledge, Set status): its AI-run
+  // note counts the selected cases with a run, as the close dialogs do.
+  const bulkStatusIds = React.useMemo(
+    () =>
+      pendingBulkAction === 'acknowledge' || bulkFormAction === 'status' ? Array.from(selectedIds).sort() : undefined,
+    [bulkFormAction, pendingBulkAction, selectedIds],
   );
   const [bulkBusy, setBulkBusy] = React.useState(false);
   const [selectingAll, setSelectingAll] = React.useState(false);
@@ -3245,41 +3263,16 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                 ref={detailRef}
                 aria-label="Selected case workspace"
                 className={cn(
-                  'group/detail min-h-0 min-w-0 flex-col bg-background',
+                  'min-h-0 min-w-0 flex-col bg-background',
                   selectedCaseId ? 'flex' : 'hidden xl:flex',
                 )}
               >
                 {selectedCaseId ? (
                   <>
-                    {/* The below-xl back bar. It steps aside (CSS `:has`) once the case
-                        header carries its own Back at every width, a control marked
-                        `data-case-header-back` (Round 16 WP03, [cmux] §5.11), so a phone
-                        keeps one back path and the case starts 40px higher. */}
-                    <div
-                      data-testid="case-manager-back-bar"
-                      className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-card/35 px-3 xl:hidden group-has-[[data-case-header-back]]/detail:hidden"
-                    >
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2"
-                        onClick={closeDetail}
-                        aria-label="Back to case queue"
-                      >
-                        <ChevronLeft className="h-4 w-4" />
-                        Cases
-                      </Button>
-                      {/* The display id and title, never the raw id (CM-9 below xl). */}
-                      <span className="min-w-0 truncate text-xs text-muted-foreground">
-                        {selectedCase ? (
-                          <>
-                            <span className="font-mono">{caseDisplayId(selectedCase)}</span>
-                            {' · '}
-                            {caseTitle(selectedCase)}
-                          </>
-                        ) : null}
-                      </span>
-                    </div>
+                    {/* No back bar of its own (Round 16, WP16): below xl the case header's
+                        Back (marked `data-case-header-back`, WP03) is the one back path, in
+                        every browser, so a phone keeps one Back and the case starts 40px
+                        higher. */}
                     <div className="min-h-0 flex-1">
                       <CaseDetail
                         caseId={selectedCaseId}
@@ -3351,6 +3344,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
               <DialogDescription>{bulkFormConfig?.description}</DialogDescription>
             </DialogHeader>
             <div className="space-y-2 py-1">
+              <AiRunCloseNotice caseIds={bulkStatusIds} open={bulkFormAction === 'status'} action="status" />
               <label htmlFor="case-manager-bulk-value" className="text-xs font-medium text-foreground">
                 {bulkFormConfig?.label}
               </label>
@@ -3448,7 +3442,10 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
           description={bulkConfirmConfig?.description}
           confirmLabel={bulkConfirmConfig?.label}
           onConfirm={runConfirmedBulkAction}
-        />
+        >
+          {/* Acknowledge moves the status: a run's result replaces it (D10). */}
+          <AiRunCloseNotice caseIds={bulkStatusIds} open={pendingBulkAction === 'acknowledge'} action="status" />
+        </ConfirmDialog>
 
         <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
           <DialogContent

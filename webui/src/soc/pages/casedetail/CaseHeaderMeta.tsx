@@ -17,6 +17,11 @@
  * SLA stays in the inspector's Signal section; the review sentence is the Brief's first
  * block. Tags, the campaign, Ask AI and the Sample mark live in the inspector.
  *
+ * While an AI run is under way the status words keep priority (WP16): the verdict chip is
+ * dimmed and drops its label word ("Previous verdict. The running investigation replaces
+ * it." leads its hover line), below a 56rem strip the run chip shows the ring and the time
+ * only, and below 30rem the items sit closer and the status glyph gives way to the ring.
+ *
  * SECURITY (#9): every case-derived value (id, owner) renders as a plain text node. #3:
  * the owner edit is the existing collaboration route; nothing here changes status,
  * verdict or disposition.
@@ -46,6 +51,7 @@ import { OwnerMonogram, assignedToLabel } from '@/soc/components/OwnerMonogram';
 import type { CaseOutcome } from '@/soc/components/outcome';
 import { scoreBand, semanticIcon } from '@/soc/components/palette';
 import { AiRunChip } from '@/soc/investigations/AiRunChip';
+import { useAiRun } from '@/soc/investigations/useAiRun';
 import type { PickableUser, TriageChips } from '@/soc/pages/CaseDetail.api';
 
 import { AssigneePicker } from './AssigneePicker';
@@ -82,6 +88,43 @@ export const META_HIDE = {
   sla: 'hidden @[52rem]/case:inline-flex',
   review: 'hidden @[44rem]/case:inline-flex',
 } as const;
+
+/** The verdict chip's note while an AI run is under way on the case. */
+export const PREVIOUS_VERDICT_NOTE = 'Previous verdict. The running investigation replaces it.';
+
+/**
+ * Below this strip width (56rem) the AI run chip drops its words ("0:42" with the ring),
+ * and below 30rem it keeps the ring alone, so the status words keep their place beside
+ * it (WP16).
+ */
+export const META_COMPACT_RUN_PX = 896;
+export const META_RING_RUN_PX = 480;
+
+/** How much of the run chip a strip of `width` px shows (`width` null: not measured). */
+export function runChipFit(width: number | null): boolean | 'ring' {
+  if (width === null || width <= 0) return false;
+  if (width < META_RING_RUN_PX) return 'ring';
+  return width < META_COMPACT_RUN_PX;
+}
+
+/** The width of `ref`'s element while `active` (null where it cannot be measured). */
+function useWidth(ref: React.RefObject<HTMLElement | null>, active: boolean): number | null {
+  const [width, setWidth] = React.useState<number | null>(null);
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!active || !el) {
+      setWidth(null);
+      return undefined;
+    }
+    const measure = () => setWidth(Math.round(el.getBoundingClientRect().width));
+    measure();
+    if (typeof ResizeObserver !== 'function') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, active]);
+  return width;
+}
 
 /** Copy the case's display id; confirms in place and via a toast. */
 const CopyId: React.FC<{ value: string }> = ({ value }) => {
@@ -185,6 +228,12 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
     String(priorityExplanation.value ?? '').trim().toUpperCase() === sla.priority;
   const [assigningSelf, setAssigningSelf] = React.useState(false);
   const ownerTitleId = React.useId();
+  // An AI run under way: the verdict on screen is the one it replaces, and the run chip
+  // takes room on the line, so the status words keep priority (WP16).
+  const run = useAiRun(c.case_id);
+  const aiRunning = run !== null && run.state !== 'finished';
+  const stripRef = React.useRef<HTMLDivElement | null>(null);
+  const runFit = runChipFit(useWidth(stripRef, aiRunning));
 
   const assignToMe = React.useCallback(async () => {
     if (!currentUser) return;
@@ -201,9 +250,13 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
 
   return (
     <div
+      ref={stripRef}
       data-testid="case-detail-meta"
       className={cn(
-        'flex h-6 min-w-0 flex-nowrap items-center gap-x-2.5 overflow-x-auto whitespace-nowrap text-xs text-muted-foreground',
+        'flex h-6 min-w-0 flex-nowrap items-center overflow-x-auto whitespace-nowrap text-xs text-muted-foreground',
+        // A phone-width strip with an AI run under way spaces its items closer, so the
+        // status words keep their room beside the run chip.
+        aiRunning ? 'gap-x-1.5 @[30rem]/case:gap-x-2.5' : 'gap-x-2.5',
         // Never a visible scrollbar: in a very narrow pane the line scrolls sideways.
         '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
       )}
@@ -216,21 +269,25 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
       </span>
 
       {severity ? (
-        <FactExplain explanation={explainSeverity(triage)}>
-          {/* "High severity"; in a phone-width pane the word alone ("High"), so the
-              owner control keeps its place on the line. */}
-          <span className="inline-flex shrink-0 items-center" data-meta-item="severity">
-            <SeverityBadge
-              severity={severity}
-              labelSuffix="severity"
-              className="hidden h-5 shrink-0 px-1.5 @[36rem]/case:inline-flex"
-            />
-            <span className="inline-flex items-center @[36rem]/case:hidden">
-              <SeverityBadge severity={severity} className="h-5 shrink-0 px-1.5" />
-              <span className="sr-only"> severity</span>
+        // A wrapper that never shrinks: the explain trigger inside may, and its badge
+        // would then run under the status words on a short line.
+        <span className="inline-flex shrink-0">
+          <FactExplain explanation={explainSeverity(triage)}>
+            {/* "High severity"; in a phone-width pane the word alone ("High"), so the
+                owner control keeps its place on the line. */}
+            <span className="inline-flex shrink-0 items-center" data-meta-item="severity">
+              <SeverityBadge
+                severity={severity}
+                labelSuffix="severity"
+                className="hidden h-5 shrink-0 px-1.5 @[36rem]/case:inline-flex"
+              />
+              <span className="inline-flex items-center @[36rem]/case:hidden">
+                <SeverityBadge severity={severity} className="h-5 shrink-0 px-1.5" />
+                <span className="sr-only"> severity</span>
+              </span>
             </span>
-          </span>
-        </FactExplain>
+          </FactExplain>
+        </span>
       ) : null}
 
       {/* The status or outcome gives way first when the line is short (it truncates), so
@@ -245,7 +302,13 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
           data-meta-item="status"
           className="inline-flex min-w-0 shrink items-center gap-1 font-medium text-foreground"
         >
-          {StatusGlyph ? <StatusGlyph className="size-3.5 shrink-0 text-muted-foreground" aria-hidden /> : null}
+          {/* Beside a run chip on a phone-width strip the chip's ring is the glyph. */}
+          {StatusGlyph ? (
+            <StatusGlyph
+              className={cn('size-3.5 shrink-0 text-muted-foreground', aiRunning && 'hidden @[30rem]/case:block')}
+              aria-hidden
+            />
+          ) : null}
           <span className="min-w-0 truncate">{statusWords(c.status)}</span>
         </span>
       )}
@@ -267,19 +330,27 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
       ) : null}
 
       {c.verdict ? (
-        <span className={cn('shrink-0 items-center', META_HIDE.verdict)} data-meta-item="verdict">
-          <DecisionExplain caseRecord={c}>
+        <span
+          className={cn('shrink-0 items-center', META_HIDE.verdict)}
+          data-meta-item="verdict"
+          data-previous-verdict={aiRunning ? '' : undefined}
+        >
+          {/* While an AI run is under way the verdict is the one it replaces: dimmed, its
+              label word dropped, and the hover line says so first. */}
+          <DecisionExplain caseRecord={c} note={aiRunning ? PREVIOUS_VERDICT_NOTE : null}>
+            {aiRunning ? <span className="sr-only">Previous verdict: </span> : null}
             <AiVerdictChip
               verdict={c.verdict}
               confidence={c.confidence}
-              className="h-5 shrink-0"
-              labelClassName="hidden @[48rem]/case:inline"
+              className={cn('h-5 shrink-0', aiRunning && 'border-dashed text-muted-foreground [&>svg]:text-muted-foreground')}
+              labelClassName={aiRunning ? 'hidden' : 'hidden @[48rem]/case:inline'}
             />
           </DecisionExplain>
         </span>
       ) : null}
-      {/* The AI working on this case right now (WP09); renders nothing otherwise. */}
-      <AiRunChip caseId={c.case_id} />
+      {/* The AI working on this case right now (WP09); renders nothing otherwise. On a
+          narrow strip it drops its words, so the status words keep their place. */}
+      <AiRunChip caseId={c.case_id} compact={runFit} />
 
       <Popover open={ownerOpen} onOpenChange={onOwnerOpenChange}>
         <PopoverTrigger asChild>

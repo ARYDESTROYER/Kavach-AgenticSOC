@@ -35,6 +35,13 @@ class DocsThemeContractTests(unittest.TestCase):
         self.assertEqual(2, len(re.findall(r"^\s+accent: lime$", config, re.MULTILINE)))
         self.assertNotRegex(config, r"^\s+accent: deep-purple$")
 
+    def test_the_channel_banner_has_no_long_dashes(self) -> None:
+        override = (ROOT / "overrides/main.html").read_text(encoding="utf-8")
+        start = override.index("{% block announce %}")
+        banner = override[start : override.index("{% endblock %}", start)]
+        self.assertIn("PROMOTES TO STABLE ON MAIN", banner)
+        self.assertNotRegex(banner, "[\u2013\u2014]")
+
     def test_console_theme_bridge_covers_light_dark_and_system(self) -> None:
         override = (ROOT / "overrides/main.html").read_text(encoding="utf-8")
         javascript = (ROOT / "docs/javascripts/extra.js").read_text(encoding="utf-8")

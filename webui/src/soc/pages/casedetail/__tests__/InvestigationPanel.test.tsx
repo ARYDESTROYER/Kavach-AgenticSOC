@@ -136,7 +136,7 @@ describe('InvestigationPanel: the AI lane (Round 16, D8)', () => {
     expect(container.querySelectorAll('.uppercase')).toHaveLength(0);
 
     // Collapsed by default, with the counts visible before opening.
-    expect(screen.getByTestId('investigation-trace-counts')).toHaveTextContent('3 steps · 1 tool');
+    expect(screen.getByTestId('investigation-trace-counts')).toHaveTextContent('2 AI steps · 1 tool');
     expect(screen.queryByText('hits=3')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Show trace' }));
     expect(screen.getByText('hits=3')).toBeInTheDocument();
@@ -192,6 +192,28 @@ describe('InvestigationPanel: the AI lane (Round 16, D8)', () => {
     await waitFor(() =>
       expect(document.activeElement?.getAttribute('data-trace-kind')).toBe('decision'),
     );
+  });
+
+  it('filters People and Chat apart from the Agent, as the trace counts them (WP16)', () => {
+    const personSpan: TraceSpan = { ...agentSpan, step_index: 3, kind: 'person', name: 'analyst.one', summary: 'Acknowledged the case' };
+    const chatSpan: TraceSpan = { ...agentSpan, step_index: 4, kind: 'chat', name: 'case_chat', summary: 'Asked about the host' };
+    renderCm({ timeline: { ...FULL, total: 5, spans: [agentSpan, toolSpan, personSpan, chatSpan, decisionSpan] } });
+    // The header counts the AI's steps and the people's apart (never one step count).
+    expect(screen.getByTestId('investigation-trace-counts')).toHaveTextContent('2 AI steps · 1 tool · 1 by people');
+    fireEvent.click(screen.getByRole('button', { name: 'Show trace' }));
+    const filter = screen.getByRole('radiogroup', { name: 'Show trace steps by' });
+    expect(within(filter).getAllByRole('radio').map((r) => r.textContent)).toEqual(['All', 'Agent', 'Tool', 'Code', 'People', 'Chat']);
+    // Agent keeps the agent's own step only: no person, no chat turn.
+    fireEvent.click(within(filter).getByRole('radio', { name: 'Agent' }));
+    expect(screen.getByText('Thinking')).toBeInTheDocument();
+    expect(screen.queryByText('Acknowledged the case')).toBeNull();
+    expect(screen.queryByText('Asked about the host')).toBeNull();
+    fireEvent.click(within(filter).getByRole('radio', { name: 'People' }));
+    expect(screen.getByText('Acknowledged the case')).toBeInTheDocument();
+    expect(screen.queryByText('Thinking')).toBeNull();
+    fireEvent.click(within(filter).getByRole('radio', { name: 'Chat' }));
+    expect(screen.getByText('Asked about the host')).toBeInTheDocument();
+    expect(screen.queryByText('Acknowledged the case')).toBeNull();
   });
 
   it('repeats none of the header and rail facts: no risk score, confidence or status chip', () => {

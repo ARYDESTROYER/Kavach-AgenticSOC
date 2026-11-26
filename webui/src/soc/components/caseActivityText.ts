@@ -14,7 +14,7 @@
  * Cases investigated before Round 14 keep their stored rows, written with the retired
  * procedure noun (`playbook=...`, actor `playbook_selector`, action type `playbook`).
  * Those shapes are read too, and their tokens get the Console-authored friendly names of
- * SPEC §3.1 ("Runbook selector (before Round 14)"); the stored text stays verbatim under
+ * SPEC §3.1 ("Older runbook selector"); the stored text stays verbatim under
  * Details (AU-7).
  *
  * SECURITY (#9): the values come from the audit trail and can carry log- or
@@ -22,7 +22,7 @@
  * a string that the caller renders as a plain text node, never as markup.
  */
 import { humanizeToken } from '@/lib/format';
-import { confidencePercent, verdictWords } from '@/soc/components/outcome';
+import { confidencePercent, dispositionWords, verdictWords } from '@/soc/components/outcome';
 
 /** A prompt excerpt longer than this, or on several lines, is kept under Details. */
 const PROMPT_INLINE_MAX = 240;
@@ -52,8 +52,8 @@ const SYSTEM_ACTORS: Readonly<Record<string, string>> = {
   router: 'Router',
   runbook_selector: 'Runbook selector',
   // Legacy tokens (SPEC §3.1): the stored value stays in the record; a list names them.
-  playbook_selector: 'Runbook selector (before Round 14)',
-  run_playbook: 'Runbook automation (before Round 14)',
+  playbook_selector: 'Older runbook selector',
+  run_playbook: 'Older runbook automation',
   analyst_policy: 'Analyst policy',
   agentic_soc: 'Agentic SOC',
   scheduler: 'Scheduler',
@@ -74,7 +74,7 @@ export function activityActorLabel(actor: string | null | undefined): string {
 /** Activity kinds (audit action types) whose list name is not the token's own words. */
 const KIND_LABELS: Readonly<Record<string, string>> = {
   // Legacy `ActionType.PLAYBOOK` (SPEC §3.1).
-  playbook: 'Runbook (before Round 14)',
+  playbook: 'Older runbook',
 };
 
 /** The kind badge's words: a friendly name for a legacy token, else the token's words. */
@@ -340,6 +340,55 @@ function screenshotSize(raw: string): string {
   return `${(bytes / (1024 * 1024)).toLocaleString('en-US', { maximumFractionDigits: 1 })} MB`;
 }
 
+/** What a person's lifecycle action did to the case, in plain words (`case.*` actions). */
+const STATUS_ACTION: Readonly<Record<string, string>> = {
+  acknowledge: 'Acknowledged the case',
+  close: 'Closed the case',
+  confirm_fp: 'Confirmed the case as a false positive',
+  resolve: 'Marked the case resolved',
+  reopen: 'Reopened the case',
+  escalate: 'Escalated the case',
+  deescalate: 'Took the case off escalation',
+  hold: 'Put the case on hold',
+  resume: 'Resumed the case',
+  set_disposition: 'Set the disposition',
+  set_status: 'Set the status',
+};
+
+/** A status token in running text ("on hold"); empty for the unknown `?`. */
+function statusInText(raw: string): string {
+  const t = raw.trim().toLowerCase();
+  if (!t || t === '?') return '';
+  return t === 'needs_human' ? 'needs human review' : humanizeToken(t).toLowerCase();
+}
+
+/**
+ * A person's status change as the case action route records it
+ * (`action=hold status escalated→on_hold disposition=none reason=... classified=...`; the
+ * fields after the disposition are appended only when present): what was done, the status
+ * before and after, the disposition (or the classification made in this action) and the
+ * reason given.
+ */
+function statusRow(row: {
+  action: string;
+  from: string;
+  to: string;
+  disposition: string;
+  reason: string;
+  classified: string;
+}): string {
+  const lead = STATUS_ACTION[row.action.toLowerCase()] ?? `${humanizeToken(row.action)} on the case`;
+  const from = statusInText(row.from);
+  const to = statusInText(row.to);
+  const status = !to ? '' : !from ? `The status is now ${to}` : from === to ? `The status stays ${to}` : `The status went from ${from} to ${to}`;
+  const disposition = row.classified
+    ? `Classified as ${dispositionWords(row.classified).toLowerCase()}`
+    : row.disposition && row.disposition.toLowerCase() !== 'none'
+      ? `Disposition: ${dispositionWords(row.disposition).toLowerCase()}`
+      : '';
+  return sentences(lead, status, disposition, row.reason ? `Reason: ${row.reason}` : '');
+}
+
 /**
  * The display text for one activity row. A recognised `key=value` summary becomes one
  * plain sentence and `recorded` keeps the original; anything else is returned as it is.
@@ -352,6 +401,21 @@ export function activityText(item: ActivityInput): ActivityText {
 
   let m = /^rule=(\S+) action=(\S+)(?: (.*))?$/s.exec(raw);
   if (m) return plain(automationAction(m[1], m[2], (m[3] ?? '').trim()));
+
+  // A person's lifecycle action (`routes.py`, and the seeded Demo rows).
+  m = /^action=(\w+) status (\S+?)(?:→|->)(\S+) disposition=(\S+)(?: reason=(.*?))?(?: classified=(\S+))?$/s.exec(raw);
+  if (m) {
+    return plain(
+      statusRow({
+        action: m[1],
+        from: m[2],
+        to: m[3],
+        disposition: m[4],
+        reason: (m[5] ?? '').trim(),
+        classified: m[6] ?? '',
+      }),
+    );
+  }
 
   m = /^automation drafted (\S+) proposal \S+ \(rule=(\S+)\)$/.exec(raw);
   if (m) return plain(`Automation drafted a ${approvalKind(m[1])} proposal for approval${ruleNote(m[2])}.`);

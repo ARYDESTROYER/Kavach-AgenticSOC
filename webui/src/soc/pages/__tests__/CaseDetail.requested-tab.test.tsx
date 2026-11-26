@@ -593,7 +593,7 @@ describe('CaseDetail: the next case while a read for the one it replaces is stil
     await pastTheBeat();
     const trace = screen.getByTestId('investigation-trace');
     expect(within(trace).getByRole('button', { name: /Hide trace/ })).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId('investigation-trace-counts')).toHaveTextContent('0 steps · 0 tools'));
+    await waitFor(() => expect(screen.getByTestId('investigation-trace-counts')).toHaveTextContent('0 AI steps · 0 tools'));
     expect(readsOf('c-tab-2', 'timeline')).toBe(1);
   });
 

@@ -8,7 +8,7 @@
  *
  * Round 14 (SPEC §4.10.9): the Published runbook the investigator received is shown as
  * "Runbook" with its version, consulted or selected only; a run from before Round 14
- * keeps its stored procedure id under "Runbook (before Round 14)".
+ * keeps its stored procedure id under "Older runbook".
  *
  * Round 15 (SPEC D8.5): it opens inside the Investigation tab's AI assessment ("Show full
  * assessment evidence"), so it is flat: sections divided by hairlines with plain h3
@@ -309,7 +309,7 @@ export const WhyPanel: React.FC<{
             ) : procedurePlaybook?.selected_id ? (
               <div className="grid gap-2 py-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-start">
                 <div className="text-xs font-medium text-muted-foreground">
-                  Runbook (before Round 14)
+                  Older runbook
                 </div>
                 <div className="min-w-0">
                   <div className="break-all font-mono text-sm font-semibold text-foreground">
@@ -642,7 +642,7 @@ export const WhyPanel: React.FC<{
           {!guidance && playbook && playbook.id && playbook.consulted === true ? (
             <WhyBlock>
               <WhyHeading>
-                Runbook consulted (before Round 14)
+                Older runbook consulted
               </WhyHeading>
               <Badge variant="info" className="font-mono">
                 {playbook.id}{playbook.version ? ` · v${playbook.version}` : ''}

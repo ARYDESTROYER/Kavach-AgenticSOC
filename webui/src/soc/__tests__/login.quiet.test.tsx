@@ -68,7 +68,7 @@ vi.mock('@/lib/api', () => {
 
 import { ThemeProvider, BRANDING_FRESH_MS } from '../theme';
 import { TooltipProvider } from '@/ui/tooltip';
-import Login from '../pages/Login';
+import Login, { MFA_PENDING_SPENT_TEXT } from '../pages/Login';
 import { ApiError as MockApiError } from '@/lib/api';
 
 const BRANDING = { org_name: 'Acme SOC', product_name: 'Triage', login_subtitle: '' };
@@ -270,6 +270,31 @@ describe('Login: the code cells submit on their own, once (R10)', () => {
     expect(fresh.map((c) => c.value).join('')).toBe('');
     await waitFor(() => expect(fresh[0]).toHaveFocus());
     expect(verifyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('goes back to the password step once the code step is spent (five wrong codes), as an expired enrollment does (WP16)', async () => {
+    verifyMock
+      .mockRejectedValueOnce(new MockApiError(401, 'invalid code'))
+      .mockRejectedValueOnce(new MockApiError(401, 'invalid or expired pending session'));
+    renderLogin();
+    const cells = await toMfaStep();
+    // A wrong code keeps the code step, with its error.
+    '111111'.split('').forEach((digit, i) => fireEvent.change(cells[i], { target: { value: digit } }));
+    expect(await screen.findByText('invalid code')).toBeInTheDocument();
+    // The spent pending token cannot take any code: the password step, with the reason.
+    const fresh = screen.getAllByLabelText(/Authentication code digit/) as HTMLInputElement[];
+    '222222'.split('').forEach((digit, i) => fireEvent.change(fresh[i], { target: { value: digit } }));
+    const password = (await screen.findByLabelText('Password')) as HTMLInputElement;
+    expect(screen.queryByRole('group', { name: 'Authentication code' })).toBeNull();
+    expect(screen.queryByText('invalid or expired pending session')).toBeNull();
+    expect(screen.getByText(MFA_PENDING_SPENT_TEXT)).toBeInTheDocument();
+    expect(password.value).toBe('');
+    await waitFor(() => expect(password).toHaveFocus());
+    // Signing in again starts a fresh code step.
+    verifyMock.mockReset().mockReturnValue(new Promise(() => undefined));
+    fireEvent.change(password, { target: { value: 'pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByRole('group', { name: 'Authentication code' })).toBeInTheDocument();
   });
 });
 

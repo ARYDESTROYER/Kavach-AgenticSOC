@@ -260,7 +260,7 @@ export const KPI_STRIP_BINDINGS: readonly KpiStripBinding[] = [
     group: 'operations',
     cell: 'sla_breached',
     label: 'SLA breached',
-    definition: 'Open cases past their response or resolve target.',
+    definition: 'Open cases past their response target.',
     provider: 'shift',
     window: 'all',
     // With no SLA policy turned on the server reports 0 breached; that is not a measurement.

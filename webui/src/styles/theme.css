@@ -130,10 +130,10 @@
        nudge the backdrop without touching the card colour. */
     --canvas-tint: 220 20% 97%;
     --surface-tint: 220 20% 99%;
-    /* Secondary brand accent (login hero aurora / decorative). W0-A §11 gives it a
-       real default (indigo-ish) so the login hero is never a flat monochrome when
-       branding leaves it unset; branding may override via `--accent2`. The tailwind
-       `accent2` still resolves through `var(--accent2, var(--primary))`. */
+    /* Secondary brand accent (decorative). It has a real default (indigo-ish) so a
+       secondary accent is never flat when branding leaves it unset; branding may
+       override it via `--accent2`. The tailwind `accent2` still resolves through
+       `var(--accent2, var(--primary))`. */
     --accent2: 243 75% 59%;
     /* Optional display font family for hero titles (operator-selectable, enum). */
     --font-display: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;

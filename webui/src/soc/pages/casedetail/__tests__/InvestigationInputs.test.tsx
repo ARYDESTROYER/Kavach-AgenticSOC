@@ -93,7 +93,7 @@ describe('InvestigationInputs', () => {
       'Knowledge',
       'Runbook references',
       'Persona',
-      'Runbook (before Round 14)',
+      'Older runbook',
       'Threshold tuning',
     ]);
     for (const label of labels) {
@@ -116,6 +116,13 @@ describe('InvestigationInputs', () => {
 
     expect(screen.queryByText('selected-only')).toBeNull();
     expect(screen.getByText('Runbook references')).toBeInTheDocument();
+  });
+
+  it('says an older version made the run, never a release round (WP16)', () => {
+    render(<InvestigationInputs rationale={RATIONALE} />);
+    const older = screen.getByLabelText(/^Older runbook: /);
+    expect(older.getAttribute('aria-label')).toMatch(/The latest run, made by an older version, received and consulted this procedure\./);
+    expect(older.getAttribute('aria-label')).not.toMatch(/Round/);
   });
 
   it('names the Published runbook the latest run received, with its version (Round 14)', () => {

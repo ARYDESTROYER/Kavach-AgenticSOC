@@ -26,6 +26,11 @@ import { getTimeline, type DecisionPayload } from '@/soc/pages/CaseDetail.api';
 export interface DecisionExplainProps {
   caseRecord: Case;
   children: React.ReactNode;
+  /**
+   * A sentence that leads the hover line and the panel's notes, for example while an AI
+   * run is under way: "Previous verdict. The running investigation replaces it." (WP16).
+   */
+  note?: string | null;
 }
 
 /** `GET /api/cases/{id}/forwarding`: which deterministic gate sent the case to the AI. */
@@ -48,7 +53,7 @@ async function loadForwarding(caseId: string): Promise<ForwardingReading | null>
   return reading && typeof reading === 'object' ? reading : null;
 }
 
-export const DecisionExplain: React.FC<DecisionExplainProps> = ({ caseRecord, children }) => {
+export const DecisionExplain: React.FC<DecisionExplainProps> = ({ caseRecord, children, note = null }) => {
   const caseId = caseRecord?.case_id ?? '';
   const [payload, setPayload] = React.useState<DecisionPayload | null>(null);
   const [forwarding, setForwarding] = React.useState<ForwardingReading | null>(null);
@@ -63,17 +68,20 @@ export const DecisionExplain: React.FC<DecisionExplainProps> = ({ caseRecord, ch
   }, [caseId]);
 
   const explanation = React.useMemo(() => {
-    const base = caseRecord ? explainDecision(caseRecord, payload) : null;
+    const decided = caseRecord ? explainDecision(caseRecord, payload) : null;
+    // A lead note (an AI run under way) opens the hover line and the panel's notes.
+    const lead = note?.trim() || null;
+    const base = decided && lead ? { ...decided, summary: `${lead} ${decided.summary}`, caveats: [lead, ...decided.caveats] } : decided;
     // While the decision record is read, or after it failed, the panel says so instead of
     // showing "Not known" without a reason.
-    const note =
+    const reading =
       read === 'loading'
         ? 'Reading the decision record.'
         : read === 'failed'
           ? 'The decision record could not be read, so the auto-close thresholds are not shown.'
           : null;
-    return base && note ? { ...base, caveats: [...base.caveats, note] } : base;
-  }, [caseRecord, payload, read]);
+    return base && reading ? { ...base, caveats: [...base.caveats, reading] } : base;
+  }, [caseRecord, payload, read, note]);
 
   const onOpenChange = React.useCallback(
     (open: boolean) => {

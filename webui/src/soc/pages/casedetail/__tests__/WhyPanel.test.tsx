@@ -143,7 +143,7 @@ describe('WhyPanel — latest-run investigation input provenance', () => {
 
     expect(screen.getByText('Knowledge')).toBeInTheDocument();
     expect(screen.getByText('Runbook references')).toBeInTheDocument();
-    expect(screen.getByText('Runbook consulted (before Round 14)')).toBeInTheDocument();
+    expect(screen.getByText('Older runbook consulted')).toBeInTheDocument();
     // The stored id is shown verbatim.
     expect(screen.getByText('credential-response · v3')).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/playbook/i);
@@ -160,7 +160,7 @@ describe('WhyPanel — latest-run investigation input provenance', () => {
       <WhyPanel c={CASE} rationale={rationale} loading={false} error={null} onRetry={vi.fn()} />,
     );
 
-    expect(screen.queryByText('Runbook consulted (before Round 14)')).toBeNull();
+    expect(screen.queryByText('Older runbook consulted')).toBeNull();
     expect(screen.queryByText('selected-only')).toBeNull();
   });
 
@@ -212,9 +212,9 @@ describe('WhyPanel — latest-run investigation input provenance', () => {
     expect(screen.getByText('Runbook references')).toBeInTheDocument();
     expect(screen.getByText('runbook:web_scanner · rev 4')).toBeInTheDocument();
     expect(screen.getByText('0.912')).toBeInTheDocument();
-    expect(screen.queryByText('Runbook consulted (before Round 14)')).toBeNull();
+    expect(screen.queryByText('Older runbook consulted')).toBeNull();
     // A selected-only procedure from before Round 14 keeps its stored id under the legacy label.
-    expect(screen.getByText('Runbook (before Round 14)')).toBeInTheDocument();
+    expect(screen.getByText('Older runbook')).toBeInTheDocument();
   });
 
   it('shows the Published runbook the latest run received, with its version (Round 14)', () => {

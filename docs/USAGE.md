@@ -1124,7 +1124,7 @@ three things:
   the retrieval query groups that produced it); approved operator **memory consulted** (§10);
   the exact **tool calls / ES queries** run; **enrichment** pulled; and the routed
   **persona** and **runbook** with explicit selected-versus-consulted state (a run from
-  before Round 14 keeps its stored procedure id under "Runbook (before Round 14)"),
+  before Round 14 keeps its stored procedure id under "Older runbook"),
   selection reason and consultation path (+ version/why), **MITRE**
   techniques, and evidence list. When the case traversed a threshold previously
   changed by Agentic SOC, it also shows the immutable platform tuning snapshot

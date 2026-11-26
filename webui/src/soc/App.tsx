@@ -38,6 +38,9 @@ import { WHATS_NEW_LATEST, WhatsNewGate } from './whats-new/WhatsNewGate';
 import { ConfirmProvider } from './components/ConfirmDialog';
 import { PageSkeleton } from './components/PageSkeleton';
 
+/** The boot spinner's label, while the session or the setup state is read. */
+const BOOT_LABEL = 'Starting console…';
+
 // The boot and sign-in hand-off spinner. It fades in only after 300ms
 // (`login-delayed-reveal`, theme.css), so a fast load goes from the sign-in page to the
 // shell without a spinner flash; it sits on the same canvas as both, so no colour jumps.
@@ -156,15 +159,20 @@ const Boot: React.FC = () => {
     navigate('overview');
   }, [logout, navigate]);
 
-  const onRerunWizard = React.useCallback(() => setForceWizard(true), []);
+  // The routed page, kept while its route stays: Boot reads the preferences context for
+  // the What's new stamp below, and a preference change must not re-render the page.
+  const routed = React.useMemo(
+    () => renderRoute(page, { opts, onRerunWizard: () => setForceWizard(true) }),
+    [page, opts],
+  );
 
-  if (authLoading) return <CenterSpinner label="Starting console…" />;
+  if (authLoading) return <CenterSpinner label={BOOT_LABEL} />;
   // A failed /api/auth/me must NOT collapse to "auth disabled" and render the console;
   // offer a retry instead (auth on/off is indistinguishable from a load failure once
   // `me` is null, so we key off the explicit loadError flag).
   if (loadError) return <BootError onRetry={() => void refresh()} />;
   if (showLogin) return <Login onAuthenticated={onAuthenticated} />;
-  if (!setupChecked) return <CenterSpinner label="Starting console…" />;
+  if (!setupChecked) return <CenterSpinner label={BOOT_LABEL} />;
   if (setupError) {
     return (
       <BootError
@@ -206,7 +214,7 @@ const Boot: React.FC = () => {
               Keyed by `page` so each route shows its own fresh fallback. The route
               table (soc/registry.ts) maps the id → lazy chunk + config props. */}
           <React.Suspense key={page} fallback={<PageSkeleton label={navLabel(page)} />}>
-            {renderRoute(page, { opts, onRerunWizard })}
+            {routed}
           </React.Suspense>
         </ErrorBoundary>
       </AppShell>

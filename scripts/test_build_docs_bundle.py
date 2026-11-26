@@ -197,5 +197,46 @@ class LegacyRedirectTests(unittest.TestCase):
         self.assertNotIn("<", script[len("<script>") : -len("</script>")])
 
 
+
+def _material_config(version: object) -> str:
+    config = {"base": ".", "features": [], "version": version}
+    return (
+        '<meta name="generator" content="mkdocs-test">'
+        f'<script id="__config" type="application/json">{json.dumps(config)}</script>'
+    )
+
+
+class VersionListTests(unittest.TestCase):
+    """The bundled Help Center never asks for /docs/versions.json (WP16)."""
+
+    def test_the_bundled_build_sets_no_version_provider(self) -> None:
+        source = (bundle.ROOT / "scripts" / "build_docs_bundle.py").read_text(encoding="utf-8")
+        self.assertIn('"TLSOC_DOCS_VERSION_PROVIDER": ""', source)
+        config = (bundle.ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+        # The published site keeps Mike: the variable is unset there.
+        self.assertIn("provider: !ENV [TLSOC_DOCS_VERSION_PROVIDER, mike]", config)
+
+    def test_the_provider_is_read_from_the_page_configuration(self) -> None:
+        mike = {"provider": "mike", "default": "stable", "alias": True}
+        self.assertEqual(bundle.version_provider(_material_config(mike)), "mike")
+        self.assertEqual(bundle.version_provider(_material_config({"provider": None})), "")
+        self.assertEqual(bundle.version_provider(_material_config(None)), "")
+        self.assertEqual(bundle.version_provider('<meta name="generator" content="mkdocs-test">'), "")
+
+    def test_a_landing_page_that_asks_for_a_version_list_fails_the_check(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_temp:
+            output = Path(raw_temp)
+            _fake_built_tree(output, "0.2", ("",))
+            bundle.write_bundle_metadata(output, version="0.2.0", docs_version="0.2", channel="Testing")
+            bundle.write_legacy_redirects(output, docs_version="0.2")
+            bundle.validate_bundle(output, version="0.2.0", docs_version="0.2", channel="Testing")
+            (output / "0.2" / "index.html").write_text(
+                _material_config({"provider": "mike", "default": "stable", "alias": True}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "versions.json"):
+                bundle.validate_bundle(output, version="0.2.0", docs_version="0.2", channel="Testing")
+
+
 if __name__ == "__main__":
     unittest.main()

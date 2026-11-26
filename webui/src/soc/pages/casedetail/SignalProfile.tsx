@@ -326,7 +326,7 @@ export function caseRiskFactors(c: Case, triage: TriageChips | null): RiskFactor
   // a partial object reads "not recorded", never "undefined events" (or a crash).
   const scored: RiskInputs | null =
     recordedRiskInputs(c.risk_breakdown) ?? recordedRiskInputs(recorded as { inputs?: RiskInputs | null });
-  const memberEventCount = c.member_event_keys?.length || c.member_event_ids?.length || 0;
+  const memberEventCount = caseEventCount(c);
   const reputationInput =
     typeof caseEnrichment?.reputation_score === 'number' &&
     Number.isFinite(caseEnrichment.reputation_score)
@@ -354,7 +354,17 @@ export interface SignalProfileProps {
   triage: TriageChips | null;
   /** Today's internal network range that holds the entity (`settings:read` only). */
   assetRange?: AssetRangeReading | null;
+  /**
+   * Opens the Evidence tab's events table (the raw records behind the case). Omitted: the
+   * event count reads as plain text.
+   */
+  onShowEvents?: () => void;
   className?: string;
+}
+
+/** The events the case holds now (its member keys, else its member ids). */
+export function caseEventCount(c: Case): number {
+  return c.member_event_keys?.length || c.member_event_ids?.length || 0;
 }
 
 /**
@@ -363,7 +373,7 @@ export interface SignalProfileProps {
  * column of facts and the factor bars are one click away. The AI confidence is part of
  * the Outcome section's AI line, its one home.
  */
-export const SignalProfile: React.FC<SignalProfileProps> = ({ c, triage, assetRange = null, className }) => {
+export const SignalProfile: React.FC<SignalProfileProps> = ({ c, triage, assetRange = null, onShowEvents, className }) => {
   const riskVal = typeof triage?.risk?.value === 'number' ? triage.risk.value : c.risk_score;
   // The shown integer (rounded half up) and ITS band: the one rule for every score (D4).
   const shown = displayScore(riskVal);
@@ -371,6 +381,8 @@ export const SignalProfile: React.FC<SignalProfileProps> = ({ c, triage, assetRa
   const factors = caseRiskFactors(c, triage);
   const [showFactors, setShowFactors] = React.useState(false);
   const factorsId = React.useId();
+  const eventCount = caseEventCount(c);
+  const eventWords = `${eventCount.toLocaleString('en-US')} event${eventCount === 1 ? '' : 's'}`;
   return (
     <div data-testid="case-signal-profile" className={cn('space-y-3', className)}>
       {typeof riskVal === 'number' && ourRiskBand ? (
@@ -389,6 +401,25 @@ export const SignalProfile: React.FC<SignalProfileProps> = ({ c, triage, assetRa
       ) : (
         <p className="text-xs text-muted-foreground">No risk score recorded.</p>
       )}
+      {/* The events behind the case: the count opens the Evidence tab's events table. */}
+      {eventCount > 0 ? (
+        <p className="text-xs text-muted-foreground" data-testid="signal-event-count">
+          {'The case holds '}
+          {onShowEvents ? (
+            <button
+              type="button"
+              onClick={onShowEvents}
+              aria-label={`${eventWords}. Show them on the Evidence tab`}
+              className="rounded-sm font-medium tabular-nums text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {eventWords}
+            </button>
+          ) : (
+            <span className="font-medium tabular-nums text-foreground">{eventWords}</span>
+          )}
+          .
+        </p>
+      ) : null}
       {factors.length ? (
         <div className="space-y-2">
           <button
