@@ -28,9 +28,10 @@
  *
  * While an AI run is under way the verdict chip is dimmed ("Previous verdict. The running
  * investigation replaces it." leads its hover line). The run chip keeps its words, "AI
- * working · 0:42", "AI queued" and then "AI finished", on every strip of 30rem or wider;
- * below that it shows the ring alone, the items sit closer and the status glyph gives way
- * to the ring. While the chip is on the strip, lower-priority items make room first
+ * working · 0:42", "AI queued" and then "AI finished" (or "AI stopped"), on every strip of
+ * 30rem or wider; below that it shows its mark with the word "AI" (FXB), the items sit
+ * closer and the status glyph gives way to the mark, so the status words truncate before
+ * the chip does. While the chip is on the strip, lower-priority items make room first
  * (`META_RUN_ROOM`): the verdict's label word, the whole verdict below a 48rem pane, the
  * owner's name below a 56rem pane, and the SLA and the review chip below 64rem. The status
  * words never vanish (`META_SHRINK`).
@@ -239,9 +240,10 @@ export const META_RUN_ROOM = {
 export const PREVIOUS_VERDICT_NOTE = 'Previous verdict. The running investigation replaces it.';
 
 /**
- * Below this strip width (30rem) the AI run chip keeps the ring alone, and its name still
- * says what it is. From 30rem it always keeps its words: "AI working · 0:42", "AI queued"
- * and "AI finished".
+ * Below this strip width (30rem) the AI run chip keeps its mark with the word "AI" (no
+ * clock; never a bare ring, which is the case chat glyph and says nothing under reduced
+ * motion), and its name still says the whole state. From 30rem it always keeps its words:
+ * "AI working · 0:42", "AI queued", "AI finished" and "AI stopped".
  */
 export const META_RING_RUN_PX = 480;
 
@@ -253,8 +255,8 @@ export const META_RUN_GAP =
   'gap-x-2.5 has-[[data-meta-item=ai-run]]:gap-x-1.5 @[30rem]/case:has-[[data-meta-item=ai-run]]:gap-x-2.5';
 
 /**
- * How much of the run chip a strip of `width` px shows: `'ring'` below 30rem, else all of
- * it (`false`, its words kept). `width` null: not measured.
+ * How much of the run chip a strip of `width` px shows: `'ring'` below 30rem (its mark
+ * and "AI"), else all of it (`false`, its words kept). `width` null: not measured.
  */
 export function runChipFit(width: number | null): false | 'ring' {
   if (width === null || width <= 0) return false;
@@ -538,9 +540,9 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
           </DecisionExplain>
         </span>
       ) : null}
-      {/* The AI working on this case right now (WP09), and "AI finished" for a few seconds
-          after; renders nothing otherwise. It keeps its words from a 30rem strip, the
-          ring alone below that (its name still says what it is). */}
+      {/* The AI working on this case right now (WP09), and "AI finished" (or "AI stopped")
+          for a few seconds after; renders nothing otherwise. It keeps its words from a
+          30rem strip, its mark and "AI" below that (its name still says the whole state). */}
       <AiRunChip caseId={c.case_id} compact={runFit === 'ring'} />
 
       <Popover open={ownerOpen} onOpenChange={onOwnerOpenChange}>

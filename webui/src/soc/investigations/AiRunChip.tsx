@@ -7,17 +7,24 @@
  * what happens if you act now, and its steps in the audit log. While the popover is open
  * the run is read again every 3 s (the phase is served by the route, not by a frame).
  *
+ * A run that failed or was cancelled ends as "AI stopped", neutral and with an alert mark,
+ * never the success tint (FXB): it did not finish.
+ *
  * One polite announcement per change, at most one every 10 s: "AI investigation running",
- * "AI investigation waiting", then "AI investigation finished: <status words>". The ring
- * stands still under reduced motion. The chip keeps its words at every width it is given;
- * `compact` keeps the ring alone, for a strip narrower than 30rem (its name still says
- * what it is). There is no form with a clock and no words: the ring alone is the case chat
- * glyph, so the words are what tell the two apart.
+ * "AI investigation waiting", then how it ended ("AI investigation finished: <status
+ * words>"). The end is said once on a console: when the finish toast or a close dialog's
+ * note says it, the chip does not (`announce.ts`). The ring stands still under reduced
+ * motion. The chip keeps its words at every width it is given; `compact`, for a strip
+ * narrower than 30rem, keeps the mark with the word "AI" (no clock), so a still ring is
+ * never alone (FXB). Its name still says the whole state. There is never a clock without
+ * words, nor a bare ring: the ring alone is the case chat glyph, so the words are what
+ * tell the two apart.
  */
 import * as React from 'react';
-import { CheckCircle2 } from 'lucide-react';
+import { CheckCircle2, CircleAlert } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
+import type { InvestigationView } from '@/lib/types';
 import { ActivityGlyph } from '@/soc/chat-activity/glyph';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
 
@@ -29,12 +36,23 @@ import { useAiRun, useAiRunFinished } from './useAiRun';
 
 export interface AiRunChipProps {
   caseId: string;
-  /** The ring alone, for a strip narrower than 30rem. */
+  /** The mark and the word "AI" (no clock), for a strip narrower than 30rem. */
   compact?: boolean;
 }
 
 /** How long the success tint stays after a run ends. */
 export const FINISHED_TINT_MS = 6000;
+
+/** A run that ended without finishing: it failed, or was cancelled. */
+export function aiRunStopped(view: InvestigationView | null | undefined): boolean {
+  return view?.outcome === 'failed' || view?.outcome === 'cancelled';
+}
+
+/** The chip's words for a run, and for one that just ended. */
+export function aiRunChipLabel(view: InvestigationView, ended: boolean): string {
+  if (ended) return aiRunStopped(view) ? 'AI stopped' : 'AI finished';
+  return view.state === 'running' ? 'AI working' : 'AI queued';
+}
 /** How often an open popover reads the run again. */
 const POPOVER_READ_MS = 3000;
 
@@ -98,14 +116,19 @@ export const AiRunChip: React.FC<AiRunChipProps> = ({ caseId, compact = false })
       : finished
         ? aiRunFinishedText(finished.view)
         : '',
+    undefined,
+    // The end is said once: not here when the finish toast or a dialog's note says it.
+    !run && finished ? finished.view.run_id : null,
   );
 
   const shown = run ?? (finished && (tint || open) ? finished.view : null);
   if (!shown) return null;
   const ended = !run;
-  const label = ended ? 'AI finished' : run.state === 'running' ? 'AI working' : 'AI queued';
+  const stopped = ended && aiRunStopped(shown);
+  const label = aiRunChipLabel(shown, ended);
   const time = run?.state === 'running' ? elapsedClock(run.started_at, now) : null;
-  const visible = compact ? null : time ? `${label} · ${time}` : label;
+  // A phone-width strip keeps the word "AI" beside the mark, never a bare ring.
+  const visible = compact ? 'AI' : time ? `${label} · ${time}` : label;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -119,21 +142,23 @@ export const AiRunChip: React.FC<AiRunChipProps> = ({ caseId, compact = false })
           className={cn(
             'inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm border px-1.5 text-xs font-medium tabular-nums',
             'transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            ended
-              ? 'border-success/40 bg-success/10 text-success-text hover:bg-success/15'
-              : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary/15',
+            stopped
+              ? 'border-border bg-muted text-muted-foreground hover:bg-muted/80'
+              : ended
+                ? 'border-success/40 bg-success/10 text-success-text hover:bg-success/15'
+                : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary/15',
           )}
         >
-          {ended ? (
+          {stopped ? (
+            <CircleAlert className="size-3 shrink-0" aria-hidden data-run-mark="stopped" />
+          ) : ended ? (
             <CheckCircle2 className="size-3 shrink-0" aria-hidden />
           ) : (
             <ActivityGlyph status="running" className="size-3 border-[1.5px]" />
           )}
-          {visible ? (
-            <span aria-hidden className="whitespace-nowrap">
-              {visible}
-            </span>
-          ) : null}
+          <span aria-hidden className="whitespace-nowrap">
+            {visible}
+          </span>
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" collisionPadding={12} className="w-80" aria-labelledby={titleId}>

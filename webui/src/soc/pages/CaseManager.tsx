@@ -489,8 +489,9 @@ const QueueRow: React.FC<{
   const chat = useCaseChatActivity(item.case_id);
   // The AI investigation running or queued on this case, if any (Round 16, A1).
   const run = useAiRun(item.case_id);
-  // The `aria-label` overrides descendant text, so the run's words join the name here.
-  const runText = aiRunAccessibleText(run, Date.now());
+  // The `aria-label` overrides descendant text, so the run's words join the name here
+  // (no elapsed time: the row is not drawn again while the run goes on).
+  const runText = aiRunAccessibleText(run);
   const accessibleName = [
     title,
     displayId,

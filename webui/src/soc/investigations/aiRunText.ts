@@ -25,14 +25,14 @@ export function elapsedClock(fromIso: string | null | undefined, now: number): s
 
 /**
  * The words a screen reader hears for a case's run, appended to the queue row's
- * accessible name (the row joins its parts with ", "): "AI investigation running,
- * started 40 seconds ago" or "AI investigation waiting, queued 12 seconds ago". `null`
- * when there is no run (or it finished).
+ * accessible name (the row joins its parts with ", "): "AI investigation running" or
+ * "AI investigation waiting". `null` when there is no run (or it finished). No elapsed
+ * time: the row is drawn again only when its run changes (a frame comes at the start, when
+ * the case is attached and at the end), so a time in the name would stay at "1 second"
+ * for the whole run, and a name that ticks would make a focused row read itself again.
+ * The header chip shows the clock and its popover says how long the run has gone on.
  */
-export function aiRunAccessibleText(view: InvestigationView | null, now: number): string | null {
+export function aiRunAccessibleText(view: InvestigationView | null): string | null {
   if (!view || view.state === 'finished') return null;
-  const running = view.state === 'running';
-  const since = Date.parse((running ? view.started_at : view.queued_at) || '');
-  const when = Number.isFinite(since) ? `, ${running ? 'started' : 'queued'} ${spokenDuration(now - since)} ago` : '';
-  return `AI investigation ${running ? 'running' : 'waiting'}${when}`;
+  return `AI investigation ${view.state === 'running' ? 'running' : 'waiting'}`;
 }

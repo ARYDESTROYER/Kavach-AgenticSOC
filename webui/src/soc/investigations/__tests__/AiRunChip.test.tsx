@@ -29,7 +29,8 @@ vi.mock('@/soc/components/announcer', () => ({ useAnnouncer: () => h.announce })
 vi.mock('@/soc/auth', () => ({ useAuth: () => ({ hasPermission: () => true }) }));
 
 import { AiRunChip, FINISHED_TINT_MS } from '../AiRunChip';
-import { ACT_NOW_TEXT, aiRunFinishedText, aiRunOrigin, aiRunTimeLine, capWords } from '../AiRunPopover';
+import { ACT_NOW_TEXT, aiRunFinishedText, aiRunOrigin, aiRunPopoverTitle, aiRunTimeLine, capWords } from '../AiRunPopover';
+import { END_GRACE_MS, noteRunEnd, resetRunEndMarksForTests } from '../announce';
 import { HOLD_OFF_MS, resetInvestigationsForTests } from '../store';
 
 const T0 = Date.parse('2026-11-25T10:00:00Z');
@@ -87,6 +88,7 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: false });
   vi.setSystemTime(T0);
   resetInvestigationsForTests();
+  resetRunEndMarksForTests();
   h.read.mockReset();
   serve();
   h.onEvent = null;
@@ -118,7 +120,7 @@ describe('the header chip', () => {
     expect(chip).toHaveTextContent('AI working · 0:42');
   });
 
-  it('keeps its words unless compact, and compact keeps the ring alone for a phone-width line (XFCM)', async () => {
+  it('keeps its words unless compact, and compact keeps its mark with the word "AI" (XFCM, FXB)', async () => {
     serve({ items: [view()] });
     const { rerender } = render(<AiRunChip caseId="case-1" compact={false} />);
     await settle();
@@ -126,10 +128,71 @@ describe('the header chip', () => {
     // Never a clock without its words: the ring alone is the case chat glyph.
     expect(chip).toHaveTextContent(/^AI working · 0:02$/);
     rerender(<AiRunChip caseId="case-1" compact />);
-    expect(chip).toHaveTextContent('');
+    // Never a bare ring: under reduced motion a still ring says nothing on its own.
+    expect(chip).toHaveTextContent(/^AI$/);
     expect(chip.querySelector('[data-activity="running"]')).not.toBeNull();
-    // The name still says what it is.
+    // The name still says the whole state.
     expect(chip).toHaveAttribute('aria-label', 'AI working. Show the AI investigation');
+  });
+
+  it('says "AI" beside the mark of a run that just ended on a phone-width line (FXB)', async () => {
+    serve({ items: [view()] });
+    render(<AiRunChip caseId="case-1" compact />);
+    await settle();
+    act(() =>
+      h.onEvent?.({
+        type: 'case.investigation',
+        data: { ...view({ state: 'finished', phase: 'decision', outcome: 'decided', status_after: 'needs_human' }), active: 0, new_runs: 0 },
+        lastEventId: '20',
+      }),
+    );
+    const chip = screen.getByTestId('ai-run-chip');
+    expect(chip).toHaveAttribute('data-run-state', 'finished');
+    expect(chip).toHaveTextContent(/^AI$/);
+    expect(chip).toHaveAttribute('aria-label', 'AI finished. Show the AI investigation');
+  });
+
+  it.each(['failed', 'cancelled'] as const)(
+    'ends a %s run as "AI stopped", neutral with an alert mark, never the success tint (FXB)',
+    async (outcome) => {
+      serve({ items: [view({ requested_by_you: true })] });
+      render(<AiRunChip caseId="case-1" />);
+      await settle();
+      act(() =>
+        h.onEvent?.({
+          type: 'case.investigation',
+          data: { ...view({ state: 'finished', phase: 'decision', outcome }), active: 0, new_runs: 0 },
+          lastEventId: '21',
+        }),
+      );
+      const chip = screen.getByTestId('ai-run-chip');
+      expect(chip).toHaveTextContent(/^AI stopped$/);
+      expect(chip).toHaveAttribute('aria-label', 'AI stopped. Show the AI investigation');
+      expect(chip.className).not.toMatch(/success/);
+      expect(chip.querySelector('[data-run-mark="stopped"]')).not.toBeNull();
+      const pop = await openPopover();
+      const content = pop.closest('[role="dialog"]') ?? pop.parentElement!;
+      const labelled = content.getAttribute('aria-labelledby');
+      expect(labelled && document.getElementById(labelled)).toHaveTextContent(/^AI investigation stopped$/);
+      expect(pop).not.toHaveTextContent('AI investigation finished');
+    },
+  );
+
+  it('keeps the success tint and "AI finished" for a run that finished', async () => {
+    serve({ items: [view()] });
+    render(<AiRunChip caseId="case-1" />);
+    await settle();
+    act(() =>
+      h.onEvent?.({
+        type: 'case.investigation',
+        data: { ...view({ state: 'finished', phase: 'decision', outcome: 'unchanged' }), active: 0, new_runs: 0 },
+        lastEventId: '22',
+      }),
+    );
+    const chip = screen.getByTestId('ai-run-chip');
+    expect(chip).toHaveTextContent(/^AI finished$/);
+    expect(chip.className).toMatch(/text-success-text/);
+    expect(aiRunPopoverTitle(view({ state: 'finished', outcome: 'routed_to_person' }))).toBe('AI investigation finished');
   });
 
   it('says "AI queued" and the waiting line with the slots in use', async () => {
@@ -247,6 +310,63 @@ describe('the header chip', () => {
     render(<AiRunChip caseId="case-2" />);
     await settle();
     expect(h.read).not.toHaveBeenCalled();
+  });
+});
+
+describe('the end of a run, said once (FXB)', () => {
+  const finishFrame = (id: string) =>
+    act(() =>
+      h.onEvent?.({
+        type: 'case.investigation',
+        data: {
+          ...view({ state: 'finished', phase: 'decision', outcome: 'decided', status_after: 'needs_human' }),
+          active: 0,
+          new_runs: 0,
+        },
+        lastEventId: id,
+      }),
+    );
+  const endSaid = () => h.announce.mock.calls.filter(([text]) => String(text).startsWith('AI investigation finished'));
+
+  it('leaves the end out when the finish toast or a dialog note says it', async () => {
+    serve({ items: [view({ requested_by_you: true })] });
+    render(<AiRunChip caseId="case-1" />);
+    await settle();
+    finishFrame('30');
+    // The case page's toast says the end (ReinvestigateDialog marks it).
+    noteRunEnd('inv-1', 'said');
+    await settle(15_000);
+    expect(endSaid()).toEqual([]);
+  });
+
+  it('waits while the page reads the case for its toast, then says the end if no toast came', async () => {
+    serve({ items: [view()] });
+    render(<AiRunChip caseId="case-1" />);
+    // The run is said at once, then 10 s pass, so the end is held only by the wait below.
+    await settle();
+    await settle(10_000);
+    h.announce.mockClear();
+    finishFrame('31');
+    noteRunEnd('inv-1', 'pending');
+    await settle(END_GRACE_MS + 2_000);
+    expect(endSaid()).toEqual([]);
+    // The read landed and the page showed no toast (not your run, no status change).
+    noteRunEnd('inv-1', null);
+    await settle(500);
+    expect(endSaid()).toEqual([['AI investigation finished: Open · awaiting analyst.', 'polite']]);
+  });
+
+  it('says the end itself when nothing else does, after a short wait', async () => {
+    serve({ items: [view()] });
+    render(<AiRunChip caseId="case-1" />);
+    await settle();
+    await settle(10_000);
+    h.announce.mockClear();
+    finishFrame('32');
+    await settle(END_GRACE_MS - 100);
+    expect(endSaid()).toEqual([]);
+    await settle(200);
+    expect(endSaid()).toHaveLength(1);
   });
 });
 
