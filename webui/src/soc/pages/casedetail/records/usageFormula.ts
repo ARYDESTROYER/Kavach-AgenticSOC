@@ -84,7 +84,32 @@ export const PRICE_BASIS_WORDS: Record<string, string> = {
   demo_simulated: 'Simulated Demo price',
 };
 
-export function priceBasisWords(basis: unknown): string {
+/**
+ * How a catalog price was found when the price table did not name the model
+ * (`pricing_source`, recorded by the gateway beside the rates): the model family's
+ * price, or the default price for a model the table does not know.
+ */
+export const CATALOG_PRICING_SOURCE_WORDS: Record<string, string> = {
+  heuristic: 'Estimated from the model family price.',
+  default: 'Default price. This model is not in the price table.',
+};
+
+/**
+ * Where a row's rates came from, in words. A catalog price the table matched by family or
+ * not at all says so (`pricing_source`), so a guessed price never reads as "Catalog price".
+ */
+export function priceBasisWords(basis: unknown, pricingSource?: unknown): string {
   if (typeof basis !== 'string' || !basis) return 'Price source not recorded';
+  if (basis === 'catalog' && typeof pricingSource === 'string' && CATALOG_PRICING_SOURCE_WORDS[pricingSource]) {
+    return CATALOG_PRICING_SOURCE_WORDS[pricingSource];
+  }
   return PRICE_BASIS_WORDS[basis] ?? basis;
+}
+
+/** "Build v0.2.0 · 934331273dc0": the build that wrote a ledger row, or null for a row written before builds were recorded. */
+export function usageBuildText(row: Pick<CaseUsageRow, 'app_version' | 'build_sha'>): string | null {
+  const version = typeof row.app_version === 'string' ? row.app_version.trim() : '';
+  const sha = typeof row.build_sha === 'string' ? row.build_sha.trim() : '';
+  if (!version && !sha) return null;
+  return `Build ${version ? `v${version}` : 'version not recorded'} · ${sha ? sha.slice(0, 12) : 'SHA not recorded'}`;
 }

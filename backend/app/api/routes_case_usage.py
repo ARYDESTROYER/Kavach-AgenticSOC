@@ -18,16 +18,19 @@ Totals (:class:`app.models.CaseUsageTotals`), in USD:
 * ``pipeline``: the router, investigator and formatter calls
   (``constants.CASE_PIPELINE_USAGE_ROLES``), the calls ``Case.token_cost`` records;
 * ``chat``: case chat on this case, never part of the investigation cost;
+* ``runbook``: runbook AI help on this case (the step drafts and suggestions, surface
+  ``runbook``), never part of the investigation cost and never case chat;
 * ``other``: anything else written with the case id.
 
 When every row of the case fit on the page (``truncated`` false), ``rows_total`` is their
-exact count and the three totals are exact lifetime sums of those rows. When the read
+exact count and the four totals are exact lifetime sums of those rows. When the read
 filled its bound, older rows may exist: ``truncated`` is true, ``rows_total`` is null,
 ``pipeline`` is the ledger's own exact lifetime sum
-(``UsageRepository.total_pipeline_cost_for_case``) and ``chat`` and ``other`` count the
-returned rows only, so they read "at least". ``reconciles`` says whether ``pipeline``
-equals the case's recorded ``token_cost`` within the one micro-dollar it is displayed to
-(null when the ledger could not prove a lifetime pipeline sum).
+(``UsageRepository.total_pipeline_cost_for_case``) and ``chat``, ``runbook`` and
+``other`` count the returned rows only, so they read "at least". ``reconciles`` says
+whether ``pipeline`` equals the case's recorded ``token_cost`` within the one
+micro-dollar it is displayed to (null when the ledger could not prove a lifetime
+pipeline sum).
 
 Read-only over the ledger (#6: the gateway stays its only writer), Demo-switched through
 ``state.usage_store`` (SPEC §3.2), and spend, so it needs ``cost:view`` as every other
@@ -59,6 +62,9 @@ _VIEW_COST = require_permission("cost", "view")
 RECONCILE_EPSILON = 0.000001
 _PIPELINE_ROLES = frozenset(CASE_PIPELINE_USAGE_ROLES)
 _CHAT_ROLE = Role.CHAT.value
+#: The surface of runbook AI help (``engine.runbook_runs.CASE_RUNBOOK_SURFACE``): a chat
+#: role call on it is a step draft or a suggestion, never case chat.
+_RUNBOOK_SURFACE = "runbook"
 
 
 def _cost(row: dict[str, Any]) -> float:
@@ -69,16 +75,23 @@ def _cost(row: dict[str, Any]) -> float:
 
 
 def _totals(rows: list[dict[str, Any]]) -> CaseUsageTotals:
-    pipeline = chat = other = 0.0
+    """The spend split by what the call was for: the investigation roles, then the
+    runbook surface (its calls use the chat role), then case chat, then the rest."""
+    pipeline = chat = runbook = other = 0.0
     for row in rows:
         role = str(row.get("role") or "")
         if role in _PIPELINE_ROLES:
             pipeline += _cost(row)
+        elif str(row.get("surface") or "") == _RUNBOOK_SURFACE:
+            runbook += _cost(row)
         elif role == _CHAT_ROLE:
             chat += _cost(row)
         else:
             other += _cost(row)
-    return CaseUsageTotals(pipeline=round(pipeline, 8), chat=round(chat, 8), other=round(other, 8))
+    return CaseUsageTotals(
+        pipeline=round(pipeline, 8), chat=round(chat, 8), runbook=round(runbook, 8),
+        other=round(other, 8),
+    )
 
 
 def _reconciles(pipeline: float, token_cost: float) -> bool:

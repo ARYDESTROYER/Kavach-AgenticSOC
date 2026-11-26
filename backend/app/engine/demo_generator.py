@@ -1132,8 +1132,9 @@ def _hist_case(
     notifications_sent: list[dict[str, Any]] = []
     if verdict == Verdict.TRUE_POSITIVE and idx % 2 == 0:
         notifications_sent.append({
+            # ``type``, as the live dispatcher records a send (``notifications/dispatch.py``).
             "ts": created, "trigger": "on_true_positive", "channel_id": "demo-email",
-            "channel_type": "email", "ok": True, "detail": "delivered (simulated)",
+            "type": "email", "ok": True, "detail": "delivered (simulated)",
         })
     automation_actions: list[dict[str, Any]] = []
     if idx % 4 == 0:
@@ -1548,6 +1549,127 @@ def demo_seeded_usage_docs(cases: Iterable[Case], *, model: str) -> list[UsageDo
             price_basis="demo_simulated",
         ))
     return rows
+
+
+#: How long before its ledger call a seeded investigation wrote its prompt row and its
+#: read-only query row, in seconds (the verdict row is written as the call ends).
+_DEMO_INVESTIGATION_LEAD_S = (4, 2)
+#: The most events the seeded query returns, as the investigator's es_query asks.
+_DEMO_INVESTIGATION_QUERY_SIZE = 20
+
+
+def demo_investigation_run_id(case_id: str) -> str:
+    """The run id of a seeded case's investigation: ``inv-`` and 32 hex characters, as
+    a live run id reads, derived from the case id so a reseed gives the same id."""
+    import hashlib
+
+    return "inv-" + hashlib.sha256(f"demo-investigation:{case_id}".encode()).hexdigest()[:32]
+
+
+def demo_investigation_audit_rows(cases: Iterable[Case], usage_docs: Iterable[UsageDoc]) -> list[dict[str, Any]]:
+    """The AI's own audit rows of the seeded investigations, oldest first, as keyword
+    arguments of ``record_strict``: for each investigator ledger row
+    :func:`demo_seeded_usage_docs` writes, the rows the live investigator writes for
+    the same work (``agents/investigator.py``), with that row's model, surface and time
+    and one run id (:func:`demo_investigation_run_id`), so a seeded case's AI
+    investigation tab shows the AI's work and its trace adds up to the ledger.
+
+    The investigator's prompt row (persona and runbook, and a short prompt excerpt with
+    the case's entity and rule fenced as untrusted log data, #9), one read-only
+    ``es_query`` tool row over the case's own entity and window, and the verdict row
+    (the case's verdict, confidence and summary as the reasoning), dated 4 s and 2 s
+    before the call and as it ends. A case without a ledger row (no recorded model
+    call, so no AI step to show) gets none. Seeds of the Demo audit, never a model
+    call (#6) and never a log read (#1). Pure."""
+    from ..agents.prompts import CLUSTER_CONTEXT_HEADING, fence
+    from ..constants import ActionType, Role
+
+    by_id = {str(getattr(c, "case_id", "") or ""): c for c in cases}
+    prompt_lead, query_lead = _DEMO_INVESTIGATION_LEAD_S
+    rows: list[tuple[datetime, int, dict[str, Any]]] = []
+    for doc in usage_docs:
+        case = by_id.get(str(doc.case_id or ""))
+        if case is None or case.verdict is None or doc.role != Role.INVESTIGATOR.value:
+            continue
+        called = _demo_moment(doc.ts, 0)
+        base: dict[str, Any] = {
+            "surface": doc.surface, "actor": Role.INVESTIGATOR.value, "actor_type": "agent",
+            "case_id": str(case.case_id), "run_id": demo_investigation_run_id(str(case.case_id)),
+            "outcome": "success",
+        }
+        entity = case.entity
+        entity_kind = str(getattr(getattr(entity, "type", None), "value", "") or "")
+        entity_value = str(getattr(entity, "value", "") or "")
+        rules = [fence(rule) for rule in case.rule_ids]
+        members = len(case.member_event_ids or [])
+        persona = case.agent_persona or "generalist"
+        runbook = f"{case.runbook_id} v{case.runbook_version}" if case.runbook_id else "none"
+        excerpt = "\n".join([
+            CLUSTER_CONTEXT_HEADING,
+            f"- entity: {entity_kind} = {fence(entity_value)}",
+            f"- event_count: {members}",
+            f"- distinct_rules: [{', '.join(rules)}]",
+            f"- risk_score: {round(float(case.risk_score), 2)}",
+        ])
+        first_seen = case.first_seen_millis
+        window_from = (_iso(int(first_seen)) if first_seen else str(case.created_at))
+        query: dict[str, Any] = {
+            **({entity_kind: entity_value} if entity_kind in ("ip", "user", "host") else {}),
+            "time_from": window_from, "time_to": str(case.created_at),
+            "size": _DEMO_INVESTIGATION_QUERY_SIZE,
+        }
+        verdict = case.verdict.value
+        reasoning = str(case.summary or "")
+        planned = [
+            (called - timedelta(seconds=prompt_lead), {
+                **base, "action_type": ActionType.PROMPT, "model": doc.model,
+                "prompt_excerpt": excerpt, "result_summary": f"persona={persona} runbook={runbook}",
+            }),
+            (called - timedelta(seconds=query_lead), {
+                **base, "action_type": ActionType.TOOL_CALL, "tool_name": "es_query",
+                "tool_input": query, "query_text": str(case.reproduce_query or ""),
+                "tool_output_summary": (
+                    f"{members} event(s) matched; returning {min(members, _DEMO_INVESTIGATION_QUERY_SIZE)}."
+                ),
+            }),
+            (called, {
+                **base, "action_type": ActionType.VERDICT, "model": doc.model,
+                "result_summary": (
+                    f"verdict={verdict} confidence={case.confidence}"
+                    + (f" reasoning={reasoning}" if reasoning else "")
+                ),
+                "tool_input": ({"reasoning": reasoning} if reasoning else None),
+            }),
+        ]
+        for moment, fields in planned:
+            rows.append((moment, len(rows), {**fields, "ts": _demo_iso(moment)}))
+    rows.sort(key=lambda item: (item[0], item[1]))
+    return [fields for _at, _order, fields in rows]
+
+
+async def seed_demo_investigation_audit(audit: Any, cases: Iterable[Case], usage_docs: Iterable[UsageDoc]) -> int:
+    """Append :func:`demo_investigation_audit_rows` to the Demo audit, once the seeded
+    ledger rows they describe are written. Returns the rows written. A failed row is
+    logged and the rest are still written; it never raises, so seeding never blocks
+    Demo Mode."""
+    import logging
+
+    log = logging.getLogger("tlsoc.engine.demo_generator")
+    if audit is None:
+        return 0
+    try:
+        planned = demo_investigation_audit_rows(list(cases), list(usage_docs))
+    except Exception as exc:  # noqa: BLE001 - seeded rows never block Demo Mode
+        log.warning("demo investigation rows not planned: %s", exc)
+        return 0
+    written = 0
+    for fields in planned:
+        try:
+            await audit.record_strict(**fields)
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - one row never blocks the rest
+            log.warning("demo investigation row for case %s not written: %s", str(fields.get("case_id"))[:80], exc)
+    return written
 
 
 # --------------------------------------------------------------------------- #

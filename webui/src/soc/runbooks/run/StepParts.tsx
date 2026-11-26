@@ -19,7 +19,7 @@ import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
 import { Textarea } from '@/ui/textarea';
 import { RadioGroup, RadioGroupItem } from '@/ui/radio-group';
-import type { RunbookRun, RunbookStep, StepState } from '@/lib/types-runbooks';
+import type { RunbookRun, RunbookStep, StepAiDraft, StepState } from '@/lib/types-runbooks';
 import { KIND_STEP_NOTE, ProvenanceChip, RunbookExternalLink, StatusMark } from '@/soc/runbooks/shared';
 
 import { actorName, evidenceLinks, numberedSteps, utcTime, type NameOf } from './model';
@@ -176,6 +176,51 @@ function useClipped(el: HTMLElement | null, clamped: boolean, text: string): boo
 /** The toggle of the draft preview: "Show the whole draft" and "Show less". */
 export const DRAFT_SHOW_ALL = 'Show the whole draft';
 export const DRAFT_SHOW_LESS = 'Show less';
+/** The disclosure of a confirmed draft's original text. */
+export const CONFIRMED_DRAFT_SHOW = 'Show the AI draft';
+export const CONFIRMED_DRAFT_HIDE = 'Hide the AI draft';
+
+/**
+ * "Started from an AI draft (gpt-5.6-luna, 11:37 UTC).": the one line a step keeps once a
+ * person confirmed the AI's draft as its note, naming the model and when it drafted.
+ */
+export function confirmedDraftLine(draft: Pick<StepAiDraft, 'model' | 'created_at'>, now: Date = new Date()): string {
+  const bits = [String(draft.model ?? '').trim(), draft.created_at ? utcTime(draft.created_at, now) : ''].filter(Boolean);
+  return bits.length ? `Started from an AI draft (${bits.join(', ')}).` : 'Started from an AI draft.';
+}
+
+/**
+ * A confirmed AI draft: the step's note is now the person's, so the draft is no longer
+ * offered, but the record keeps where the note started. One line names the model and the
+ * time, and "Show the AI draft" opens the draft as the model wrote it, as plain text (#9).
+ */
+function ConfirmedAiDraft({ draft }: { draft: StepAiDraft }) {
+  const [open, setOpen] = React.useState(false);
+  const textId = React.useId();
+  return (
+    <div className="space-y-1" data-ai-draft-confirmed="">
+      <p className="text-xs text-muted-foreground">{confirmedDraftLine(draft)}</p>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={textId}
+        onClick={() => setOpen((value) => !value)}
+        className="-mx-1 inline-flex min-h-6 items-center gap-1 rounded-sm px-1 text-xs font-medium text-secondary-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <ChevronDown className={cn('size-3.5 transition-transform duration-fast', open && 'rotate-180')} aria-hidden />
+        {open ? CONFIRMED_DRAFT_HIDE : CONFIRMED_DRAFT_SHOW}
+      </button>
+      <p
+        id={textId}
+        hidden={!open}
+        data-ai-draft-original=""
+        className="whitespace-pre-wrap rounded-md bg-muted/40 px-3 py-2 text-sm text-foreground [overflow-wrap:anywhere]"
+      >
+        {draft.text}
+      </p>
+    </div>
+  );
+}
 
 /**
  * The AI's draft note: labelled, and not part of the case until a person confirms it.
@@ -193,6 +238,9 @@ export const DRAFT_SHOW_LESS = 'Show less';
  * four lines (a wider pane, a phone turned to landscape), so "Show less" keeps its focus.
  * When it does go while focused (a teammate's shorter draft arrives), focus moves to the
  * draft, not the page body.
+ *
+ * Once a person confirmed the draft as the step's note, the box keeps where the note
+ * started instead: one line with the model and the time, and "Show the AI draft".
  */
 export function AiDraftBox({
   state,
@@ -231,7 +279,8 @@ export function AiDraftBox({
   const showToggle = showPreview && pendingText !== null && (clipped || expanded || reachedFor === pendingText);
   const sectionRef = React.useRef<HTMLElement | null>(null);
   const keepFocus = useKeepFocus(showToggle, () => sectionRef.current?.focus());
-  if (!draft || draft.confirmed) return null;
+  if (!draft) return null;
+  if (draft.confirmed) return <ConfirmedAiDraft draft={draft} />;
   const reached = () => setReachedFor(draft.text);
   return (
     <section

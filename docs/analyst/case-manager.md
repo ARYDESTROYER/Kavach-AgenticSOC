@@ -332,10 +332,14 @@ Every record a case keeps can be reached from the case:
   `sources:read`. The audit log records each read, at most once per person and case
   every ten minutes.
 - **AI usage.** In the case facts' **Record** section, select the investigation cost to
-  see every AI call on the case, newest first: its tier (Standard, Flex or Batch), the
-  model, tokens, latency, cost, and the cost formula with its own rates. If a call's
-  recorded cost differs from what its rates give, the call says so. Case chat spend is
-  shown on its own line and is not part of the investigation cost. You need
+  see every AI call on the case, newest first: what it was for (Router, Investigator,
+  Case chat or Runbook AI help), its tier (Standard, Flex or Batch), the model, tokens,
+  latency, the build that wrote it, cost, and the cost formula with its own rates. Each
+  call says where its price came from: the catalog price, a price estimated from the
+  model family, the default price for a model not in the price table, an
+  administrator's override, or no charge. If a call's recorded cost differs from what
+  its rates give, the call says so. Case chat spend and runbook AI help spend are each
+  shown on their own line and are not part of the investigation cost. You need
   `cases:read` and `cost:view`; without `cost:view`, cost figures in step text read
   "hidden".
 - **All fields.** **View all fields** in the Record section shows every stored field of
@@ -347,7 +351,12 @@ Every record a case keeps can be reached from the case:
   case on hold shows the reason given when it was put on hold.
 - **Trace details.** On the AI investigation tab, open a trace step's **Details** to see
   the model, latency, tokens, cost and how the cost was found, plus the tool input,
-  query and output. Values that come from logs are marked untrusted.
+  query and output. Values that come from logs are marked untrusted. The decision step
+  says "No model call. Code made this decision.", because code decides and no ledger
+  row exists for it.
+- **AI drafts.** A runbook step whose note started from an AI draft says so, for example
+  "Started from an AI draft (gpt-5.6-luna, 11:37 UTC).", and **Show the AI draft** shows
+  the draft as the AI wrote it.
 - **Gradings and reputation.** **Full record** on a grading shows its three scores, the
   AI verdict it graded and whether it came from the auto-close review. On an indicator,
   **Providers** lists each provider's answer and how the scores were combined.

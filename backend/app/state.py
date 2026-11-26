@@ -3955,12 +3955,16 @@ class AppState:
         # the Cost page and Agent effectiveness agree. Seeds of the Demo usage store,
         # never a model call (#6). Never blocks enable.
         try:
-            from .engine.demo_generator import demo_seeded_usage_docs
+            from .engine.demo_generator import demo_seeded_usage_docs, seed_demo_investigation_audit
 
-            for doc in demo_seeded_usage_docs(
+            usage_docs = demo_seeded_usage_docs(
                 seeded_counter_cases, model=seed_prefs.investigator_model.model,
-            ):
+            )
+            for doc in usage_docs:
                 await demo_stack.usage_store.write_strict(doc)
+            # The AI's own audit rows of those investigations (prompt, query, verdict),
+            # so a seeded case's trace shows the AI's work behind its ledger row.
+            await seed_demo_investigation_audit(demo_stack.audit, seeded_counter_cases, usage_docs)
         except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
             logger.warning("demo seeded usage rows not written: %s", exc)
 

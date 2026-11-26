@@ -42,6 +42,7 @@ import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 
 import { AuditLogLink } from '@/soc/components/audit/AuditLink';
+import { activityActorLabel } from '@/soc/components/caseActivityText';
 import type { DecisionPayload, TimelineResponse, TraceSpan } from '@/soc/pages/CaseDetail.api';
 import type { CasePanelPresentation } from '@/soc/pages/casedetail/shared';
 
@@ -132,6 +133,21 @@ export function traceCountsText(spans: readonly Pick<TraceSpan, 'kind'>[]): stri
   return parts.join(' · ');
 }
 
+/**
+ * The structured action of a person reading the case's raw events on the Evidence tab
+ * (`case.events_viewed`, one row per viewer per 10 minutes). It is a person's span of the
+ * timeline, never a step of the investigation.
+ */
+export const EVENTS_VIEWED_ACTION = 'case.events_viewed';
+
+/**
+ * The spans of the AI investigation tab's trace: every span but a person opening the
+ * Evidence tab (SPEC 8.1). Those rows stay in Activity and the audit log.
+ */
+export function investigationSpans<T extends Pick<TraceSpan, 'payload_ref'>>(spans: readonly T[]): T[] {
+  return spans.filter((span) => span.payload_ref?.action !== EVENTS_VIEWED_ACTION);
+}
+
 /** The trace filter's choices, in order (the actor filter of the AI investigation tab). */
 export const TRACE_FILTERS: ReadonlyArray<{ value: TraceActor | 'all'; label: string }> = [
   { value: 'all', label: 'All' },
@@ -152,6 +168,9 @@ export const COST_BASIS_WORDS: Record<string, string> = {
   exact: "Cost and latency from this call's own ledger row.",
   split: "An even share of this role's recorded cost, split across its steps. Not this call's own cost.",
 };
+
+/** The decision step's cost, in words: code decided, so there is no call and no ledger row. */
+export const DECISION_COST_WORDS = 'No model call. Code made this decision.';
 
 /** Whether the trace shows only the newest records, and of how many (WP10, additive). */
 function traceCut(data: TimelineResponse): { truncated: boolean; total: number | null; atLeast: boolean } {
@@ -235,10 +254,16 @@ export const SpanDetails: React.FC<{ span: TraceSpan }> = ({ span }) => {
           {typeof span.tokens === 'number' && span.tokens > 0 ? (
             <DetailFact label="Tokens">{span.tokens.toLocaleString('en-US')}</DetailFact>
           ) : null}
-          {typeof span.cost === 'number' ? <DetailFact label="Cost">{fmtMoney(span.cost)}</DetailFact> : null}
-          {span.cost_basis ? (
-            <DetailFact label="Cost basis">{COST_BASIS_WORDS[span.cost_basis] ?? humanizeToken(span.cost_basis)}</DetailFact>
-          ) : null}
+          {span.kind === 'decision' ? (
+            <DetailFact label="Cost">{DECISION_COST_WORDS}</DetailFact>
+          ) : (
+            <>
+              {typeof span.cost === 'number' ? <DetailFact label="Cost">{fmtMoney(span.cost)}</DetailFact> : null}
+              {span.cost_basis ? (
+                <DetailFact label="Cost basis">{COST_BASIS_WORDS[span.cost_basis] ?? humanizeToken(span.cost_basis)}</DetailFact>
+              ) : null}
+            </>
+          )}
           {d?.outcome ? <DetailFact label="Outcome">{humanizeToken(d.outcome)}</DetailFact> : null}
           {d?.run_id ? (
             <DetailFact label="Run">
@@ -310,9 +335,15 @@ const KIND_META: Record<string, KindMeta> = {
   system: { label: 'System', icon: Cog, tone: 'low' },
 };
 
-/** A span's name as shown: a person's name exactly as recorded, a token in words. */
-function spanName(span: TraceSpan): string {
-  return span.kind === 'person' ? span.name : humanizeToken(span.name);
+/**
+ * A span's name as shown: a person's name exactly as recorded; a pipeline actor by the
+ * name the activity feed gives it (`agentic_soc` is "Agentic SOC"); any other token in
+ * words.
+ */
+export function spanName(span: Pick<TraceSpan, 'kind' | 'name'>): string {
+  if (span.kind === 'person') return span.name;
+  const label = activityActorLabel(span.name);
+  return label === String(span.name ?? '').trim() ? humanizeToken(span.name) : label;
 }
 
 /** The span's cost, marked when it is an even share rather than the call's own. */
@@ -550,6 +581,12 @@ export interface TraceTimelineProps {
   error?: unknown;
   onRetry?: () => void;
   presentation?: CasePanelPresentation;
+  /**
+   * The step count in the case manager trace's header. Left out, the trace counts its own
+   * steps; `null` shows none (the AI tab counts the steps beside its heading, and passes
+   * a count here only while a filter narrows the trace).
+   */
+  countsText?: string | null;
 }
 
 function terminalTime(ts?: string | null): string {
@@ -579,15 +616,22 @@ const TERMINAL_LABEL: Record<string, { label: string; tone: string }> = {
 };
 
 /** Compact terminal treatment used only by the Case Manager Investigation tab. */
-const TerminalTrace: React.FC<{ data: TimelineResponse; spans: TraceSpan[] }> = ({ data, spans }) => {
+const TerminalTrace: React.FC<{ data: TimelineResponse; spans: TraceSpan[]; countsText?: string | null }> = ({
+  data,
+  spans,
+  countsText,
+}) => {
   const cut = traceCutText(data);
+  const counts = countsText === undefined ? traceCountsText(spans) : countsText;
   return (
     <div className="overflow-hidden rounded-[4px] border border-border bg-surface-sunken">
       <div className="flex items-center gap-2 border-b border-border px-4 py-2">
         <span className="text-xs font-medium text-muted-foreground">Agent investigation trace</span>
-        <span className="ml-auto text-xs tabular-nums text-muted-foreground" data-testid="trace-step-counts">
-          {traceCountsText(spans)}
-        </span>
+        {counts ? (
+          <span className="ml-auto text-xs tabular-nums text-muted-foreground" data-testid="trace-step-counts">
+            {counts}
+          </span>
+        ) : null}
       </div>
       <ol className="space-y-3 p-4">
         {spans.map((span) => {
@@ -681,6 +725,7 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({
   error,
   onRetry,
   presentation = 'default',
+  countsText,
 }) => {
   if (loading) {
     return (
@@ -716,7 +761,7 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({
   const cut = data ? traceCutText(data) : null;
 
   if (presentation === 'case-manager') {
-    return <TerminalTrace data={data as TimelineResponse} spans={spans} />;
+    return <TerminalTrace data={data as TimelineResponse} spans={spans} countsText={countsText} />;
   }
 
   return (
