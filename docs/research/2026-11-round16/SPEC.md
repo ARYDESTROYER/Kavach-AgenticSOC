@@ -2953,7 +2953,11 @@ reverting.
   new generator's intro names Settings → Account → Appearance. Deviation: the replay job's
   cancel message is written to no audit row (a tripped replay proves it), so it stays in the
   job's own record, shown only to the person who ran it, beside the bound they set and the
-  report's spend.
+  report's spend. Review fixes: a turn-off on an account whose two-factor is already off
+  says "Two-factor is already off for this account." instead of calling the code wrong; the
+  CHANGELOG and `USAGE.md` name Settings → Account → Appearance for the What's new switch;
+  and the CHANGELOG says the AI run signals once, in the Added entry, instead of again as a
+  Changed entry.
 
 WP17B and WP19 are recorded with the closing gates.
 

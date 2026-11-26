@@ -19,6 +19,7 @@ mock model.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -196,3 +197,49 @@ async def test_a_tripped_replay_writes_its_spend_only_where_the_rule_withholds_i
         # As GET /api/audit and the export show it to a viewer without cost:view.
         assert "spend_usd=0" not in hidden and "bound_usd=0" not in hidden and "$" not in hidden
     assert "spend_usd=hidden bound_usd=hidden" in withheld_cost(spend[0])["result_summary"]
+
+
+# --------------------------------------------------------------------------- #
+# The records: where the What's new switch is, and the AI run signals said once
+# --------------------------------------------------------------------------- #
+_REPO = Path(__file__).resolve().parents[2]
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _round16_changelog() -> str:
+    text = (_REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    start = text.index("### Round 16")
+    return text[start:text.index("### Round 15", start)]
+
+
+def test_the_records_name_where_the_whats_new_switch_really_is() -> None:
+    """**Show What's new after updates** sits in Settings, Account, Appearance (the
+    generator's intro and the Console say so); no record places it in a bare
+    "Settings, Appearance"."""
+    usage = _flat((_REPO / "docs" / "USAGE.md").read_text(encoding="utf-8"))
+    changelog = _flat(_round16_changelog())
+    for text in (usage, changelog):
+        assert "Settings, Appearance" not in text
+    assert ("**Show What's new after updates** in **Settings → Account → Appearance** "
+            "turns it off") in usage
+    assert "(on the page, or Settings → Account → Appearance;" in usage
+    assert ("**Show What's new after updates**, on the page or in **Settings → Account → "
+            "Appearance**, turns it off.") in changelog
+
+
+def test_the_changelog_says_the_ai_run_signals_once() -> None:
+    """The release's AI run signals are one Added entry: the queue row, the header chip,
+    the trace and the Inbox wording are said there, not again as a separate entry."""
+    changelog = _flat(_round16_changelog())
+    assert "AI run signals in Case Manager" not in changelog
+    assert changelog.count('"AI working" or "AI queued"') == 1
+    assert changelog.count('"N AI steps"') == 1
+    assert changelog.count('"Needs human review", as the case does') == 1
+    added = changelog[changelog.index("#### Added"):changelog.index("#### Changed")]
+    for fact in ("at every queue width", "shows the ring alone on a phone",
+                 "the same number as the trace's \"N AI steps\"",
+                 "The notices name the needs-human verdict \"Needs human review\""):
+        assert fact in added, fact

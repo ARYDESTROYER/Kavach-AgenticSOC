@@ -62,7 +62,7 @@ surface into **six top-level nav groups**:
 | **Triage** | Cases (§3), **Case Manager** (§3), Campaigns (§16), Logs (a unified cross-source log browser, §2a), Workspace with **Chat** (§5), **Entity investigation** (§4) and **Reports** as children, Approvals |
 | **Intelligence** | Knowledge corpus (§9), Runbooks (§12), Operator memory (§10), Agent personas |
 | **Analytics** | Metrics, **Agent effectiveness** (§7a), Cost (§8), Models (§22), Baseline (§17), Jobs (§22) |
-| **Communication** | Inbox (the in-app notification inbox, §23) and **What's new** (the release tracker: every release this Console ships notes for, with highlights and screenshots; a short welcome shows once after each update, and the personal switch **Show What's new after updates** in Settings, Appearance turns it off) |
+| **Communication** | Inbox (the in-app notification inbox, §23) and **What's new** (the release tracker: every release this Console ships notes for, with highlights and screenshots; a short welcome shows once after each update, and the personal switch **Show What's new after updates** in **Settings → Account → Appearance** turns it off) |
 | **Platform** | Sources (§2, standalone, not inside Settings), Audit log (§31), Auto-tuning (§15), Settings (§25, with Users and Roles as children) |
 
 The pinned **Help Center** item at the bottom of the rail opens the
@@ -2120,8 +2120,8 @@ search, links to one highlight, "New to you" marks and screenshots. A short welc
 after each update, after sign-in and never over another dialog or an open record; a new
 account starts with it marked seen. Closing it writes `misc.whats_new_seen` (the newest
 update id) through `PUT /api/prefs/user`, which audits it as a preferences change. **Show
-What's new after updates** (on the page, or Settings, Appearance; `misc.whats_new_auto`,
-absent means on) turns the welcome off. The top-bar release badge links to What's new for
+What's new after updates** (on the page, or Settings → Account → Appearance;
+`misc.whats_new_auto`, absent means on) turns the welcome off. The top-bar release badge links to What's new for
 the running version, and the Help Center has a What's new page generated from the same
 notes. With sign-in off every caller shares the `default` preferences bucket, so the welcome
 shows once per installation. The notes live in `docs/releases/notes/<version>.json` and

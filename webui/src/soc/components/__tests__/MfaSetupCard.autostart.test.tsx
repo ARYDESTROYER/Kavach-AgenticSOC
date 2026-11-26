@@ -333,6 +333,20 @@ describe('MfaSetupCard failure sentences (never the server text)', () => {
     expect(document.body.textContent ?? '').not.toContain('UNTRUSTED');
     noDashes();
   });
+
+  it('a turn-off on an account whose two-factor is already off says so, not that the code was wrong', async () => {
+    // Turned off elsewhere (another tab, an administrator) while this card still showed it on.
+    disableMock.mockRejectedValue(new ApiError(400, 'MFA is not enabled for this account'));
+    render(<MfaSetupCard enabled frameless autoStart onCancel={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Enter a current code to turn off two-factor'), {
+      target: { value: '654321' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /turn off two-factor/i }));
+    expect(await screen.findByText('Two-factor is already off for this account.')).toBeInTheDocument();
+    expect(screen.queryByText(/That code did not work/)).not.toBeInTheDocument();
+    expect(screen.queryByText('MFA is not enabled for this account')).not.toBeInTheDocument();
+    noDashes();
+  });
 });
 
 describe('MfaSetupCard without autoStart (unchanged triggers)', () => {

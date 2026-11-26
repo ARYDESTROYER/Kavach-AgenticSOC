@@ -30,10 +30,16 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
 
 - **See the AI working on a case.** While the AI investigates a case:
   - the case header shows "AI working · m:ss", or "AI queued" while the run waits for an
-    investigation slot. Select it for the five steps, who or what started the run ("You
-    started it", "Started by a person", or the automatic origin), the time against the
-    investigation cap, and a link to its steps in the Audit log;
-  - queue rows show "AI working" or "AI queued" in place of the status mark;
+    investigation slot, then "AI finished". The chip keeps its words on any strip 30rem
+    wide or wider, where the AI verdict's label, the owner's name and the SLA make room
+    first and the status words always stay on the line, and shows the ring alone on a
+    phone. Select it for the five steps, who or what started the run ("You started it",
+    "Started by a person", or the automatic origin), the time against the investigation
+    cap, and a link to its steps in the Audit log;
+  - queue rows show "AI working" or "AI queued" in place of the status mark, at every queue
+    width. In a narrow queue the status words, the outcome badge and the severity word step
+    aside for it; the row's accessible name, the leading glyph and the case header keep all
+    of them;
   - the Case Manager navigation item counts the cases the AI is investigating, and the queue
     band says how many new alerts it is investigating;
   - close, resolve, the bulk close and the bulk Acknowledge and Set status dialogs say that
@@ -42,11 +48,14 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   - Take action shows Reinvestigate as unavailable while a run is queued or running and says
     why, and the header dims the verdict the run will replace;
   - W opens the AI investigation tab at the live trace while a run is under way, and the
-    case's live narration ends with "Investigation finished".
+    case's live narration ends with "Investigation finished". The open trace updates every
+    few seconds while the run is under way and does not blank when it ends, and the tab's
+    count is the AI's own steps, the same number as the trace's "N AI steps".
 - **Notices when a run ends.** The person who started a manual run (Reinvestigate, or the
   Investigate page) gets a toast and an Inbox item when it finishes. A person whose close an
   AI run replaced gets an Inbox item, and the change is recorded as a `case.close_replaced`
-  audit row.
+  audit row. The notices name the needs-human verdict "Needs human review", as the case
+  does.
 - **Every number explains itself.** Hover a risk score, verdict, severity, priority, SLA,
   cost or dashboard figure for a one-line formula with the real numbers. Click it, press
   Enter or Space, or tap it for the full calculation: inputs, each step, rounding, where the
@@ -108,11 +117,11 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   appears once after each update, after sign-in and never over another dialog or an open
   record. A new account starts with it marked seen, so it is not welcomed to changes made
   before it existed. **Show What's new after updates**, on the page or in
-  Settings, Appearance, turns it off. Acknowledging it is audited as a preferences change. The
-  release badge links to What's new for the running version, and the Help Center has a What's
-  new page generated from the same notes, which chat's product help reads. It lists every
-  change since 0.1.1: twelve dated updates for 0.2.0 and an entry for the 0.1 line, and
-  older updates show screenshots of the interface they describe.
+  **Settings → Account → Appearance**, turns it off. Acknowledging it is audited as a
+  preferences change. The release badge links to What's new for the running version, and the
+  Help Center has a What's new page generated from the same notes, which chat's product help
+  reads. It lists every change since 0.1.1: twelve dated updates for 0.2.0 and an entry for
+  the 0.1 line, and older updates show screenshots of the interface they describe.
 - **AI runs on the server.** `GET /api/investigations/active` (needs `cases:read`) lists the
   queued and running runs, the runs that finished in the last two minutes, how many runs on
   new events have no case yet and the investigation slots in use; the requester's name is
@@ -173,20 +182,6 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
 - **Case facts are an inspector** beside the tabs from a 52rem pane, or a side sheet below
   that, shown or hidden with `]`, with six sections that open and close (each viewer's
   choices are kept; Record starts closed). It replaces the facts rail.
-- **AI run signals in Case Manager.**
-  - While the AI investigates a case, its queue row always says "AI working" or "AI
-    queued", at every queue width. In a narrow queue the status words, the outcome badge and
-    the severity word step aside for it. The row's accessible name, the leading glyph and
-    the case header keep all of them.
-  - The case header's AI run chip keeps its words ("AI working · 0:42", "AI queued", then
-    "AI finished") on any strip 30rem wide or wider, and shows the ring alone on a phone.
-    While it shows, the AI verdict's label, the owner's name and the SLA make room first,
-    and the status words always stay on the line.
-  - The AI investigation tab's count is the AI's own steps, the same number as the trace's
-    "N AI steps". While a run is under way the open trace updates every few seconds, and
-    when the run ends it no longer blanks.
-  - Inbox notices about an AI investigation name the needs-human verdict "Needs human
-    review", as the case does.
 - **The Brief's Decision lane** says in plain words who settled the case and how
   ("Escalated by the system."). The raw decision record is in Policy inputs. On a case a
   person closed, the lane shows what the policy recorded before them and no longer repeats

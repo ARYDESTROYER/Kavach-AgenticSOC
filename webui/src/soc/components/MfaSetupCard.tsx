@@ -179,7 +179,8 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
 
 /**
  * The fixed sentence for a failed step. The server's text only picks the sentence (a lapsed
- * setup, an account set in the environment) and is never shown. A wrong code answers 400,
+ * setup, an account set in the environment, a turn-off on an account whose two-factor is
+ * already off) and is never shown. A wrong code answers 400,
  * or 401 at sign-in (`pending`); any other 401 is a fresh sign-in that did not happen.
  */
 function mfaFailText(err: unknown, step: 'setup' | 'confirm' | 'disable', pending: boolean): string {
@@ -190,6 +191,7 @@ function mfaFailText(err: unknown, step: 'setup' | 'confirm' | 'disable', pendin
   if (status === 409) return 'Two-factor is already on for this account.';
   if (status === 400 && /environment/i.test(said)) return 'This account is set by the server and cannot use two-factor.';
   if (status === 400 && /no pending/i.test(said)) return 'This setup has ended. Start again.';
+  if (status === 400 && /not enabled/i.test(said)) return 'Two-factor is already off for this account.';
   if (step !== 'setup' && (status === 400 || (status === 401 && pending))) {
     return step === 'disable' ? 'That code did not work. Enter a current code or a recovery code.' : 'That code did not work. Enter the current code from your app.';
   }
