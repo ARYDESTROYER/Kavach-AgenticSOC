@@ -13851,3 +13851,10 @@
 - Tests: the WP19 review ran the whole backend suite (14,054 passed, 29 skipped, 0 failed), npm run test:strict with the stamped dist (9,972 passed, 1 skipped), check_version in four contexts including the v0.2.0 stable tag, the stamped Stable build (entry 318,012 B) and a 19-check browser pass.
 - Status: WP19 ready on its branch, not pushed. Waiting on the user: the merge of PR #144 into Testing, then the WP19 pull request, then the maintainer actions M1 to M7 before the v0.2.0 tag.
 - Next: after #144 merges, bring Testing into claude/round16 with the WP19 commits and open the frozen preparation pull request; if the tag is not created on 2026-11-27, re-date the CHANGELOG heading and the notes before tagging.
+
+### 2026-11-27 04:40Z - orchestrator - Round 16 merged into Testing; the 0.2.0 release preparation pull request
+- Context: the user approved merging PR #144 and keeping 2026-11-27 as the intended tag date for the frozen release preparation.
+- Did: PR #144 (claude/round16 into Testing) merged on its green head 4e32d29. The repository allows squash or rebase only, so it landed as the squash commit 72eafaf, whose tree equals 4e32d29. Testing was then merged into claude/round16 (no tree change), followed by WP19, so the release preparation pull request into Testing carries only the WP19 change (25 files).
+- Tests: on the merged branch, check_version (the branch and the v0.2.0 stable tag context), check_ci_contract, check_docs, build_app_knowledge --check, build_release_notes --check, fatal ruff and the records, docs, knowledge and version modules; the WP19 review ran the whole suites on the same tree content.
+- Status: in progress: the WP19 pull request into Testing, then the maintainer actions M1 to M7 of SPEC 4.11 before the v0.2.0 tag.
+- Next: drive the WP19 pull request green. If the tag is not created on 2026-11-27, re-date the CHANGELOG [0.2.0] heading, the notes date and the newest update's date before tagging.
