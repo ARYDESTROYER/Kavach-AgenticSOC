@@ -4,7 +4,7 @@
 # Docs and browser assets are architecture-neutral, so their package tools run on
 # the native builder platform rather than through target-architecture emulation.
 
-FROM --platform=$BUILDPLATFORM python:3.11-alpine@sha256:25976e9d34a0fab1f278cae931f34c8303d97bf0c0d7f85b6b4dcf641d7702a4 AS docs
+FROM --platform=$BUILDPLATFORM python:3.11-alpine@sha256:7fbad8e4652eae0186429a6f26cf5b23e27e8c6fd7ac4d0cfd7a6988cdeea1e1 AS docs
 WORKDIR /repo
 COPY docs/requirements.txt docs/requirements.txt
 RUN python3 -m pip install --no-cache-dir --requirement docs/requirements.txt
