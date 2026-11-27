@@ -170,3 +170,27 @@ def test_the_v0_1_1_rollback_rehearsal_is_recorded_and_the_image_rehearsal_stays
     upgrades = _flat(_read(UPGRADES))
     assert "is recorded at release preparation, in" not in upgrades
     assert "#rolling-back-to-v011-resets-the-settings-it-does-not-model" in upgrades
+
+
+ACCEPTANCE = REPO_ROOT / "docs" / "research" / "2026-11-round16" / "acceptance"
+SPEC = REPO_ROOT / "docs" / "research" / "2026-11-round16" / "SPEC.md"
+
+
+def test_the_receipts_and_the_spec_line_record_the_release_preparation() -> None:
+    postgres = _flat(_read(ACCEPTANCE / "release-postgres-receipt.md"))
+    for fact in ("PostgreSQL 16.15", "| 10,000,000 | 6,115,549,184 B (6.12 GB) |", "44.3 s",
+                 "37 of 38", "32 of 33", "maintainer action M5"):
+        assert fact in postgres, fact
+    browser = _flat(_read(ACCEPTANCE / "release-browser-receipt.md"))
+    for fact in ("SHA 963cec4335aebaa3362273de6bbb87eafbf90ea5", "v0.2.0 · Stable",
+                 "568 loads", "19 checks, 19 pass", "vite preview over webui/dist (not nginx)"):
+        assert fact in browser, fact
+    spec = _read(SPEC)
+    assert "WP19 is recorded with the release preparation." not in spec
+    per_package = spec[spec.index("### 8.2 Per package"):spec.index("### 8.3 Known limitations")]
+    line = _flat(per_package[per_package.index("- **WP19, the frozen release preparation**"):])
+    for fact in ("`963cec4`", "2026-11-27", "M5", "release-postgres-receipt.md",
+                 "release-browser-receipt.md"):
+        assert fact in line, fact
+    record = spec[spec.index("### 8.4 Verification record"):spec.index("### 8.5 Cross-cutting review")]
+    assert "The release preparation WP19 (`963cec4`" in record
