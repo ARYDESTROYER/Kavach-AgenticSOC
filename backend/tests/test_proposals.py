@@ -36,7 +36,7 @@ from app.engine.correlation import cluster_from_events
 from app.engine.cost_gate import passes_suppression
 from app.models import Case, Entity, Proposal
 from app.state import AppState
-from app.stores.proposals import ProposalStore
+from app.stores.proposals import PROVENANCE_KEY, ProposalStore, evidence_fingerprint
 
 from tests.conftest import make_log_event, make_raw_event
 
@@ -368,28 +368,40 @@ async def test_approve_explicit_memory_still_materialises_trusted_fact(client) -
 async def test_approve_tuning_materializes_bounded_change_and_ledger(client) -> None:
     state: AppState = client.app.state.tlsoc
     before = state.execution_prefs.correlation_for("reviewed_rule").n
+    payload = {
+        "tuning": True,
+        "action": "apply_change",
+        "reason_code": "policy_requires_approval",
+        "reason": "Independent analyst evidence supports a bounded change.",
+        "recommended_action": "Approve the bounded threshold increase.",
+        "rule_id": " reviewed_rule ",
+        "target": "correlation_n",
+        "before": before,
+        "after": before + 1,
+        "fp_rate": 0.72,
+        "analyst_samples": 40,
+        "observed_cases": 46,
+        "unconfirmed_cases": 6,
+        "confirmed_false_positives": 37,
+        "confirmed_true_positives": 3,
+        "evidence_basis": "analyst outcomes",
+        # A threshold change may only be applied on a verifiable, independent basis.
+        PROVENANCE_KEY: {
+            "independent_analyst_outcomes": 40,
+            "analyst_feedback_labels": 31,
+            "explicit_disposition_labels": 9,
+            "bulk_ratified_model_verdicts": 0,
+            "unlabelled_cases": 6,
+            "provenance": "independent_analyst",
+            "analyst_confirmed": True,
+        },
+        "dedupe_key": "test-reviewed-rule",
+    }
     p = Proposal(
         kind="tuning",
-        payload={
-            "tuning": True,
-            "action": "apply_change",
-            "reason_code": "policy_requires_approval",
-            "reason": "Independent analyst evidence supports a bounded change.",
-            "recommended_action": "Approve the bounded threshold increase.",
-            "rule_id": " reviewed_rule ",
-            "target": "correlation_n",
-            "before": before,
-            "after": before + 1,
-            "fp_rate": 0.72,
-            "analyst_samples": 40,
-            "observed_cases": 46,
-            "unconfirmed_cases": 6,
-            "confirmed_false_positives": 37,
-            "confirmed_true_positives": 3,
-            "evidence_basis": "analyst outcomes",
-            "dedupe_key": "test-reviewed-rule",
-        },
+        payload=payload,
         created_by="tuner",
+        evidence_fingerprint=evidence_fingerprint(payload),
     )
     await state.proposals.add(p)
 
@@ -408,23 +420,34 @@ async def test_approve_tuning_ledger_failure_restores_threshold_and_retries(
 ) -> None:
     state: AppState = client.app.state.tlsoc
     before = state.execution_prefs.correlation_for("reviewed_saga_rule").n
+    payload = {
+        "tuning": True,
+        "action": "apply_change",
+        "reason_code": "policy_requires_approval",
+        "rule_id": "reviewed_saga_rule",
+        "target": "correlation_n",
+        "before": before,
+        "after": before + 1,
+        "fp_rate": 0.72,
+        "analyst_samples": 40,
+        "observed_cases": 40,
+        "confirmed_false_positives": 37,
+        "confirmed_true_positives": 3,
+        PROVENANCE_KEY: {
+            "independent_analyst_outcomes": 40,
+            "analyst_feedback_labels": 40,
+            "explicit_disposition_labels": 0,
+            "bulk_ratified_model_verdicts": 0,
+            "unlabelled_cases": 0,
+            "provenance": "independent_analyst",
+            "analyst_confirmed": True,
+        },
+    }
     p = Proposal(
         kind="tuning",
-        payload={
-            "tuning": True,
-            "action": "apply_change",
-            "reason_code": "policy_requires_approval",
-            "rule_id": "reviewed_saga_rule",
-            "target": "correlation_n",
-            "before": before,
-            "after": before + 1,
-            "fp_rate": 0.72,
-            "analyst_samples": 40,
-            "observed_cases": 40,
-            "confirmed_false_positives": 37,
-            "confirmed_true_positives": 3,
-        },
+        payload=payload,
         created_by="tuner",
+        evidence_fingerprint=evidence_fingerprint(payload),
     )
     await state.proposals.add(p)
     original_append = state.tuning_store.add_approved_proposal_strict

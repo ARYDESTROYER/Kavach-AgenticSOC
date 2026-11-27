@@ -9,6 +9,7 @@ import {
   resolveDocumentationDirectory,
 } from './docs.config';
 import { releaseEntryId, resolveBuildReleaseIdentity } from './release.config';
+import { resolveWhatsNewLatest } from './whats-new.config';
 
 /**
  * Vite config for Agentic SOC.
@@ -21,6 +22,8 @@ import { releaseEntryId, resolveBuildReleaseIdentity } from './release.config';
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8088';
 const RELEASE_IDENTITY = resolveBuildReleaseIdentity();
 const RELEASE_ENTRY_ID = releaseEntryId(RELEASE_IDENTITY);
+// Round 16 (SPEC D7): the newest What's new update id, compared in the entry chunk.
+const WHATS_NEW_LATEST = resolveWhatsNewLatest();
 const DEV_DOCS_ROOT = path.resolve(__dirname, 'public/docs');
 const PREVIEW_DOCS_ROOT = path.resolve(__dirname, 'dist/docs');
 const RELEASE_MANIFEST_PATH = '/release.json';
@@ -136,6 +139,116 @@ function docsRequestBoundary(docsRoot: string): Connect.NextHandleFunction {
   };
 }
 
+/**
+ * Chunks each chunk is guaranteed to have loaded before any of its code runs: the
+ * transitive closure of its STATIC imports (an ES module evaluates only after every
+ * static dependency has loaded). Filled per build by {@link preloadClosurePlugin}.
+ */
+let staticClosureByChunk = new Map<string, Set<string>>();
+
+/**
+ * Records every chunk's static-import closure before Vite writes the dynamic-import
+ * preload lists (`order: 'pre'` runs this hook ahead of Vite's own import analysis).
+ */
+function preloadClosurePlugin(): Plugin {
+  return {
+    name: 'tlsoc-preload-closure',
+    apply: 'build',
+    generateBundle: {
+      order: 'pre',
+      handler(_options, bundle) {
+        const imports = new Map<string, string[]>();
+        for (const output of Object.values(bundle)) {
+          if (output.type === 'chunk') imports.set(output.fileName, output.imports);
+        }
+        const next = new Map<string, Set<string>>();
+        for (const [fileName, direct] of imports) {
+          const seen = new Set<string>();
+          const visit = (name: string) => {
+            if (seen.has(name)) return;
+            seen.add(name);
+            for (const dep of imports.get(name) ?? []) visit(dep);
+          };
+          direct.forEach(visit);
+          next.set(fileName, seen);
+        }
+        staticClosureByChunk = next;
+      },
+    },
+  };
+}
+
+/**
+ * Trim each dynamic import's preload list to chunks that can still be missing. Vite lists
+ * the imported chunk's whole static graph, including the vendor chunks its importer has
+ * already loaded; in the entry that is every `React.lazy` page naming react-vendor,
+ * radix, icons and utils again, which the browser already holds (they are the entry's
+ * own static imports and index.html modulepreloads). Dropping them changes nothing at
+ * runtime and keeps the first-paint entry inside the chat revamp's 1 kB budget
+ * (SPEC §10.10). A list left holding only the imported chunk itself becomes `[]`, the
+ * same rule Vite applies (preloading the module `import()` fetches next is a no-op).
+ * Without a recorded closure (an unexpected hook order) the list is kept as Vite built it.
+ */
+function resolvePreloadDependencies(
+  filename: string,
+  deps: string[],
+  context: { hostId: string; hostType: 'html' | 'js' },
+): string[] {
+  if (context.hostType !== 'js') return deps;
+  const loaded = staticClosureByChunk.get(context.hostId);
+  if (!loaded) return deps;
+  const kept = deps.filter((dep) => !loaded.has(dep));
+  return kept.length === 1 && kept[0] === filename ? [] : kept;
+}
+
+/** `'__CHUNK_LIST:<source path>__'` (either quote) in rendered, not yet minified code. */
+const CHUNK_LIST_MARK_RE = /(["'])__CHUNK_LIST:([A-Za-z0-9_./-]+)__\1/g;
+
+/**
+ * Lists, at build time, the chunks a lazy feature needs that first paint does not hold,
+ * so the shell can warm them with plain prefetch requests (soc/lazy-retry.ts
+ * `prefetchChunks`) instead of `import()`. A warm through `import()` enters every chunk
+ * it touches into the page's module map, and a fetch that fails there (a network blip)
+ * stays failed for the life of the page, for the warmed feature and for every other
+ * feature that shares its chunks (cmdk with Chat, the Settings metadata with Settings).
+ * A prefetch only fills the HTTP cache: when it fails, nothing remembers it.
+ *
+ * Each string literal `'__CHUNK_LIST:<path under webui/>__'` becomes a JSON string
+ * holding the paths, relative to the chunk that holds the literal, of the chunk built
+ * from that module and of its static imports, without the chunks the holder already
+ * loads. Names carry Rollup's hash placeholders here; Rollup puts the final hashes in
+ * after this hook. It runs before minification, and only the rest of the one line that
+ * holds the literal moves, so the source map is kept (`map: null`).
+ */
+function chunkListPlugin(): Plugin {
+  return {
+    name: 'chunk-list',
+    apply: 'build',
+    renderChunk(code, chunk, _options, meta) {
+      if (!code.includes('__CHUNK_LIST:')) return null;
+      const closure = (name: string, into = new Set<string>()): Set<string> => {
+        for (const dep of meta.chunks[name]?.imports ?? []) {
+          if (!into.has(dep)) {
+            into.add(dep);
+            closure(dep, into);
+          }
+        }
+        return into;
+      };
+      const held = closure(chunk.fileName).add(chunk.fileName);
+      const dir = path.posix.dirname(chunk.fileName);
+      const out = code.replace(CHUNK_LIST_MARK_RE, (_mark, _quote, source: string) => {
+        const id = path.resolve(__dirname, source);
+        const target = Object.values(meta.chunks).find((c) => c.facadeModuleId === id);
+        if (!target) this.error(`no chunk is built from ${source} (a __CHUNK_LIST mark names it)`);
+        const names = [target.fileName, ...closure(target.fileName)].filter((name) => !held.has(name));
+        return JSON.stringify(JSON.stringify(names.map((name) => path.posix.relative(dir, name))));
+      });
+      return { code: out, map: null };
+    },
+  };
+}
+
 function bundledDocumentationPlugin(): Plugin {
   return {
     name: 'tlsoc-bundled-documentation',
@@ -149,9 +262,16 @@ function bundledDocumentationPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [releaseManifestPlugin(), bundledDocumentationPlugin(), react()],
+  plugins: [
+    releaseManifestPlugin(),
+    bundledDocumentationPlugin(),
+    preloadClosurePlugin(),
+    chunkListPlugin(),
+    react(),
+  ],
   define: {
     __TLSOC_RELEASE_IDENTITY__: JSON.stringify(RELEASE_IDENTITY),
+    __AGENTIC_SOC_WHATS_NEW_LATEST__: JSON.stringify(WHATS_NEW_LATEST),
   },
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },
@@ -169,6 +289,7 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: true,
     chunkSizeWarningLimit: 4096,
+    modulePreload: { resolveDependencies: resolvePreloadDependencies },
     rollupOptions: {
       output: {
         /**
@@ -179,6 +300,11 @@ export default defineConfig({
          * falls through to Vite's default chunking.
          */
         manualChunks(id: string) {
+          // App modules (src/) are never grouped here: Rollup pulls a manual chunk's
+          // static dependencies into it, so grouping e.g. the shared chat modules moved
+          // lib/api, registry and nav into that chunk and made the entry import it
+          // statically (measured during the chat revamp). Preload-list size is trimmed
+          // by `resolvePreloadDependencies` instead.
           if (!id.includes('node_modules')) return undefined;
           // clsx / tailwind-merge back the entry's cn() helper AND are a transitive
           // dependency of recharts. They MUST get their own tiny, stable chunk

@@ -14,7 +14,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { KpiTile } from '../KpiTile';
 
@@ -22,6 +22,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const KPI_TILE_SRC = path.resolve(HERE, '..', 'KpiTile.tsx');
 
 describe('KpiTile — AnimatedNumber is wired in (no longer dead code)', () => {
+  // Load the spring module (and motion.dev behind it) once, before the render test, so
+  // the upgrade below waits on React.lazy only, never on how long a cold worker takes to
+  // load motion.dev: that load used to outlast waitFor's one second on a busy machine. The
+  // lazy import still resolves after first paint (a promise is never synchronous), so the
+  // CountUp fallback is still what the first assertion reads.
+  beforeAll(async () => {
+    await import('../motion/AnimatedNumber');
+  });
+
+
   it('renders the CountUp fallback immediately, then upgrades to the lazy AnimatedNumber', async () => {
     render(<KpiTile label="Open" value="0" countTo={7} />);
 

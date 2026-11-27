@@ -1,5 +1,5 @@
 /**
- * Experimental › Demo Mode — the Settings control (Round-2 Wave 5).
+ * Experimental › Demo Mode: the Settings control (Round-2 Wave 5).
  *
  * Arms / re-seeds / exits the first-class, REVERSIBLE demo tenant (off | seeded |
  * live). Seeded loads a static synthetic history; live additionally simulates new
@@ -20,6 +20,7 @@ import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import type { DemoConfig, DemoIncidentResult, DemoMode } from '@/lib/types';
 import { cn } from '@/lib/cn';
+import { DASH } from '@/lib/format';
 import { useDemo } from '@/soc/demo';
 
 import { Button } from '@/ui/button';
@@ -29,6 +30,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
 import { NumberField } from '@/soc/components/NumberField';
 import { LabeledSlider } from '@/soc/components/LabeledSlider';
 import { SectionTitle } from '@/soc/pages/settings/primitives';
+import { StatusDot } from '@/design-system';
 
 const MODES: Array<{ value: Exclude<DemoMode, 'off'>; label: string; help: string }> = [
   {
@@ -132,7 +134,7 @@ export function DemoModeSection() {
         const wait = Math.max(1, Math.ceil(result.cooldown_seconds || 0));
         toast.warning(
           result.cooldown_seconds > 0
-            ? `Incident generator is cooling down — retry in ${wait}s.`
+            ? `The incident generator is cooling down. Try again in ${wait}s.`
             : result.reason || 'No incident was generated.',
         );
       }
@@ -149,7 +151,7 @@ export function DemoModeSection() {
       await api.demo.disable();
       setLastIncident(null);
       await refresh();
-      toast.success('Demo mode exited — synthetic data cleared, real state restored.');
+      toast.success('Demo mode exited. Synthetic data cleared and your real state restored.');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Could not exit demo mode.');
     } finally {
@@ -172,7 +174,7 @@ export function DemoModeSection() {
         ) : null}
       />
 
-      {/* The safety contract — isolation, $0, reversibility. */}
+      {/* The safety contract: isolation, $0, reversibility. */}
       <Alert>
         <FlaskConical className="h-4 w-4" aria-hidden />
         <AlertTitle>Isolated, free, and fully reversible</AlertTitle>
@@ -181,7 +183,7 @@ export function DemoModeSection() {
           model, so it{' '}
           <strong className="font-semibold text-foreground">costs nothing</strong> and the
           deterministic close/escalate logic runs against a{' '}
-          <strong className="font-semibold text-foreground">sandboxed policy copy</strong> —
+          <strong className="font-semibold text-foreground">sandboxed policy copy</strong>, so
           your live policy is never changed by demo processing. While demo is on, your real
           cases are <strong className="font-semibold text-foreground">hidden</strong>, source
           controls are read-only, and outbound notification tests are refused. Other
@@ -196,7 +198,7 @@ export function DemoModeSection() {
         <>
           {/* Mode picker */}
           <div className="space-y-3">
-            <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <Label className="text-sm font-medium text-foreground">
               Mode
             </Label>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -236,7 +238,7 @@ export function DemoModeSection() {
             </div>
           </div>
 
-          {/* Knobs — shared NumberField (+/- steppers, clamp-on-blur) + LabeledSlider,
+          {/* Knobs: shared NumberField (+/- steppers, clamp-on-blur) + LabeledSlider,
               matching Settings › Detection so the demo config uses the same primitives. */}
           <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
             <NumberField
@@ -255,7 +257,7 @@ export function DemoModeSection() {
               min={1}
               max={60}
               onChange={setTickSeconds}
-              description="Live mode only — how often a new synthetic batch arrives."
+              description="Live mode only: how often a new synthetic batch arrives."
             />
             <NumberField
               label="Alert interval"
@@ -280,7 +282,7 @@ export function DemoModeSection() {
               value={seed}
               min={0}
               onChange={setSeed}
-              description="Deterministic — the same seed reproduces the same data."
+              description="Deterministic: the same seed reproduces the same data."
             />
             <LabeledSlider
               label="Incident rate"
@@ -315,13 +317,13 @@ export function DemoModeSection() {
             />
             <SummaryTile
               label="Synthetic cases"
-              value={typeof status.case_count === 'number' ? String(status.case_count) : '—'}
+              value={typeof status.case_count === 'number' ? status.case_count.toLocaleString() : DASH}
             />
           </div>
 
-          {/* Live capability signal — "these features are working" (demo overhaul). */}
+          {/* Live capability signal: "these features are working" (demo overhaul). */}
           <div>
-            <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <Label className="text-sm font-medium text-foreground">
               Capabilities live
             </Label>
             <div className="mt-3 grid gap-x-6 gap-y-4 sm:grid-cols-2 sm:[&>*:nth-child(2n+1)]:border-l-0 lg:grid-cols-4 lg:[&>*:nth-child(2n+1)]:border-l lg:[&>*:nth-child(4n+1)]:border-l-0">
@@ -341,8 +343,8 @@ export function DemoModeSection() {
                 label="RAG corpus"
                 value={
                   typeof status.rag_chunks === 'number'
-                    ? `${status.rag_chunks} chunks`
-                    : '—'
+                    ? `${status.rag_chunks.toLocaleString()} chunks`
+                    : DASH
                 }
               />
             </div>
@@ -350,7 +352,7 @@ export function DemoModeSection() {
 
           {Array.isArray(status.source_activity) && status.source_activity.length > 0 ? (
             <div>
-              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              <Label className="text-sm font-medium text-foreground">
                 Native source activity
               </Label>
               <div className="mt-3 divide-y divide-border border-y border-border sm:grid sm:grid-cols-2 sm:divide-y-0 sm:[&>*:nth-child(2n+1)]:border-l-0 xl:grid-cols-4 xl:[&>*:nth-child(2n+1)]:border-l xl:[&>*:nth-child(4n+1)]:border-l-0">
@@ -363,22 +365,22 @@ export function DemoModeSection() {
                       <p className="truncate text-sm font-semibold text-foreground">
                         {source.display_name || source.source_id}
                       </p>
-                      <span
-                        className={cn(
-                          'h-2 w-2 shrink-0 rounded-full',
-                          source.healthy === false ? 'bg-critical' : 'bg-success',
-                        )}
-                        title={source.healthy === false ? 'Degraded' : 'Healthy'}
-                        aria-label={source.healthy === false ? 'Degraded' : 'Healthy'}
-                      />
+                      {/* A status only for the exception, in words beside its dot (never
+                          colour alone, SPEC §4.9.2): a healthy source reads calm. */}
+                      {source.healthy === false ? (
+                        <StatusDot tone="critical" className="shrink-0 text-xs">
+                          Degraded
+                        </StatusDot>
+                      ) : null}
                     </div>
                     <p className="mt-1 truncate text-xs text-muted-foreground">
                       {source.protocol || source.wire_format || source.source_type || 'Native feed'}
                     </p>
                     <p className="mt-2 text-xs tabular-nums text-muted-foreground">
-                      {source.events_total ?? 0} events · {source.alerts_total ?? 0} native alert{source.alerts_total === 1 ? '' : 's'}
+                      {fmtCount(source.events_total ?? 0)} event{source.events_total === 1 ? '' : 's'} ·{' '}
+                      {fmtCount(source.alerts_total ?? 0)} native alert{source.alerts_total === 1 ? '' : 's'}
                       {(source.system_detections_total ?? 0) > 0
-                        ? ` · ${source.system_detections_total} Agentic SOC detection${source.system_detections_total === 1 ? '' : 's'}`
+                        ? ` · ${fmtCount(source.system_detections_total)} Agentic SOC detection${source.system_detections_total === 1 ? '' : 's'}`
                         : ''}
                     </p>
                   </div>
@@ -435,7 +437,7 @@ export function DemoModeSection() {
 
 /** Render a best-effort capability count (falls back to a dash when absent). */
 function fmtCount(n: number | undefined): string {
-  return typeof n === 'number' ? String(n) : '—';
+  return typeof n === 'number' ? n.toLocaleString() : DASH;
 }
 
 function SummaryTile({ label, value, mono }: { label: string; value: string; mono?: boolean }) {

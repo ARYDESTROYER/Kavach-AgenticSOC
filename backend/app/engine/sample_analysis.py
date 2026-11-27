@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..evidence_fields import DEFAULT_EVIDENCE_FIELDS, record_carries
+
 # Candidate dotted-path substrings for each mapping target, in PREFERENCE order
 # (the first present in the flattened sample wins). Substring match is
 # case-insensitive on the full dotted path so both ECS (`source.ip`) and SIEM-native
@@ -106,12 +108,34 @@ def _best_path(candidates: tuple[str, ...], lowered: dict[str, str]) -> str | No
     return None
 
 
+def suggest_evidence_fields(record: Any) -> list[str]:
+    """Which of the default evidence paths this sample record actually carries.
+
+    Answers the question an operator cannot otherwise answer without querying the
+    index by hand: "do MY alerts carry the fields that decide the case?" Returned in
+    the default set's own priority order, so the answer doubles as a ready
+    ``evidence_fields`` list.
+
+    #9-safe by construction, and more strictly so than ``fields``: every string
+    returned is one of OUR OWN constants, matched against the sample. No path, key or
+    value from the untrusted record is ever echoed back.
+    """
+    # A DIRECT lookup per path, not an intersection with ``flatten_paths``: that
+    # inventory is sorted then cut at 500, so on a large record it reports a present
+    # field as absent purely because its path sorts late — telling an operator their
+    # alerts carry none of the deciding fields when they carry all of them. That is
+    # the original bug, arriving through the one affordance built to diagnose it.
+    return [path for path in DEFAULT_EVIDENCE_FIELDS if record_carries(record, path)]
+
+
 def analyze_sample(record: Any) -> dict[str, Any]:
     """The /analyze-sample response: suggested mappings + the flattened field paths.
 
     The sample itself is NEVER returned or persisted — only the derived field-name
-    strings (suggested_mappings) and the path inventory (fields) the UI renders."""
+    strings (suggested_mappings / suggested_evidence_fields) and the path inventory
+    (fields) the UI renders."""
     return {
         "suggested_mappings": suggest_mappings(record),
+        "suggested_evidence_fields": suggest_evidence_fields(record),
         "fields": flatten_paths(record),
     }

@@ -16,7 +16,7 @@ imported here, so this module imports cleanly without ``pgvector`` installed.
 
 from __future__ import annotations
 
-from sqlalchemy import JSON, Float, Index, Integer, String, Text
+from sqlalchemy import JSON, BigInteger, Float, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -46,7 +46,21 @@ class AuditRow(Base):
 
     # A surrogate autoincrement id preserves insertion order as a stable tiebreaker
     # when many actions share a millisecond-identical ``ts``.
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    #
+    # MUST be 64-bit: :meth:`SqlAuditRepository.write_strict` maps a privileged
+    # ``event_id`` to a deterministic NEGATIVE 63-bit surrogate key, so a 32-bit
+    # column rejects every keyed strict write on PostgreSQL (``asyncpg`` DataError,
+    # "value out of int32 range") and takes proposal approve/reject down with it.
+    # SQLite is unaffected (its INTEGER is already 64-bit) which is why the
+    # SQLite-backed suite never caught it — hence ``with_variant``: AUTOINCREMENT
+    # rowid aliasing needs a literal ``INTEGER PRIMARY KEY`` there, while every
+    # other dialect gets a true BIGINT. Existing PostgreSQL deployments are widened
+    # in place by :func:`app.stores.sql.engine.ensure_schema_migrations`.
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     ts: Mapped[str] = mapped_column(String(64), index=True, default="")
     case_id: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
     action_type: Mapped[str] = mapped_column(String(64), default="")

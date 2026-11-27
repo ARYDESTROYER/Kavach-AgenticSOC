@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-const { getMock, postMock } = vi.hoisted(() => ({
+const { getMock, postMock, submitJobMock } = vi.hoisted(() => ({
   getMock: vi.fn(),
   postMock: vi.fn(),
+  submitJobMock: vi.fn(),
 }));
 
 vi.mock('@/lib/api', () => ({
-  api: { get: getMock, post: postMock },
+  api: { get: getMock, post: postMock, jobs: { submit: submitJobMock } },
 }));
 
 import type {
@@ -92,6 +93,12 @@ describe('StorageLifecycleSection', () => {
     postMock.mockReset();
     getMock.mockResolvedValue(STATUS);
     postMock.mockResolvedValue(STATUS);
+    submitJobMock.mockReset().mockResolvedValue({
+      job_id: 'job-storage', kind: 'storage_lifecycle_apply', actor: 'operator',
+      created_at: '2026-08-13T00:00:00Z', status: 'queued',
+      progress: { done: 0, total: 1, unit: 'apply' }, failures: [], failure_count: 0,
+      failures_truncated: 0, request_fingerprint: 'e'.repeat(64), params: {}, cancel_requested: false,
+    });
   });
 
   it('shows the effective 180-day Hot, 90-day Warm, and truthful archive boundary', async () => {
@@ -99,7 +106,7 @@ describe('StorageLifecycleSection', () => {
 
     await screen.findByTestId('storage-lifecycle-status');
     expect(screen.getAllByText('First 180 days')).toHaveLength(2);
-    expect(screen.getAllByText('Next 90 days · until day 270')).toHaveLength(2);
+    expect(screen.getAllByText('Next 90 days, until day 270')).toHaveLength(2);
     expect(screen.getAllByText('From day 270')).toHaveLength(2);
     expect(screen.getByText('Desired · not configured.')).toBeInTheDocument();
     expect(screen.getByText('Connected source logs')).toBeInTheDocument();
@@ -109,11 +116,24 @@ describe('StorageLifecycleSection', () => {
     expect(screen.getByText(/Automatic deletion is off/i)).toBeInTheDocument();
   });
 
+  it('gives Hot and Warm retention the column their 12rem fields need', async () => {
+    renderSection();
+    await screen.findByTestId('storage-lifecycle-status');
+    // Up to 3650 days, the steppers and the unit "days" need 140px, more than 8rem.
+    for (const label of ['Hot retention', 'Warm retention']) {
+      const input = screen.getByLabelText(label);
+      expect(input.closest('[data-number-field]'), label).toHaveAttribute('data-number-field', 'md');
+      const row = input.closest('[data-setting-row="field"]') as HTMLElement;
+      expect(row.style.getPropertyValue('--setting-control-w'), label).toBe('12rem');
+    }
+  });
+
   it('edits desired policy through the page-wide preferences draft', async () => {
     const { update } = renderSection();
     await screen.findByTestId('storage-lifecycle-status');
 
-    const hotDays = screen.getByLabelText('Hot retention (days)');
+    // Round 14: the unit sits inside the field ("days"), not in the label.
+    const hotDays = screen.getByLabelText('Hot retention');
     fireEvent.focus(hotDays);
     fireEvent.change(hotDays, { target: { value: '200' } });
     fireEvent.blur(hotDays);
@@ -149,8 +169,12 @@ describe('StorageLifecycleSection', () => {
     expect(apply).toBeEnabled();
 
     fireEvent.click(apply);
-    await waitFor(() => expect(postMock).toHaveBeenCalledWith('storage/lifecycle/apply'));
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(submitJobMock).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'storage_lifecycle_apply',
+      params: { acknowledge: true, policy: POLICY },
+    })));
+    expect(postMock).not.toHaveBeenCalledWith('storage/lifecycle/apply');
+    expect(getMock).toHaveBeenCalledTimes(1);
   });
 
   it('allows explicit disable when management remains available but Warm is degraded', async () => {
@@ -173,7 +197,10 @@ describe('StorageLifecycleSection', () => {
     expect(apply).toBeEnabled();
 
     fireEvent.click(apply);
-    await waitFor(() => expect(postMock).toHaveBeenCalledWith('storage/lifecycle/apply'));
+    await waitFor(() => expect(submitJobMock).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'storage_lifecycle_apply',
+      params: { acknowledge: true, policy: disabledPolicy },
+    })));
   });
 
   it('keeps native Apply unavailable for an advisory PostgreSQL backend', async () => {

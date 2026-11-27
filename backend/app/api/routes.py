@@ -2,26 +2,56 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 import logging
+import math
 import os
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .. import __version__
+from ..audit.changes import diff_changes
+from ..audit.context import audit_context
+from ..audit.identity import record_identity_event
+from ..audit.prefs_write import audited_prefs_write
+from ..audit.write import AuditUnavailableError, audited_write
+from ..auth.session_limits import (
+    REMEMBER_MAX_SECONDS,
+    effective_roles,
+    limits_for_username,
+    remember_idle_window_seconds,
+    remember_window_seconds,
+)
+from ..build_identity import build_identity_advisories, build_stamp
 from ..config import (
+    AUTO_CLOSE_REVIEW_BOUNDS,
+    CAPS_MINIMUMS,
     Preferences,
     SourceInstance,
     SuppressionRule,
+    map_retired_runbook_writes,
 )
 from ..connectors.registry import get_registry
 from ..constants import (
+    BULK_RUN_ID_PREFIX,
+    CASE_ACTIONS_TAKEN_LABELS,
+    CASE_ACTIONS_TAKEN_MAX,
+    CASE_ASSIGNED_AUDIT_ACTION,
+    CASE_COMMENTED_AUDIT_ACTION,
+    CASE_GRADED_AUDIT_ACTION,
+    CASE_LIFECYCLE_AUDIT_ACTIONS,
+    CASE_TAGGED_AUDIT_ACTION,
     ActionType,
+    CaseActionTaken,
     CaseStatus,
     DecisionBy,
     Disposition,
@@ -29,62 +59,102 @@ from ..constants import (
     FeedbackOutcome,
     IngestMode,
     OCSF_VERSION,
-    SourceSurface,
     SourceType,
     UserRole,
 )
+# Route-private helpers moved to engine modules by the chat revamp (SPEC §5.3) so the
+# chat tools can share them without importing the HTTP layer. Each keeps its
+# historical underscore name here (tests, ``routes_rules`` and route code use them;
+# ``noqa: F401`` marks the re-export-only ones); the ``AppState``-reading ones are
+# thin wrappers further down this module.
+from ..engine.analyst_outcomes import CLASSIFIED_DISPOSITION_KEY, standing_analyst_disposition
+from ..engine.case_cluster import WIDEN_LADDER as _WIDEN_LADDER  # noqa: F401
+from ..engine.case_cluster import cluster_for_case, entity_events_widening
+from ..engine.case_cluster import entity_field as _entity_field  # noqa: F401
+from ..engine.case_cluster import manual_trigger_reason as _manual_trigger_reason
+from ..engine.case_cluster import window_words as _window_phrase
+from ..engine.case_cluster import (  # noqa: F401
+    reconstruct_cluster_from_case as _reconstruct_cluster_from_case,
+)
+from ..engine.case_cluster import scoped_entity_body as _scoped_entity_body  # noqa: F401
+from ..engine.case_cluster import widen_windows as _widen_windows  # noqa: F401
+from ..engine.case_rationale import audit_get as _audit_get  # noqa: F401
+from ..engine.case_rationale import build_rationale as _build_rationale
+from ..engine.case_tags import CASE_TAG_MAX_CHARS, CASE_TAG_MAX_COUNT  # noqa: F401
+from ..engine.case_tags import CaseTagError, merge_case_tags
 from ..engine.correlation import cluster_from_events
-from ..engine.metrics import compute_metrics, feedback_stats
+from ..engine.log_rows import LogFilter, browse_query, clamp_browse_limit, clamp_per_source_timeout
+from ..engine.log_rows import browse_truncated as _browse_truncated
+from ..engine.log_rows import demo_browse_targets, fan_out, tenant_browse_targets
+from ..engine.log_rows import valid_rule_value as _valid_rule_value
+from ..engine.log_rows import log_message as _log_message  # noqa: F401
+from ..engine.log_rows import log_row as _log_row
+from ..engine.log_rows import source_can_browse as _source_can_browse
+from ..engine.metrics import feedback_stats
 from ..engine.priority import advisory_bands
-from ..es.querybuilder import entity_query, ids_query, scope_filters, scope_must_not
+from ..engine.source_health import coverage_rollup, cursor_millis, sources_health_rows
+from ..engine.source_health import (  # noqa: F401
+    wallclock_last_event_millis as _wallclock_last_event_millis,
+)
+from ..engine.views import proposal_public as _proposal_public
+from ..es.querybuilder import ids_query
 from ..llm.pricing import (
     model_capabilities,
     model_catalog,
-    model_supports_capability,
+    model_may_embed,
     models_by_provider,
 )
 from ..models import (
+    AUDIT_MAX_CHANGES,
+    AuditChange,
+    AuditTarget,
     Case,
     CaseComment,
-    ChatConversationRenameRequest,
+    ChatConversation,
+    ChatConversationSearchHit,
+    ChatConversationUpdateRequest,
     ChatRequest,
     ChatResponse,
-    ChatTurn,
     Cluster,
-    Entity,
     FeedbackEntry,
     InvestigateRequest,
     Proposal,
     RawEvent,
     StatusHistoryEntry,
     TraceStep,
-    TriggerReason,
     validate_avatar,
 )
-from ..playbooks.registry import (
-    MAX_PLAYBOOK_BYTES,
-    PlaybookConflictError,
-    PlaybookManagementError,
-    PlaybookNotFoundError,
-    PlaybookProtectedError,
-)
 from ..state import AppState
+from ..stores.base import CASE_STATUS_GROUPS
 from ..stores.chat_conversations import (
-    ChatConversationMissing,
     ChatHistoryUnavailable,
-    ChatIdempotencyConflict,
-    ChatRequestCapacityBusy,
-    ChatRequestInProgress,
+    ChatPinLimitReached,
 )
+from ..stores.proposals import (
+    BULK_DECISION_LIMIT,
+    MAX_DECISION_REASON_CHARS,
+    evidence_summary,
+    sanitize_decision_reason,
+)
+from ..stored_text import audit_actor_key, shown, username_char_problem, username_problem
 from ..tools.enrich import EnrichTool
-from ..utils import iso_now, new_id, now_utc, relative_to_millis, to_millis
+from ..utils import (
+    iso_now,
+    new_id,
+    now_utc,
+    parse_millis_strict,
+    relative_to_millis,
+    to_millis,
+)
+from ..whats_new import stamp_new_account
 from .deps import (
-    _audit_session,
     _bearer,
+    _sid_tag,
     current_user,
     current_username,
+    evaluate_session,
     get_state,
-    has_permission,
+    live_session_limits,
     require_admin,
     require_fresh_auth,
     require_permission,
@@ -123,6 +193,22 @@ class HealthResponse(BaseModel):
     )
     store_type: str
     setup_complete: bool
+    degraded: bool = Field(
+        default=False,
+        description=(
+            "Whether a subsystem the product depends on is impaired while the state "
+            "store itself is reachable. Additive: `status` keeps its historical "
+            "meaning (state-store readiness) so existing clients are unaffected."
+        ),
+    )
+    degraded_reasons: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Opaque, closed-vocabulary codes naming each active degradation. This "
+            "endpoint is PUBLIC, so it carries no counts, source names or posture "
+            "detail — the authenticated /api/diagnostics/health surface owns those."
+        ),
+    )
 
 
 class LivenessResponse(BaseModel):
@@ -149,6 +235,10 @@ class BuildInfoResponse(BaseModel):
     ocsf_version: str
     provenance_complete: bool
     provenance_missing: list[str]
+    #: Additive advisories about a build identity that IS stamped but is not an
+    #: exact source revision (see ``build_identity``). Never narrows the two
+    #: completeness fields above, which keep their original broad semantics.
+    provenance_advisories: list[str] = []
 
 
 async def _state_store_probe(state: AppState) -> tuple[bool, str]:
@@ -205,10 +295,60 @@ def _release_channel(configured: str | None = None) -> str:
     return "testing"
 
 
-def _build_stamp(environment_key: str) -> str:
-    """Return a normalized, public build stamp without inventing provenance."""
-    value = os.getenv(environment_key, "unknown").strip()
-    return value if value and value.lower() != "unknown" else "unknown"
+# --------------------------------------------------------------------------- #
+# Public degradation codes. CLOSED vocabulary, deliberately opaque.
+# --------------------------------------------------------------------------- #
+# ``/api/health`` is anonymous (the Console reads it before login), so it may never
+# publish corpus counts, source names or detection posture — that detail lives on the
+# ``settings:read``-gated ``/api/diagnostics/health``. But the incident this exists for
+# ran for three days with this endpoint returning ``ok`` and the Console showing
+# "Healthy" while the corpus sat at zero, so a coarse, count-free signal must be here:
+# it is the only surface polled continuously and visible without a page visit.
+DEGRADED_RAG_CORPUS_EMPTY = "rag_corpus_empty"
+DEGRADED_RAG_PROJECTION_REFUSED = "rag_projection_refused"
+DEGRADED_LLM_PROVIDER_UNAUTHENTICATED = "llm_provider_unauthenticated"
+DEGRADED_LLM_PROVIDER_QUOTA = "llm_provider_quota_exhausted"
+DEGRADED_LLM_PROVIDER_UNAVAILABLE = "llm_provider_unavailable"
+
+
+def _degraded_reasons(state: AppState) -> list[str]:
+    """Active degradations, from CACHED in-process state only.
+
+    Hard constraint: this runs on an anonymous, un-rate-limited endpoint that the
+    Console polls every 15 seconds, so it must never touch the vector store, the case
+    store or the network. In particular it must never reach ``rag_stats()`` /
+    ``list_documents()``, which call ``ensure_seeded()`` first — that would let an
+    unauthenticated caller trigger an embedding spend (#6). Every value read here is
+    already resident in memory. Fail-open: a health read never raises.
+    """
+    reasons: list[str] = []
+    try:
+        rag = getattr(state, "rag", None)
+        rag_cfg = getattr(getattr(state, "prefs", None), "rag", None)
+        if rag is not None and bool(getattr(rag_cfg, "enabled", False)):
+            # ``corpus_empty`` is published by the retrieval path, which already knows
+            # the count it just read — no extra read is performed here.
+            if bool(getattr(rag, "corpus_degraded", False)):
+                reasons.append(DEGRADED_RAG_CORPUS_EMPTY)
+            refusal = getattr(rag, "last_refusal", None)
+            if isinstance(refusal, dict) and refusal.get("collapsed"):
+                reasons.append(DEGRADED_RAG_PROJECTION_REFUSED)
+    except Exception:  # noqa: BLE001 — health must never fail on observability
+        logger.debug("RAG degradation probe failed", exc_info=True)
+    try:
+        tracker = getattr(state, "_provider_health", None)
+        provider_state = tracker.snapshot()["state"] if tracker is not None else "ok"
+        reasons.extend(
+            {
+                "unauthenticated": [DEGRADED_LLM_PROVIDER_UNAUTHENTICATED],
+                "quota_exhausted": [DEGRADED_LLM_PROVIDER_QUOTA],
+                "unavailable": [DEGRADED_LLM_PROVIDER_UNAVAILABLE],
+                "unsupported": [DEGRADED_LLM_PROVIDER_UNAVAILABLE],
+            }.get(str(provider_state), [])
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("provider degradation probe failed", exc_info=True)
+    return sorted(set(reasons))
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -217,8 +357,14 @@ async def health(state: AppState = Depends(get_state)) -> HealthResponse:
     state_backend = str(
         getattr(state.secrets, "state_backend", "elasticsearch") or "elasticsearch"
     )
+    reasons = _degraded_reasons(state)
     return HealthResponse(
+        # ``status`` keeps its historical meaning — state-store readiness — because
+        # release/update tooling gates on `status == 'ok'`. A subsystem degradation is
+        # reported additively so it can be surfaced without blocking those flows.
         status="ok" if ready else "degraded",
+        degraded=bool(reasons),
+        degraded_reasons=reasons,
         version=__version__,
         # Backward-compatible wire name: this now truthfully represents the OWN-state
         # backend (ES, PostgreSQL, or SQLite), which is what existing clients use it for.
@@ -263,8 +409,8 @@ async def health_ready(state: AppState = Depends(get_state)) -> ReadinessRespons
 @router.get("/health/build-info", response_model=BuildInfoResponse)
 async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoResponse:
     """Non-secret release identity for support, diagnostics, and upgrade checks."""
-    commit_sha = _build_stamp("TLSOC_BUILD_SHA")
-    build_time = _build_stamp("TLSOC_BUILD_DATE")
+    commit_sha = build_stamp("TLSOC_BUILD_SHA")
+    build_time = build_stamp("TLSOC_BUILD_DATE")
     provenance_missing = [
         label
         for label, value in (("commit_sha", commit_sha), ("build_time", build_time))
@@ -280,6 +426,10 @@ async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoRe
         ocsf_version=OCSF_VERSION,
         provenance_complete=not provenance_missing,
         provenance_missing=provenance_missing,
+        # A stamped identity that is not an exact source revision is honest
+        # provenance for a tarball/Nix/CI builder, so it stays `complete`; the
+        # advisory is what explains why supervised updates refuse the same build.
+        provenance_advisories=build_identity_advisories(commit_sha, build_time),
     )
 
 
@@ -292,8 +442,37 @@ async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoRe
 # encoded verbatim by the bus (the PRODUCER fences/escapes #9 at its own boundary).
 # --------------------------------------------------------------------------- #
 # Topics the UI may subscribe to. A single case-detail view may also request
-# 'cases:{case_id}' (exact-match topic) — allowed via the prefix below.
-_REALTIME_TOPICS = frozenset({"notifications", "cases", "agent"})
+# 'cases:{case_id}' (exact-match topic) — allowed via the prefix below. ``chat``
+# (Round 12) carries only owner-targeted ``chat.turn`` frames (``realtime.publish_chat_turn``).
+_REALTIME_TOPICS = frozenset({
+    "notifications", "inbox", "jobs", "cases", "agent", "chat", "runbooks", "investigations",
+})
+
+# The grants a principal must hold for a topic to be served (Round 12 WP-CM: case
+# topics carry case ids and lifecycle status; Round 14 SPEC §4.10.15: the ``runbooks``
+# topic carries ``case.runbook`` progress frames, served only with BOTH grants; Round 16
+# SPEC §4.5 WP08: the low-volume ``investigations`` topic carries ``case.investigation``
+# frames, ids and enums of AI runs, for the navigation count). A topic not listed here
+# needs no grant beyond the stream itself.
+_REALTIME_TOPIC_GRANTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "cases": (("cases", "read"),),
+    "runbooks": (("runbooks", "read"), ("cases", "read")),
+    "investigations": (("cases", "read"),),
+}
+
+
+def _topic_grants(topic: str) -> tuple[tuple[str, str], ...]:
+    """The grants ``topic`` needs (an exact case room ``cases:{id}`` needs ``cases:read``)."""
+    if topic.startswith("cases:"):
+        return _REALTIME_TOPIC_GRANTS["cases"]
+    return _REALTIME_TOPIC_GRANTS.get(topic, ())
+
+
+def gate_realtime_topics(topics: list[str], allows: Any) -> list[str]:
+    """``topics`` without those the caller may not receive (``allows(resource, action)``
+    is the caller's RBAC view). Pure; dropping an optional topic is not an access attempt,
+    so nothing is audited."""
+    return [t for t in topics if all(allows(resource, action) for resource, action in _topic_grants(t))]
 
 
 @router.get("/events")
@@ -332,6 +511,20 @@ async def realtime_events(
     ]
     if not allowed:
         allowed = list(_REALTIME_TOPICS)
+    # Round 12 (WP-CM): case topics carry case ids and lifecycle status (the live
+    # ``case.changed`` queue nudges and per-case rooms), so they are served only to a
+    # principal that may read cases; Round 14: the ``runbooks`` topic (``case.runbook``
+    # progress frames) only to one holding ``runbooks:read`` AND ``cases:read``. A no-op
+    # when auth or RBAC is off (``allows`` is then always true). Resolved WITHOUT the
+    # denial audit row ``_enforce`` writes: dropping an optional topic from a stream is
+    # not an access attempt.
+    if any(_topic_grants(t) for t in allowed):
+        from .deps import resolve_access
+
+        view = await resolve_access(request)
+        allowed = gate_realtime_topics(allowed, view.allows)
+        if not allowed:
+            return Response(status_code=204)
 
     user = current_user(request)
     username = getattr(user, "username", None) if user is not None else None
@@ -370,7 +563,10 @@ class SecretsUpdate(BaseModel):
 
 
 @router.get("/setup/status")
-async def setup_status(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def setup_status(
+    state: AppState = Depends(get_state),
+    request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
+) -> dict[str, Any]:
     """PUBLIC first-run status. Carries both the legacy wizard fields AND the Wave-1
     OOBE fields (auth/RBAC/user-count) the login/setup screen needs before a session
     exists. ``needs_user`` is true only when auth is enabled and NO users exist yet
@@ -389,6 +585,14 @@ async def setup_status(state: AppState = Depends(get_state)) -> dict[str, Any]:
     )
     es_connected = await state.es.ping()
     return {
+        # Round 12 (Remember me): the sign-in page learns the policy here, so no new
+        # public path is needed. Nothing secret: an on/off flag, a duration, and
+        # whether THIS request's transport would refuse a remembered session.
+        "remember_me": _remember_me_status(state, request),
+        # Round 15 (SPEC D2.2): whether the AI agent can call the default investigation
+        # models at all. One boolean only: this route is public, so it never names the
+        # provider (the authenticated POST /setup/secrets answer does).
+        "ai_runtime_ready": await _ai_runtime_ready(state),
         "setup_complete": p.setup_complete,
         "needs_user": bool(auth_enabled and user_count == 0),
         "auth_enabled": auth_enabled,
@@ -417,6 +621,17 @@ async def setup_status(state: AppState = Depends(get_state)) -> dict[str, Any]:
     }
 
 
+async def _ai_runtime_ready(state: AppState) -> bool:
+    """Round 15 (SPEC D2.1): ``llm.readiness``, never failing the public status read."""
+    from ..llm.readiness import ai_runtime_status_for
+
+    try:
+        return bool((await ai_runtime_status_for(state))["ready"])
+    except Exception as exc:  # noqa: BLE001 (the public status never fails on it)
+        logger.warning("AI runtime readiness could not be computed: %s", exc)
+        return False
+
+
 # NOTE: the legacy PUBLIC ``POST /api/setup/init-admin`` was REMOVED (H4 / FINDING
 # #11). It bypassed the OOBE strong-password policy (it only required >= 8 chars), so a
 # weak first-admin credential could be set. The webui now bootstraps the first admin
@@ -426,9 +641,76 @@ async def setup_status(state: AppState = Depends(get_state)) -> dict[str, Any]:
 # also dropped from ``deps.PUBLIC_API_PATHS``.)
 
 
+#: Runtime keys that reach the Elasticsearch the suite keeps its OWN state (and so its
+#: audit log) in when ``STATE_BACKEND=elasticsearch``: the management connection
+#: (``es/client.py`` builds ``_mgmt`` from ``es_mgmt_api_key`` with ``es_url`` and
+#: ``es_ca_cert``). ``es_api_key`` is NOT one of them: it is the read-only log key
+#: (``_ro``, non-negotiable #1), never reaches the audit store, and so can never
+#: repair it; during an outage it is refused like any other key.
+_STATE_STORE_KEY_FIELDS = frozenset({"es_mgmt_api_key", "es_url", "es_ca_cert"})
+
+
+def _secret_names_summary(prefix: str, updates: dict[str, Any]) -> str:
+    """``"<prefix>: anthropic_api_key set, es_url cleared"``: names only, never a value."""
+    parts = [
+        f"{name} {'cleared' if updates[name] in (None, '') else 'set'}"
+        for name in sorted(updates)
+    ]
+    return (f"{prefix}: " + ", ".join(parts))[:1000] if parts else prefix
+
+
+def _secret_name_changes(prefix: str, names: Any) -> list[dict[str, Any]]:
+    """One ``{field, secret: True}`` change per secret NAME (never a value, #10)."""
+    return [
+        {"field": f"{prefix}.{name}", "before": None, "after": None, "secret": True}
+        for name in sorted(str(n) for n in names)
+    ][:AUDIT_MAX_CHANGES]
+
+
+async def _repair_audit_store_keys(
+    state: AppState,
+    request: Request,
+    store_updates: dict[str, Any],
+    row_for: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    """Apply the audit store's own keys while the audit log cannot be written.
+
+    On ``STATE_BACKEND=elasticsearch`` the audit log lives in the Elasticsearch these
+    keys reach, so a broken key there must stay fixable: refusing it for want of an
+    audit row would make the outage permanent. This is the one change applied before
+    its audit row, so it is limited to those keys (``_STATE_STORE_KEY_FIELDS``; the
+    caller audits the rest of the request normally), logged at error level every
+    time it is used whatever happens to the row, and recorded afterwards through the
+    new connection with ``applied_before_audit``. A row that still cannot be appended
+    is counted like a dropped identity row. A repointed ``es_url`` means the old
+    store never receives the row; the error log is the record there."""
+    names = ", ".join(sorted(store_updates))
+    await state.apply_secrets(store_updates)
+    logger.error(
+        "The audit log could not be written, so the audit store key(s) %s were applied "
+        "before their audit row (applied_before_audit=true); any other key in the "
+        "request is still audited first", names,
+    )
+    row = row_for(store_updates)
+    try:
+        await state.control_audit.record_strict(
+            **{k: v for k, v in row.items() if k not in ("sink", "expected_revision", "context")},
+            outcome="success", actor_type="human",
+            tool_input={"applied_before_audit": True, "reason": "audit store keys repaired"},
+            **audit_context(request).record_fields(),
+        )
+    except Exception as exc:  # noqa: BLE001 (the keys are applied; the drop is counted)
+        from ..audit.identity import DROPS
+
+        total = DROPS.note("settings.updated")
+        logger.error("Audit row for the audit store key repair (%s) could not be appended "
+                     "(%d dropped since start): %s", names, total, exc)
+
+
 @router.post("/setup/secrets")
 async def setup_secrets(
     body: SecretsUpdate,
+    request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("settings", "manage")),
 ) -> dict[str, Any]:
@@ -441,17 +723,77 @@ async def setup_secrets(
     updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No secret values provided")
-    await state.apply_secrets(updates)
-    return {"ok": True, "configured": state.secrets.configured_status()}
+    # Round 14 (SPEC §3.6): audited before it applies, recording the key NAMES only.
+    def _row(names: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "sink": "control", "action": "settings.updated",
+            "target": {"type": "setting", "id": "runtime_keys", "label": "Runtime keys"},
+            "expected_revision": None,
+            "changes": _secret_name_changes("secrets", names),
+            "action_type": ActionType.STATUS, "actor": current_username(request) or "",
+            "surface": "setup", "context": audit_context(request),
+            "result_summary": _secret_names_summary("runtime keys", names),
+        }
+
+    try:
+        await audited_write(state, write=lambda: state.apply_secrets(updates), **_row(updates))
+    except AuditUnavailableError:
+        store_keys = sorted(_STATE_STORE_KEY_FIELDS.intersection(updates))
+        backend = str(getattr(state.secrets, "state_backend", "elasticsearch") or "elasticsearch")
+        if backend != "elasticsearch" or not store_keys:
+            raise
+        await _repair_audit_store_keys(
+            state, request, {name: updates[name] for name in store_keys}, _row,
+        )
+        # Every other key in the request is an ordinary audited change against the
+        # repaired store: refused with 503 (and not applied) when it is still down.
+        # The refusal names what WAS applied, never "nothing was changed".
+        others = {name: value for name, value in updates.items() if name not in store_keys}
+        if others:
+            try:
+                await audited_write(
+                    state, write=lambda: state.apply_secrets(others), **_row(others),
+                )
+            except AuditUnavailableError as exc:
+                raise AuditUnavailableError(
+                    "The audit log could not be written. The audit store "
+                    f"{'keys' if len(store_keys) > 1 else 'key'} {', '.join(store_keys)} "
+                    f"{'were' if len(store_keys) > 1 else 'was'} applied to repair it; "
+                    f"the other {'keys were' if len(others) > 1 else 'key was'} not changed: "
+                    f"{', '.join(sorted(others))}."
+                ) from exc
+    # Round 15 (SPEC D2.2): the wizard patches the readiness of the default
+    # investigation models from this answer, since the status read that follows can be
+    # briefly stale. Authenticated, so it also names the provider family (a fixed token).
+    from ..llm.readiness import ai_runtime_status_for
+
+    try:
+        runtime = await ai_runtime_status_for(state)
+    except Exception as exc:  # noqa: BLE001 (the keys are saved; readiness is advisory)
+        logger.warning("AI runtime readiness could not be computed: %s", exc)
+        runtime = {"ready": False, "provider": "mock"}
+    return {
+        "ok": True,
+        "configured": state.secrets.configured_status(),
+        "ai_runtime_ready": bool(runtime["ready"]),
+        "ai_runtime_provider": runtime["provider"],
+    }
 
 
 @router.post("/setup/complete")
 async def setup_complete(
+    request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("settings", "manage")),
 ) -> dict[str, Any]:
-    prefs = await state.mutate_prefs(
-        lambda current: current.model_copy(update={"setup_complete": True})
+    # Round 14 (SPEC §3.6): a settings write, audited before it becomes visible.
+    _before, prefs = await audited_prefs_write(
+        state,
+        transform=lambda current: current.model_copy(update={"setup_complete": True}),
+        actor=current_username(request) or "",
+        context=audit_context(request),
+        summary="first-run setup completed",
+        surface="setup",
     )
     if prefs.polling_enabled:
         state.poller.start()
@@ -474,6 +816,34 @@ class SourceUpsert(BaseModel):
     ingest_mode: str | None = None       # defaults to the connector's first mode
     is_primary: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
+    # The operator-DECLARED ceiling of this source's native severity ladder (see
+    # ``config.SourceInstance.severity_scale_max``). Three-state on the wire, which is why
+    # it is declared here as well as on the stored model:
+    #   * OMITTED       → keep whatever the stored source already declares (carry-forward).
+    #   * a number > 0  → declare that ceiling.
+    #   * explicit null → CLEAR the declaration (undeclared → the 100 identity projection,
+    #                     or the connector's seeded default where one exists).
+    # ``upsert_source`` distinguishes the first two cases via ``model_fields_set``.
+    #
+    # Strict at the boundary: ``0``/negative 422, and so does a NON-FINITE literal. An
+    # overflowing JSON number such as ``1e309`` parses to ``inf``, which passes ``> 0``,
+    # divides without raising, would read every severity from that source as
+    # Informational, and would re-serialize as the non-standard token ``Infinity``.
+    severity_scale_max: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+    @field_validator("severity_scale_max", mode="before")
+    @classmethod
+    def _non_finite_ceiling_is_not_a_number(cls, value: Any) -> Any:
+        """Render a non-finite ceiling as TEXT so the boundary can 422 it.
+
+        ``allow_inf_nan=False`` already rejects it, but FastAPI's validation-error
+        response ECHOES the offending input, and a non-finite float cannot be written into
+        that JSON body at all — the rejection would itself fail to serialize. Handing the
+        parser the value's text instead keeps the 422 renderable and still names exactly
+        what was sent."""
+        if isinstance(value, float) and not math.isfinite(value):
+            return repr(value)
+        return value
 
 
 class ConnectorTestRequest(BaseModel):
@@ -594,16 +964,73 @@ async def list_sources(
     # preserved untouched and returns immediately on disable.
     if state.demo_active:
         return {"sources": state.demo_sources_overlay()}
-    rows = [s.model_dump(mode="json") for s in state.prefs.sources]
+    # `can_browse` is SERVER-AUTHORITATIVE and additive: it is the SAME
+    # `_source_can_browse` predicate the browse routes gate on, so the inventory, the
+    # health view, the demo overlays, and `GET /api/logs` cannot disagree about which
+    # sources are browsable. Never trust a client-side re-derivation.
+    reg = get_registry()
+    rows = [
+        {**s.model_dump(mode="json"), "can_browse": _source_can_browse(reg, s)}
+        for s in state.prefs.sources
+    ]
     return {"sources": rows}
+
+
+def _source_secret_paths(sources: Any) -> list[str]:
+    """``sources[<id>].config.<field>`` for every connector field the source's manifest
+    marks secret (a RabbitMQ ``url`` carries its password), so a settings or source
+    row withholds the value whole instead of only reducing it (SPEC §4.5.3). Accepts
+    stored sources or request dicts; anything unreadable contributes nothing."""
+    reg = get_registry()
+    paths: list[str] = []
+    for src in sources or []:
+        if isinstance(src, dict):
+            sid, kind = src.get("id"), src.get("source_type")
+        else:
+            sid, kind = getattr(src, "id", None), getattr(src, "source_type", None)
+        if not isinstance(sid, str) or not sid:
+            continue
+        try:
+            manifest = reg.manifest(SourceType(str(getattr(kind, "value", kind))))
+        except ValueError:
+            continue
+        if manifest is None:
+            continue
+        paths.extend(
+            f"sources[{sid}].config.{field.key}"
+            for field in (*manifest.auth_fields, *manifest.config_fields) if field.secret
+        )
+    return paths
+
+
+def _refuse_demo_source_write(state: AppState, source_id: str) -> None:
+    """Round 16 B43: while Demo Mode is on, the Demo overlay sources are read-only.
+
+    ``GET /api/sources`` lists only the overlay then, so a write to one of its ids would
+    put a Demo-only source into the live configuration, hidden until Demo Mode is turned
+    off. The overlay is the authority for which ids those are. Real-source adds stay
+    allowed, and the refusal applies only while Demo is active. Nothing is written, so
+    nothing is audited, as with ``runbook_demo_readonly``."""
+    if not state.demo_active:
+        return
+    if source_id in {str(row.get("id")) for row in state.demo_sources_overlay()}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "source_demo_readonly",
+                "message": "Demo Mode manages this source. Turn Demo Mode off to change it.",
+            },
+        )
 
 
 @router.post("/sources")
 async def upsert_source(
     body: SourceUpsert,
+    request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "manage")),
 ) -> dict[str, Any]:
+    _refuse_demo_source_write(state, body.id)
     reg = get_registry()
     try:
         st = SourceType(body.source_type)
@@ -635,6 +1062,14 @@ async def upsert_source(
         # "N secrets" subline, the delete-confirm warning, and the Creation Date column
         # would all lie. Carry them forward from the existing source.
         existing = next((s for s in p.sources if s.id == body.id), None)
+        # The row says "updated" or "added" from what was stored when the request
+        # arrived. A source deleted, or added by another request, while that row was
+        # appended is refused here (the failure row says why), never re-created under
+        # an "updated" row or replaced under an "added" one.
+        if existing is None and existed:
+            raise HTTPException(status_code=404, detail="Source not found")
+        if existing is not None and not existed:
+            raise HTTPException(status_code=409, detail=f"Source '{body.id}' already exists")
         instance = SourceInstance(
             id=body.id,
             source_type=st,
@@ -647,6 +1082,17 @@ async def upsert_source(
             is_primary=(body.is_primary and mode == IngestMode.PULL and not reg.is_receiver(st)),
             config=body.config,
             configured_secrets=(list(existing.configured_secrets) if existing else []),
+            # Same carry-forward hazard as `configured_secrets` above: the severity-ladder
+            # ceiling is set from the source editor, but EVERY enable/disable/make-primary
+            # posts a body without it, and a bare rebuild would silently wipe the operator's
+            # declaration (re-banding every one of that source's cases). `model_fields_set`
+            # is what tells an OMITTED key from an explicit `null`, so omission preserves
+            # the stored ceiling while an explicit null still CLEARS it on purpose.
+            severity_scale_max=(
+                body.severity_scale_max
+                if "severity_scale_max" in body.model_fields_set
+                else (existing.severity_scale_max if existing else None)
+            ),
             **({"created_at": existing.created_at} if existing else {}),
         )
         # Wave 6: keep ``config['data_view_pattern']`` synced to the comma-join of the
@@ -656,14 +1102,33 @@ async def upsert_source(
         live_dv = instance.live_data_view()
         if live_dv:
             instance.config["data_view_pattern"] = live_dv
-        # Upsert by id; a new primary unsets any previous primary.
+        # Upsert by id; a new primary unsets any previous primary. The others are
+        # copied, never changed in place: the transform is pure (the audited write
+        # records the stored document as it was before the edit).
         others = [s for s in p.sources if s.id != body.id]
         if instance.is_primary:
-            for s in others:
-                s.is_primary = False
+            others = [
+                s.model_copy(update={"is_primary": False}) if s.is_primary else s
+                for s in others
+            ]
         return p.model_copy(update={"sources": others + [instance]})
 
-    prefs = await state.mutate_prefs(_apply)
+    # Round 14 (SPEC §3.6, §4.5.3): a source change is audited before it is visible,
+    # with the changed fields (a source URL cut to scheme and host, credentials and any
+    # field the connector marks secret withheld).
+    existed = any(s.id == body.id for s in state.prefs.sources)
+    _before, prefs = await audited_prefs_write(
+        state,
+        transform=_apply,
+        actor=current_username(request) or "",
+        context=audit_context(request),
+        summary=f"{'updated' if existed else 'added'} source '{body.id}' ({st.value})",
+        action="source.updated" if existed else "source.created",
+        surface="sources",
+        target=AuditTarget(type="source", id=body.id,
+                           label=body.display_name or manifest.display_name or body.id),
+        secret_fields=_source_secret_paths([{"id": body.id, "source_type": st.value}]),
+    )
     state.rebuild_log_source()
     await state.reconcile_receivers()
     return {"ok": True, "sources": [s.model_dump(mode="json") for s in prefs.sources]}
@@ -672,9 +1137,11 @@ async def upsert_source(
 @router.delete("/sources/{source_id}")
 async def delete_source(
     source_id: str,
+    request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "manage")),
 ) -> dict[str, Any]:
+    _refuse_demo_source_write(state, source_id)
     # Atomic remove under the prefs write lock (mutate_prefs) so a concurrent full-doc
     # writer can't resurrect the deleted source by saving a stale snapshot. The 404 is
     # raised from inside the transform (before any save), so nothing is persisted when
@@ -685,7 +1152,20 @@ async def delete_source(
             raise HTTPException(status_code=404, detail="Source not found")
         return p.model_copy(update={"sources": remaining})
 
-    prefs = await state.mutate_prefs(_apply)
+    # Round 14 (SPEC §3.6): audited before the source disappears.
+    gone = next((s for s in state.prefs.sources if s.id == source_id), None)
+    _before, prefs = await audited_prefs_write(
+        state,
+        transform=_apply,
+        actor=current_username(request) or "",
+        context=audit_context(request),
+        summary=f"deleted source '{source_id}'",
+        action="source.deleted",
+        surface="sources",
+        target=AuditTarget(type="source", id=source_id,
+                           label=(getattr(gone, "display_name", "") or source_id)),
+        secret_fields=_source_secret_paths([gone] if gone is not None else []),
+    )
     remaining = prefs.sources
     state.rebuild_log_source()
     # Revoke now-orphaned in-memory credentials and stop a deleted background
@@ -709,31 +1189,58 @@ async def delete_source(
 async def set_source_secrets(
     source_id: str,
     body: dict[str, str | None],
+    request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "manage")),
 ) -> dict[str, Any]:
     """Set/clear a source's secret fields (e.g. a webhook token, a Splunk key).
 
     Values go to the secret tier (in memory), NEVER to the persisted config; only
-    the configured field NAMES are recorded on the SourceInstance (#10)."""
+    the configured field NAMES are recorded on the SourceInstance (#10). Round 14
+    (SPEC §3.6): audited before the credentials change, naming the fields only."""
+    _refuse_demo_source_write(state, source_id)
     src = next((s for s in state.prefs.sources if s.id == source_id), None)
     if src is None:
         raise HTTPException(status_code=404, detail="Source not found")
-    for field, value in body.items():
-        state.secrets.set_source_secret(source_id, field, value)
-    configured = sorted(state.secrets.source_secrets(source_id).keys())
+    configured: list[str] = []
+    # ``set_source_secret`` clears a field for None or "" and sets it otherwise.
+    cleared = {field for field, value in body.items() if value in (None, "")}
+    set_now = set(body) - cleared
 
     # Persist only the configured secret NAMES onto the source, atomically against the
     # freshest prefs (mutate_prefs) so a concurrent full-doc writer can't drop the update.
+    # The names are what the secret tier WILL hold once this request applies.
     def _apply(p: Preferences) -> Preferences:
         cur = next((s for s in p.sources if s.id == source_id), None)
-        if cur is None:  # removed concurrently — nothing to stamp the names onto
-            return p
-        updated = cur.model_copy(update={"configured_secrets": configured})
+        if cur is None:
+            # Deleted while the row was appended: refused before anything is saved or
+            # any credential is set, so the failure row ("Not applied") is true and no
+            # credential is left behind for a source that no longer exists.
+            raise HTTPException(status_code=404, detail="Source not found")
+        names = (set(state.secrets.source_secrets(source_id)) | set_now) - cleared
+        updated = cur.model_copy(update={"configured_secrets": sorted(names)})
         others = [s for s in p.sources if s.id != source_id]
         return p.model_copy(update={"sources": others + [updated]})
 
-    await state.mutate_prefs(_apply)
+    async def _write() -> None:
+        # The names are saved first and the credentials change in memory only after
+        # that save succeeds: a failed save leaves the credentials as they were, so its
+        # failure row ("Not applied") is true.
+        await state.mutate_prefs(_apply)
+        for field, value in body.items():
+            state.secrets.set_source_secret(source_id, field, value)
+        configured[:] = sorted(state.secrets.source_secrets(source_id).keys())
+
+    await audited_write(
+        state, sink="control", action="source.secrets_updated",
+        target={"type": "source", "id": source_id,
+                "label": getattr(src, "display_name", "") or source_id},
+        expected_revision=None,
+        changes=_secret_name_changes(f"sources[{source_id}].secrets", body),
+        write=_write, action_type=ActionType.STATUS, actor=current_username(request) or "",
+        surface="sources", context=audit_context(request),
+        result_summary=_secret_names_summary(f"credentials of source '{source_id}'", body),
+    )
     # Pull clients snapshot per-source connection credentials when they are built.
     # Rebuild the primary + fan-out immediately so a first key or key rotation takes
     # effect on the next query/poll rather than after another source edit or restart.
@@ -768,11 +1275,15 @@ async def analyze_source_sample(
 ) -> dict[str, Any]:
     """Suggest field mappings from a pasted SAMPLE record (F9; gated by sources:manage).
 
-    Returns ``{suggested_mappings, fields}`` — the suggested field-name overrides
-    (``source_ip_field``/``user_field``/``host_field``/``message_field``/
-    ``severity_field``/``rule_field``/...) and the flattened path inventory the UI
+    Returns ``{suggested_mappings, suggested_evidence_fields, fields}`` — the
+    suggested field-name overrides (``source_ip_field``/``user_field``/``host_field``/
+    ``message_field``/``severity_field``/``rule_field``/...), which of the default
+    case-evidence paths this record actually carries (the answer to "do my alerts
+    carry the fields that decide the case?"), and the flattened path inventory the UI
     renders. Pure heuristic (no LLM/network). The sample is SANITIZED (flattened to
-    paths only) and is NEVER persisted to the config doc / secret tier (#9)."""
+    paths only) and is NEVER persisted to the config doc / secret tier (#9);
+    ``suggested_evidence_fields`` is stricter still — every entry is one of the
+    backend's own constants matched against the sample, never a path echoed back."""
     from ..engine.sample_analysis import analyze_sample
 
     if not body.sample:
@@ -863,36 +1374,9 @@ async def ingest_push(
 # honoring the source's field mapping + TLS; PUSH sources return the in-memory
 # live-tail buffer of recently-ingested events. Secrets are never returned.
 # --------------------------------------------------------------------------- #
-def _log_message(src: dict[str, Any]) -> str:
-    from ..utils import dotted_get
-    for f in (
-        "message", "description", "full_log", "event.original", "log.message",
-        "event.action", "rule.description",
-    ):
-        v = dotted_get(src, f)
-        if v:
-            return str(v) if not isinstance(v, list) else str(v[0])
-    return ""
-
-
-def _log_row(ev) -> dict[str, Any]:
-    """Project a RawEvent → the browse-logs row contract. _raw is the full log
-    document (log data, never secrets)."""
-    import datetime as _dt
-    ts_iso = ""
-    if getattr(ev, "timestamp_millis", 0):
-        ts_iso = _dt.datetime.fromtimestamp(ev.timestamp_millis / 1000, tz=_dt.timezone.utc).isoformat()
-    return {
-        "id": ev.id,
-        "ts": ts_iso,
-        "source_ip": ev.ip,
-        "user": ev.user,
-        "host": ev.host,
-        "rule": ev.rule or ev.rule_name,
-        "severity": ev.severity,
-        "message": _log_message(ev.source or {}),
-        "_raw": ev.source or {},
-    }
+# ``_log_message`` / ``_log_row`` / ``_browse_truncated`` live in ``engine/log_rows.py``
+# (chat revamp SPEC §5.3) and are re-exported at the top of this module under their
+# historical names; tests and ``routes_rules`` import them from here.
 
 
 @router.get("/sources/{source_id}/logs")
@@ -910,7 +1394,21 @@ async def source_logs(
     Pull sources run a scoped read-only search honoring the source's field mapping +
     data_view_pattern (and its own TLS settings); push sources return the last N
     ingested events from the in-memory live-tail buffer. Hard-capped; secrets are
-    never returned (rows are log data only)."""
+    never returned (rows are log data only).
+
+    BOUNDED, NOT COMPLETE. ``limit`` is clamped to 1..200 and there is NO pagination,
+    cursor, or offset: the response is always the MOST RECENT ``count`` rows for the
+    requested window, never the full match set. The envelope echoes the effective
+    ``limit`` and a ``truncated`` flag so a caller can say "most recent N" instead of
+    implying completeness. ``mode`` distinguishes the two read paths:
+    ``"search"`` = a real backing search (``from``/``to``/``query`` apply, and
+    ``total`` reports the match count when the connector supplies one) and
+    ``"buffer"`` = a push source's process-local, volatile in-memory live-tail ring,
+    where ``from``/``to``/``query`` are IGNORED and nothing survives a restart.
+    ``mode`` describes the FILTERS, never the durability of the backing store: a Demo
+    Mode adapter reports ``"search"`` because it really does apply
+    ``from``/``to``/``query`` and really does report a match ``total``, even though the
+    ring it searches is itself in-memory."""
     limit = max(1, min(int(limit or 100), 200))  # hard cap
     # The four protocol-faithful demo adapters never enter prefs.sources. Their bounded
     # native-derived rings are exposed through the same browse row contract, with source
@@ -939,9 +1437,15 @@ async def source_logs(
                 row["source_name"] = source_name
             return {
                 "source_id": source_id,
-                "mode": "buffer",
+                # A demo adapter runs a REAL filtered search over its ring: the
+                # `contains`/`time_from`/`time_to` above are all honoured and `total`
+                # is a real match count, so the honest mode is "search". Calling it a
+                # "buffer" would tell the operator the range/query did not apply.
+                "mode": "search",
                 "count": len(rows),
                 "total": result.total,
+                "limit": limit,
+                "truncated": _browse_truncated(len(rows), limit, result.total),
                 "logs": rows,
                 "query": result.rendering.query if result.rendering else (query or "*"),
             }
@@ -959,7 +1463,9 @@ async def source_logs(
     # PUSH receivers → the live-tail buffer.
     if reg.is_receiver(src.source_type):
         rows = [_log_row(ev) for ev in state.ingest_service.recent_events_for_source(source_id, limit)]
-        return {"source_id": source_id, "mode": "buffer", "count": len(rows), "logs": rows}
+        return {"source_id": source_id, "mode": "buffer", "count": len(rows),
+                "limit": limit, "truncated": _browse_truncated(len(rows), limit, None),
+                "logs": rows}
 
     # PULL connectors → a bounded, read-only scoped search honoring per-source TLS.
     if reg.is_pull(src.source_type):
@@ -985,7 +1491,10 @@ async def source_logs(
                 raise HTTPException(status_code=502, detail=f"log read failed: {exc}") from exc
             rows = [_log_row(ev) for ev in result.events]
             return {"source_id": source_id, "mode": "search", "count": len(rows),
-                    "total": result.total, "logs": rows,
+                    "total": result.total,
+                    "limit": limit,
+                    "truncated": _browse_truncated(len(rows), limit, result.total),
+                    "logs": rows,
                     "query": result.rendering.query if result.rendering else None}
         finally:
             if owned:
@@ -1004,15 +1513,9 @@ async def source_logs(
 # slow/failing source can never block the others (per-source timeout + gather with
 # return_exceptions), so a partial result is served (#11 graceful degradation).
 # --------------------------------------------------------------------------- #
-def _source_can_browse(reg, src) -> bool:
-    """True when a source advertises the ``browse`` capability (registry augments every
-    push receiver with it; pull manifests declare it explicitly). Defensive — a missing
-    manifest / odd capabilities list is treated as NOT browsable rather than raising."""
-    try:
-        manifest = reg.manifest(src.source_type)
-    except Exception:  # noqa: BLE001 — one bad manifest never breaks the scan
-        return False
-    return bool(manifest) and "browse" in (manifest.capabilities or [])
+# ``_source_can_browse`` and the scatter-gather core (per-source readers, timeout-
+# guarded gather, merge) live in ``engine/log_rows.py`` (chat revamp SPEC §5.3) so
+# the chat ``search_logs`` tool shares them; the route keeps its HTTP-only checks.
 
 
 @router.get("/logs")
@@ -1021,7 +1524,12 @@ async def unified_logs(
     query: str | None = None,
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = None,
+    source_id: str | None = None,
     per_source_timeout: float = 8.0,
+    # Round 14 (SPEC §4.6.1): exact filters, each optional and additive.
+    rule: str | None = None,
+    severity: str | None = None,
+    severity_gte: str | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "read")),
 ) -> dict[str, Any]:
@@ -1036,243 +1544,134 @@ async def unified_logs(
 
     Resilient by design: each source runs under ``asyncio.wait_for`` and the whole set
     under ``gather(return_exceptions=True)``, so one slow or failing source degrades to
-    a per-source error entry and NEVER blocks the rest (partial success)."""
-    import asyncio
+    a per-source error entry and NEVER blocks the rest (partial success).
 
-    limit = max(1, min(int(limit or 100), 200))  # hard cap (per source AND on the merge)
-    timeout = max(0.5, min(float(per_source_timeout or 8.0), 30.0))
+    ``source_id`` (OPTIONAL) scopes the fan-out to exactly one source, mirroring the
+    private preview reader in ``routes_rules._read_recent_events``. Omitting it is the
+    byte-identical all-sources behaviour. A ``source_id`` that is not visible in the
+    CURRENT mode is a 404 — while Demo Mode is active a real tenant id is
+    indistinguishable from an unknown one, so demo isolation leaks nothing — and a
+    visible id that is not an eligible browse target for this route (disabled, no
+    registered connector, or no ``browse`` capability) is a 501, the same status and
+    detail the per-source sibling route uses.
+
+    Each per-source status entry carries ``mode``: ``"search"`` = a real backing search
+    (``from``/``to``/``query`` apply) and ``"buffer"`` = a push source's process-local,
+    volatile in-memory live-tail ring, where ``from``/``to``/``query`` are IGNORED and
+    nothing survives a restart. Without it a caller cannot tell a time-ranged query from
+    a ring read in the merged view. ``mode`` describes the FILTERS, not the durability
+    of the backing store: a Demo Mode adapter reports ``"search"`` because it really
+    does apply ``from``/``to``/``query``.
+
+    BOUNDED, NOT COMPLETE. ``limit`` is clamped to 1..200 and applied per source AND on
+    the merge; there is NO pagination, cursor, or offset. The envelope echoes the
+    effective ``limit`` and a ``truncated`` flag so a caller can say "most recent N"
+    rather than implying it has seen everything. Each per-source status carries its own
+    ``truncated``, computed by the SAME ``_browse_truncated`` rule the per-source
+    sibling route uses, and the envelope ``truncated`` is the OR of the merge being cut
+    with any single source being cut — so scoping to one source, or running a
+    single-source deployment, reports exactly what ``GET /sources/{id}/logs`` reports
+    for that same read.
+
+    Round 14 (SPEC §4.6.1) adds three EXACT filters, each bound as a structured filter
+    value and never as query text: ``rule`` (an equality match against any rule identity
+    of an event: its rule field, rule name field or classified suite rule; 1 to 256
+    characters on one line), ``severity`` (exactly one named level: ``info``, ``low``,
+    ``medium``, ``high`` or ``critical``) and ``severity_gte`` (that level or above).
+    A level is projected through EACH source's own severity ceiling before it is
+    compared, so a 0 to 15 and a 0 to 100 source agree on what "High" means. Pull
+    sources compile the filters into their own query (exact); a push source's
+    live-tail ring is filtered here over the whole ring and, while a filter is active,
+    also kept to an explicit ``from``/``to`` (``now``, ``now-3d``, an ISO-8601 instant),
+    as a pull search and the rule summary are, so its rows and its "at least" total
+    describe the window the page names (``query`` still does not apply to a ring, and
+    ``mode`` stays ``"buffer"``). While any of them is active the envelope echoes
+    ``filters: {rule, severity, severity_gte}`` (``null`` = that one not filtered), so a
+    client can tell the filter was applied (an older backend ignores the parameters and
+    echoes nothing), and each per-source status carries ``exact``: ``false`` when that
+    source could only be filtered after a bounded read, so its rows are "at least"
+    these. A request with none of them is answered exactly as before, key for key. An
+    invalid value is a 400."""
+    try:
+        log_filter = LogFilter.parse(rule=rule, severity=severity, severity_gte=severity_gte)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    limit = clamp_browse_limit(limit)  # hard cap (per source AND on the merge)
+    timeout = clamp_per_source_timeout(per_source_timeout)
     reg = get_registry()
+    source_id = (source_id or "").strip() or None
 
-    async def _read_pull(src) -> list[dict[str, Any]]:
-        es_client, owned = state.es_client_for_source(src)
-        try:
-            from ..connectors.base import StructuredQuery
-            from ..connectors.elastic import ElasticConnector
-            from ..connectors.opensearch import OpenSearchConnector
-            from ..connectors.wazuh import WazuhConnector
-            if src.source_type == SourceType.OPENSEARCH:
-                conn = OpenSearchConnector(es_client, config=src.config, connector_id=src.id)
-            elif src.source_type == SourceType.WAZUH:
-                conn = WazuhConnector(es_client, config=src.config, connector_id=src.id)
-            else:
-                conn = ElasticConnector(es_client, config=src.config, connector_id=src.id)
-            sq = StructuredQuery(
-                contains=(query or None), time_from=from_, time_to=to,
-                size=limit, sort_desc=True,
-            )
-            result = await conn.search(state.prefs, sq)
-            return [_log_row(ev) for ev in result.events]
-        finally:
-            if owned:
-                try:
-                    await es_client.close()
-                except Exception:  # noqa: BLE001
-                    pass
+    # Resolve the optional scope BEFORE any read coroutine is constructed (an unawaited
+    # coroutine would leak on the raise path). Statuses mirror the per-source sibling.
+    if source_id is not None:
+        if state.demo_active:
+            if source_id not in {
+                str(row.get("id")) for row in state.demo_sources_overlay()
+            }:
+                # Identical to an unknown id: a demo session never reveals whether a
+                # real tenant source exists behind it.
+                raise HTTPException(status_code=404, detail="Source not found")
+        else:
+            scoped = next((s for s in state.prefs.sources if s.id == source_id), None)
+            if scoped is None:
+                raise HTTPException(status_code=404, detail="Source not found")
+            if (
+                not scoped.enabled
+                or not _source_can_browse(reg, scoped)
+                or reg.get(scoped.source_type) is None
+            ):
+                raise HTTPException(
+                    status_code=501,
+                    detail="Browsing logs is not supported for this source",
+                )
 
-    async def _read_push(src) -> list[dict[str, Any]]:
-        return [_log_row(ev)
-                for ev in state.ingest_service.recent_events_for_source(src.id, limit)]
-
-    async def _read_demo(src) -> list[dict[str, Any]]:
-        conn = state.demo_source_connector(src.id)
-        if conn is None:
-            return []
-        from ..connectors.base import StructuredQuery
-
-        result = await conn.search(
-            state.prefs,
-            StructuredQuery(
-                contains=(query or None), time_from=from_, time_to=to,
-                size=limit, sort_desc=True,
-            ),
-        )
-        return [_log_row(ev) for ev in result.events]
-
-    # Select the enabled + browse-capable sources and pair each read coroutine with its
-    # source (for provenance + error attribution). Unsupported sources are skipped.
-    targets: list[tuple[Any, Any]] = []
+    # Select the enabled + browse-capable sources, each paired with its reader and
+    # read mode (engine/log_rows.py). Unsupported sources are skipped.
     if state.demo_active:
-        from types import SimpleNamespace
-
-        for row in state.demo_sources_overlay():
-            sid = str(row.get("id"))
-            if not sid:
-                continue
-            src = SimpleNamespace(id=sid, display_name=row.get("display_name") or sid)
-            targets.append((src, _read_demo(src)))
+        targets = demo_browse_targets(
+            state.demo_sources_overlay(),
+            prefs=state.prefs,
+            demo_source_connector=state.demo_source_connector,
+            source_id=source_id,
+        )
     else:
-        for src in state.prefs.sources:
-            if not src.enabled or not _source_can_browse(reg, src):
-                continue
-            cls = reg.get(src.source_type)
-            if cls is None:
-                continue
-            if reg.is_receiver(src.source_type):
-                targets.append((src, _read_push(src)))
-            elif reg.is_pull(src.source_type):
-                targets.append((src, _read_pull(src)))
-
-    async def _guarded(coro):
-        return await asyncio.wait_for(coro, timeout=timeout)
-
-    results = await asyncio.gather(
-        *[_guarded(coro) for _, coro in targets], return_exceptions=True
+        targets = tenant_browse_targets(
+            state.prefs.sources,
+            prefs=state.prefs,
+            registry=reg,
+            es_client_for_source=state.es_client_for_source,
+            ingest_service=state.ingest_service,
+            source_id=source_id,
+        )
+    envelope = await fan_out(
+        targets,
+        browse_query(limit=limit, query=query, time_from=from_, time_to=to),
+        per_source_timeout=timeout,
+        log_filter=log_filter,
     )
-
-    merged: list[dict[str, Any]] = []
-    source_status: list[dict[str, Any]] = []
-    for (src, _coro), outcome in zip(targets, results):
-        if isinstance(outcome, Exception):
-            source_status.append({
-                "source_id": src.id, "source_name": src.display_name or src.id,
-                "ok": False,
-                "error": ("timeout" if isinstance(outcome, asyncio.TimeoutError)
-                          else str(outcome)),
-                "count": 0,
-            })
-            continue
-        rows = outcome or []
-        for row in rows:
-            # MANDATORY provenance — overwrite (never trust a per-source row to self-label).
-            row["source_id"] = src.id
-            row["source_name"] = src.display_name or src.id
-        merged.extend(rows)
-        source_status.append({
-            "source_id": src.id, "source_name": src.display_name or src.id,
-            "ok": True, "count": len(rows),
-        })
-
-    # Merge newest-first by ts (ISO strings sort lexicographically for UTC; empty ts
-    # sorts last). Then hard-cap the merged view.
-    merged.sort(key=lambda r: (r.get("ts") or ""), reverse=True)
-    merged = merged[:limit]
-    return {
-        "logs": merged,
-        "count": len(merged),
-        "sources": source_status,
-        "partial": any(not s["ok"] for s in source_status),
-    }
+    if log_filter.active:
+        envelope["filters"] = log_filter.echo()
+    return envelope
 
 
 async def _cursor_millis(state: AppState, src) -> int:
-    """Newest processed timestamp across a source's feeds (0 = never polled).
-
-    Mirrors the poller's durable cursor key ``f'{source.id}:{feed.id}'`` (falling back
-    to the legacy single-source cursor). Read-only; a store hiccup fails soft to 0 rather
-    than breaking the whole health view."""
-    best = 0
-    try:
-        feeds = src.feeds()
-        keys: list[str] = []
-        if feeds:
-            keys = [f"{src.id}:{f.id}" for f in feeds]
-        else:
-            # Un-fed source: the primary uses the legacy 'primary' key; a non-primary
-            # un-fed source uses a distinct 'f{id}:primary' key (see PollerManager).
-            keys = ["primary" if src.is_primary else f"{src.id}:primary"]
-        for key in keys:
-            try:
-                cur = await state.cursor_store.load_keyed(key)
-            except Exception:  # noqa: BLE001
-                continue
-            best = max(best, int(getattr(cur, "timestamp_millis", 0) or 0))
-    except Exception:  # noqa: BLE001 — health is best-effort, never raises
-        return best
-    return best
-
-
-def _wallclock_last_event_millis(last_event_map: dict, source_id: str) -> int:
-    """Epoch-millis of the last WALL-CLOCK event arrival for a source (0 when never seen).
-
-    Reads ``state._source_last_event`` (the silence clock ``state.silent_sources`` uses,
-    updated on any tick with events) so ``last_event_millis`` / ``worst_last_event_seconds``
-    agree with the ``silent`` flag. Fails soft to 0 — advisory only (#3)."""
-    last_ev = (last_event_map or {}).get(source_id)
-    if last_ev is None:
-        return 0
-    try:
-        return int(to_millis(last_ev))
-    except Exception:  # noqa: BLE001
-        return 0
+    """Route-compat wrapper: :func:`app.engine.source_health.cursor_millis` over
+    ``state.cursor_store`` (moved there by chat revamp SPEC §5.3)."""
+    return await cursor_millis(getattr(state, "cursor_store", None), src)
 
 
 async def _sources_health_rows(state: AppState) -> list[dict[str, Any]]:
-    """Build the per-source health rows for the REAL configured sources (the demo overlay
-    is added by the ``/sources/health`` caller). Each row carries the legacy shape PLUS the
-    additive coverage-observability fields (A5.2): ``last_poll_at``/``last_poll_ok``/
-    ``last_poll_error`` (from the poller's in-memory last-tick snapshot), ``events_per_min``
-    (smoothed rate; pull from the poller, push from the ingest ring), ``last_event_millis``
-    (a wall-clock/event watermark for the coverage rollup), and ``silent`` (the v0 flat
-    silent-source flag from ``state.silent_sources``). All advisory (#3); connector error
-    strings are plain text (#9); NO secrets. Never raises — every lookup fails soft."""
-    reg = get_registry()
-    try:
-        snaps = state.poller.last_tick_by_source()
-    except Exception:  # noqa: BLE001 — the snapshot is advisory; degrade to none
-        snaps = {}
-    try:
-        silent_set = set(state.silent_sources(state.prefs))
-    except Exception:  # noqa: BLE001
-        silent_set = set()
-    last_event_map = getattr(state, "_source_last_event", {}) or {}
-    ingest_service = getattr(state, "ingest_service", None)
-
-    out: list[dict[str, Any]] = []
-    for src in state.prefs.sources:
-        is_receiver = reg.is_receiver(src.source_type)
-        is_pull = (not is_receiver) and reg.is_pull(src.source_type)
-        row: dict[str, Any] = {
-            "source_id": src.id,
-            "source_name": src.display_name or src.id,
-            "source_type": src.source_type.value,
-            "enabled": src.enabled,
-            "is_primary": src.is_primary,
-            "ingest_mode": src.ingest_mode.value,
-            "kind": "push" if is_receiver else ("pull" if is_pull else "unknown"),
-            "can_browse": _source_can_browse(reg, src),
-            "buffer_depth": 0,
-            "last_poll_millis": 0,
-            # --- Coverage observability (A5.2), additive + advisory ---
-            "last_poll_at": None,
-            "last_poll_ok": None,
-            "last_poll_error": None,
-            "last_event_millis": 0,
-            "events_per_min": 0.0,
-            "silent": bool(src.id in silent_set),
-        }
-        if is_receiver:
-            if ingest_service is not None:
-                row["buffer_depth"] = len(
-                    ingest_service.recent_events_for_source(src.id, 500)
-                )
-                try:
-                    row["events_per_min"] = float(
-                        ingest_service.events_per_min_for_source(src.id) or 0.0
-                    )
-                except Exception:  # noqa: BLE001
-                    row["events_per_min"] = 0.0
-            # PUSH last-event is a wall-clock (the arrival clock the silence check uses).
-            row["last_event_millis"] = _wallclock_last_event_millis(last_event_map, src.id)
-        elif is_pull and src.enabled:
-            lp = await _cursor_millis(state, src)
-            row["last_poll_millis"] = lp
-            # last_event = the more-recent of the cursor's event watermark and the
-            # wall-clock silence clock (state._source_last_event), so it agrees with the
-            # ``silent`` flag + drives ``worst_last_event_seconds`` even before the cursor
-            # advances (e.g. a source that reported once then went quiet).
-            row["last_event_millis"] = max(lp, _wallclock_last_event_millis(last_event_map, src.id))
-            snap = snaps.get(src.id)
-            if isinstance(snap, dict):
-                row["last_poll_at"] = snap.get("ts")
-                row["last_poll_ok"] = snap.get("ok")
-                # Plain text — a connector error is source-controlled data (#9).
-                row["last_poll_error"] = snap.get("error")
-                try:
-                    row["events_per_min"] = float(snap.get("events_per_min", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    row["events_per_min"] = 0.0
-        out.append(row)
-    return out
+    """Route-compat wrapper: :func:`app.engine.source_health.sources_health_rows` with
+    its inputs read from the ``AppState`` exactly where the original helper read them
+    (moved there by chat revamp SPEC §5.3). Real configured sources only."""
+    return await sources_health_rows(
+        state.prefs,
+        poller=getattr(state, "poller", None),
+        silent_sources=getattr(state, "silent_sources", None),
+        cursor_store=getattr(state, "cursor_store", None),
+        ingest_service=getattr(state, "ingest_service", None),
+        last_event_map=getattr(state, "_source_last_event", {}) or {},
+    )
 
 
 @router.get("/sources/health")
@@ -1309,10 +1708,12 @@ async def sources_coverage(
 
     Returns ``{sources_total, sources_enabled, sources_silent, events_per_min,
     alerts_triaged_24h, worst_last_event_seconds}`` computed over the configured sources,
-    or over the isolated native demo sources while Demo Mode is active. ``alerts_triaged_24h`` is
-    the count of cases opened in the last 24h computed with the SAME window filter the
-    ``/metrics/noise-reduction`` endpoint uses, so the two agree. Never raises — every
-    sub-lookup degrades to a safe zero (#3/#4/#6/#9 untouched)."""
+    or over the isolated native demo sources while Demo Mode is active. ``alerts_triaged_24h``
+    is the count of cases created in the last 24h, answered by a repository COUNT
+    push-down (``CaseRepository.count_created_since`` — one backend count, zero full
+    documents fetched) over the same 24h window the ``/metrics/noise-reduction``
+    funnel's ``cases`` stage uses. Never raises — every sub-lookup degrades to a safe
+    zero (#3/#4/#6/#9 untouched)."""
     # Demo reads are intentionally scoped to the throwaway demo stack, just like cases,
     # metrics, usage, and RAG. Including the four real simulator rows avoids the previous
     # misleading 0/0 coverage tile without leaking tenant-source health into a demo.
@@ -1321,36 +1722,30 @@ async def sources_coverage(
         if state.demo_active
         else await _sources_health_rows(state)
     )
-    now_ms = to_millis(now_utc())
-    enabled_rows = [r for r in rows if r.get("enabled")]
-    sources_silent = sum(1 for r in enabled_rows if r.get("silent"))
-    events_per_min = round(
-        sum(float(r.get("events_per_min") or 0.0) for r in enabled_rows), 2
-    )
-    worst = 0
-    for r in enabled_rows:
-        lev = int(r.get("last_event_millis") or 0)
-        if lev > 0:
-            worst = max(worst, (now_ms - lev) // 1000)
+    # The source-derived numbers live in ``engine/source_health.coverage_rollup`` (chat
+    # revamp SPEC §5.3) so the chat ``source_health`` tool reports the same rollup.
+    rollup = coverage_rollup(rows, to_millis(now_utc()))
 
-    # Cases opened in the last 24h — the SAME newest-N page + 24h window the noise-reduction
-    # funnel's ``cases`` stage uses, so ``alerts_triaged_24h`` is cross-consistent with it.
+    # Cases created in the last 24h — a pure repository COUNT (no 5000-document fetch
+    # just to ``len()`` a window). The 24h boundary is the same cutoff the noise-
+    # reduction funnel's ``cases`` stage windows on, so the two stay consistent.
     alerts_triaged = 0
     try:
-        cases, _total = await state.cases.list(limit=5000)
-        from ..engine.metrics import _window_filter
+        from datetime import timedelta
 
-        alerts_triaged = len(_window_filter(list(cases), window_hours=24))
+        since_iso = (now_utc() - timedelta(hours=24)).isoformat()
+        alerts_triaged = int(await state.cases.count_created_since(since_iso))
     except Exception:  # noqa: BLE001 — a store hiccup degrades to 0, never a 500
         alerts_triaged = 0
 
+    # Explicit key order: the response is byte-identical to the pre-move envelope.
     payload = {
-        "sources_total": len(rows),
-        "sources_enabled": len(enabled_rows),
-        "sources_silent": int(sources_silent),
-        "events_per_min": events_per_min,
+        "sources_total": rollup["sources_total"],
+        "sources_enabled": rollup["sources_enabled"],
+        "sources_silent": rollup["sources_silent"],
+        "events_per_min": rollup["events_per_min"],
         "alerts_triaged_24h": int(alerts_triaged),
-        "worst_last_event_seconds": int(max(0, worst)),
+        "worst_last_event_seconds": rollup["worst_last_event_seconds"],
     }
     if state.demo_active:
         payload["demo"] = True
@@ -1361,6 +1756,7 @@ async def sources_coverage(
 async def source_feeds(
     source_id: str,
     state: AppState = Depends(get_state),
+    _=Depends(require_permission("sources", "read")),
 ) -> dict[str, Any]:
     """The resolved EFFECTIVE feeds for a source (Wave 6) — for the per-source Feeds
     editor.
@@ -1402,7 +1798,10 @@ async def source_feeds(
 # Settings (Surface 5)
 # --------------------------------------------------------------------------- #
 @router.get("/settings")
-async def get_settings(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def get_settings(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("settings", "read")),
+) -> dict[str, Any]:
     return {
         "prefs": state.prefs.model_dump(mode="json"),
         "configured": state.secrets.configured_status(),
@@ -1499,10 +1898,360 @@ async def _record_settings_rule_versions(
         try:
             await state.control_audit.record(
                 action_type=ActionType.STATUS, surface="rules", actor=actor,
+                actor_type="human", outcome="success",
                 result_summary=("rule versions recorded: " + ", ".join(changes))[:500],
             )
         except Exception:  # noqa: BLE001 — audit is best-effort
             pass
+
+
+def _reject_out_of_range_caps(body: Any) -> None:
+    """422 on a ``caps`` value below its declared floor that arrived in a REQUEST BODY.
+
+    ``Preferences._clamp_caps`` is a ``mode="before"`` validator, so it REPAIRS the
+    merged document before ``CapsConfig``'s ``ge=`` constraints are ever evaluated. That
+    repair is mandatory for a STORED document — both preference loaders answer any
+    validation error by returning a full default ``Preferences()``, which would silently
+    revert ``auto_close``, the rule catalog and the source list — but it is the wrong
+    answer for a live edit: it made this endpoint return 200 while storing a value the
+    operator never typed, and ``timeout_seconds=1`` is exactly as unusable as the 0 they
+    meant to reject. The sibling ``resilience`` block was already rejected by its own
+    field constraints, so the surface was inconsistent as well as silent.
+
+    It inspects the BODY, never the merged document, so an already-poisoned stored
+    configuration stays loadable and repairable. The floors are read off
+    :data:`CAPS_MINIMUMS` (derived from ``CapsConfig`` itself) rather than restated, so
+    this can never drift from what it enforces. There is no upper bound to check — one
+    would encode a single vendor's latency/context envelope as product policy.
+    """
+    if not isinstance(body, dict):
+        return
+    caps = body.get("caps")
+    if not isinstance(caps, dict):
+        return
+    for key, floor in CAPS_MINIMUMS.items():
+        if key not in caps:
+            continue
+        raw = caps[key]
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            continue  # let normal field validation report a non-numeric value
+        if float(raw) >= floor:
+            continue
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid settings: caps.{key} must be at least {floor} "
+                f"(received {raw!r})"
+            ),
+        )
+
+
+def _reject_out_of_range_remember_me(body: Any) -> None:
+    """422 on an out-of-range or malformed ``session_policy.remember_me`` value that
+    arrived in a REQUEST BODY (Round 12; ``research/remember-me.md`` §4.1).
+
+    ``RememberMePolicy`` REPAIRS a stored document on load (clamping a duration into
+    1–24 h, dropping a malformed flag) so one bad number can never reset the whole
+    configuration. That repair is the wrong answer for a live edit: an administrator
+    who asks for a 30-minute remembered session must not silently get a 1-hour one.
+    Like :func:`_reject_out_of_range_caps` it inspects the BODY, never the merged
+    document, so an already-stored value stays loadable. The bounds are read off the
+    model, so this can never drift from what the loader enforces."""
+    if not isinstance(body, dict):
+        return
+    policy = body.get("session_policy")
+    if not isinstance(policy, dict):
+        return
+    rm = policy.get("remember_me")
+    if rm is None:
+        return
+    if not isinstance(rm, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid settings: session_policy.remember_me must be an object",
+        )
+    from ..config import RememberMePolicy
+
+    def _bad(field: str, expected: str, raw: Any) -> HTTPException:
+        return HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid settings: session_policy.remember_me.{field} must be "
+                f"{expected} (received {raw!r})"
+            ),
+        )
+
+    for flag in ("enabled", "allow_insecure_http"):
+        if flag in rm and not isinstance(rm[flag], bool):
+            raise _bad(flag, "true or false", rm[flag])
+    lo, hi = RememberMePolicy._DURATION_BOUNDS
+    if "duration_seconds" in rm:
+        raw = rm["duration_seconds"]
+        if isinstance(raw, bool) or not isinstance(raw, int) or not lo <= raw <= hi:
+            raise _bad("duration_seconds", f"a whole number of seconds from {lo} to {hi}", raw)
+    ilo, ihi = RememberMePolicy._IDLE_BOUNDS
+    if "idle_seconds" in rm and rm["idle_seconds"] is not None:
+        raw = rm["idle_seconds"]
+        if isinstance(raw, bool) or not isinstance(raw, int) or not (
+            raw == 0 or ilo <= raw <= ihi
+        ):
+            raise _bad(
+                "idle_seconds",
+                f"null, 0 (off) or a whole number of seconds from {ilo} to {ihi}",
+                raw,
+            )
+    if "excluded_roles" in rm:
+        roles = rm["excluded_roles"]
+        if not isinstance(roles, list) or not all(isinstance(r, str) for r in roles):
+            raise _bad("excluded_roles", "a list of role names", roles)
+        if len(roles) > RememberMePolicy._MAX_ROLES:
+            raise _bad(
+                "excluded_roles",
+                f"at most {RememberMePolicy._MAX_ROLES} role names",
+                f"{len(roles)} names",
+            )
+
+
+def _reject_out_of_range_auto_close_review(body: Any) -> None:
+    """422 on an out-of-range or malformed ``auto_close_review`` value that arrived in
+    a REQUEST BODY (Round 15 SPEC D6.2).
+
+    ``AutoCloseReviewConfig`` REPAIRS a stored document on load (clamping
+    ``sample_rate`` into 0 to 0.5 and each cap into its range, replacing a malformed
+    value with its default) so one bad number can never reset the whole configuration.
+    That repair is the wrong answer for a live edit: an operator who asks for a 60%
+    sample must not silently get 50%. Like :func:`_reject_out_of_range_caps` it inspects
+    the BODY, never the merged document, so an already-stored value stays loadable. The
+    bounds are :data:`~app.config.AUTO_CLOSE_REVIEW_BOUNDS`, the table the repair reads,
+    so the two can never drift."""
+    if not isinstance(body, dict):
+        return
+    block = body.get("auto_close_review")
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid settings: auto_close_review must be an object",
+        )
+    if "enabled" in block and not isinstance(block["enabled"], bool):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Invalid settings: auto_close_review.enabled must be true or false "
+                f"(received {block['enabled']!r})"
+            ),
+        )
+    for name, (lo, hi, integer) in AUTO_CLOSE_REVIEW_BOUNDS.items():
+        if name not in block:
+            continue
+        raw = block[name]
+        numeric = not isinstance(raw, bool) and isinstance(raw, (int, float))
+        finite = numeric and math.isfinite(float(raw))
+        whole = finite and (isinstance(raw, int) or float(raw).is_integer())
+        if finite and (whole or not integer) and lo <= float(raw) <= hi:
+            continue
+        if integer:
+            expected = f"a whole number from {int(lo)} to {int(hi)}"
+        else:
+            expected = f"a number from {lo:g} to {hi:g}"
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid settings: auto_close_review.{name} must be {expected} "
+                f"(received {raw!r})"
+            ),
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Round 15 (SPEC D1.3): role-based access through PUT /api/settings
+# --------------------------------------------------------------------------- #
+#: The ``rbac`` fields other than ``enabled`` a settings save may change, given the
+#: role-management grant and a fresh sign-in. ``rbac_grants_version`` is a stamp the
+#: validator keeps, not something a person edits.
+_RBAC_MATRIX_FIELDS = frozenset({"roles", "resources", "custom_roles", "denies", "default_role"})
+
+
+class _RbacEditAuthorityNeeded(Exception):
+    """Raised by the settings transform when the body changes the role matrix and the
+    caller's authority for that has not been checked yet (the check is asynchronous and
+    the transform is not)."""
+
+
+def _guard_rbac_settings_change(current: Preferences, validated: Preferences, *,
+                                authorized: bool) -> None:
+    """Compare the validated merged ``rbac`` block with the stored one.
+
+    A changed ``rbac.enabled`` answers ``409 rbac_switch_moved``: the switch lives on
+    Roles & permissions and ``PUT /api/rbac``, which is Super admin only and asks for a
+    strict fresh sign-in. Any other changed ``rbac`` field needs ``roles:manage`` and a
+    fresh sign-in (:func:`_require_rbac_edit_authority`), as editing a role on Roles &
+    permissions does. Compared after validation, so ``1`` or ``"true"`` for a stored
+    ``true`` is no change. The Console never sends ``rbac`` here (it is a curated
+    section), so no Console save is affected."""
+    before, after = current.rbac, validated.rbac
+    if bool(after.enabled) != bool(before.enabled):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "rbac_switch_moved",
+                "message": (
+                    "Turn role-based access on or off in Roles & permissions, "
+                    "or with PUT /api/rbac."
+                ),
+            },
+        )
+    if authorized:
+        return
+    fields = set(_RBAC_MATRIX_FIELDS)
+    if before.model_dump(mode="json", include=fields) != after.model_dump(mode="json", include=fields):
+        raise _RbacEditAuthorityNeeded()
+
+
+class _SsoEditAuthorityNeeded(Exception):
+    """Raised by the settings transform when the body changes the single sign-on block
+    and the caller's Super admin authority has not been checked yet (Round 16, B15)."""
+
+
+# The refusal a single sign-on change or provider secret gets from anyone who is not a
+# stored Super admin (Round 16, B15). The Console shows it as it is.
+SSO_SUPER_ADMIN_MESSAGE = "Only a Super admin can change single sign-on."
+
+
+def _guard_sso_settings_change(current: Preferences, validated: Preferences, *,
+                               authority: dict[str, Any]) -> None:
+    """Compare the validated merged ``sso`` block with the stored one (Round 16, B15).
+
+    Any change (a provider added, removed or edited in any field, or ``sso.enabled``
+    changed) needs a stored Super admin with a strict fresh sign-in: a capability test
+    on the role values is not enough, because repointing the issuer of a provider a
+    Super admin is linked to would sign the editor in as that Super admin. Once the
+    authority is held, every role value of a changed or added provider must be a
+    built-in role, otherwise 422. A custom role name is refused too (Round 16, WP16):
+    single sign-on gives a new account its built-in role, so mapping a group to a
+    custom role is not supported in 0.2.0."""
+    before = current.sso.model_dump(mode="json")
+    after = validated.sso.model_dump(mode="json")
+    if before == after:
+        return
+    if not authority.get("checked"):
+        raise _SsoEditAuthorityNeeded()
+    known = SSO_ROLE_VALUES
+    stored = {p.get("id"): p for p in before.get("providers") or []}
+    for prov in after.get("providers") or []:
+        if stored.get(prov.get("id")) == prov:
+            continue  # unchanged: a stored value never blocks another edit
+        pid = str(prov.get("id") or "")
+        values = [("default_role", prov.get("default_role"))]
+        values += [
+            (f"group_role_map.{group}", role)
+            for group, role in (prov.get("group_role_map") or {}).items()
+        ]
+        for field, value in values:
+            if str(value or "") not in known:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Invalid settings: sso provider {pid!r} {field} must be a built-in "
+                        f"role (received {value!r})"
+                    ),
+                )
+
+
+#: The role values a single sign-on provider may give (Round 16, WP16): the built-in
+#: roles only. A custom role is a grant set added to an account, not an account role.
+SSO_ROLE_VALUES: frozenset[str] = frozenset(r.value for r in UserRole)
+
+
+def _sla_timezone_ok(name: str) -> bool:
+    """``UTC``, ``Z``, a ``+HH:MM`` offset (hours below 24) or a zone name ``zoneinfo``
+    accepts: the grammar ``engine.time_windows.zone_for`` reads (Round 16, B51)."""
+    import re
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    if name.upper() in ("UTC", "Z"):
+        return True
+    match = re.fullmatch(r"([+-])(\d{2}):?(\d{2})", name)
+    if match:
+        return int(match.group(2)) <= 23 and int(match.group(3)) <= 59
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError, TypeError):
+        return False
+    return True
+
+
+def _reject_incoherent_settings(body: Any, current: Preferences) -> None:
+    """422 with a field message for a settings value that would be saved but cannot
+    work (Round 16, B51). Like :func:`_reject_out_of_range_caps` it reads only the keys
+    the request BODY sets, so a stored bad value still loads:
+
+    * ``sla.timezone`` must be ``UTC``, ``Z``, a ``+HH:MM`` offset or a zone name;
+    * a ``sla.targets`` tier, merged with its stored value, must not respond later
+      than it resolves (``response_minutes > resolve_minutes``);
+    * ``investigate_lookback`` must parse to an instant earlier than now."""
+    if not isinstance(body, dict):
+        return
+    sla = body.get("sla")
+    if isinstance(sla, dict):
+        tz = sla.get("timezone")
+        if isinstance(tz, str) and tz.strip() and not _sla_timezone_ok(tz.strip()):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid settings: sla.timezone {tz!r} is not UTC, a +HH:MM offset "
+                    "or a time zone name such as Europe/London"
+                ),
+            )
+        targets = sla.get("targets")
+        if isinstance(targets, dict):
+            from ..config import SlaTarget
+
+            for tier, raw in targets.items():
+                if not isinstance(raw, dict):
+                    continue
+                stored = current.sla.targets.get(str(tier)) or SlaTarget()
+                respond = raw.get("response_minutes", stored.response_minutes)
+                resolve = raw.get("resolve_minutes", stored.resolve_minutes)
+                numbers = all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool)
+                    for v in (respond, resolve)
+                )
+                if numbers and respond > resolve:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Invalid settings: sla.targets.{tier}.response_minutes "
+                            f"({respond}) must not be more than resolve_minutes ({resolve})"
+                        ),
+                    )
+    if "investigate_lookback" in body:
+        from ..utils import relative_to_millis_strict
+
+        raw = body.get("investigate_lookback")
+        try:
+            start = relative_to_millis_strict(raw) if isinstance(raw, str) else None
+        except (ValueError, OverflowError, TypeError):
+            start = None
+        if start is None or start >= to_millis(now_utc()):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Invalid settings: investigate_lookback must be a time before now, "
+                    "such as now-24h or now-7d"
+                ),
+            )
+
+
+async def _require_rbac_edit_authority(request: Request, state: AppState) -> None:
+    """``roles:manage`` (the route gate's core, which writes the Access denied row on a
+    refusal) and a fresh sign-in. Both are no-ops with sign-in off."""
+    from .deps import _enforce
+    from .routes_rbac import require_strict_fresh_sign_in
+
+    await _enforce(request, "roles", "manage")
+    await require_strict_fresh_sign_in(request, state)
 
 
 @router.put("/settings")
@@ -1515,53 +2264,101 @@ async def put_settings(
     requested_embedding = body.get("embedding_model") if isinstance(body, dict) else None
     if isinstance(requested_embedding, dict) and requested_embedding.get("model"):
         embedding_id = str(requested_embedding.get("model") or "").strip()
-        if not model_supports_capability(embedding_id, "embedding"):
+        # Refuse only on POSITIVE catalog evidence of incapability — a bundled row
+        # that declares other capabilities and not ``embedding``. The old check
+        # refused whatever the catalog had never heard of, which is every self-hosted
+        # / LiteLLM / vLLM / Ollama endpoint and every model newer than this build:
+        # on a vendor-agnostic product that made the operator's own embedding
+        # endpoint unconfigurable while an unknown completion id sailed through.
+        # ``POST /api/llm/models/test {"mode": "embedding"}`` is the empirical probe
+        # that answers the unknown case with evidence instead of with a JSON file.
+        if not model_may_embed(embedding_id):
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"Invalid settings: model {embedding_id!r} is not declared "
-                    "embedding-capable"
+                    f"Invalid settings: the model catalog lists {embedding_id!r} "
+                    "WITHOUT the embedding capability. If this endpoint really does "
+                    "embed, verify it with POST /api/llm/models/test "
+                    '{"model": "...", "mode": "embedding"} and register it as a '
+                    "custom model."
                 ),
             )
-    # Build the partial deep-merge from the freshest Preferences document while the
-    # application-wide prefs lock is held. This prevents a settings write racing a
-    # source/rule/tuner/branding writer from silently restoring a stale sibling block.
-    old_prefs: Preferences | None = None
-
+    # Build the partial deep-merge from the freshest Preferences document. Round 14
+    # (SPEC §3.6, E16): the save is AUDITED BEFORE IT IS VISIBLE. The action row, with
+    # every changed field from the stored document before and the validated document
+    # after (secrets withheld, webhook URLs cut to scheme and host), is appended first;
+    # a failed append answers 503 audit_unavailable and nothing is saved. The edit is
+    # re-applied under the prefs lock to the freshest document, so a settings write
+    # racing a source/rule/tuner/branding writer never restores a stale sibling block
+    # (see ``audit.prefs_write``).
     def _apply(current: Preferences) -> Preferences:
-        nonlocal old_prefs
         if (
             current.read_only_settings_mode
             and body.get("read_only_settings_mode") is not False
         ):
             raise HTTPException(status_code=403, detail="Settings are in read-only mode")
-        old_prefs = current
-        merged = _deep_update(current.model_dump(mode="json"), body)
+        # AFTER the read-only gate (that answer takes precedence) and BEFORE the merge:
+        # the check must see the REQUEST BODY, because `_clamp_caps` repairs the merged
+        # document before any `ge=` constraint can fire. See `_reject_out_of_range_caps`.
+        _reject_out_of_range_caps(body)
+        _reject_out_of_range_remember_me(body)
+        _reject_out_of_range_auto_close_review(body)
+        # Round 16 (B51): values that would save but cannot work answer 422.
+        _reject_incoherent_settings(body, current)
+        # Round 14 (SPEC §4.10.19): a retired runbook key the body CHANGES
+        # (``rag.use_runbooks``, ``playbooks.enabled``) is carried onto its successor
+        # under ``runbooks`` before the merge; validation rewrites the retired key as a
+        # read-only mirror, so without this the write would answer 200 and change nothing.
+        mapped = map_retired_runbook_writes(body, current)
+        merged = _deep_update(current.model_dump(mode="json"), mapped)
         # Demo Mode is managed ONLY by the /api/demo/* endpoints — never via this path.
         merged["demo"] = current.demo.model_dump(mode="json")
         try:
-            return Preferences.model_validate(merged)
+            validated = Preferences.model_validate(merged)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=422, detail=f"Invalid settings: {exc}") from exc
+        # Round 15 (SPEC D1.3): the role-based access switch moved to PUT /api/rbac, and
+        # the role matrix needs the role-management grant and a fresh sign-in.
+        _guard_rbac_settings_change(current, validated, authorized=rbac_authority["checked"])
+        # Round 16 (B15): every single sign-on change needs a stored Super admin.
+        _guard_sso_settings_change(current, validated, authority=sso_authority)
+        return validated
 
-    prefs = await state.mutate_prefs(_apply)
-    assert old_prefs is not None
-    # P12 (#2 audit / #10 secrets): settings now carry the decision-critical auto-close
-    # policy (bug-#1 repointed the flagship toggle to ``prefs.auto_close.<verdict>``, the
-    # field ``decide()`` reads), so an operator changing which cases auto-close must leave
-    # an append-only who/when trail — like rule edits + reset already do. Record only the
-    # CHANGED top-level keys (never their values → never a secret, #10). Best-effort: an
-    # audit glitch must never fail the settings save (mirrors terminology_put).
+    # The legacy one-line summary keeps naming the top-level keys the body sent (never
+    # their values, #10); the structured ``changes`` carry what actually changed.
     changed = sorted(str(k) for k in body.keys()) if isinstance(body, dict) else []
-    try:
-        await state.control_audit.record(
-            action_type=ActionType.STATUS, surface="settings",
-            actor=current_username(request) or "",
-            result_summary=("updated settings: " + ", ".join(changed))[:500]
-            if changed else "updated settings",
-        )
-    except Exception:  # noqa: BLE001 — audit is best-effort; never break the save
-        pass
+    body_sources = body.get("sources") if isinstance(body, dict) else None
+    rbac_authority = {"checked": False}
+    sso_authority: dict[str, Any] = {"checked": False}
+    while True:
+        try:
+            old_prefs, prefs = await audited_prefs_write(
+                state,
+                transform=_apply,
+                actor=current_username(request) or "",
+                context=audit_context(request),
+                summary=("updated settings: " + ", ".join(changed))[:500] if changed else "updated settings",
+                # A connector field its manifest marks secret is withheld whole, for the
+                # stored sources and any the body brings.
+                secret_fields=_source_secret_paths(
+                    [*state.prefs.sources, *(body_sources if isinstance(body_sources, list) else [])]
+                ),
+            )
+            break
+        except _RbacEditAuthorityNeeded:
+            # Asked once, before the edit's action row (the transform runs on the
+            # snapshot first); then the save is tried again with the authority held.
+            if rbac_authority["checked"]:  # pragma: no cover - the guard never asks twice
+                raise
+            await _require_rbac_edit_authority(request, state)
+            rbac_authority["checked"] = True
+        except _SsoEditAuthorityNeeded:
+            # The same pattern for the single sign-on block (Round 16, B15): a stored
+            # Super admin with a strict fresh sign-in, asked once before the row.
+            if sso_authority["checked"]:  # pragma: no cover - the guard never asks twice
+                raise
+            await _require_super_admin_for(request, state, message=SSO_SUPER_ADMIN_MESSAGE)
+            sso_authority["checked"] = True
     # #10 / G6 R5: record an immutable version snapshot for every rule this save CHANGED
     # (detection / correlation / case-automation) so DetectionRulesHome edits populate the
     # ledger + rollback UI. Best-effort; a versioning glitch never fails the save.
@@ -1628,63 +2425,70 @@ def _chat_conflict_http(code: str, message: str) -> HTTPException:
 
 
 def _chat_request_fingerprint(body: ChatRequest) -> str:
-    """Stable identity over caller-controlled inputs (never over generated ids)."""
-    payload = body.model_dump(
-        mode="json", exclude={"idempotency_key", "persist_conversation"}
-    )
+    """Stable identity over caller-controlled inputs (never over generated ids).
+
+    ``fingerprint_payload`` dumps the pre-revamp fields exactly as before and the
+    revamp fields only when they differ from their defaults (``stream_mode`` never),
+    so a pre-revamp body hashes byte-identically and one key is valid across
+    ``/chat`` and ``/chat/stream`` (chat revamp SPEC §3.1)."""
+    payload = body.fingerprint_payload()
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _replayed_chat_response(reservation) -> ChatResponse:
-    conversation = reservation.conversation
-    assistant = reservation.assistant_message
-    if assistant is None:
-        raise _chat_history_http(
-            ChatHistoryUnavailable("The completed chat response could not be restored.")
-        )
-    payload = dict(assistant.response or {})
-    payload.update({
-        "answer": assistant.content,
-        "conversation_id": reservation.conversation_id,
-        "conversation_title": reservation.conversation_title
-        or (conversation.title if conversation else "Conversation"),
-        "idempotency_key": reservation.idempotency_key,
-        "effective_model": assistant.model or (conversation.model if conversation else None),
-        "effective_source_id": assistant.source_id
-        or (conversation.source_id if conversation else None),
-        "effective_source_name": assistant.source_name
-        or (conversation.source_name if conversation else None),
-        "truncated": bool(payload.get("truncated")),
-    })
-    try:
-        return ChatResponse.model_validate(payload)
-    except Exception as exc:  # noqa: BLE001 -- corrupt durable receipt is a store failure
-        raise _chat_history_http(
-            ChatHistoryUnavailable("The completed chat response is invalid.")
-        ) from exc
+class ChatConversationPage(BaseModel):
+    """``GET /api/chat/conversations``: one page of the caller's conversation
+    summaries. With ``?q=`` each row also carries ``match {message_id, snippet}``
+    (rows of a plain listing omit it; the route serialises with
+    ``response_model_exclude_unset`` so the wire shape is unchanged)."""
+
+    conversations: list[ChatConversationSearchHit]
+    # The retained (paginatable) count, kept for compatibility.
+    total: int
+    history_truncated: bool
+    total_conversation_count: int
+    oldest_retained_at: str | None = None
+    limit: int
+    offset: int
+    # With ``?q=`` only (Round 12): the full-text search hit its read budget, so older
+    # messages of some conversations were not searched.
+    search_incomplete: bool = False
 
 
-@router.get("/chat/conversations")
+@router.get(
+    "/chat/conversations",
+    response_model=ChatConversationPage,
+    response_model_exclude_unset=True,
+)
 async def list_chat_conversations(
     request: Request,
     state: AppState = Depends(get_state),
-    limit: int = Query(default=30, ge=1, le=50),
+    limit: int = Query(default=30, ge=1, le=60),
     offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=200),
     _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
-    """Newest-first Workspace conversation summaries owned by this principal.
+    """Workspace conversation summaries owned by this principal: pinned first, then
+    newest first. ``limit`` goes to 60 so the <= 10 pinned conversations (exempt
+    from the 50-conversation eviction) are never off the first page. With ``q`` the
+    rows are the conversations whose title, messages or block titles contain it,
+    each with a ``match {message_id, snippet}`` (chat revamp SPEC §7.5).
 
     Auth-disabled deployments use the same isolated ``default`` profile as user
     preferences. Case-scoped collaboration chat is intentionally not listed here.
     """
     try:
-        page = await state.chat_conversations.list_page(
-            current_username(request), limit=limit, offset=offset,
-        )
+        if q and q.strip():
+            page = await state.chat_conversations.search(
+                current_username(request), q, limit=limit, offset=offset,
+            )
+        else:
+            page = await state.chat_conversations.list_page(
+                current_username(request), limit=limit, offset=offset,
+            )
     except ChatHistoryUnavailable as exc:
         raise _chat_history_http(exc) from exc
-    return {
+    result = {
         "conversations": [item.model_dump(mode="json") for item in page.conversations],
         # ``total`` remains the retained/paginatable count for compatibility.
         "total": page.total,
@@ -1694,9 +2498,16 @@ async def list_chat_conversations(
         "limit": limit,
         "offset": offset,
     }
+    if q and q.strip():
+        result["search_incomplete"] = bool(getattr(page, "search_incomplete", False))
+    return result
 
 
-@router.get("/chat/conversations/{conversation_id}")
+@router.get(
+    "/chat/conversations/{conversation_id}",
+    response_model=ChatConversation,
+    response_model_exclude_unset=True,
+)
 async def get_chat_conversation(
     conversation_id: str,
     request: Request,
@@ -1716,29 +2527,42 @@ async def get_chat_conversation(
     return conversation.model_dump(mode="json")
 
 
-@router.patch("/chat/conversations/{conversation_id}")
-async def rename_chat_conversation(
+@router.patch(
+    "/chat/conversations/{conversation_id}",
+    response_model=ChatConversation,
+    response_model_exclude_unset=True,
+)
+async def update_chat_conversation(
     conversation_id: str,
-    body: ChatConversationRenameRequest,
+    body: ChatConversationUpdateRequest,
     request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
-    """Rename one owned conversation with bounded, single-line plain text."""
+    """Rename (bounded, single-line plain text) and/or pin one owned conversation
+    (chat revamp SPEC §7.5). Pinning never changes ``updated_at``; an 11th pin is
+    409 ``chat_pin_limit``."""
     user = current_username(request)
     try:
-        conversation = await state.chat_conversations.rename(
-            user, conversation_id, body.title
+        conversation = await state.chat_conversations.update(
+            user, conversation_id, title=body.title, pinned=body.pinned,
         )
+    except ChatPinLimitReached as exc:
+        raise _chat_conflict_http("chat_pin_limit", str(exc)) from exc
     except ChatHistoryUnavailable as exc:
         raise _chat_history_http(exc) from exc
     if conversation is None:
         raise HTTPException(status_code=404, detail="conversation not found")
+    changes = [
+        *(["renamed"] if body.title is not None else []),
+        *(["pinned" if body.pinned else "unpinned"] if body.pinned is not None else []),
+    ]
     await state.audit.record(
         action_type=ActionType.CONTEXT,
         surface="chat_history",
-        actor=user,
-        result_summary=f"conversation renamed: {conversation.id}"[:500],
+        actor=user or "default",
+        actor_type="human", outcome="success",
+        result_summary=f"conversation {' and '.join(changes)}: {conversation.id}"[:500],
     )
     return conversation.model_dump(mode="json")
 
@@ -1762,259 +2586,23 @@ async def delete_chat_conversation(
         action_type=ActionType.CONTEXT,
         surface="chat_history",
         actor=user,
+        actor_type="human", outcome="success",
         result_summary=f"conversation deleted: {str(conversation_id)[:100]}",
     )
     return {"ok": True, "id": conversation_id}
 
 
-@router.post("/chat")
+@router.post("/chat", response_model=ChatResponse)
 async def chat(
     body: ChatRequest, request: Request, state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
-) -> dict[str, Any]:
-    # The auth dependency already verified the principal; the same helper used by
-    # preferences/history defines the auth-off ``default`` partition.
-    author = current_username(request)
-    # Workspace history is opt-in and NEVER duplicates case-scoped turns. Context may
-    # carry a case id even when the top-level field does not, so resolve the effective
-    # case boundary before deciding whether this belongs in personal history.
-    effective_case_id = body.case_id or (body.context.case_id if body.context else None)
-    persist_workspace = bool(body.persist_conversation and not effective_case_id)
-    history = body.history
-    existing_conversation = None
-    if persist_workspace and body.conversation_id:
-        try:
-            existing_conversation = await state.chat_conversations.get(
-                author, body.conversation_id
-            )
-        except ChatHistoryUnavailable as exc:
-            raise _chat_history_http(exc) from exc
-        if existing_conversation is None:
-            raise HTTPException(status_code=404, detail="conversation not found")
-        # The durable transcript is authoritative for a resumed conversation. Ignore
-        # caller-supplied history so a client cannot replace another turn sequence.
-        history = [
-            ChatTurn(role=item.role, content=item.content)
-            for item in existing_conversation.messages
-        ]
+) -> ChatResponse:
+    """One chat turn, blocking (chat revamp SPEC §6): the same preflight, turn task
+    and persistence as ``POST /api/chat/stream`` (``routes_chat.run_chat_turn``),
+    awaited. Imported lazily: ``routes_chat`` imports this module."""
+    from .routes_chat import run_chat_blocking
 
-    # Per-call model override (additive): run THIS chat turn with the chat-role model
-    # swapped to body.model via a prefs copy. Unchanged when body.model is None.
-    # ``None`` means the CURRENT default. The UI resends a saved non-default
-    # selection while resuming; omitting it is how an analyst resets the thread.
-    selected_model = body.model
-    prefs_eff = _override_models(state.execution_prefs, selected_model, ("chat",))
-    selected_source_id = body.source_id
-    request_key = body.idempotency_key or new_id("chatreq-")
-    request_fingerprint = _chat_request_fingerprint(body)
-    reservation = None
-    source_conn = None
-    owned_client = None
-    effective_source_id = None
-    effective_source_name = None
-    try:
-        if persist_workspace:
-            try:
-                reservation = await state.chat_conversations.reserve_exchange(
-                    author,
-                    idempotency_key=request_key,
-                    request_fingerprint=request_fingerprint,
-                    conversation_id=body.conversation_id,
-                )
-            except ChatHistoryUnavailable as exc:
-                raise _chat_history_http(exc) from exc
-            except ChatRequestInProgress as exc:
-                raise _chat_conflict_http("chat_request_in_progress", str(exc)) from exc
-            except ChatRequestCapacityBusy as exc:
-                raise _chat_conflict_http("chat_request_capacity_busy", str(exc)) from exc
-            except ChatIdempotencyConflict as exc:
-                raise _chat_conflict_http("chat_idempotency_conflict", str(exc)) from exc
-            except ChatConversationMissing as exc:
-                raise HTTPException(status_code=404, detail="conversation not found") from exc
-            if reservation.status == "completed":
-                return _replayed_chat_response(reservation).model_dump(mode="json")
-
-        # Resolve a live source only after durable replay had a chance to return.
-        # A historical receipt remains replayable even if its source was later
-        # disabled or removed. New executions reject an unusable explicit source.
-        source_conn, owned_client, effective_source_id, effective_source_name = (
-            _chat_source_connector(state, selected_source_id)
-        )
-        resp = await state.chat_engine.chat(
-            body.message, prefs_eff, case_id=body.case_id, history=history,
-            context=body.context, author=author, source=source_conn,
-            can_manage_memory=await has_permission(request, "memory", "manage"),
-        )
-    except HTTPException:
-        if persist_workspace and reservation is not None:
-            try:
-                await state.chat_conversations.abort_exchange(
-                    author,
-                    idempotency_key=request_key,
-                    request_fingerprint=request_fingerprint,
-                    lease_token=reservation.lease_token or "",
-                )
-            except Exception:  # noqa: BLE001 -- preserve the typed HTTP failure
-                pass
-        raise
-    except Exception:
-        if persist_workspace and reservation is not None:
-            try:
-                await state.chat_conversations.abort_exchange(
-                    author,
-                    idempotency_key=request_key,
-                    request_fingerprint=request_fingerprint,
-                    lease_token=reservation.lease_token or "",
-                )
-            except Exception:  # noqa: BLE001 -- never hide the original model failure
-                pass
-        raise
-    finally:
-        if owned_client is not None:
-            try:
-                await owned_client.close()
-            except Exception:  # noqa: BLE001
-                pass
-    if persist_workspace:
-        assert reservation is not None
-        response_with_provenance = resp.model_copy(update={
-            "idempotency_key": request_key,
-            "effective_model": resp.effective_model,
-            "effective_source_id": effective_source_id,
-            "effective_source_name": effective_source_name,
-        })
-        try:
-            completed = await state.chat_conversations.complete_exchange(
-                author,
-                idempotency_key=request_key,
-                request_fingerprint=request_fingerprint,
-                conversation_id=reservation.conversation_id,
-                lease_token=reservation.lease_token or "",
-                requested_existing_conversation=body.conversation_id is not None,
-                user_content=body.message,
-                assistant_content=resp.answer,
-                response=response_with_provenance.model_dump(mode="json"),
-                model=resp.effective_model,
-                source_id=effective_source_id,
-                source_name=effective_source_name,
-            )
-        except ChatHistoryUnavailable as exc:
-            raise _chat_history_http(exc) from exc
-        except ChatConversationMissing as exc:
-            raise _chat_conflict_http(
-                "chat_idempotency_conflict",
-                "The conversation changed while the response was being saved.",
-            ) from exc
-        except ChatIdempotencyConflict as exc:
-            raise _chat_conflict_http("chat_idempotency_conflict", str(exc)) from exc
-        except ChatRequestInProgress as exc:
-            raise _chat_conflict_http("chat_request_in_progress", str(exc)) from exc
-        conversation = completed.conversation
-        if conversation is None:
-            raise _chat_history_http(
-                ChatHistoryUnavailable("The saved conversation could not be restored.")
-            )
-        resp = response_with_provenance.model_copy(update={
-            "conversation_id": conversation.id,
-            "conversation_title": conversation.title,
-            "truncated": bool(
-                (completed.assistant_message.response or {}).get("truncated")
-                if completed.assistant_message is not None else False
-            ),
-        })
-    else:
-        resp = resp.model_copy(update={
-            "idempotency_key": body.idempotency_key,
-            "effective_model": resp.effective_model,
-            "effective_source_id": effective_source_id,
-            "effective_source_name": effective_source_name,
-        })
-    return resp.model_dump(mode="json")
-
-
-def _chat_source_connector(state: AppState, source_id: str | None):
-    """Build the PULL connector for an explicitly-selected chat source.
-
-    Returns connector/client plus the truthful effective id/name. ``None`` connector
-    means use the engine's configured primary only when no explicit id was supplied.
-    Explicit unknown, disabled, receiver-only or unbuildable sources return 422."""
-    if not source_id:
-        if state.demo_active:
-            from ..engine.demo_sources import DEMO_SOURCE_SPECS
-
-            spec = DEMO_SOURCE_SPECS["splunk"]
-            return None, None, spec.source_id, spec.display_name
-        primary = state.execution_prefs.primary_source()
-        return (
-            None,
-            None,
-            primary.id if primary is not None else None,
-            (primary.display_name or primary.id) if primary is not None else "Primary source",
-        )
-    if state.demo_active:
-        # Demo push adapters expose the same bounded search contract as a pull
-        # connector, so chat source selection remains truthful for all four rows.
-        connector = state.demo_source_connector(source_id)
-        if connector is None:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "chat_source_unavailable",
-                    "message": "The selected source is unavailable for chat.",
-                },
-            )
-        rows = state.demo_sources_overlay()
-        row = next((item for item in rows if item.get("id") == source_id), {})
-        return connector, None, source_id, str(row.get("display_name") or source_id)
-    src = next((s for s in state.prefs.sources if s.id == source_id and s.enabled), None)
-    if src is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "chat_source_unavailable",
-                "message": "The selected source is unknown or disabled.",
-            },
-        )
-    reg = get_registry()
-    if not reg.is_pull(src.source_type):
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "chat_source_unavailable",
-                "message": "The selected source does not provide a query surface.",
-            },
-        )
-    try:
-        from ..connectors.elastic import ElasticConnector
-        from ..connectors.opensearch import OpenSearchConnector
-        from ..connectors.wazuh import WazuhConnector
-
-        es_client, owned = state.es_client_for_source(src)
-        cfg = {**(src.config or {})}
-        if src.display_name:
-            cfg.setdefault("display_name", src.display_name)
-        if src.source_type == SourceType.OPENSEARCH:
-            conn = OpenSearchConnector(es_client, config=cfg, connector_id=src.id)
-        elif src.source_type == SourceType.WAZUH:
-            conn = WazuhConnector(es_client, config=cfg, connector_id=src.id)
-        else:
-            conn = ElasticConnector(es_client, config=cfg, connector_id=src.id)
-        return (
-            conn,
-            (es_client if owned else None),
-            src.id,
-            src.display_name or src.id,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "chat_source_unavailable",
-                "message": "The selected source could not be prepared for chat.",
-            },
-        ) from exc
+    return await run_chat_blocking(request, body, state)
 
 
 # --------------------------------------------------------------------------- #
@@ -2023,8 +2611,12 @@ def _chat_source_connector(state: AppState, source_id: str | None):
 @router.post("/investigate")
 async def investigate(
     body: InvestigateRequest, state: AppState = Depends(get_state),
-    _=Depends(require_permission("cases", "reinvestigate")),
+    principal=Depends(require_permission("cases", "reinvestigate")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
+    """The Investigate page: a person asks for one investigation. The run is a manual
+    run of that person (Round 16, WP16), so the AI run popover names who asked and the
+    finish notice reaches them, as Investigate on a case does."""
     query_source = state.active_source_for_id(body.source_id)
     if body.source_id and query_source is None:
         raise HTTPException(
@@ -2032,14 +2624,22 @@ async def investigate(
             detail="The selected source is not an enabled queryable pull source",
         )
     cluster, widest = await _cluster_for_request(state, body, query_source=query_source)
+    if cluster is None and body.entity is not None and not body.source_id:
+        # No source was named and the default one holds nothing: look in the other
+        # sources the Logs page shows, so a push source's entity is found too (FXE).
+        found = await _cluster_from_other_sources(state, body, tried=query_source)
+        if found is not None:
+            cluster, widest, query_source = found
     if cluster is None:
         # NEUTRAL, specific detail so the FE shows an empty-state, not a scary error.
         detail = _no_events_detail(body, widest)
         raise HTTPException(status_code=400, detail=detail)
+    requested_by = str(getattr(principal, "username", "") or "") or None
     case = await state.pipeline.investigate_cluster(
-        cluster, body.source_surface, state.execution_prefs, query_source=query_source
+        cluster, body.source_surface, state.execution_prefs, query_source=query_source,
+        trigger="manual", requested_by=requested_by,
     )
-    return case.model_dump(mode="json")
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 # --------------------------------------------------------------------------- #
@@ -2069,7 +2669,10 @@ async def overview(
 # Model catalog (Feature 4) — for the settings per-role model pickers
 # --------------------------------------------------------------------------- #
 @router.get("/models")
-async def models(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def models(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("models", "read")),
+) -> dict[str, Any]:
     grouped = models_by_provider()
     # Merge the operator's runtime-registered self-hosted / LiteLLM (OpenAI-compatible)
     # models so a locally-added model is selectable in the per-role picker, and expose a
@@ -2154,11 +2757,8 @@ async def personas(state: AppState = Depends(get_state)) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Agent PROPOSALS (HITL — agent drafts, human approves/rejects)
 # --------------------------------------------------------------------------- #
-def _proposal_public(proposal: Proposal) -> dict[str, Any]:
-    """Public projection; lease and immutable recovery identity stay internal."""
-    return proposal.model_dump(
-        mode="json", exclude={"applying_token", "decision_actor"}
-    )
+# ``_proposal_public`` lives in ``engine/views.py`` (chat revamp SPEC §5.3) and is
+# re-exported at the top of this module under its historical name.
 
 
 @router.get("/proposals")
@@ -2169,12 +2769,73 @@ async def list_proposals(
 ) -> dict[str, Any]:
     """List agent-drafted proposals (newest first). ``?status=pending`` filters to
     the review queue; omit for all. A proposal is a PENDING recommendation — nothing
-    is live until it is explicitly approved."""
+    is live until it is explicitly approved.
+
+    Opportunistically garbage-collects lapsed proposals first. A queue nobody can work
+    (the deployment whose approvals were broken for its whole life) otherwise grows
+    without bound and keeps rendering month-old recommendations as actionable. The
+    sweep is bounded, writes nothing when nothing has lapsed, and is best-effort: the
+    store's read-time projection already presents a lapsed row as ``expired``, so a
+    failed sweep costs durability, never honesty.
+    """
+    try:
+        swept = await state.proposals.sweep_expired()
+    except Exception as exc:  # noqa: BLE001 — a read must never fail on housekeeping
+        logger.warning("expired-proposal sweep failed: %s", exc)
+        swept = []
+    if swept:
+        try:
+            await state.audit.record(
+                action_type=ActionType.PROPOSAL,
+                surface="proposal",
+                actor="system",
+                actor_type="system", outcome="success",
+                result_summary=(
+                    f"expired {len(swept)} pending proposals past expires_at: "
+                    + ",".join(p.id for p in swept[:20])
+                    + (",..." if len(swept) > 20 else "")
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — audit is best-effort for housekeeping
+            logger.warning("expired-proposal sweep audit failed: %s", exc)
     proposals = await state.proposals.list(status=status)
     return {
         "proposals": [_proposal_public(p) for p in proposals],
         "count": len(proposals),
+        "expired_swept": len(swept),
     }
+
+
+def _decision_failure_detail(phase: str, proposal_id: str, action: str) -> str:
+    """Truthful 503 text for a failed decision, by the phase that actually failed.
+
+    The operator-visible message must never claim more or less than the code can
+    prove. ``audit`` means this attempt stopped before its effect could run;
+    ``effect``/``finalize`` mean a configuration change may already be live, so the
+    message names exactly what to inspect instead of reporting a clean no-op.
+    """
+    evidence = f"proposal-decision:{proposal_id}:{action}"
+    noun = "approval" if action == "approve" else "rejection"
+    done = "approved" if action == "approve" else "rejected"
+    if phase == "finalize":
+        return (
+            f"The {noun} was applied and audited, but the proposal could not be marked "
+            f"{done} and is still shown as pending. Inspect audit event {evidence} and the "
+            "affected configuration; retrying is safe — the effect is keyed by the proposal id "
+            "and cannot be applied twice."
+        )
+    if phase == "effect":
+        return (
+            f"The {noun} decision was audited but applying it did not complete, so the "
+            "configuration may be partially changed. Inspect the proposal's approval_error, "
+            f"audit event {evidence}, and the affected configuration; retrying is safe — the "
+            "effect is keyed by the proposal id and cannot be applied twice."
+        )
+    return (
+        f"This {noun} attempt was not recorded in the append-only audit trail and therefore "
+        f"applied no configuration change. The proposal is still pending; inspect audit event "
+        f"{evidence} and the proposal's approval_error, then retry."
+    )
 
 
 @router.post("/proposals/{proposal_id}/approve")
@@ -2191,9 +2852,18 @@ async def approve_proposal(
     picks it up LIVE. memory → append a human-injectable agent fact. tuning →
     revalidate and, where eligible, materialise the bounded change. ``automation_ack``
     records review only and never mutates configuration, Memory, suppression, or case
-    state. A strict CAS claim is persisted before any effect, every effect is keyed by
-    proposal id, and finalisation is strict so concurrent/retried requests cannot apply
-    the same proposal twice. 404 if missing; 409 if already decided/in progress."""
+    state.
+
+    The decision runs in four ordered phases — PREPARE (pure validation only),
+    AUDIT (the strict ``event_id``-keyed decision record), EFFECT, FINALISE — so an
+    operator who is told the approval failed can never find the configuration already
+    changed by that attempt. Every phase is idempotent: the strict claim fixes actor
+    and audit timestamp, ``record_strict`` deduplicates on ``event_id``, and every
+    effect is keyed by proposal id, so a retry after any failure converges on exactly
+    one applied change. 404 if missing; 409 if already decided/in progress, if the
+    proposal has EXPIRED, or if its evidence basis can no longer be verified — the
+    last two are refusals to act on stale reasoning and ask for a re-draft, and both
+    happen before anything is audited or applied."""
     by = current_username(request)
     token = new_id("approval-")
     try:
@@ -2201,9 +2871,26 @@ async def approve_proposal(
             proposal_id, by=by, token=token
         )
     except Exception as exc:  # durability boundary: never run an effect without a claim
+        logger.exception("Approval claim for proposal %s could not be persisted", proposal_id)
         raise HTTPException(status_code=503, detail="Could not persist the approval claim") from exc
     if claim == "missing" or proposal is None:
         raise HTTPException(status_code=404, detail="proposal not found")
+    if claim == "expired":
+        # Its evidence window closed. Refusing is the safe default: approving a
+        # month-old recommendation against today's configuration is not.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "proposal_expired",
+                "proposal_id": proposal.id,
+                "expires_at": proposal.expires_at,
+                "redraft_required": True,
+                "message": (
+                    "This proposal expired and can no longer be approved. Reject it to "
+                    "clear the queue; the drafter re-proposes from current evidence."
+                ),
+            },
+        )
     if claim != "claimed":
         raise HTTPException(
             status_code=409,
@@ -2219,6 +2906,11 @@ async def approve_proposal(
     )
     audit_actor = decision_actor or "analyst"
 
+    # PREPARE validates purely, AUDIT records the decision, EFFECT applies it,
+    # FINALISE closes the lease. ``phase`` names the boundary an exception crossed so
+    # the 503 below can tell the operator what is actually true of their config.
+    phase = "prepare"
+    effect: Callable[[], Awaitable[None]] | None = None
     try:
         if proposal.kind == "suppression":
             payload = dict(proposal.payload or {})
@@ -2249,48 +2941,83 @@ async def approve_proposal(
                     "suppression_rules": [*prefs.suppression_rules, rule],
                 })
 
-            await state.mutate_execution_prefs(_append_once)
+            async def _apply_suppression() -> None:
+                await state.mutate_execution_prefs(_append_once)
+
+            effect = _apply_suppression
         elif proposal.kind == "memory":
             payload = dict(proposal.payload or {})
             text = str(payload.get("text", "") or proposal.rationale).strip()
             if not text:
                 raise ValueError("memory proposal has no text")
-            # Strict persistence: approval cannot succeed on a fail-soft KV write.
-            await state.memory.add_approved_proposal_strict(
-                text,
-                proposal_id=proposal.id,
-                category=str(payload.get("category", "")),
-                tags=list(payload.get("tags", []) or []),
-                author=decision_actor,
-            )
+
+            async def _apply_memory() -> None:
+                # Strict persistence: approval cannot succeed on a fail-soft KV write.
+                # ``proposal_id`` is the idempotency key for a post-audit retry.
+                await state.memory.add_approved_proposal_strict(
+                    text,
+                    proposal_id=proposal.id,
+                    category=str(payload.get("category", "")),
+                    tags=list(payload.get("tags", []) or []),
+                    author=decision_actor,
+                )
+
+            effect = _apply_memory
         elif proposal.kind == "tuning":
-            from ..engine.threshold_tuner import commit_approved_tuning
+            from ..engine.threshold_tuner import (
+                commit_approved_tuning,
+                materialize_approved_tuning,
+            )
 
             payload = dict(proposal.payload or {})
-            record, created = await commit_approved_tuning(
+            fingerprint = proposal.evidence_fingerprint
+            # Pure revalidation BEFORE the decision record: an unknown action, an
+            # out-of-policy step, an unverifiable evidence basis, or a recommendation
+            # overtaken by a live change is refused without auditing an approval that
+            # will never be applied. The commit below revalidates again against the
+            # freshest preferences under its own lock.
+            materialize_approved_tuning(
                 state.execution_prefs,
                 payload,
                 proposal_id=proposal.id,
-                tuning_store=state.tuning_store,
-                write_prefs=state.update_execution_prefs,
-                mutate_prefs=state.mutate_execution_prefs,
+                allow_idempotent_replay=True,
+                evidence_fingerprint_recorded=fingerprint,
             )
-            if record is not None and created:
-                await state.audit.record(
-                    action_type=ActionType.TUNING,
-                    surface="proposal",
-                    actor=audit_actor,
-                    result_summary=(
-                        f"approved tuning proposal {proposal.id}: {record.target} "
-                        f"{record.before}->{record.after} for {record.rule_id}"
-                    ),
+
+            async def _apply_tuning() -> None:
+                record, created = await commit_approved_tuning(
+                    state.execution_prefs,
+                    payload,
+                    proposal_id=proposal.id,
+                    tuning_store=state.tuning_store,
+                    write_prefs=state.update_execution_prefs,
+                    mutate_prefs=state.mutate_execution_prefs,
+                    evidence_fingerprint_recorded=fingerprint,
                 )
+                if record is not None and created:
+                    await state.audit.record(
+                        action_type=ActionType.TUNING,
+                        surface="proposal",
+                        actor=audit_actor,
+                        actor_type="human", outcome="success",
+                        result_summary=(
+                            f"approved tuning proposal {proposal.id}: {record.target} "
+                            f"{record.before}->{record.after} for {record.rule_id}"
+                        ),
+                    )
+
+            effect = _apply_tuning
         elif proposal.kind == "automation_ack":
             # The status transition and audit are the complete effect.
-            pass
+            effect = None
         else:  # pragma: no cover — Literal-constrained, defensive
             raise ValueError(f"unknown proposal kind: {proposal.kind}")
 
+        # The strict decision record comes FIRST so a failure here cannot leave a
+        # silently applied configuration change behind. It is keyed by event_id and
+        # its content is a pure function of the fixed claim, so the retry that
+        # follows a failed effect or finalisation reuses this exact row.
+        phase = "audit"
         await state.control_audit.record_strict(
             action_type=ActionType.PROPOSAL,
             event_id=f"proposal-decision:{proposal.id}:approve",
@@ -2299,30 +3026,137 @@ async def approve_proposal(
             actor=audit_actor,
             result_summary=(
                 f"proposal_id={proposal.id} action=approve kind={proposal.kind} "
-                "effect=confirmed finalization=pending"
+                "decision=authorized effect=pending finalization=pending"
             ),
         )
+        phase = "effect"
+        if effect is not None:
+            await effect()
+        phase = "finalize"
         updated = await state.proposals.finalize_approval(
             proposal_id, by=by, token=token
         )
         if updated is None:
             raise RuntimeError("approval lease was lost before finalisation")
     except Exception as exc:  # noqa: BLE001 — release the lease for a visible retry
+        # Diagnosis must not depend on the proposal's approval_error field alone.
+        logger.exception(
+            "Proposal %s approval failed in the %s phase (kind=%s)",
+            proposal_id, phase, proposal.kind,
+        )
         try:
             await state.proposals.release_approval(
                 proposal_id, token=token, error=str(exc)
             )
-        except Exception as release_exc:  # status remains applying; stale lease is recoverable
-            logger.error("Could not release failed proposal approval %s: %s", proposal_id, release_exc)
+        except Exception:  # noqa: BLE001 — status remains applying; a stale lease is recoverable
+            logger.exception("Could not release failed proposal approval %s", proposal_id)
         if isinstance(exc, ValueError):
+            # A staleness refusal is NOT an ordinary failure: nothing is wrong with the
+            # request, the recommendation itself is no longer safe to enact. Report it
+            # as its own machine-readable outcome so an operator (and the UI) can tell
+            # "re-draft this" apart from "this payload is malformed" or "the store is
+            # down". ``tuning_evidence_code`` is read duck-typed so the route never
+            # depends on the tuner module's exception class.
+            code = getattr(exc, "tuning_evidence_code", None)
+            if code:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "stale_proposal",
+                        "code": str(code),
+                        "proposal_id": proposal.id,
+                        "redraft_required": True,
+                        "message": str(exc),
+                        "evidence": evidence_summary(proposal),
+                    },
+                ) from exc
             status = 409 if "stale" in str(exc).lower() else 400
             raise HTTPException(status_code=status, detail=str(exc)) from exc
         raise HTTPException(
             status_code=503,
-            detail="Approval could not be durably completed; no success was reported",
+            detail=_decision_failure_detail(phase, proposal.id, "approve"),
         ) from exc
 
     return {"ok": True, "proposal": _proposal_public(updated)}
+
+
+async def _reject_one(
+    state: AppState, proposal_id: str, *, by: str, reason: str = "",
+) -> tuple[str, Proposal | None, str]:
+    """Run ONE rejection through the durable decision boundary.
+
+    The single and bulk endpoints share this exact body so bulk rejection is not a
+    second, weaker path: strict CAS claim → strict ``event_id``-keyed append-only
+    decision record → strict finalisation, unchanged. Rejection has no effect phase at
+    all — preferences, Memory, suppression and case state are never touched.
+
+    Returns ``(outcome, proposal, detail)`` instead of raising, so a batch can report
+    per-item results without one bad item aborting the rest. ``outcome`` is one of
+    ``rejected``, ``already_rejected``, ``missing``, ``conflict``, ``unavailable``
+    (the claim could not be persisted — nothing was audited) or ``incomplete`` (the
+    decision could not be durably completed).
+    """
+    token = new_id("rejection-")
+    try:
+        proposal, outcome = await state.proposals.claim_rejection(
+            proposal_id, by=by, token=token, reason=reason,
+        )
+    except Exception as exc:  # noqa: BLE001 — never audit without a durable claim
+        logger.exception("Rejection claim for proposal %s could not be persisted", proposal_id)
+        return "unavailable", None, f"Could not persist the rejection claim: {exc}"
+    if outcome == "missing" or proposal is None:
+        return "missing", None, "proposal not found"
+    if outcome != "claimed":
+        if proposal.status == "rejected":
+            # Idempotent: this proposal is already in the state the caller asked for
+            # and its append-only decision row already exists.
+            return "already_rejected", proposal, "proposal is already rejected"
+        return "conflict", proposal, f"proposal is {proposal.status}, not pending"
+
+    decision_actor = (
+        proposal.decision_actor
+        if proposal.decision_actor is not None
+        else (by or "").strip()
+    )
+    fixed_reason = sanitize_decision_reason(proposal.decision_reason)
+    phase = "audit"
+    try:
+        await state.control_audit.record_strict(
+            action_type=ActionType.PROPOSAL,
+            event_id=f"proposal-decision:{proposal.id}:reject",
+            ts=proposal.decision_audit_at,
+            surface="proposal",
+            actor=decision_actor or "analyst",
+            result_summary=(
+                f"proposal_id={proposal.id} action=reject kind={proposal.kind} "
+                "effect=none finalization=pending"
+                + (f" reason={fixed_reason}" if fixed_reason else "")
+            ),
+        )
+        phase = "finalize"
+        updated = await state.proposals.finalize_rejection(
+            proposal_id, by=by, token=token
+        )
+        if updated is None:
+            raise RuntimeError("rejection lease was lost before finalisation")
+    except Exception as exc:  # noqa: BLE001 — no unaudited success response
+        logger.exception(
+            "Proposal %s rejection failed in the %s phase (kind=%s)",
+            proposal_id, phase, proposal.kind,
+        )
+        try:
+            await state.proposals.release_approval(
+                proposal_id, token=token, error=str(exc)
+            )
+        except Exception:  # noqa: BLE001 — status remains applying; a stale lease is recoverable
+            logger.exception("Could not release failed proposal rejection %s", proposal_id)
+        return "incomplete", proposal, (
+            "Rejection could not be durably completed; the proposal is still pending and "
+            "no configuration, Memory or case state was changed. Inspect audit event "
+            f"proposal-decision:{proposal.id}:reject and the proposal's approval_error, "
+            "then retry."
+        )
+    return "rejected", updated, ""
 
 
 @router.post("/proposals/{proposal_id}/reject")
@@ -2334,264 +3168,322 @@ async def reject_proposal(
 ) -> dict[str, Any]:
     """Reject a pending proposal through the same durable decision boundary.
 
-    Preferences / memory are unchanged. A strict CAS claim and idempotent
-    append-only audit row must both succeed before the proposal can be finalised as
-    rejected. 404 if missing; 409 if already decided/in progress.
+    Rejection has no effect phase at all: preferences, Memory, suppression and case
+    state are never touched, so the ordering is simply strict CAS claim → strict
+    append-only decision record → strict finalisation. An EXPIRED proposal may still
+    be rejected — retiring dead review work is how a queue is cleared and it changes
+    nothing. 404 if missing; 409 if already decided/in progress.
     """
     by = current_username(request)
-    token = new_id("rejection-")
-    try:
-        proposal, outcome = await state.proposals.claim_rejection(
-            proposal_id, by=by, token=token
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503, detail="Could not persist the rejection claim"
-        ) from exc
-    if outcome == "missing" or proposal is None:
+    outcome, proposal, detail = await _reject_one(state, proposal_id, by=by)
+    if outcome == "unavailable":
+        raise HTTPException(status_code=503, detail="Could not persist the rejection claim")
+    if outcome == "missing":
         raise HTTPException(status_code=404, detail="proposal not found")
-    if outcome != "claimed":
+    if outcome in {"conflict", "already_rejected"}:
         raise HTTPException(
             status_code=409,
-            detail=f"proposal is {proposal.status}, not pending",
-        )
-    decision_actor = (
-        proposal.decision_actor
-        if proposal.decision_actor is not None
-        else (by or "").strip()
-    )
-    try:
-        await state.control_audit.record_strict(
-            action_type=ActionType.PROPOSAL,
-            event_id=f"proposal-decision:{proposal.id}:reject",
-            ts=proposal.decision_audit_at,
-            surface="proposal",
-            actor=decision_actor or "analyst",
-            result_summary=(
-                f"proposal_id={proposal.id} action=reject kind={proposal.kind} "
-                "effect=none finalization=pending"
+            detail=(
+                f"proposal is {proposal.status}, not pending"
+                if proposal is not None
+                else detail
             ),
         )
-        updated = await state.proposals.finalize_rejection(
-            proposal_id, by=by, token=token
-        )
-        if updated is None:
-            raise RuntimeError("rejection lease was lost before finalisation")
-    except Exception as exc:  # noqa: BLE001 — no unaudited success response
-        try:
-            await state.proposals.release_approval(
-                proposal_id, token=token, error=str(exc)
-            )
-        except Exception as release_exc:
-            logger.error(
-                "Could not release failed proposal rejection %s: %s",
-                proposal_id,
-                release_exc,
-            )
-        raise HTTPException(
-            status_code=503,
-            detail="Rejection could not be durably completed; no success was reported",
-        ) from exc
-    return {"ok": True, "proposal": _proposal_public(updated)}
+    if outcome == "incomplete":
+        raise HTTPException(status_code=503, detail=detail)
+    return {"ok": True, "proposal": _proposal_public(proposal)}
 
 
-def _playbook_payload(state: AppState, playbook, *, content: str | None = None) -> dict[str, Any]:
-    """Stable public playbook shape; never exposes the server filesystem path."""
-    payload: dict[str, Any] = {
-        "id": playbook.id,
-        "name": playbook.name,
-        "version": playbook.version,
-        "description": playbook.manifest.description,
-        "priority": playbook.manifest.priority,
-        "match": {
-            "rule_ids": list(playbook.manifest.match.rule_ids),
-            "entity_types": list(playbook.manifest.match.entity_types),
-            "mitre": list(playbook.manifest.match.mitre),
-            "min_event_count": playbook.manifest.match.min_event_count,
-            "any_tags": list(playbook.manifest.match.any_tags),
-        },
-        "suggested_tools": list(playbook.manifest.suggested_tools),
-        "rag_queries": list(playbook.manifest.rag_queries),
-        "escalate_if": playbook.manifest.escalate_if,
-        "suggested_verdict_bias": playbook.manifest.suggested_verdict_bias,
-        **state.playbooks.metadata(playbook),
-    }
-    if content is not None:
-        payload["content"] = content
-        payload["body"] = playbook.body
-    return payload
+class ProposalBulkRejectRequest(BaseModel):
+    """Explicit ids plus one audited reason for clearing a review queue."""
+
+    ids: list[str] = Field(default_factory=list)
+    reason: str = ""
 
 
-class PlaybookCreateRequest(BaseModel):
-    """Create one operator-owned Markdown playbook."""
-
-    id: str = Field(min_length=1, max_length=64)
-    content: str = Field(min_length=1, max_length=MAX_PLAYBOOK_BYTES)
-
-
-class PlaybookUpdateRequest(BaseModel):
-    """Replace one operator-owned Markdown playbook; the id remains immutable."""
-
-    content: str = Field(min_length=1, max_length=MAX_PLAYBOOK_BYTES)
-    expected_revision: int | None = Field(default=None, ge=1)
-
-
-class PlaybookDryRunRequest(BaseModel):
-    """Synthetic cluster attributes for deterministic procedure diagnostics."""
-
-    rule_ids: list[str] = Field(default_factory=list, max_length=100)
-    entity_type: EntityType = EntityType.RULE
-    event_count: int = Field(default=1, ge=0, le=1_000_000)
-
-
-def _raise_playbook_management_http(exc: Exception) -> None:
-    if isinstance(exc, PlaybookNotFoundError):
-        raise HTTPException(status_code=404, detail="playbook not found") from exc
-    if isinstance(exc, PlaybookConflictError):
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if isinstance(exc, PlaybookProtectedError):
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    if isinstance(exc, PlaybookManagementError):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    raise exc
-
-
-@router.get("/playbooks")
-async def playbooks(
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
-) -> dict[str, Any]:
-    await state.refresh_playbooks()
-    pbs = state.playbooks.all()
-    return {
-        "enabled": state.prefs.playbooks.enabled,
-        "count": len(pbs),
-        "playbooks": [_playbook_payload(state, p) for p in pbs],
-    }
-
-
-@router.post("/playbooks")
-async def playbooks_create(
-    body: PlaybookCreateRequest,
+@router.post("/proposals/bulk-reject")
+async def bulk_reject_proposals(
+    body: ProposalBulkRejectRequest,
     request: Request,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "manage")),
+    _=Depends(require_permission("proposals", "approve")),
 ) -> dict[str, Any]:
-    """Create an operator Markdown file, atomically reload it, and audit the change.
+    """Reject many proposals in one audited request.
 
-    The front-matter id must equal ``body.id``.  IDs are slug/path constrained and
-    a create never overwrites any existing file or bundled playbook.  Playbook text
-    remains recommendation-only context; this endpoint never touches ``decide()``.
+    A queue that accumulated for a deployment's whole life cannot realistically be
+    cleared one HTTP request at a time, but convenience must not buy itself a hole in
+    the append-only audit trail (#2). This therefore runs the SAME strict per-proposal
+    decision path as :func:`reject_proposal` — one ``event_id``-keyed append-only
+    decision record each — rather than a bulk state write with a single summary row.
+
+    Consequences of that choice, all deliberate:
+
+    * **Idempotent.** An already-rejected id reports ``already_rejected`` and writes
+      nothing new; ``record_strict`` deduplicates on ``event_id`` anyway.
+    * **Partial success is a first-class result.** One unusable id — missing, in
+      flight, or a store hiccup — is reported in ``results`` and never aborts the
+      batch, so an operator is never left guessing which half landed.
+    * **Bounded.** At most :data:`BULK_DECISION_LIMIT` ids per request, deduplicated,
+      because each one performs a durable write.
+
+    Expired proposals are rejectable, which is what makes this the queue-clearing tool.
     """
-    try:
-        playbook, summary = await state.create_playbook(
-            body.id,
-            body.content,
-            actor=current_username(request) or "operator",
+    seen: set[str] = set()
+    ids: list[str] = []
+    for raw in body.ids or []:
+        pid = str(raw or "").strip()
+        if pid and pid not in seen:
+            seen.add(pid)
+            ids.append(pid)
+    if not ids:
+        raise HTTPException(status_code=400, detail="ids must contain at least one proposal id")
+    if len(ids) > BULK_DECISION_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"at most {BULK_DECISION_LIMIT} proposals per bulk rejection "
+                f"(received {len(ids)}); send the rest in a follow-up request"
+            ),
         )
-    except Exception as exc:  # mapped to bounded, non-path-leaking HTTP errors
-        _raise_playbook_management_http(exc)
-        raise AssertionError("unreachable")  # pragma: no cover
-    await state.control_audit.record(
-        action_type=ActionType.PLAYBOOK,
-        surface="playbooks",
-        actor=current_username(request) or "operator",
-        result_summary=f"created operator playbook {playbook.id} v{playbook.version}",
-    )
-    return {"ok": True, "playbook": _playbook_payload(state, playbook), "reload": summary}
+    reason = sanitize_decision_reason(body.reason)
+    if not reason:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "reason is required so the append-only audit row records why the queue "
+                f"was cleared (max {MAX_DECISION_REASON_CHARS} characters)"
+            ),
+        )
+
+    by = current_username(request)
+    results: list[dict[str, Any]] = []
+    for pid in ids:
+        outcome, proposal, detail = await _reject_one(state, pid, by=by, reason=reason)
+        row: dict[str, Any] = {
+            "id": pid,
+            "outcome": outcome,
+            "ok": outcome in {"rejected", "already_rejected"},
+        }
+        if detail:
+            row["detail"] = detail
+        if proposal is not None:
+            row["status"] = proposal.status
+        results.append(row)
+
+    rejected = [r["id"] for r in results if r["outcome"] == "rejected"]
+    already = [r["id"] for r in results if r["outcome"] == "already_rejected"]
+    failed = [r for r in results if not r["ok"]]
+    try:
+        await state.audit.record(
+            action_type=ActionType.PROPOSAL,
+            surface="proposal",
+            actor=by or "analyst",
+            actor_type="human",
+            # Every proposal rejected (or already rejected), some, or none.
+            outcome=("success" if not failed else "partial" if len(failed) < len(results) else "failure"),
+            result_summary=(
+                f"bulk reject requested={len(ids)} rejected={len(rejected)} "
+                f"already_rejected={len(already)} failed={len(failed)} reason={reason}"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — the per-proposal strict rows are the record
+        logger.warning("bulk rejection summary audit failed: %s", exc)
+
+    return {
+        "ok": not failed,
+        "requested": len(ids),
+        "rejected": rejected,
+        "already_rejected": already,
+        "failed": [r["id"] for r in failed],
+        "results": results,
+        "reason": reason,
+    }
 
 
-@router.post("/playbooks/reload")
-async def playbooks_reload(
-    request: Request,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "manage")),
+# --------------------------------------------------------------------------- #
+# Retired procedure routes (Round 14 SPEC §4.10.16, D44, E14). For one release the
+# reads stay as ALIASES over the runbook library in the old response shape, with
+# ``Deprecation`` and ``Link`` headers, behind ``runbooks:read``; every write answers
+# ``410 runbooks_moved``, because an old-shape write cannot be honoured without making
+# unreviewed text live (#9). Nothing here reads the retired registry.
+# --------------------------------------------------------------------------- #
+def _legacy_markdown_body(content: str) -> str:
+    """The exported Markdown without its front matter (the old ``body`` field)."""
+    if content.startswith("---\n"):
+        end = content.find("\n---\n", 4)
+        if end != -1:
+            return content[end + 5:].lstrip("\n")
+    return content
+
+
+def _legacy_alias_item(
+    runbook_id: str, version: Any, builtin: Any, *, include_content: bool,
 ) -> dict[str, Any]:
-    """Hot-reload playbooks from disk (atomic; a broken file never replaces a good
-    live set). Returns the load summary."""
-    summary = await state.refresh_playbooks()
-    await state.control_audit.record(
-        action_type=ActionType.PLAYBOOK,
-        surface="playbooks",
-        actor=current_username(request) or "operator",
-        result_summary=(
-            f"reloaded playbooks loaded={summary.get('loaded', 0)} "
-            f"skipped={len(summary.get('skipped', []))}"
-        ),
-    )
-    return summary
+    """One Published runbook in the old procedure item shape (read-only)."""
+    from ..engine.runbook_catalog import export_markdown
+
+    defn = version.definition
+    applies = defn.applies_when
+    escalate = next((s.escalate_if for s in defn.steps if s.escalate_if), None)
+    item: dict[str, Any] = {
+        "id": runbook_id,
+        "name": defn.title,
+        "version": version.version,
+        "description": defn.summary,
+        "priority": defn.priority,
+        "match": {
+            "rule_ids": list(applies.rule_ids),
+            "entity_types": [str(getattr(e, "value", e)) for e in applies.entity_types],
+            "mitre": list(dict.fromkeys([*applies.mitre, *defn.mitre])),
+            "min_event_count": applies.min_event_count or 0,
+            "any_tags": list(applies.any_tags),
+        },
+        "suggested_tools": [],
+        "rag_queries": list(defn.retrieval_queries),
+        "escalate_if": escalate,
+        "suggested_verdict_bias": None,
+        "source_type": "bundled" if builtin is not None else "operator",
+        "protected": builtin is not None,
+        "editable": False,
+        "file_name": builtin.file_name if builtin is not None else None,
+    }
+    if include_content:
+        content = export_markdown(version)
+        item["content"] = content
+        item["body"] = _legacy_markdown_body(content)
+    return item
 
 
-@router.post("/playbooks/dry-run")
-async def playbooks_dry_run(
-    body: PlaybookDryRunRequest,
+async def _legacy_published(state: AppState) -> list[tuple[str, Any, Any, Any]]:
+    from ..engine.runbook_catalog import published_versions
+    from ..stores.runbook_library import RunbookStoreUnavailable
+
+    try:
+        return await published_versions(state.runbook_library)
+    except RunbookStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "runbook_store_unavailable",
+            "message": "Runbooks could not be read. Try again.",
+        }) from exc
+
+
+def _deprecated(response: Response) -> None:
+    from ..engine.runbook_catalog import DEPRECATION_HEADERS
+
+    for name, value in DEPRECATION_HEADERS.items():
+        response.headers[name] = value
+
+
+@router.get("/playbooks", deprecated=True)
+async def playbooks(
+    response: Response,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
+    _=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Explain exact match and no-match reasons without running an investigation."""
-    await state.refresh_playbooks()
-    rules = [str(value).strip() for value in body.rule_ids if str(value).strip()]
-    cluster = Cluster(
-        signature="playbook-dry-run",
-        entity=Entity(type=body.entity_type, value="dry-run"),
-        group_by=body.entity_type,
-        rule_values=rules,
-        count=body.event_count,
-    )
-    return state.playbooks.diagnose(cluster)
+    """Deprecated alias: every Published runbook in the old procedure list shape. Use
+    ``GET /api/runbooks``."""
+    _deprecated(response)
+    items = [
+        _legacy_alias_item(rid, version, builtin, include_content=False)
+        for rid, version, builtin, _doc in await _legacy_published(state)
+    ]
+    cfg = getattr(state.execution_prefs, "runbooks", None)
+    return {"enabled": bool(getattr(cfg, "enabled", True)), "count": len(items), "playbooks": items}
 
 
-@router.get("/playbooks/coverage")
+@router.get("/playbooks/coverage", deprecated=True)
 async def playbooks_coverage(
+    request: Request,
+    response: Response,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
+    _=Depends(require_permission("cases", "read")),
+    __=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Coverage over the stored case population, paged without a 200-row cap."""
-    await state.refresh_playbooks()
-    offset = 0
-    page_size = 500
-    max_cases = 20_000
-    scanned = covered = 0
+    """Deprecated alias: which runbook each stored case would match (the fallback does
+    not count as coverage), over the newest 20,000 cases at most. Needs ``cases:read``
+    as well as ``runbooks:read``, answers ``409 runbook_scope_unsupported`` while
+    row-level data scope applies to the caller and ``503 case_store_unavailable`` when
+    cases cannot be read. ``truncated`` is true when more cases exist beyond the ones
+    read, or a later page could not be read: every figure is then a lower bound. Use
+    ``GET /api/runbooks/metrics`` for runbook coverage."""
+    # The figures are derived from cases, so the alias follows its successor (SPEC
+    # §4.10.15, D16): the same grants, the same row-scope refusal as
+    # ``GET /api/metrics/breakdown`` (failing closed), and the same bound
+    # (``runbook_catalog.METRICS_MAX_CASES``) read through the bounded case scan
+    # (``case_aggregate.scan_cases``, newest first, never offset paging; the cursor is
+    # released when it stops). Like ``runbook_catalog.cases_in_window``, it reports
+    # truncation only when a case beyond the bound exists, so a store holding exactly
+    # the bound reads as complete.
+    from ..engine import runbook_runs
+    from ..engine.case_aggregate import scan_cases
+    from ..engine.chat_starters import object_scoped
+    from ..engine.runbook_catalog import DEPRECATION_HEADERS, METRICS_MAX_CASES
+    from ..engine.runbook_match import match
+    from ..stores.runbook_library import RunbookStoreUnavailable
+
+    _deprecated(response)
+    principal = current_user(request)
+    role = getattr(principal, "role", "") if principal is not None else ""
+    if object_scoped(state, str(getattr(role, "value", role) or "")):
+        raise HTTPException(status_code=409, detail={
+            "code": "runbook_scope_unsupported",
+            "message": "Runbook figures are hidden while row-level data scope is on.",
+        }, headers=dict(DEPRECATION_HEADERS))
+    try:
+        catalog = await runbook_runs.load_catalog(state)
+    except RunbookStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "runbook_store_unavailable",
+            "message": "Runbooks could not be read. Try again.",
+        }, headers=dict(DEPRECATION_HEADERS)) from exc
+    prefs = state.execution_prefs
+    counts = {"scanned": 0, "covered": 0}
+    beyond_bound = False
     selected_counts: dict[str, int] = {}
     unmatched_rules: dict[str, int] = {}
-    while scanned < max_cases:
-        page, total = await state.cases.list(limit=page_size, offset=offset)
-        if not page:
-            break
+
+    def consume(page: list[Any]) -> None:
+        nonlocal beyond_bound
         for case in page:
-            count = max(
-                len(case.member_event_keys or []),
-                len(case.member_event_ids or []),
-                1,
-            )
-            cluster = Cluster(
-                signature=case.cluster_signature,
-                entity=case.entity,
-                group_by=case.entity.type,
-                rule_values=list(case.rule_ids or []),
-                count=count,
-            )
-            chosen, _reason = state.playbooks.select(cluster)
-            scanned += 1
-            if chosen is not None:
-                covered += 1
-                selected_counts[chosen.id] = selected_counts.get(chosen.id, 0) + 1
+            if not isinstance(case, Case):
+                try:
+                    case = Case.model_validate(case)
+                except Exception:  # noqa: BLE001 (an undecodable row is not a case)
+                    continue
+            if counts["scanned"] >= METRICS_MAX_CASES:
+                # A case past the bound exists: the figures are lower bounds.
+                beyond_bound = True
+                return
+            result = match(runbook_runs.case_facts(case, prefs), catalog.matchable, fallback=False)
+            counts["scanned"] += 1
+            if result.winner is not None:
+                counts["covered"] += 1
+                selected_counts[result.winner.id] = selected_counts.get(result.winner.id, 0) + 1
             else:
-                families = sorted({str(value).strip() for value in case.rule_ids if str(value).strip()}) or ["<no-rule-id>"]
+                families = sorted({str(v).strip() for v in case.rule_ids if str(v).strip()}) or ["<no-rule-id>"]
                 for family in families:
                     unmatched_rules[family] = unmatched_rules.get(family, 0) + 1
-            if scanned >= max_cases:
-                break
-        offset += len(page)
-        if offset >= total or len(page) < page_size:
-            break
+
+    try:
+        outcome = await scan_cases(
+            state.cases, consume, newest_first=True,
+            stop=lambda: beyond_bound,
+        )
+    except Exception as exc:  # noqa: BLE001 (the first page failed: nothing to report)
+        logger.warning("playbook coverage alias: the case store could not be read: %s", exc)
+        raise HTTPException(status_code=503, detail={
+            "code": "case_store_unavailable",
+            "message": "Cases could not be read. Try again.",
+        }, headers=dict(DEPRECATION_HEADERS)) from exc
+    scanned, covered = counts["scanned"], counts["covered"]
     return {
         "scanned_cases": scanned,
         "covered_cases": covered,
         "uncovered_cases": scanned - covered,
         "coverage_percent": round((covered / scanned) * 100, 1) if scanned else None,
-        "scan_limit": max_cases,
-        "truncated": scanned >= max_cases,
+        "scan_limit": METRICS_MAX_CASES,
+        # More cases than the bound, or a later page failed: every figure is a lower bound.
+        "truncated": beyond_bound or not outcome.complete,
         "selected_playbooks": [
             {"playbook_id": key, "case_count": value}
             for key, value in sorted(selected_counts.items(), key=lambda item: (-item[1], item[0]))
@@ -2603,91 +3495,137 @@ async def playbooks_coverage(
     }
 
 
-@router.get("/playbooks/selection/{case_id}")
+@router.get("/playbooks/selection/{case_id}", deprecated=True)
 async def playbook_selection(
     case_id: str,
+    response: Response,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
+    __=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Why a given case selected the playbook it did (from the audit trail)."""
+    """Deprecated alias: the runbook on a case and why it was attached (the first run
+    that is not abandoned). Use ``GET /api/cases/{case_id}/runbooks``."""
+    from ..engine.runbook_match import describe_explanation
+    from ..models import MatchExplanation
+
+    _deprecated(response)
     case = await state.cases.get(case_id)
+    runbook_id = ""
     reason = ""
-    try:
-        records = await state.audit.records_for_case(case_id)
-        for r in records:
-            actor = r.get("actor") if isinstance(r, dict) else getattr(r, "actor", "")
-            if actor == "playbook_selector":
-                reason = r.get("result_summary") if isinstance(r, dict) else getattr(r, "result_summary", "")
-                break
-    except Exception:  # noqa: BLE001 — explainability is best-effort
-        reason = ""
-    return {
-        "case_id": case_id,
-        "playbook_id": (case.playbook_id if case else ""),
-        "reason": reason,
-    }
+    if case is not None:
+        try:
+            runs = (await state.runbook_runs.get(case_id)).runs
+        except Exception:  # noqa: BLE001 (explainability is best-effort)
+            runs = []
+        run = next((r for r in runs if r.status != "abandoned"), None)
+        if run is not None:
+            runbook_id = run.runbook_id
+            info = run.attached_reason or {}
+            if run.attached_by in ("rule", "fallback") and "tier" in info and "matched" in info:
+                try:
+                    reason = describe_explanation(MatchExplanation.model_validate(info))
+                except Exception:  # noqa: BLE001
+                    reason = ""
+            elif run.attached_actor:
+                reason = f"Added by {run.attached_actor}"
+        else:
+            runbook_id = str(getattr(case, "playbook_id", "") or "")
+    return {"case_id": case_id, "playbook_id": runbook_id, "reason": reason}
 
 
-@router.get("/playbooks/{playbook_id}")
+@router.get("/playbooks/{playbook_id}", deprecated=True)
 async def playbook_detail(
     playbook_id: str,
+    response: Response,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
+    _=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Open one playbook as plain UTF-8 Markdown plus parsed catalog metadata."""
-    await state.refresh_playbooks()
-    try:
-        playbook, content = state.playbooks.read_document(playbook_id)
-    except Exception as exc:
-        _raise_playbook_management_http(exc)
-        raise AssertionError("unreachable")  # pragma: no cover
-    return _playbook_payload(state, playbook, content=content)
+    """Deprecated alias: one Published runbook in the old procedure detail shape,
+    ``content`` and ``body`` exported as Markdown. A retired bundled procedure id
+    answers with the runbook that replaced it; an unknown id answers the old ``404``
+    (``{"detail": "playbook not found"}``). Use ``GET /api/runbooks/{id}``."""
+    from ..engine.runbook_model import LEGACY_BUNDLED_RUNBOOK_MAP
+
+    _deprecated(response)
+    wanted = {playbook_id, LEGACY_BUNDLED_RUNBOOK_MAP.get(playbook_id, playbook_id)}
+    for rid, version, builtin, _doc in await _legacy_published(state):
+        if rid in wanted:
+            return _legacy_alias_item(rid, version, builtin, include_content=True)
+    from ..engine.runbook_catalog import DEPRECATION_HEADERS
+
+    raise HTTPException(status_code=404, detail="playbook not found", headers=dict(DEPRECATION_HEADERS))
 
 
-@router.put("/playbooks/{playbook_id}")
-async def playbook_update(
-    playbook_id: str,
-    body: PlaybookUpdateRequest,
-    request: Request,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "manage")),
-) -> dict[str, Any]:
-    """Atomically update an operator playbook. Bundled playbooks are read-only."""
-    try:
-        playbook, summary = await state.update_playbook(
-            playbook_id,
-            body.content,
-            actor=current_username(request) or "operator",
-            expected_revision=body.expected_revision,
-        )
-    except Exception as exc:
-        _raise_playbook_management_http(exc)
-        raise AssertionError("unreachable")  # pragma: no cover
-    await state.control_audit.record(
-        action_type=ActionType.PLAYBOOK,
-        surface="playbooks",
-        actor=current_username(request) or "operator",
-        result_summary=f"updated operator playbook {playbook.id} v{playbook.version}",
-    )
-    return {"ok": True, "playbook": _playbook_payload(state, playbook), "reload": summary}
+def _runbooks_moved() -> Any:
+    from ..engine.runbook_catalog import runbooks_moved_response
+
+    return runbooks_moved_response()
+
+
+@router.post("/playbooks", deprecated=True, status_code=410)
+async def playbooks_create(_=Depends(require_permission("runbooks", "manage"))) -> Any:
+    """Retired write: ``410 runbooks_moved``. Create a runbook with ``POST /api/runbooks``."""
+    return _runbooks_moved()
+
+
+@router.post("/playbooks/reload", deprecated=True, status_code=410)
+async def playbooks_reload(_=Depends(require_permission("runbooks", "manage"))) -> Any:
+    """Retired write: ``410 runbooks_moved``. The runbook library needs no reload."""
+    return _runbooks_moved()
+
+
+@router.post("/playbooks/dry-run", deprecated=True, status_code=410)
+async def playbooks_dry_run(_=Depends(require_permission("runbooks", "read"))) -> Any:
+    """Retired: ``410 runbooks_moved``. Preview matching with ``POST
+    /api/runbooks/match-preview``."""
+    return _runbooks_moved()
+
+
+@router.put("/playbooks/{playbook_id}", deprecated=True, status_code=410)
+async def playbook_update(playbook_id: str, _=Depends(require_permission("runbooks", "manage"))) -> Any:
+    """Retired write: ``410 runbooks_moved``. Edit a draft with ``PUT
+    /api/runbooks/{id}/draft``."""
+    del playbook_id
+    return _runbooks_moved()
 
 
 # --------------------------------------------------------------------------- #
 # Metrics / analytics (deterministic aggregation over cases + the cost ledger)
 # --------------------------------------------------------------------------- #
 @router.get("/metrics")
-async def metrics(window_hours: int = 24, state: AppState = Depends(get_state)) -> dict[str, Any]:
-    cases, _total = await state.cases.list(limit=2000)
-    out = compute_metrics(cases)
-    try:
-        out["cost"] = await state.usage_store.summary(window_hours=max(1, window_hours))
-    except Exception:  # noqa: BLE001 — cost is best-effort on the metrics view
-        out["cost"] = {}
-    return out
+async def metrics(
+    request: Request,
+    window_hours: int = 24,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
+) -> dict[str, Any]:
+    """The Metrics page's operational rollup. Needs ``metrics:view``, like every other
+    metrics read. Its ``cost`` part is the AI spend of the window, which ``cost:view``
+    governs: for a caller without that grant it is ``{}``."""
+    # Round 14 roles-04 and roles-11: the figures are store-wide, so the gate matches
+    # posture, trends and the breakdown; spend follows the one cost:view rule (the Cost
+    # page, GET /api/usage/summary, the usage breakdown, chat), and ``{}`` is the shape
+    # the payload already uses when spend cannot be read.
+    # Round 12: exact store-wide headline counts (status / verdict / disposition
+    # aggregates) beside figures over the SAME shared all-time case population the
+    # posture rollups read, with a truncation marker for the latter. See
+    # ``routes_metrics.legacy_metrics_payload``. An unreadable store is a 503.
+    from . import routes_metrics
+    from .deps import has_permission
+
+    payload = await routes_metrics.legacy_metrics_payload(state, window_hours)
+    if not await has_permission(request, "cost", "view"):
+        payload["cost"] = {}
+    return payload
 
 
 @router.get("/feedback/stats")
-async def feedback_stats_route(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def feedback_stats_route(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
+) -> dict[str, Any]:
+    """Analyst feedback agreement over the newest cases, a metrics read behind
+    ``metrics:view`` like ``GET /api/metrics`` (whose ``feedback`` part it repeats)."""
     cases, _total = await state.cases.list(limit=2000)
     return feedback_stats(cases)
 
@@ -2754,6 +3692,7 @@ async def demo_enable(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human", outcome="success",
         result_summary=f"demo enabled mode={mode} run_id={status.get('run_id')}",
     )
     return status
@@ -2780,6 +3719,9 @@ async def demo_incident(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human",
+        # Refused (cooling down, an unknown scenario): nothing was triggered.
+        outcome="success" if result.get("triggered") else "failure",
         result_summary=(
             f"demo incident trigger triggered={bool(result.get('triggered'))} "
             f"scenario_id={result.get('scenario_id') or scenario_id or ''} "
@@ -2800,6 +3742,7 @@ async def demo_reset(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human", outcome="success",
         result_summary=f"demo reset run_id={status.get('run_id')}",
     )
     return status
@@ -2817,6 +3760,7 @@ async def demo_disable(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human", outcome="success",
         result_summary=f"demo disabled run_id={before.get('run_id')}",
     )
     return status
@@ -2827,8 +3771,15 @@ async def demo_disable(
 # no-auth "old version" remains the default and fully available.
 # --------------------------------------------------------------------------- #
 class LoginBody(BaseModel):
+    # Any text is accepted here: a username with a control character (``\u0000``
+    # among them, ``username_char_problem``) is answered by the route as an ordinary
+    # failed sign-in (401) and recorded, cleaned, as attempted. Length is bounded where
+    # accounts are created, not here: an older build allowed longer names.
     username: str
     password: str
+    # Round 12: "Remember me" (additive; the proxies forward arbitrary JSON). The
+    # server decides eligibility (``_remember_decision``) — a request is never a grant.
+    remember: bool = False
 
 
 def _resolved_role(state: AppState, user) -> str:
@@ -2846,9 +3797,323 @@ def _session_policy(state: AppState):
     return getattr(state.prefs, "session_policy", None)
 
 
+# --------------------------------------------------------------------------- #
+# Remember me (Round 12, SPEC D14). One cookie helper replaces the five copies:
+# a REMEMBERED sign-in gets a persistent cookie (Max-Age = the policy duration, the
+# JWT ``exp`` matches); every other sign-in gets a browser-session cookie (no
+# Max-Age) bounded by the server's idle/absolute limits. The cookie NAME is an
+# existing wire identifier and is unchanged (AGENTS.md naming contract).
+# --------------------------------------------------------------------------- #
+_SESSION_COOKIE = "tlsoc_token"
+
+# Revocations this session's own user asked for on this device (logout, "Sign out
+# this device"): /auth/me reports no reason for them.
+_DELIBERATE_SIGNOUTS = frozenset({"logout", "self_signout"})
+
+# Why a remember request was refused (or ``ok`` / ``not_requested``). Closed set.
+REMEMBER_REASONS = ("ok", "not_requested", "disabled", "role_excluded", "insecure_transport")
+
+
+def _set_session_cookie(
+    response: Response, state: AppState, token: str, *, remember_seconds: int = 0
+) -> None:
+    """Set the session cookie. ``remember_seconds > 0`` makes it persistent."""
+    kwargs: dict[str, Any] = {
+        "httponly": True,
+        "samesite": "lax",
+        "secure": bool(state.secrets.auth_cookie_secure),
+        "path": "/",
+    }
+    if remember_seconds > 0:
+        kwargs["max_age"] = int(remember_seconds)
+    response.set_cookie(_SESSION_COOKIE, token, **kwargs)
+
+
+def _clear_session_cookie(response: Response, state: AppState) -> None:
+    """Clear the session cookie with the SAME attributes it was set with."""
+    response.delete_cookie(
+        _SESSION_COOKIE,
+        path="/",
+        samesite="lax",
+        secure=bool(state.secrets.auth_cookie_secure),
+        httponly=True,
+    )
+
+
+def _host_is_loopback(host: str) -> bool:
+    """Whether a ``Host``-style value (optionally with a port) names this machine."""
+    import ipaddress
+
+    value = (host or "").strip().lower()
+    if not value:
+        return False
+    if value.startswith("["):  # [::1]:8080
+        end = value.find("]")
+        value = value[1:end] if end > 0 else value[1:]
+    elif value.count(":") == 1:  # host:port (a bare IPv6 address has several colons)
+        value = value.split(":", 1)[0]
+    value = value.rstrip(".")
+    if value == "localhost" or value.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+# Headers a reverse proxy adds when it forwards a request. Their presence means the
+# request did not come straight from a browser on this machine, whatever ``Host`` says.
+_FORWARDING_HEADERS = (
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
+)
+
+
+def _peer_is_loopback(request: Request) -> bool:
+    import ipaddress
+
+    client = getattr(request, "client", None)
+    host = str(getattr(client, "host", "") or "").strip().lower()
+    if not host:
+        return False
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _request_is_loopback(request: Request | None) -> bool:
+    """True only for a DIRECT local request: the TCP peer is a loopback address, the
+    ``Host`` header names this machine, and no reverse-proxy forwarding header is
+    present. A proxied request — even one whose ``Host`` was rewritten to
+    ``127.0.0.1`` by a proxy on the same host — never counts, because the browser
+    behind the proxy may be anywhere on the network (OWASP ASVS 3.3.1). The
+    development server's proxy (``./scripts/run-demo.sh``) forwards without these
+    headers, so a browser on the same machine keeps Remember me there."""
+    if request is None:
+        return False
+    if any(request.headers.get(name) for name in _FORWARDING_HEADERS):
+        return False
+    if not _peer_is_loopback(request):
+        return False
+    return _host_is_loopback(request.headers.get("host") or (request.url.hostname or ""))
+
+
+def _remember_insecure(state: AppState, request: Request | None) -> bool:
+    """Whether a persistent cookie would cross plain HTTP to a network origin: the
+    cookie is not ``Secure`` (``AUTH_COOKIE_SECURE`` off) and the request is not a
+    direct local one (see :func:`_request_is_loopback`). OWASP ASVS 3.3.1."""
+    if bool(getattr(state.secrets, "auth_cookie_secure", False)):
+        return False
+    return not _request_is_loopback(request)
+
+
+def _remember_policy(state: AppState):
+    return getattr(_session_policy(state), "remember_me", None)
+
+
+def _secure_cookies_configured(state: AppState) -> bool:
+    """Whether ``AUTH_COOKIE_SECURE`` was set explicitly (environment or ``.env``)
+    rather than left at its ``false`` default. The Session policy editor uses it to
+    say what is true ("AUTH_COOKIE_SECURE=false" versus "not set"); it describes the
+    shape of the configuration, never a secret value."""
+    fields_set = getattr(state.secrets, "model_fields_set", None) or set()
+    return "auth_cookie_secure" in fields_set
+
+
+def _remember_me_status(state: AppState, request: Request | None) -> dict[str, Any]:
+    """The PUBLIC ``/setup/status`` ``remember_me`` block.
+
+    Non-secret by construction: an on/off flag, the lifetime a new remembered
+    sign-in gets (the policy duration capped by the absolute lifetime), whether THIS
+    request's transport would refuse it, whether the session cookie is marked
+    ``Secure`` (observable on every ``Set-Cookie`` anyway — lets the sign-in page and
+    the Session policy editor tell "plain HTTP" from "HTTPS without secure cookies"),
+    whether ``AUTH_COOKIE_SECURE`` was set explicitly or left at its default
+    (``secure_cookies_configured``, a boolean about the configuration's shape),
+    how long a sign-in WITHOUT Remember me lasts (the token lifetime,
+    ``AUTH_TOKEN_HOURS``), and ``idle_seconds``: how long a remembered device may go
+    unused before it is signed out (0 when no inactivity limit is shorter than the
+    remembered lifetime), so the page never promises more than the server keeps."""
+    rm = _remember_policy(state)
+    enabled = bool(getattr(rm, "enabled", False))
+    duration = remember_window_seconds(_session_policy(state))
+    if not duration:
+        duration = int(getattr(rm, "duration_seconds", 0) or 0)
+    idle_seconds = remember_idle_window_seconds(_session_policy(state))
+    insecure_blocked = bool(
+        enabled
+        and not bool(getattr(rm, "allow_insecure_http", False))
+        and _remember_insecure(state, request)
+    )
+    standard = int(getattr(getattr(state, "auth", None), "token_seconds", 0) or 0)
+    return {
+        "enabled": enabled,
+        "duration_seconds": duration,
+        "idle_seconds": idle_seconds,
+        "insecure_blocked": insecure_blocked,
+        "secure_cookies": bool(getattr(state.secrets, "auth_cookie_secure", False)),
+        "secure_cookies_configured": _secure_cookies_configured(state),
+        "standard_session_seconds": standard,
+    }
+
+
+def _remember_decision(
+    state: AppState, request: Request | None, user: Any, requested: bool
+) -> tuple[int, str]:
+    """Server-side "Remember me" eligibility: ``(remember_seconds, reason)``.
+
+    ``remember_seconds`` is the remembered lifetime when granted (the policy
+    duration, capped by the standard absolute lifetime), else 0. Reasons, in
+    precedence order: ``not_requested``, ``disabled`` (policy off),
+    ``role_excluded`` (the account's stored role OR its effective role — every
+    principal is effectively ``super_admin`` while RBAC is off — is excluded), and
+    ``insecure_transport`` (see :func:`_remember_insecure`, unless the admin allowed
+    plain HTTP). ``ok`` when granted. MFA and step-up are never affected. The same
+    exclusion is re-checked on every request (``deps.live_session_limits``)."""
+    if not requested:
+        return (0, "not_requested")
+    rm = _remember_policy(state)
+    if rm is None or not bool(getattr(rm, "enabled", False)):
+        return (0, "disabled")
+    excluded = {
+        str(r).strip().lower() for r in (getattr(rm, "excluded_roles", None) or []) if str(r).strip()
+    }
+    if excluded:
+        roles = set(effective_roles(state.prefs, getattr(user, "role", "")))
+        roles.add(str(_resolved_role(state, user) or "").strip().lower())
+        if roles & excluded:
+            return (0, "role_excluded")
+    if not bool(getattr(rm, "allow_insecure_http", False)) and _remember_insecure(state, request):
+        return (0, "insecure_transport")
+    duration = min(REMEMBER_MAX_SECONDS, remember_window_seconds(_session_policy(state)))
+    if duration <= 0:
+        return (0, "disabled")
+    return (duration, "ok")
+
+
+def _duration_label(seconds: int) -> str:
+    """A compact audit label for a lifetime: ``24h`` / ``90m``."""
+    seconds = int(seconds or 0)
+    if seconds > 0 and seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    return f"{max(1, round(seconds / 60))}m"
+
+
+def _token_expires_iso(state: AppState, token: str) -> str:
+    """The ISO ``exp`` of a token this server just minted ("" when unknown)."""
+    try:
+        exp = int((state.auth.claims_of(token) or {}).get("exp", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    if exp <= 0:
+        return ""
+    from datetime import datetime, timezone
+
+    try:
+        return datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _remember_fields(
+    state: AppState, token: str, remember_seconds: int, reason: str
+) -> dict[str, Any]:
+    """The additive ``remembered`` / ``remember_reason`` / ``session_expires_at``
+    fields every session-minting response carries."""
+    return {
+        "remembered": remember_seconds > 0,
+        "remember_reason": reason if reason in REMEMBER_REASONS else "disabled",
+        "session_expires_at": _token_expires_iso(state, token),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Identity audit rows (Round 14 SPEC §4.5.3, §4.5.4). Sign-in, sign-out, MFA and
+# session events are recorded BEST-EFFORT WITH A SIGNAL with the structured fields
+# (action, outcome, actor type, client, session reference, role at the time, request
+# id): an audit outage must never stop a person signing in, signing out or ending a
+# session, and a dropped row is logged at error level and counted
+# (``app.audit.identity``). Every change to an account, a role or the settings is
+# instead AUDIT-FIRST (``audited_write``): no change without its row.
+# --------------------------------------------------------------------------- #
+def _session_summary(event: str, sid: str, detail: str) -> str:
+    """The session row's one-line summary, in the form older rows used
+    (``session_create sid=1a2b3c4d… detail``), so existing readers keep working."""
+    return f"{event} sid={_sid_tag(sid)} {detail}".strip()
+
+
+def _user_target(username: str, label: str | None = None) -> dict[str, str] | None:
+    name = str(username or "").strip()
+    if not name:
+        return None
+    return {"type": "user", "id": name, "label": str(label or name)}
+
+
+async def _patch_user_or_404(state: AppState, username: str, **fields: Any) -> Any:
+    """The store write of an audited account change: patch ONLY the named fields
+    under the user store's own compare-and-swap (never save a copy read before the
+    action row was appended, which would revert whatever an administrator saved to
+    the account meanwhile). An account deleted in that window answers ``404 user not
+    found``, so ``audited_write`` records the paired failure row instead of a success
+    that never happened."""
+    updated = await state.users.update(username, **fields)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    return updated
+
+
+async def _record_identity_event(
+    state: AppState,
+    request: Request,
+    *,
+    action: str,
+    actor: str,
+    summary: str,
+    outcome: str = "success",
+    surface: str = "auth",
+    actor_type: str = "human",
+    user: Any = None,
+    token: str | None = None,
+    sid: str | None = None,
+    target: Any = None,
+    tool_input: Any = None,
+    from_request: bool = True,
+) -> None:
+    """Append one identity row to the real audit log (never the Demo one), best effort
+    with a signal (:func:`app.audit.identity.record_identity_event`): a failure is
+    logged, counted and never reaches the caller. ``user``/``token``/``sid`` name the
+    principal and session the row is about when they are not the request's own (a
+    sign-in that has just minted its session). ``from_request=False`` on every row
+    written before its actor has signed in: the cookie or bearer token the request
+    happens to carry (another account's, in the same browser) is never read."""
+    await record_identity_event(
+        state, request, action=action, actor=actor, summary=summary, outcome=outcome,
+        surface=surface, actor_type=actor_type, user=user, token=token, sid=sid,
+        target=target, tool_input=tool_input, from_request=from_request,
+    )
+
+
+def _session_tool_input(state: AppState, sid: str | None, **extra: Any) -> dict[str, Any] | None:
+    """``{"session": <reference of the session acted on>, ...}`` for a session row
+    whose subject is not the request's own session (a revocation)."""
+    auth = getattr(state, "auth", None)
+    ref_of = getattr(auth, "session_ref", None)
+    ref = ref_of(sid) if callable(ref_of) and sid else None
+    out: dict[str, Any] = {k: v for k, v in extra.items() if v is not None}
+    if ref:
+        out["session"] = ref
+    return out or None
+
+
 async def _register_session(
     state: AppState, request: Request, token: str, *, mfa_method: str = "",
-    refresh_hash: str = "",
+    refresh_hash: str = "", remember_seconds: int = 0,
 ) -> str:
     """Session-create HOOK (Wave 3) — called at EVERY cookie-set site (login,
     mfa/verify, sso/callback). Decodes the freshly-minted token to read its ``sid``/
@@ -2868,19 +4133,40 @@ async def _register_session(
         username = str(claims.get("sub") or "")
         tv = int(claims.get("tv", 0) or 0)
         policy = _session_policy(state)
-        idle = int(getattr(policy, "idle_timeout", 0) or 0)
-        absolute = int(getattr(policy, "absolute_lifetime", 0) or 0)
+        limits = limits_for_username(state, username)
+        remembered = int(remember_seconds or 0) > 0
+        if remembered:
+            # Stamp the REMEMBERED limits on the row (display + prune); the live
+            # policy stays authoritative in is_active().
+            absolute = int(remember_seconds)
+            idle = limits.remember_idle if 0 < limits.remember_idle <= absolute else absolute
+        else:
+            idle, absolute = limits.idle, limits.absolute
         meta = session_metadata(request)
         await sessions.create(
             sid=sid, username=username, token_version=tv,
             refresh_hash=refresh_hash or "",
             idle_timeout=idle, absolute_lifetime=absolute,
-            mfa_method=mfa_method or "", **meta,
+            mfa_method=mfa_method or "",
+            remember=remembered,
+            remember_seconds=int(remember_seconds or 0) if remembered else 0,
+            token_expires_at=_token_expires_iso(state, token),
+            **meta,
         )
-        await _audit_session(
-            state, "session_create", username, sid,
-            f"new session ({meta.get('client_type', '') or 'unknown'} "
-            f"{meta.get('ua_browser', '')}/{meta.get('ua_os', '')})".strip(),
+        await _record_identity_event(
+            state, request, action="session.created", actor=username, surface="session",
+            token=token, user=auth.principal(username),
+            summary=_session_summary(
+                "session_create", sid,
+                (
+                    f"new session ({meta.get('client_type', '') or 'unknown'} "
+                    f"{meta.get('ua_browser', '')}/{meta.get('ua_os', '')})"
+                    + (f" remembered {_duration_label(remember_seconds)}" if remembered else "")
+                ).strip(),
+            ),
+            target=_user_target(username),
+            tool_input={"remembered": remembered, "mfa_method": mfa_method or "password"},
+            from_request=False,
         )
         # Best-effort new-device notification (a first session for this UA/device).
         try:
@@ -2931,43 +4217,87 @@ async def auth_login(
     auth = state.auth
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
-    token = auth.authenticate(body.username, body.password)
-    if not token:
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="auth", actor=body.username or "",
-            result_summary="login failed",
+    # A username no account can have (a control character, NUL among them) is never
+    # looked up; the check still runs, against no account, so it costs the same. The
+    # failed attempt is recorded with the name as attempted, cleaned and bounded on
+    # write (``AuditDoc``), and its summary says why it was refused. A long name is
+    # looked up as usual (an older build created accounts with no length bound).
+    refused = username_char_problem(body.username)
+    # Constant-cost credential check (no token yet: the lifetime depends on the
+    # Remember-me decision below, which needs the verified principal's role).
+    # Round 16 (B18): the PBKDF2 work runs off the event loop, under a semaphore.
+    checked = await auth.acheck_password("" if refused else body.username, body.password)
+    user = auth.principal(body.username) if checked and refused is None else None
+    if user is None:
+        await _record_identity_event(
+            state, request, action="auth.login_failed", outcome="failure",
+            actor=body.username or "",
+            summary="login failed" if refused is None else f"login failed: {refused}",
+            from_request=False,
         )
         raise HTTPException(status_code=401, detail="invalid credentials")
-    user = auth.principal(body.username) or auth.verify(token)
     # --- MFA phase 1 (Wave 2 / F3): the password is correct, but the user has MFA
     # enabled (or its role is enforced). Do NOT mint a session cookie/token here —
     # return a SHORT-LIVED pending token the client exchanges at /auth/mfa/verify
-    # with a TOTP/recovery code. A user with mfa_enabled=False is UNAFFECTED. ---
+    # with a TOTP/recovery code. A user with mfa_enabled=False is UNAFFECTED.
+    # Round 12: the user's Remember-me REQUEST rides in the SIGNED pending token
+    # (``rm``); eligibility is decided when the session is minted. Remember me never
+    # skips the second factor. ---
     if auth.requires_mfa(user.username):
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="auth", actor=user.username,
-            result_summary="password ok; mfa challenge issued",
+        # --- Mandated-enrollment phase 1 (additive): the account is REQUIRED to use
+        # MFA (per-user ``mfa_required`` mandate or role enforce_for_roles) but has
+        # not ENROLLED yet, so a code challenge is impossible. Return the SAME
+        # short-lived pending token plus ``mfa_enrollment_required`` — the client
+        # completes enrollment at /auth/mfa/enroll-setup + /auth/mfa/enroll-confirm
+        # (which then mints the full session). No cookie/session here either. ---
+        if not auth.mfa_enabled(user.username):
+            await _record_identity_event(
+                state, request, action="auth.mfa_challenged", actor=user.username,
+                user=user, summary="password ok; mfa enrollment required",
+                target=_user_target(user.username),
+                tool_input={"enrollment_required": True}, from_request=False,
+            )
+            return {
+                "requires_mfa": True,
+                "mfa_enrollment_required": True,
+                "pending_token": auth.begin_mfa(user.username, remember=body.remember),
+            }
+        await _record_identity_event(
+            state, request, action="auth.mfa_challenged", actor=user.username,
+            user=user, summary="password ok; mfa challenge issued",
+            target=_user_target(user.username), from_request=False,
         )
         return {
             "requires_mfa": True,
-            "pending_token": auth.begin_mfa(user.username),
+            "pending_token": auth.begin_mfa(user.username, remember=body.remember),
         }
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, user, body.remember
+    )
+    minted = auth.mint_session(user.username, remember_seconds=remember_seconds)
+    if minted is None:  # pragma: no cover — the principal was verified above
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    token, _minted_user = minted
     # Best-effort: record the login timestamp (multi-user store only).
     try:
         await state.users.update(user.username, last_login_at=iso_now())
     except Exception:  # noqa: BLE001
         pass
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=user.username,
-        result_summary="login ok",
+    await _record_identity_event(
+        state, request, action="auth.login", actor=user.username, user=user, token=token,
+        summary=(
+            f"login ok (remembered {_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else "login ok"
+        ),
+        target=_user_target(user.username),
+        tool_input={"method": "password", "remembered": remember_seconds > 0},
+        from_request=False,
     )
     # Wave 3: register the session (sid/tv from the token) with request metadata.
-    await _register_session(state, request, token, mfa_method="password")
-    response.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    await _register_session(
+        state, request, token, mfa_method="password", remember_seconds=remember_seconds
     )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {
         "token": token,
         "user": {
@@ -2976,28 +4306,131 @@ async def auth_login(
             "must_change_password": bool(user.must_change_password),
             "mfa_enabled": bool(getattr(user, "mfa_enabled", False)),
         },
+        **_remember_fields(state, token, remember_seconds, remember_reason),
     }
 
 
+def _object_scoped_for(state: AppState, user: Any) -> bool:
+    """Does row-level (object) data scope apply to ``user``'s case reads? The one rule
+    the chat starters and the metrics routes use; an unreadable configuration counts
+    as scoped (fail closed)."""
+    from ..engine.chat_starters import object_scoped
+
+    role = getattr(user, "role", "") if user is not None else ""
+    try:
+        return bool(object_scoped(state, str(getattr(role, "value", role) or "")))
+    except Exception:  # noqa: BLE001 -- fail closed
+        return True
+
+
 @router.get("/auth/me")
-async def auth_me(request: Request, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def auth_me(
+    request: Request, response: Response, state: AppState = Depends(get_state)
+) -> dict[str, Any]:
+    """The session state the console boots from (PUBLIC).
+
+    Round 12: REGISTRY-AWARE. Beyond the JWT signature/``exp``/active-user check it
+    runs the same session-registry evaluation as every protected route (revocation,
+    per-user token version, idle and absolute limits — standard or remembered). When
+    the session has ended it answers ``authenticated: false`` with a ``reason``
+    (``revoked`` | ``idle_expired`` | ``absolute_expired`` | ``tv_mismatch``) and
+    clears the cookie, so the console lands on the sign-in page instead of a shell
+    where every call 401s. A session-store outage keeps trusting the JWT (as every
+    protected route does). A live session carries an additive ``session`` summary
+    ``{remember, expires_at, idle_expires_at}``.
+
+    Round 14 (SPEC §4.4.5, D16): a signed-in answer also carries ``object_scoped``,
+    true when row-level (object) data scope applies to the viewer's case reads (the
+    rule the chat starters use, ``chat_starters.object_scoped``, failing closed), so
+    the Console hides case-derived dashboard panels instead of showing aggregates the
+    viewer could not read row by row. With sign-in off the answer is unchanged (no
+    viewer role, so no row scope: an absent ``object_scoped`` reads as false)."""
     auth = state.auth
     if not auth.is_enabled:
         return {"authenticated": True, "auth_enabled": False, "user": None}
-    token = request.cookies.get("tlsoc_token") or _bearer(request)
+    cookie_token = request.cookies.get(_SESSION_COOKIE)
+    token = cookie_token or _bearer(request)
     user = auth.verify(token) if token else None
+
+    def _ended(reason: str | None, lifetime: int | None = None,
+               remembered: bool | None = None) -> dict[str, Any]:
+        if cookie_token:
+            _clear_session_cookie(response, state)
+        out: dict[str, Any] = {"authenticated": False, "auth_enabled": True, "user": None}
+        if reason:
+            out["reason"] = reason
+        if lifetime:
+            out["lifetime_seconds"] = int(lifetime)
+        if remembered is not None:
+            out["remembered"] = bool(remembered)
+        return out
+
+    if user is None:
+        if not token:
+            return {"authenticated": False, "auth_enabled": True, "user": None}
+        expired = auth.expired_session_claims(token)
+        if expired is not None:
+            # A token this server signed whose own lifetime ran out: the session
+            # ended at its absolute limit. The reason is reported (with the lifetime
+            # for API readers); the Console never states how long the session lasted.
+            try:
+                lifetime = int(expired.get("exp", 0)) - int(expired.get("iat", 0))
+            except (TypeError, ValueError):
+                lifetime = 0
+            return _ended("absolute_expired", lifetime if lifetime > 0 else None,
+                          expired.get("rm") is True)
+        return _ended(None)
+    verdict = await evaluate_session(request, state, auth, user, token)
+    if verdict.reason is not None:
+        if verdict.reason == "revoked" and str(
+            (verdict.row or {}).get("revoke_reason") or ""
+        ) in _DELIBERATE_SIGNOUTS:
+            # A deliberate sign-out of this very session needs no explanation.
+            return _ended(None)
+        lifetime: int | None = None
+        row_remembered: bool | None = None
+        if verdict.row is not None and verdict.limits is not None:
+            idle, absolute = verdict.limits.for_row(verdict.row)
+            if verdict.reason == "absolute_expired":
+                lifetime = absolute or None
+            elif verdict.reason == "idle_expired":
+                lifetime = idle or None
+            row_remembered = bool(verdict.row.get("remember"))
+        return _ended(verdict.reason, lifetime, row_remembered)
+    session: dict[str, Any] = {"remember": bool(getattr(user, "remember", False))}
+    if verdict.row is not None and verdict.limits is not None:
+        from ..stores.sessions import SessionStore
+
+        expires_at, idle_expires_at = SessionStore.effective_expiry(
+            verdict.row, **verdict.limits.kwargs()
+        )
+        # Remembered only while the LIVE policy still remembers this principal
+        # (Remember me on, role not excluded).
+        remembered = bool(verdict.row.get("remember")) and verdict.limits.remember_enabled
+        session.update(
+            remember=remembered,
+            expires_at=expires_at,
+            idle_expires_at=idle_expires_at,
+        )
+        if cookie_token and bool(verdict.row.get("remember")) and not remembered:
+            # Remember me was turned off or this role was excluded after the sign-in:
+            # turn the persistent cookie into a browser-session cookie, so it no
+            # longer survives a browser restart (the server already judges the
+            # session by the standard limits).
+            _set_session_cookie(response, state, cookie_token)
+    else:
+        session["expires_at"] = _token_expires_iso(state, token or "")
     return {
-        "authenticated": user is not None,
+        "authenticated": True,
         "auth_enabled": True,
-        "user": (
-            {
-                "username": user.username,
-                "role": _resolved_role(state, user),
-                "must_change_password": bool(user.must_change_password),
-                "mfa_enabled": bool(getattr(user, "mfa_enabled", False)),
-            }
-            if user else None
-        ),
+        "user": {
+            "username": user.username,
+            "role": _resolved_role(state, user),
+            "must_change_password": bool(user.must_change_password),
+            "mfa_enabled": bool(getattr(user, "mfa_enabled", False)),
+        },
+        "session": session,
+        "object_scoped": _object_scoped_for(state, user),
     }
 
 
@@ -3014,13 +4447,22 @@ async def auth_logout(
         sid = str((claims or {}).get("sid") or "")
         username = str((claims or {}).get("sub") or "")
         if sid:
+            revoked = False
             try:
-                if await state.sessions.revoke(sid, by=username, reason="logout"):
-                    await _audit_session(state, "session_revoke", username, sid, "logout")
+                revoked = bool(await state.sessions.revoke(sid, by=username, reason="logout"))
             except Exception:  # noqa: BLE001
                 pass
+            if revoked:
+                await _record_identity_event(
+                    state, request, action="auth.logout", actor=username, surface="session",
+                    user=auth.principal(username) if username else None, sid=sid,
+                    summary=_session_summary("session_revoke", sid, "logout"),
+                    target=_user_target(username),
+                )
+            # A chat answer this session started stops with it (never raises).
+            await _stop_chat_turns(state, username, sid=sid)
     # Mirror the set_cookie attributes so the cookie is reliably cleared.
-    response.delete_cookie("tlsoc_token", samesite="lax", secure=state.secrets.auth_cookie_secure)
+    _clear_session_cookie(response, state)
     return {"ok": True}
 
 
@@ -3035,7 +4477,11 @@ async def auth_change_password(
 ) -> dict[str, Any]:
     """Self-service password change (requires a valid session). Verifies the current
     password, sets the new one and clears ``must_change_password``. Works only for
-    multi-user accounts; the env single-admin has no persisted record to update."""
+    multi-user accounts; the env single-admin has no persisted record to update.
+
+    Round 16 (B21): a successful change signs out the caller's other sessions (this
+    one stays) and stops their chat answers, writes a ``session.revoked`` row and
+    returns ``sessions_revoked``."""
     auth = state.auth
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
@@ -3046,8 +4492,14 @@ async def auth_change_password(
     new_pw = (body.new_password or "").strip()
     if len(new_pw) < 8:
         raise HTTPException(status_code=400, detail="new password must be at least 8 characters")
-    # Re-authenticate with the current password (constant-time, no oracle).
-    if auth.authenticate(principal.username, body.current_password) is None:
+    # Re-authenticate with the current password (constant-time, no oracle), off the
+    # event loop (Round 16, B18).
+    if not await auth.acheck_password(principal.username, body.current_password):
+        await _record_identity_event(
+            state, request, action="auth.password_change_failed", outcome="failure",
+            actor=principal.username, summary="password change refused: current password incorrect",
+            target=_user_target(principal.username),
+        )
         raise HTTPException(status_code=400, detail="current password is incorrect")
     user = await state.users.get(principal.username)
     if user is None:
@@ -3055,19 +4507,59 @@ async def auth_change_password(
             status_code=400,
             detail="this account is managed via environment configuration and cannot self-change",
         )
-    from ..auth.passwords import hash_password
+    from ..auth.passwords import ahash_password
 
-    await state.users.update(
-        principal.username,
-        password_hash=hash_password(new_pw),
-        must_change_password=False,
+    new_hash = await ahash_password(new_pw)
+
+    async def _write() -> None:
+        # An account deleted while the row was appended answers 404, so its failure
+        # row is written instead of a password change that never happened.
+        await _patch_user_or_404(
+            state,
+            principal.username,
+            password_hash=new_hash,
+            must_change_password=False,
+        )
+
+    # Round 14 (SPEC §3.6): a credential change is never made without its audit row.
+    # Only the store write is the audited unit; the synced view is refreshed after
+    # it, so a refresh error can never pair a saved change with a "not applied" row.
+    await audited_write(
+        state, sink="control", action="auth.password_changed",
+        target=_user_target(principal.username), expected_revision=None,
+        changes=[{"field": "password", "before": None, "after": None, "secret": True}],
+        write=_write, action_type=ActionType.AUTH_EVENT, actor=principal.username,
+        surface="auth", context=audit_context(request), result_summary="password changed",
     )
     await state.refresh_users()
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=principal.username,
-        result_summary="password changed",
-    )
-    return {"ok": True}
+    # Round 16 (B21): the caller's OTHER sessions end now; this one stays. Without a
+    # registered session id there is nothing to keep, so every session ends.
+    keep = str(getattr(principal, "sid", "") or "")
+    if keep:
+        revoked = await state.sessions.revoke_others(
+            principal.username, keep, by=principal.username, reason="password_changed",
+        )
+        await _stop_chat_turns(state, principal.username, except_sid=keep)
+    else:
+        revoked = await state.sessions.revoke_all(
+            principal.username, by=principal.username, reason="password_changed",
+        )
+        await state.refresh_sessions()
+        await _stop_chat_turns(state, principal.username)
+    if revoked or not keep:
+        # One row when a session ended (or every token was invalidated); a change
+        # with no other session to end writes none.
+        await _record_identity_event(
+            state, request, action="session.revoked", actor=principal.username,
+            surface="session", target=_user_target(principal.username),
+            summary=_session_summary(
+                "session_revoke_others", keep,
+                f"password changed: revoked {int(revoked or 0)} other session(s)",
+            ),
+            tool_input={"scope": "others" if keep else "all", "count": int(revoked or 0),
+                        "reason": "password_changed"},
+        )
+    return {"ok": True, "sessions_revoked": int(revoked or 0)}
 
 
 # --------------------------------------------------------------------------- #
@@ -3103,9 +4595,13 @@ async def list_my_sessions(request: Request, state: AppState = Depends(get_state
     principal = _require_session(state, request)
     rows = await state.sessions.list_for(principal.username)
     current_sid = getattr(principal, "sid", None)
+    limits = live_session_limits(state, principal)
     return {
         "sessions": [
-            {**state.sessions.public(r), "current": bool(current_sid and r.get("sid") == current_sid)}
+            {
+                **state.sessions.public(r, limits),
+                "current": bool(current_sid and r.get("sid") == current_sid),
+            }
             for r in rows
         ],
         "current_sid": current_sid or "",
@@ -3121,9 +4617,20 @@ async def revoke_my_session(
     row = await state.sessions.get(sid)
     if row is None or _norm_user(row.get("username", "")) != _norm_user(principal.username):
         raise HTTPException(status_code=404, detail="session not found")
-    ok = await state.sessions.revoke(sid, by=principal.username, reason="user_revoke")
+    # Round 12: signing out THIS device is a deliberate sign-out (like logout), so the
+    # sign-in page must not later say it was "ended from another device".
+    self_signout = bool(getattr(principal, "sid", None)) and principal.sid == sid
+    ok = await state.sessions.revoke(
+        sid, by=principal.username, reason="self_signout" if self_signout else "user_revoke"
+    )
     if ok:
-        await _audit_session(state, "session_revoke", principal.username, sid, "self revoke")
+        await _record_identity_event(
+            state, request, action="session.revoked", actor=principal.username,
+            surface="session", target=_user_target(principal.username),
+            summary=_session_summary("session_revoke", sid, "self revoke"),
+            tool_input=_session_tool_input(state, sid, current=self_signout),
+        )
+    await _stop_chat_turns(state, principal.username, sid=sid)
     return {"ok": True, "revoked": bool(ok)}
 
 
@@ -3139,9 +4646,13 @@ async def revoke_other_sessions(
     count = await state.sessions.revoke_others(
         principal.username, keep, by=principal.username,
     )
-    await _audit_session(
-        state, "session_revoke_others", principal.username, keep,
-        f"revoked {count} other session(s)",
+    if keep:
+        await _stop_chat_turns(state, principal.username, except_sid=keep)
+    await _record_identity_event(
+        state, request, action="session.revoked", actor=principal.username,
+        surface="session", target=_user_target(principal.username),
+        summary=_session_summary("session_revoke_others", keep, f"revoked {count} other session(s)"),
+        tool_input={"scope": "others", "count": int(count or 0)},
     )
     if body.notify:
         try:
@@ -3151,12 +4662,17 @@ async def revoke_other_sessions(
     return {"ok": True, "revoked": count}
 
 
-@router.post("/auth/refresh")
+@router.post("/auth/refresh", deprecated=True)
 async def auth_refresh(
     body: RefreshBody, request: Request, response: Response,
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """Rotate a refresh token → mint a fresh ACCESS token + a NEW refresh token.
+
+    Round 16 (B24): deprecated. No sign-in issues a refresh token, so every call
+    answers 401 with code ``session_invalid`` and reason ``unknown_refresh``. A
+    session lasts until its access token expires, within the idle and absolute
+    limits. The route stays so an older client gets that answer, not a 404.
 
     Reuse detection (theft): if the presented token matches an ALREADY-ROTATED
     previous hash, the session is treated as compromised → revoke + bump the user's
@@ -3173,9 +4689,23 @@ async def auth_refresh(
         username = str((row or {}).get("username") or "")
         await state.sessions.revoke_all(username, by="system", reason="refresh_reuse_detected")
         await state.refresh_sessions()
-        await _audit_session(
-            state, "refresh_reuse", username, str((row or {}).get("sid") or ""),
-            "refresh-token reuse detected — all sessions revoked",
+        await _stop_chat_turns(state, username)
+        reused_sid = str((row or {}).get("sid") or "")
+        # The system revoked them (the store records ``by="system"``), not the
+        # account holder: the account is the target, the reused session is named in
+        # ``tool_input`` like every other revocation of a session that is not the
+        # actor's own, and the request's credential is never read.
+        await _record_identity_event(
+            state, request, action="session.revoked", actor="system", surface="session",
+            actor_type="system", outcome="success",
+            target=_user_target(username),
+            summary=_session_summary(
+                "refresh_reuse", reused_sid, "refresh-token reuse detected; all sessions revoked",
+            ),
+            tool_input=_session_tool_input(
+                state, reused_sid, scope="all", reason="refresh_reuse_detected",
+            ),
+            from_request=False,
         )
         try:
             await _notify_session_event(state, username, "terminate", {})
@@ -3186,15 +4716,26 @@ async def auth_refresh(
         raise HTTPException(status_code=401, detail={"code": "session_invalid", "reason": "unknown_refresh"})
     sid = str(row.get("sid") or "")
     username = str(row.get("username") or "")
-    # The session must still be usable (not revoked/expired) to rotate.
-    policy = _session_policy(state)
-    reason = state.sessions.is_active(
-        row, idle_timeout=int(getattr(policy, "idle_timeout", 0) or 0),
-        absolute_lifetime=int(getattr(policy, "absolute_lifetime", 0) or 0),
-    )
+    # The session must still be usable (not revoked/expired) to rotate — judged by
+    # the limits that apply to THIS row (standard or remembered, Round 12) for the
+    # account's LIVE role (an excluded role is never remembered).
+    limits = limits_for_username(state, username)
+    reason = state.sessions.is_active(row, **limits.kwargs())
     if reason is not None:
         raise HTTPException(status_code=401, detail={"code": "session_expired", "reason": reason})
-    minted = state.auth.mint_session(username)
+    # A remembered session stays remembered, but rotation can never extend it past
+    # its absolute limit (created_at + the remembered duration).
+    remember_seconds = 0
+    if bool(row.get("remember")) and limits.remember_enabled:
+        from ..utils import parse_es_timestamp
+
+        created_dt = parse_es_timestamp(row.get("created_at"))
+        remaining = (
+            int(created_dt.timestamp() + limits.remember_absolute - now_utc().timestamp())
+            if created_dt is not None else limits.remember_absolute
+        )
+        remember_seconds = max(60, min(remaining, limits.remember_absolute))
+    minted = state.auth.mint_session(username, remember_seconds=remember_seconds)
     if minted is None:
         raise HTTPException(status_code=401, detail={"code": "session_invalid", "reason": "inactive_user"})
     token, _principal = minted
@@ -3204,16 +4745,21 @@ async def auth_refresh(
     # the created_at anchor (absolute lifetime) while the access sid resolves.
     new_refresh = new_refresh_token()
     new_sid = str((state.auth.claims_of(token) or {}).get("sid") or "")
-    await state.sessions.rekey_and_rotate(
+    idle_for_row, _absolute_for_row = limits.for_row(row)
+    rotated = await state.sessions.rekey_and_rotate(
         sid, new_sid, hash_refresh(new_refresh),
-        idle_timeout=int(getattr(policy, "idle_timeout", 0) or 0),
+        idle_timeout=idle_for_row,
+        token_expires_at=_token_expires_iso(state, token),
     )
-    await _audit_session(state, "refresh_rotate", username, new_sid, f"rotated from {_short(sid)}")
-    response.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    if rotated is not None:
+        _rebind_chat_turns(state, username, sid, new_sid, token)
+    await _record_identity_event(
+        state, request, action="session.refreshed", actor=username, surface="session",
+        user=state.auth.principal(username), sid=new_sid,
+        summary=_session_summary("refresh_rotate", new_sid, f"rotated from {_short(sid)}"),
+        target=_user_target(username), from_request=False,
     )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {"token": token, "refresh_token": new_refresh, "sid": new_sid}
 
 
@@ -3225,16 +4771,21 @@ async def auth_reauth(
     ``last_authn_at`` on the session so a ``require_fresh_auth``-gated action is
     unlocked for the policy window. Audited (#2)."""
     principal = _require_session(state, request)
-    if state.auth.authenticate(principal.username, body.password or "") is None:
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="session", actor=principal.username,
-            result_summary="reauth failed",
+    if not await state.auth.acheck_password(principal.username, body.password or ""):
+        await _record_identity_event(
+            state, request, action="auth.reauth_failed", outcome="failure",
+            actor=principal.username, surface="session", summary="reauth failed",
+            target=_user_target(principal.username),
         )
         raise HTTPException(status_code=401, detail={"code": "reauth_required", "reason": "bad_password"})
     sid = getattr(principal, "sid", "") or ""
     if sid:
         await state.sessions.stamp_authn(sid)
-    await _audit_session(state, "session_reauth", principal.username, sid, "step-up re-auth ok")
+    await _record_identity_event(
+        state, request, action="auth.reauthenticated", actor=principal.username,
+        surface="session", summary=_session_summary("session_reauth", sid, "step-up re-auth ok"),
+        target=_user_target(principal.username),
+    )
     return {"ok": True}
 
 
@@ -3244,10 +4795,22 @@ async def account_activity(
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """The caller's OWN recent account/audit activity (newest first). Reads the
-    append-only audit log filtered by actor. Read-only; never raises."""
+    append-only audit log filtered by actor. Read-only. When the audit log cannot be
+    read the answer is ``503 audit_unavailable``, never an empty list."""
     principal = _require_session(state, request)
     rows = await _records_for_actor(state, principal.username, limit)
-    return {"activity": rows}
+    # A lone surrogate an older build stored cannot be carried by a UTF-8 response.
+    # Round 16 (B55): each row carries the friendly event name the Audit log shows.
+    from ..audit import events as audit_events
+
+    labelled = []
+    for row in shown(rows):
+        try:
+            label = audit_events.classify(row).label
+        except Exception:  # noqa: BLE001 (a row that cannot be named keeps no label)
+            label = ""
+        labelled.append({**row, "event_label": label} if label else row)
+    return {"activity": labelled}
 
 
 # --------------------------------------------------------------------------- #
@@ -3260,7 +4823,17 @@ async def admin_list_sessions(
 ) -> dict[str, Any]:
     """Every session across all users (admin console). UI-safe projection."""
     rows = await state.sessions.list_all()
-    return {"sessions": [state.sessions.public(r) for r in rows]}
+    # Each row is projected with ITS owner's live limits (an excluded role is never
+    # shown as remembered); one lookup per user.
+    by_user: dict[str, Any] = {}
+
+    def _limits(row: dict[str, Any]):
+        key = _norm_user(str(row.get("username") or ""))
+        if key not in by_user:
+            by_user[key] = limits_for_username(state, str(row.get("username") or ""))
+        return by_user[key]
+
+    return {"sessions": [state.sessions.public(r, _limits(r)) for r in rows]}
 
 
 @router.post("/admin/sessions/{sid}/revoke")
@@ -3276,8 +4849,15 @@ async def admin_revoke_session(
     by = current_username(request)
     ok = await state.sessions.revoke(sid, by=by, reason="admin_revoke")
     if ok:
-        await _audit_session(state, "session_admin_revoke", by, sid,
-                             f"admin revoked session of {row.get('username', '')}")
+        await _record_identity_event(
+            state, request, action="session.revoked", actor=by, surface="session",
+            target=_user_target(str(row.get("username") or "")),
+            summary=_session_summary(
+                "session_admin_revoke", sid, f"admin revoked session of {row.get('username', '')}",
+            ),
+            tool_input=_session_tool_input(state, sid),
+        )
+    await _stop_chat_turns(state, str(row.get("username") or ""), sid=sid)
     return {"ok": True, "revoked": bool(ok)}
 
 
@@ -3292,13 +4872,52 @@ async def admin_revoke_all(
     by = current_username(request)
     count = await state.sessions.revoke_all(username, by=by, reason="admin_revoke_all")
     await state.refresh_sessions()
-    await _audit_session(state, "session_admin_revoke_all", by, "",
-                         f"admin revoked all {count} session(s) for {username}")
+    await _stop_chat_turns(state, username)
+    await _record_identity_event(
+        state, request, action="session.revoked", actor=by, surface="session",
+        target=_user_target(username),
+        summary=_session_summary(
+            "session_admin_revoke_all", "", f"admin revoked all {count} session(s) for {username}",
+        ),
+        tool_input={"scope": "all", "count": int(count or 0)},
+    )
     return {"ok": True, "revoked": count}
 
 
 def _norm_user(username: str) -> str:
     return (username or "").strip().lower()
+
+
+async def _stop_chat_turns(
+    state: AppState, username: str, *, sid: str | None = None, except_sid: str | None = None,
+) -> int:
+    """Stop the running chat answers whose session or account just ended (Round 12
+    final review, L1): ``routes_chat.stop_chat_turns_for``, imported lazily
+    (``routes_chat`` imports this module). Never raises."""
+    from .routes_chat import stop_chat_turns_for
+
+    return await stop_chat_turns_for(state, username, sid=sid, except_sid=except_sid)
+
+
+async def _recheck_chat_turns(state: AppState, username: str) -> int:
+    """Re-check the user's running chat answers after an account change (disabled,
+    role or custom roles changed) and stop those that lost their authority."""
+    from .routes_chat import recheck_chat_turns_for
+
+    return await recheck_chat_turns_for(state, username)
+
+
+def _rebind_chat_turns(state: AppState, username: str, old_sid: str, new_sid: str,
+                       token: str) -> int:
+    """A refresh re-keyed the session: its running chat answers follow the new sid
+    and the new access token's expiry (``routes_chat.rebind_chat_turns_for``)."""
+    from .routes_chat import rebind_chat_turns_for
+
+    try:
+        exp = float((state.auth.claims_of(token) or {}).get("exp") or 0) or None
+    except (TypeError, ValueError):
+        exp = None
+    return rebind_chat_turns_for(state, username, old_sid, new_sid, token_expires_at=exp)
 
 
 def _short(sid: str) -> str:
@@ -3308,14 +4927,27 @@ def _short(sid: str) -> str:
 
 async def _records_for_actor(state: AppState, actor: str, limit: int) -> list[dict[str, Any]]:
     """Read the caller's own audit rows (newest first) via the audit repository's
-    per-actor reader. Best-effort — returns [] on any error."""
+    per-actor reader. A failed read is ``503 audit_unavailable`` (logged), so the
+    feed never shows "no activity" for a trail it could not read."""
     audit = getattr(state, "control_audit", None)
     if audit is None:
         return []
+    # The actor as ``AuditDoc`` stores it (``audit_actor_key``). For every name an
+    # account can be created with today this is the name itself; a longer name an older
+    # build allowed is recorded with a digest of the whole name (so an account sharing
+    # its first 160 characters never reads its rows), and its older rows carry it whole.
+    stored = audit_actor_key(actor)
     try:
-        return await audit.records_for_actor(actor, limit)
-    except Exception:  # noqa: BLE001
-        return []
+        rows = await audit.records_for_actor(stored, limit)
+        if stored != actor:
+            older = await audit.records_for_actor(actor, limit)
+            rows = sorted([*rows, *older], key=lambda row: str(row.get("ts") or ""), reverse=True)
+        return rows[:limit]
+    except Exception as exc:  # noqa: BLE001 (any store failure is "unavailable")
+        logger.warning("Account activity read failed: %s", exc)
+        raise HTTPException(status_code=503, detail={
+            "code": "audit_unavailable", "message": "Your recent activity could not be read.",
+        }) from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -3417,6 +5049,40 @@ def _validate_profile_text(value: str, field: str) -> str:
     return value
 
 
+def _image_marker(value: Any) -> str | None:
+    """An avatar as the audit log records it: whether one is set, never the image."""
+    return "image" if value else None
+
+
+def _account_changes(user: Any, patch: dict[str, Any]) -> list[Any]:
+    """The audit ``changes`` of an account edit (SPEC §4.5.3): each patched profile
+    field from its stored value to the new one; the avatar as set or cleared (never
+    the image); the personal preference bag field by field (secrets withheld); a
+    password or MFA secret only as "changed"."""
+    out: list[Any] = []
+    for field in sorted(patch):
+        new = patch[field]
+        old = getattr(user, field, None)
+        if field == "avatar":
+            before, after = _image_marker(old), _image_marker(new)
+            if before != after or (old != new):
+                out.append({"field": "avatar", "before": before, "after": after})
+        elif field == "prefs":
+            out.extend(diff_changes(old if isinstance(old, dict) else {},
+                                    new if isinstance(new, dict) else {}, prefix="prefs"))
+        elif field in ("password_hash", "mfa_secret", "mfa_recovery_hashes", "mfa_last_step"):
+            if field == "password_hash":
+                out.append({"field": "password", "before": None, "after": None, "secret": True})
+            elif field == "mfa_secret":
+                out.append({"field": "mfa_secret", "before": None, "after": None, "secret": True})
+        else:
+            old_v = getattr(old, "value", old)
+            new_v = getattr(new, "value", new)
+            if old_v != new_v:
+                out.extend(diff_changes({field: old_v}, {field: new_v}))
+    return out
+
+
 @router.put("/account/me")
 async def update_account_me(
     body: AccountProfileBody, request: Request, state: AppState = Depends(get_state)
@@ -3452,15 +5118,56 @@ async def update_account_me(
             raise HTTPException(
                 status_code=400, detail=f"prefs too large (max {_MAX_PREFS_JSON_LEN} bytes)"
             )
-        patch["prefs"] = body.prefs
+        # INVARIANT — ``prefs["custom_roles"]`` is a RESERVED key owned by the
+        # admin surfaces (``PUT /api/users/{u}/roles`` in routes_roles.py and the
+        # users:manage creation path): it is the assignment record that
+        # ``deps._assigned_custom_roles`` UNIONs into every live RBAC decision.
+        # A self-service profile update must NEVER add, remove, or reorder the
+        # caller's admin-assigned custom roles — otherwise any authenticated user
+        # could grant themselves an existing custom role's permissions by writing
+        # this key, bypassing the users:manage + fresh-auth gate. Whatever the
+        # client sent for the key is therefore discarded and the CURRENTLY STORED
+        # value is carried forward verbatim (stored absent → stripped). The rest
+        # of the bag stays a full replacement, so clients that round-trip the
+        # prefs they read from ``public()`` keep working unchanged (no 4xx).
+        sanitized_prefs = dict(body.prefs)
+        stored_prefs = user.prefs or {}
+        if "custom_roles" in stored_prefs:
+            sanitized_prefs["custom_roles"] = stored_prefs["custom_roles"]
+        else:
+            sanitized_prefs.pop("custom_roles", None)
+        patch["prefs"] = sanitized_prefs
     if not patch:
         raise HTTPException(status_code=400, detail="no changes provided")
-    updated = await state.users.update(principal.username, **patch)
-    await state.refresh_users()
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="account", actor=principal.username,
+
+    async def _write() -> Any:
+        if "prefs" in patch:
+            # The admin-assigned custom roles are carried forward from a read made
+            # now, never from the read before the row was appended: an assignment
+            # saved meanwhile is kept, not reverted by this profile save.
+            fresh = await state.users.get(principal.username)
+            if fresh is None:
+                raise HTTPException(status_code=404, detail="user not found")
+            fresh_prefs = fresh.prefs or {}
+            prefs_patch = dict(patch["prefs"])
+            if "custom_roles" in fresh_prefs:
+                prefs_patch["custom_roles"] = fresh_prefs["custom_roles"]
+            else:
+                prefs_patch.pop("custom_roles", None)
+            return await _patch_user_or_404(
+                state, principal.username, **{**patch, "prefs": prefs_patch}
+            )
+        return await _patch_user_or_404(state, principal.username, **patch)
+
+    updated = await audited_write(
+        state, sink="control", action="user.updated",
+        target=_user_target(principal.username, getattr(user, "display_name", "") or None),
+        expected_revision=None, changes=_account_changes(user, patch), write=_write,
+        action_type=ActionType.AUTH_EVENT, actor=principal.username, surface="account",
+        context=audit_context(request),
         result_summary=f"updated profile ({', '.join(sorted(patch))})",
     )
+    await state.refresh_users()
     return {"ok": True, "user": (updated or user).public()}
 
 
@@ -3480,12 +5187,18 @@ async def update_my_avatar(
         avatar = validate_avatar(body.avatar or "")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    updated = await state.users.update(principal.username, avatar=avatar)
-    await state.refresh_users()
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="account", actor=principal.username,
+    async def _write() -> Any:
+        return await _patch_user_or_404(state, principal.username, avatar=avatar)
+
+    updated = await audited_write(
+        state, sink="control", action="user.updated",
+        target=_user_target(principal.username, getattr(user, "display_name", "") or None),
+        expected_revision=None, changes=_account_changes(user, {"avatar": avatar}),
+        write=_write, action_type=ActionType.AUTH_EVENT, actor=principal.username,
+        surface="account", context=audit_context(request),
         result_summary=("cleared avatar" if not avatar else "updated avatar"),
     )
+    await state.refresh_users()
     return {"ok": True, "user": (updated or user).public()}
 
 
@@ -3526,16 +5239,127 @@ def _require_session(state: AppState, request: Request):
 # lowercased username — never persisted until the user proves possession via confirm.
 _MFA_PENDING_ENROLL: dict[str, dict[str, Any]] = {}
 
+# Round 16 (B19): every second-factor check (the sign-in verify, both enrolment
+# confirms and turning MFA off) shares one per-account bound. After this many
+# consecutive failures, checks are refused for 5 minutes, doubling for each further
+# run of failures up to an hour. A success resets the counter.
+MFA_LOCK_THRESHOLD = 10
+MFA_LOCK_BASE_MINUTES = 5
+MFA_LOCK_MAX_MINUTES = 60
+MFA_LOCKED_MESSAGE = "Too many wrong codes. Wait a few minutes, then try again."
+# Round 16 (B17): a new authenticator replaces an enrolled one only through
+# /auth/mfa/disable, which needs a current code.
+MFA_ALREADY_ENABLED_MESSAGE = (
+    "MFA is already enabled; turn it off with a current code before enrolling a new "
+    "authenticator."
+)
+
+
+def _mfa_lock_minutes(nth_lock: int) -> int:
+    """The length of the n-th lock in a row: 5, 10, 20, 40, then 60 minutes."""
+    return min(MFA_LOCK_MAX_MINUTES, MFA_LOCK_BASE_MINUTES * (2 ** max(0, int(nth_lock) - 1)))
+
+
+def _mfa_lock_seconds_left(user: Any) -> int:
+    """Seconds until the account's second-factor checks unlock (0 when not locked)."""
+    from ..utils import parse_es_timestamp
+
+    raw = str(getattr(user, "mfa_locked_until", "") or "")
+    until = parse_es_timestamp(raw) if raw else None
+    if until is None:
+        return 0
+    return max(0, int(until.timestamp() - now_utc().timestamp()))
+
+
+def _mfa_already_enabled() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"code": "mfa_already_enabled", "message": MFA_ALREADY_ENABLED_MESSAGE},
+    )
+
+
+async def _refuse_locked_mfa(state: AppState, request: Request, user: Any, *,
+                             pending: bool) -> None:
+    """429 without checking any code while the account's checks are locked (B19).
+    ``pending`` marks a sign-in step (the row never reads the request's credential)."""
+    left = _mfa_lock_seconds_left(user)
+    if left <= 0:
+        return
+    username = str(user.username)
+    await _record_identity_event(
+        state, request, action="auth.mfa_failed", outcome="denied", actor=username,
+        user=state.auth.principal(username) if pending else None,
+        summary="mfa check refused: too many failed codes",
+        target=_user_target(username), tool_input={"locked": True},
+        from_request=not pending,
+    )
+    raise HTTPException(
+        status_code=429,
+        detail={"code": "mfa_locked", "message": MFA_LOCKED_MESSAGE, "retry_after_seconds": left},
+        headers={"Retry-After": str(left)},
+    )
+
+
+async def _count_mfa_failure(state: AppState, request: Request, username: str, *,
+                             pending: bool) -> None:
+    """Count one failed second-factor check; the check that starts a lock writes one
+    ``auth.mfa_locked`` row (B19). Never raises into the caller."""
+    from datetime import timedelta
+
+    def _until(minutes: int) -> str:
+        return (now_utc() + timedelta(minutes=int(minutes))).isoformat()
+
+    try:
+        count, until, newly = await state.users.record_mfa_failure(
+            username, threshold=MFA_LOCK_THRESHOLD, lock_minutes=_mfa_lock_minutes,
+            now_iso=iso_now(), until_iso=_until,
+        )
+    except Exception as exc:  # noqa: BLE001 (the refusal itself still stands)
+        logger.warning("Counting a failed second-factor check failed: %s", exc)
+        return
+    if not newly:
+        return
+    minutes = _mfa_lock_minutes(count // MFA_LOCK_THRESHOLD)
+    await _record_identity_event(
+        state, request, action="auth.mfa_locked", outcome="denied", actor=username,
+        user=state.auth.principal(username) if pending else None,
+        summary=f"two-factor checks locked for {minutes} minutes after {count} failed codes",
+        target=_user_target(username),
+        tool_input={"failed_count": count, "locked_minutes": minutes, "locked_until": until},
+        from_request=not pending,
+    )
+
+
+def _mfa_changes(*, enabled: bool) -> list[dict[str, Any]]:
+    """The audit ``changes`` of turning a second factor on or off: the flag, and the
+    secret and recovery codes only as "changed" (never their values)."""
+    return [
+        {"field": "mfa_enabled", "before": "false" if enabled else "true",
+         "after": "true" if enabled else "false"},
+        {"field": "mfa_secret", "before": None, "after": None, "secret": True},
+        {"field": "mfa_recovery_codes", "before": None, "after": None, "secret": True},
+    ]
+
 
 @router.post("/auth/mfa/setup")
-async def mfa_setup(request: Request, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def mfa_setup(
+    request: Request, state: AppState = Depends(get_state),
+    _fresh=Depends(require_fresh_auth()),
+) -> dict[str, Any]:
     """Begin MFA enrollment (self, authenticated). Generates a PENDING TOTP secret +
     recovery codes and returns them ONCE (the secret + otpauth URI for the QR, and the
-    plaintext recovery codes for the user to save). Does NOT enable MFA — the user must
-    prove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret."""
+    plaintext recovery codes for the user to save). Does NOT enable MFA: the user must
+    prove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret.
+
+    Round 16 (B17): needs a fresh sign-in, and answers 409 for an account that is
+    already enrolled, so a stolen session cannot replace the authenticator."""
     from ..auth import mfa as mfa_mod
 
     principal = _require_session(state, request)
+    existing = await state.users.get(principal.username)
+    if existing is not None and existing.mfa_enabled:
+        _MFA_PENDING_ENROLL.pop(principal.username.strip().lower(), None)
+        raise _mfa_already_enabled()
     digits, period = _mfa_params(state)
     secret = mfa_mod.generate_secret()
     recovery = mfa_mod.generate_recovery_codes(10)
@@ -3544,11 +5368,11 @@ async def mfa_setup(request: Request, state: AppState = Depends(get_state)) -> d
     )
     _MFA_PENDING_ENROLL[principal.username.strip().lower()] = {
         "secret": secret,
-        "recovery_hashes": [mfa_mod.hash_recovery_code(c) for c in recovery],
+        "recovery_hashes": await mfa_mod.ahash_recovery_codes(recovery),
     }
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=principal.username,
-        result_summary="mfa enrollment started",
+    await _record_identity_event(
+        state, request, action="auth.mfa_setup_started", actor=principal.username,
+        summary="mfa enrollment started", target=_user_target(principal.username),
     )
     return {"secret": secret, "otpauth_uri": uri, "recovery_codes": recovery}
 
@@ -3559,43 +5383,67 @@ class MfaCodeBody(BaseModel):
 
 @router.post("/auth/mfa/confirm")
 async def mfa_confirm(
-    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state)
+    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state),
+    _fresh=Depends(require_fresh_auth()),
 ) -> dict[str, Any]:
     """Confirm MFA enrollment (self): verify a TOTP code against the PENDING secret,
     then persist the obfuscated secret + hashed recovery codes and set
-    ``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off."""
+    ``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off.
+
+    Round 16: needs a fresh sign-in and answers 409 for an enrolled account (B17); a
+    wrong code counts toward the account's second-factor bound (B19)."""
     from ..auth import mfa as mfa_mod
 
     principal = _require_session(state, request)
-    pending = _MFA_PENDING_ENROLL.get(principal.username.strip().lower())
+    key = principal.username.strip().lower()
+    user = await state.users.get(principal.username)
+    if user is not None and user.mfa_enabled:
+        _MFA_PENDING_ENROLL.pop(key, None)
+        raise _mfa_already_enabled()
+    pending = _MFA_PENDING_ENROLL.get(key)
     if not pending:
         raise HTTPException(status_code=400, detail="no pending MFA enrollment; call setup first")
+    if user is not None:
+        await _refuse_locked_mfa(state, request, user, pending=False)
     digits, period = _mfa_params(state)
     ok, step = mfa_mod.verify_totp(
         pending["secret"], body.code, window=1, period=period, digits=digits
     )
     if not ok:
+        if user is not None:
+            await _record_identity_event(
+                state, request, action="auth.mfa_failed", outcome="failure",
+                actor=principal.username, summary="mfa enrollment confirm failed",
+                target=_user_target(principal.username),
+            )
+            await _count_mfa_failure(state, request, principal.username, pending=False)
         raise HTTPException(status_code=400, detail="invalid code")
-    user = await state.users.get(principal.username)
     if user is None:
         raise HTTPException(
             status_code=400,
             detail="this account is managed via environment configuration and cannot enroll MFA",
         )
     obf = mfa_mod.obfuscate_secret(pending["secret"], state.secrets.mfa_server_key())
-    updated = user.model_copy(update={
-        "mfa_enabled": True,
-        "mfa_secret": obf,
-        "mfa_recovery_hashes": list(pending["recovery_hashes"]),
-        "mfa_last_step": int(step),
-    })
-    await state.users.save(updated)
+
+    async def _write() -> None:
+        # Patch only the second-factor fields: a change an administrator saves to
+        # this account while the row is appended (role, active, password) is kept.
+        await _patch_user_or_404(
+            state, principal.username, mfa_enabled=True, mfa_secret=obf,
+            mfa_recovery_hashes=list(pending["recovery_hashes"]), mfa_last_step=int(step),
+            mfa_failed_count=0, mfa_locked_until="",
+        )
+
+    # Round 14 (SPEC §3.6): turning a second factor on is never done without its row.
+    await audited_write(
+        state, sink="control", action="auth.mfa_enrolled",
+        target=_user_target(principal.username), expected_revision=None,
+        changes=_mfa_changes(enabled=True), write=_write,
+        action_type=ActionType.AUTH_EVENT, actor=principal.username, surface="auth",
+        context=audit_context(request), result_summary="mfa enabled",
+    )
     await state.refresh_users()
     _MFA_PENDING_ENROLL.pop(principal.username.strip().lower(), None)
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=principal.username,
-        result_summary="mfa enabled",
-    )
     return {"ok": True}
 
 
@@ -3618,43 +5466,53 @@ async def mfa_verify(
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
     username = auth.pending_subject(body.pending_token)
-    if username is None:
+    # Round 16 (B19): a pending token is refused after 5 failures or once used.
+    if username is None or not auth.pending_usable(body.pending_token):
         raise HTTPException(status_code=401, detail="invalid or expired pending session")
     user = await state.users.get(username)
     if user is None or not user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is not enabled for this account")
+    await _refuse_locked_mfa(state, request, user, pending=True)
     digits, period = _mfa_params(state)
     server_key = state.secrets.mfa_server_key()
     secret = mfa_mod.deobfuscate_secret(user.mfa_secret, server_key)
     method = ""
-    # 1) TOTP (with replay rejection against the stored last step).
+    # 1) TOTP (with replay rejection against the stored last step). Round 16 (B23):
+    #    the step is consumed inside the user store's compare-and-swap, so a code
+    #    replayed by a concurrent request fails there.
     if secret:
         ok, step = mfa_mod.verify_totp(
             secret, body.code, window=1, period=period, digits=digits,
             last_step=user.mfa_last_step,
         )
-        if ok:
+        if ok and await state.users.consume_mfa(username, step=int(step)):
             method = "totp"
-            await state.users.save(user.model_copy(update={"mfa_last_step": int(step)}))
-    # 2) Recovery code (single-use): consume the matching hash on success.
+    # 2) Recovery code (single-use). The matching stored hash is found off the event
+    #    loop (only for a code with the recovery-code shape, B18), then that exact
+    #    string is removed inside the compare-and-swap (B23).
     if not method:
-        remaining = list(user.mfa_recovery_hashes)
-        match_idx = next(
-            (i for i, h in enumerate(remaining) if mfa_mod.verify_recovery_code(body.code, h)),
-            -1,
-        )
-        if match_idx >= 0:
+        matched = await mfa_mod.amatch_recovery_hash(body.code, list(user.mfa_recovery_hashes))
+        if matched is not None and await state.users.consume_mfa(username, recovery_hash=matched):
             method = "recovery"
-            del remaining[match_idx]
-            await state.users.save(user.model_copy(update={"mfa_recovery_hashes": remaining}))
     if not method:
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-            result_summary="mfa verify failed",
+        auth.note_pending_failure(body.pending_token)
+        await _record_identity_event(
+            state, request, action="auth.mfa_failed", outcome="failure", actor=username,
+            user=auth.principal(username), summary="mfa verify failed",
+            target=_user_target(username), from_request=False,
         )
+        await _count_mfa_failure(state, request, username, pending=True)
         raise HTTPException(status_code=401, detail="invalid code")
+    if not auth.mark_pending_used(body.pending_token):
+        raise HTTPException(status_code=401, detail="invalid or expired pending session")
     await state.refresh_users()
-    minted = auth.mint_session(username)
+    # Round 12: the Remember-me REQUEST comes only from the SIGNED pending token
+    # (never a body field), and eligibility is decided against the live policy now.
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, auth.principal(username),
+        auth.pending_remember(body.pending_token),
+    )
+    minted = auth.mint_session(username, remember_seconds=remember_seconds)
     if minted is None:  # pragma: no cover — username verified above
         raise HTTPException(status_code=401, detail="invalid credentials")
     token, principal = minted
@@ -3662,17 +5520,21 @@ async def mfa_verify(
         await state.users.update(username, last_login_at=iso_now())
     except Exception:  # noqa: BLE001
         pass
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary=f"mfa login ok ({method})",
+    await _record_identity_event(
+        state, request, action="auth.login", actor=username, user=principal, token=token,
+        summary=(
+            f"mfa login ok ({method}; remembered {_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else f"mfa login ok ({method})"
+        ),
+        target=_user_target(username),
+        tool_input={"method": method, "remembered": remember_seconds > 0},
+        from_request=False,
     )
     # Wave 3: register the session from the freshly-minted token (carries sid/tv).
-    await _register_session(state, request, token, mfa_method=method)
-    response.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    await _register_session(
+        state, request, token, mfa_method=method, remember_seconds=remember_seconds
     )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {
         "token": token,
         "user": {
@@ -3681,23 +5543,207 @@ async def mfa_verify(
             "must_change_password": bool(principal.must_change_password),
             "mfa_enabled": True,
         },
+        **_remember_fields(state, token, remember_seconds, remember_reason),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Mandated MFA enrollment DURING login (additive). When login returns
+# ``mfa_enrollment_required`` (required-but-not-enrolled), the client completes
+# enrollment here, gated by the SAME short-lived pending token (mfa:"pending") the
+# code-challenge path uses — NOT a full session (there is none yet). Both routes:
+#   * accept ONLY the pending-token kind (``pending_subject``; ``verify()`` keeps
+#     rejecting pending tokens everywhere else, so a pending token still cannot
+#     reach any protected route);
+#   * 400 for an env-managed account (no persisted User → cannot enroll; the
+#     requires_mfa lockout guard means it is never sent here anyway);
+#   * 400 for an ALREADY-ENROLLED account — a password-only attacker holding a
+#     pending token must never be able to REPLACE the existing factor (they must
+#     clear /auth/mfa/verify with the real one);
+#   * are audited at every step (#2).
+# --------------------------------------------------------------------------- #
+class MfaEnrollSetupBody(BaseModel):
+    pending_token: str
+
+
+class MfaEnrollConfirmBody(BaseModel):
+    pending_token: str
+    code: str
+
+
+async def _enroll_pending_user(state: AppState, pending_token: str):
+    """Resolve + guard the pending-token principal for the login-phase enrollment
+    routes. Returns ``(username, User)`` or raises 400/401 (see block comment)."""
+    auth = state.auth
+    if not auth.is_enabled:
+        raise HTTPException(status_code=400, detail="authentication is disabled")
+    username = auth.pending_subject(pending_token)
+    # Round 16 (B19): the same single-use, bounded pending token as /auth/mfa/verify.
+    if username is None or not auth.pending_usable(pending_token):
+        raise HTTPException(status_code=401, detail="invalid or expired pending session")
+    user = await state.users.get(username)
+    if user is None:
+        raise HTTPException(
+            status_code=400,
+            detail="this account is managed via environment configuration and cannot enroll MFA",
+        )
+    if user.mfa_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="MFA is already enrolled for this account; verify with your existing factor",
+        )
+    if not auth.requires_mfa(username):
+        raise HTTPException(
+            status_code=400, detail="MFA enrollment is not required for this account"
+        )
+    return username, user
+
+
+@router.post("/auth/mfa/enroll-setup")
+async def mfa_enroll_setup(
+    body: MfaEnrollSetupBody, request: Request, state: AppState = Depends(get_state)
+) -> dict[str, Any]:
+    """Begin MANDATED MFA enrollment during login (PUBLIC — gated by the pending
+    token). Same response shape as the session-authed /auth/mfa/setup: a PENDING
+    TOTP secret + otpauth URI + one-time recovery codes. Nothing is persisted until
+    the user proves possession via /auth/mfa/enroll-confirm."""
+    from ..auth import mfa as mfa_mod
+
+    username, _user = await _enroll_pending_user(state, body.pending_token)
+    digits, period = _mfa_params(state)
+    secret = mfa_mod.generate_secret()
+    recovery = mfa_mod.generate_recovery_codes(10)
+    uri = mfa_mod.provisioning_uri(
+        secret, username, _mfa_issuer(state), digits=digits, period=period
+    )
+    _MFA_PENDING_ENROLL[username.strip().lower()] = {
+        "secret": secret,
+        "recovery_hashes": await mfa_mod.ahash_recovery_codes(recovery),
+    }
+    await _record_identity_event(
+        state, request, action="auth.mfa_setup_started", actor=username,
+        user=state.auth.principal(username), summary="mfa enrollment started (login-mandated)",
+        target=_user_target(username), tool_input={"mandated": True}, from_request=False,
+    )
+    return {"secret": secret, "otpauth_uri": uri, "recovery_codes": recovery}
+
+
+@router.post("/auth/mfa/enroll-confirm")
+async def mfa_enroll_confirm(
+    body: MfaEnrollConfirmBody, request: Request, response: Response,
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Complete MANDATED MFA enrollment during login (PUBLIC — gated by the pending
+    token): verify the TOTP code against the PENDING secret, persist the enrollment
+    (exactly like /auth/mfa/confirm), then mint the FULL session + cookie exactly
+    like the /auth/mfa/verify success tail — the user lands fully signed in."""
+    from ..auth import mfa as mfa_mod
+
+    auth = state.auth
+    username, user = await _enroll_pending_user(state, body.pending_token)
+    pending = _MFA_PENDING_ENROLL.get(username.strip().lower())
+    if not pending:
+        raise HTTPException(
+            status_code=400, detail="no pending MFA enrollment; call enroll-setup first"
+        )
+    await _refuse_locked_mfa(state, request, user, pending=True)
+    digits, period = _mfa_params(state)
+    ok, step = mfa_mod.verify_totp(
+        pending["secret"], body.code, window=1, period=period, digits=digits
+    )
+    if not ok:
+        auth.note_pending_failure(body.pending_token)
+        await _record_identity_event(
+            state, request, action="auth.mfa_failed", outcome="failure", actor=username,
+            user=auth.principal(username), summary="mfa enrollment confirm failed",
+            target=_user_target(username), from_request=False,
+        )
+        await _count_mfa_failure(state, request, username, pending=True)
+        raise HTTPException(status_code=401, detail="invalid code")
+    # The pending token is spent before anything is saved (Round 16, B19).
+    if not auth.mark_pending_used(body.pending_token):
+        raise HTTPException(status_code=401, detail="invalid or expired pending session")
+    # Persist the enrollment (the same block as /auth/mfa/confirm), audit-first.
+    obf = mfa_mod.obfuscate_secret(pending["secret"], state.secrets.mfa_server_key())
+
+    async def _write() -> None:
+        await _patch_user_or_404(
+            state, username, mfa_enabled=True, mfa_secret=obf,
+            mfa_recovery_hashes=list(pending["recovery_hashes"]), mfa_last_step=int(step),
+            mfa_failed_count=0, mfa_locked_until="",
+        )
+
+    await audited_write(
+        state, sink="control", action="auth.mfa_enrolled",
+        target=_user_target(username), expected_revision=None,
+        changes=_mfa_changes(enabled=True), write=_write,
+        action_type=ActionType.AUTH_EVENT, actor=username, surface="auth",
+        context=audit_context(request, user=auth.principal(username), from_request=False),
+        result_summary="mfa enabled (login-mandated enrollment)",
+        tool_input={"mandated": True},
+    )
+    await state.refresh_users()
+    _MFA_PENDING_ENROLL.pop(username.strip().lower(), None)
+    # Mint the FULL session — the /auth/mfa/verify success tail (incl. the signed
+    # Remember-me request carried by the pending token, Round 12).
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, auth.principal(username),
+        auth.pending_remember(body.pending_token),
+    )
+    minted = auth.mint_session(username, remember_seconds=remember_seconds)
+    if minted is None:  # pragma: no cover — username verified above
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    token, principal = minted
+    try:
+        await state.users.update(username, last_login_at=iso_now())
+    except Exception:  # noqa: BLE001
+        pass
+    await _record_identity_event(
+        state, request, action="auth.login", actor=username, user=principal, token=token,
+        summary=(
+            "mfa login ok (totp; enrolled at login; remembered "
+            f"{_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else "mfa login ok (totp; enrolled at login)"
+        ),
+        target=_user_target(username),
+        tool_input={"method": "totp", "remembered": remember_seconds > 0, "enrolled_at_login": True},
+        from_request=False,
+    )
+    await _register_session(
+        state, request, token, mfa_method="totp", remember_seconds=remember_seconds
+    )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
+    return {
+        "token": token,
+        "user": {
+            "username": principal.username,
+            "role": _resolved_role(state, principal),
+            "must_change_password": bool(principal.must_change_password),
+            "mfa_enabled": True,
+        },
+        **_remember_fields(state, token, remember_seconds, remember_reason),
     }
 
 
 @router.post("/auth/mfa/disable")
 async def mfa_disable(
-    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state)
+    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state),
+    _fresh=Depends(require_fresh_auth()),
 ) -> dict[str, Any]:
     """Disable MFA for the calling user (self). Requires a valid CURRENT TOTP or a
     single-use recovery code (so a hijacked session alone cannot turn MFA off).
     Clears the secret + recovery hashes. (A super_admin can force-disable another
-    user via PUT /api/users/{username} {mfa_enabled:false}.)"""
+    user via PUT /api/users/{username} {mfa_enabled:false}.)
+
+    Round 16 (B19): needs a fresh sign-in, and a wrong code counts toward the
+    account's second-factor bound, so a session cannot guess codes without limit."""
     from ..auth import mfa as mfa_mod
 
     principal = _require_session(state, request)
     user = await state.users.get(principal.username)
     if user is None or not user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is not enabled for this account")
+    await _refuse_locked_mfa(state, request, user, pending=False)
     digits, period = _mfa_params(state)
     secret = mfa_mod.deobfuscate_secret(user.mfa_secret, state.secrets.mfa_server_key())
     ok = False
@@ -3707,17 +5753,34 @@ async def mfa_disable(
             last_step=user.mfa_last_step,
         )
     if not ok:
-        ok = any(mfa_mod.verify_recovery_code(body.code, h) for h in user.mfa_recovery_hashes)
+        matched = await mfa_mod.amatch_recovery_hash(body.code, list(user.mfa_recovery_hashes))
+        ok = matched is not None
     if not ok:
+        await _record_identity_event(
+            state, request, action="auth.mfa_failed", outcome="failure",
+            actor=principal.username, summary="mfa disable refused: invalid code",
+            target=_user_target(principal.username),
+        )
+        await _count_mfa_failure(state, request, principal.username, pending=False)
         raise HTTPException(status_code=400, detail="invalid code")
-    await state.users.save(user.model_copy(update={
-        "mfa_enabled": False, "mfa_secret": "", "mfa_recovery_hashes": [], "mfa_last_step": 0,
-    }))
-    await state.refresh_users()
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=principal.username,
-        result_summary="mfa disabled",
+
+    async def _write() -> None:
+        # ``update`` drops only ``None``, so the empty secret, list and step are written.
+        await _patch_user_or_404(
+            state, principal.username,
+            mfa_enabled=False, mfa_secret="", mfa_recovery_hashes=[], mfa_last_step=0,
+            mfa_failed_count=0, mfa_locked_until="",
+        )
+
+    # Round 14 (SPEC §3.6): turning a second factor off is never done without its row.
+    await audited_write(
+        state, sink="control", action="auth.mfa_disabled",
+        target=_user_target(principal.username), expected_revision=None,
+        changes=_mfa_changes(enabled=False), write=_write,
+        action_type=ActionType.AUTH_EVENT, actor=principal.username, surface="auth",
+        context=audit_context(request), result_summary="mfa disabled",
     )
+    await state.refresh_users()
     return {"ok": True}
 
 
@@ -3763,7 +5826,9 @@ async def sso_providers(state: AppState = Depends(get_state)) -> dict[str, Any]:
     sso = getattr(state.prefs, "sso", None)
     out = []
     for p in (sso.enabled_providers() if sso else []):
-        out.append({"id": p.id, "type": p.type, "display_name": p.display_name or p.id})
+        # The stored name, empty when none is set: the sign-in page names an unnamed
+        # Google or Microsoft provider by its type, never by its internal id.
+        out.append({"id": p.id, "type": p.type, "display_name": (p.display_name or "").strip()})
     return {"providers": out}
 
 
@@ -3772,6 +5837,7 @@ async def sso_authorize(
     request: Request,
     response: Response,
     provider: str = Query(...),
+    remember: bool = False,  # query parameter (a plain default keeps direct calls safe)
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """PUBLIC: build the IdP authorization URL. Stashes a single-use state+nonce in
@@ -3799,6 +5865,9 @@ async def sso_authorize(
         "nonce": nonce,
         "redirect_uri": redirect_uri,
         "expires_at": iso_now(),
+        # Round 12: the Remember-me REQUEST, bound server-side to this single-use
+        # state; eligibility is decided at the callback against the live policy.
+        "remember": bool(remember),
     })
     response.set_cookie(
         _OIDC_STATE_COOKIE, state_tok, max_age=600, httponly=True, samesite="lax",
@@ -3859,21 +5928,34 @@ async def sso_callback(
         return _fail("incomplete_identity")
     denied = prov.check_allowed(identity)
     if denied:
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="auth", actor=identity.get("email") or "",
-            result_summary=f"sso denied: {denied}",
+        await _record_identity_event(
+            state, request, action="auth.login_failed", outcome="denied",
+            actor=identity.get("email") or "", summary=f"sso denied: {denied}",
+            tool_input={"method": f"sso:{provider_id}"}, from_request=False,
         )
         return _fail("not_allowed")
     role = prov.role_for(identity)
-    username = await _provision_sso_user(state, provider_id, identity, role)
+    try:
+        username, refusal = await _provision_sso_user(state, request, provider_id, identity, role)
+    except AuditUnavailableError:
+        # Creating or changing the account is audit-first: nothing was changed.
+        return _fail("audit_unavailable")
     if username is None:
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="auth", actor=identity.get("email") or "",
-            result_summary="sso login rejected: user not provisioned",
+        # One attempt, one row: a refused link is ``denied`` (the account-takeover
+        # guard), anything else is a ``failure`` to provision.
+        await _record_identity_event(
+            state, request, action="auth.login_failed",
+            outcome="denied" if refusal else "failure",
+            actor=identity.get("email") or "",
+            summary=refusal or "sso login rejected: user not provisioned",
+            tool_input={"method": f"sso:{provider_id}"}, from_request=False,
         )
         return _fail("user_not_provisioned")
     await state.refresh_users()
-    minted = state.auth.mint_session(username)
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, state.auth.principal(username), rec.get("remember") is True
+    )
+    minted = state.auth.mint_session(username, remember_seconds=remember_seconds)
     if minted is None:
         return _fail("session_failed")
     token, _principal = minted
@@ -3881,28 +5963,40 @@ async def sso_callback(
         await state.users.update(username, last_login_at=iso_now())
     except Exception:  # noqa: BLE001
         pass
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary=f"sso login ok ({provider_id})",
+    await _record_identity_event(
+        state, request, action="auth.login", actor=username, user=_principal, token=token,
+        summary=(
+            f"sso login ok ({provider_id}; remembered {_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else f"sso login ok ({provider_id})"
+        ),
+        target=_user_target(username),
+        tool_input={"method": f"sso:{provider_id}", "remembered": remember_seconds > 0},
+        from_request=False,
     )
     # Wave 3: register the SSO session from the freshly-minted token (carries sid/tv).
-    await _register_session(state, request, token, mfa_method=f"sso:{provider_id}")
-    redirect = RedirectResponse(url="/", status_code=302)
-    redirect.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    await _register_session(
+        state, request, token, mfa_method=f"sso:{provider_id}",
+        remember_seconds=remember_seconds,
     )
+    # A refused remember request is reported on the landing URL (a closed reason
+    # vocabulary, never free text) so the console can explain it once.
+    landing = "/"
+    if rec.get("remember") is True and remember_seconds <= 0:
+        landing = f"/?remember_refused={quote_plus(remember_reason)}"
+    redirect = RedirectResponse(url=landing, status_code=302)
+    _set_session_cookie(redirect, state, token, remember_seconds=remember_seconds)
     redirect.delete_cookie(_OIDC_STATE_COOKIE, path="/")  # one-time binding consumed (#38)
     return redirect
 
 
 async def _provision_sso_user(
-    state: AppState, provider_id: str, identity: dict[str, Any], role: str
-) -> str | None:
+    state: AppState, request: Request, provider_id: str, identity: dict[str, Any], role: str
+) -> tuple[str | None, str | None]:
     """Map an SSO identity to a local account; provision it (atomically) when
-    ``auto_create_users`` is on. Returns the local username, or ``None`` when no
-    matching user exists and auto-provisioning is off.
+    ``auto_create_users`` is on. Returns ``(username, None)``, or ``(None, refusal)``
+    when no account may be used: ``refusal`` is the reason when the link was refused
+    (the caller writes the one ``auth.login_failed`` row for the attempt) and ``None``
+    when no matching user exists and auto-provisioning is off.
 
     Matching precedence: an EXISTING user already linked to this (provider, sub) →
     (only when the IdP asserts a VERIFIED email) an existing SSO-managed user by that
@@ -3910,11 +6004,22 @@ async def _provision_sso_user(
     available, else the non-spoofable ``provider:sub``. Idempotent: a returning user is
     NOT duplicated; its role is refreshed from the group map.
 
+    Round 14 (SPEC §3.6, §4.5.4): creating the account, and changing its role or its
+    link on a later sign-in, is audit-first (``user.created``, ``user.role_changed``,
+    ``user.updated``; the actor is the system acting for the identity provider). A
+    failed append raises :class:`AuditUnavailableError` and nothing is changed.
+
     SECURITY (#3, SSO account takeover): we NEVER link an SSO login to a pre-existing
     LOCAL-credential account by email, and we NEVER trust an UNVERIFIED email as an
     account key. Either would let an attacker whose IdP account carries a victim's
-    address log in AS the victim."""
-    from ..auth.passwords import hash_password
+    address log in AS the victim.
+
+    Round 16 (B16): a verified email links only to an account of THIS provider that
+    has no subject yet. An account of another provider, or one that already holds a
+    different subject for this provider, is refused: the stable identity is the issuer
+    plus the subject, so an existing subject is never re-bound by email. Round 16
+    (B15): a group map never changes the role of a stored Super admin."""
+    from ..auth.passwords import ahash_password
 
     sso = getattr(state.prefs, "sso", None)
     cfg = sso.get(provider_id) if sso else None
@@ -3923,11 +6028,13 @@ async def _provision_sso_user(
     email_verified = bool(identity.get("email_verified"))
     sub = str(identity.get("sub") or "").strip()
     if not sub:
-        return None  # no stable subject → cannot key an account safely
+        return None, None  # no stable subject → cannot key an account safely
     # Only trust the email as an account key when the IdP asserts it is verified;
     # otherwise key on the immutable provider+sub (an attacker cannot forge that).
     trusted_email = email if (email and email_verified) else ""
     username = trusted_email or f"{provider_id}:{sub}"
+    method = f"sso:{provider_id}"
+    context = audit_context(request, from_request=False)
 
     # 1) An account already LINKED to this (provider, sub) — always safe to reuse.
     existing = None
@@ -3936,56 +6043,134 @@ async def _provision_sso_user(
             existing = u
             break
 
-    # 2) Otherwise match by the VERIFIED email — but refuse to auto-link onto a
-    #    pre-existing LOCAL-credential account (real password, not already linked to
-    #    THIS provider). That refusal is the account-takeover guard.
+    # 2) Otherwise match by the VERIFIED email, but only onto an account of THIS
+    #    provider that has no subject yet (Round 16, B16). A local account, an account
+    #    of another provider, or one bound to a different subject is refused. That
+    #    refusal is the account-takeover guard.
     if existing is None and trusted_email:
         candidate = await state.users.get(trusted_email)
         if candidate is not None:
-            already_linked_here = candidate.oauth_provider == provider_id
-            is_local_account = bool(candidate.password_hash) and not candidate.oauth_provider
-            if is_local_account and not already_linked_here:
-                await state.control_audit.record(
-                    action_type=ActionType.AUTH_EVENT, surface="auth",
-                    actor=email or username,
-                    result_summary=(
-                        f"sso link refused: {provider_id} email matches a local account"
-                    ),
+            if not candidate.oauth_provider:
+                return None, f"sso link refused: {provider_id} email matches a local account"
+            if candidate.oauth_provider != provider_id:
+                return None, (
+                    f"sso link refused: {provider_id} email matches an account linked to "
+                    "another provider"
                 )
-                return None
+            if candidate.oauth_sub:
+                return None, (
+                    f"sso link refused: {provider_id} email matches an account linked to "
+                    "a different subject"
+                )
             existing = candidate
 
     if existing is not None:
         # Idempotent re-login: refresh role + provider linkage, never duplicate.
         if not existing.active:
-            return None
-        await state.users.save(existing.model_copy(update={
-            "role": role if (cfg and cfg.group_role_map) else existing.role,
+            return None, None
+        old_role = str(getattr(existing.role, "value", existing.role) or "")
+        new_role = role if (cfg and cfg.group_role_map) else old_role
+        if old_role == UserRole.SUPER_ADMIN.value:
+            # Round 16 (B15): a Super admin's role changes only through a Super admin.
+            new_role = old_role
+        update = {
+            "role": new_role,
             "oauth_provider": provider_id,
             "oauth_sub": sub or existing.oauth_sub,
-        }))
-        return existing.username
+        }
+        patch = {
+            key: value for key, value in update.items()
+            if str(getattr(getattr(existing, key, None), "value", getattr(existing, key, None)) or "")
+            != str(value or "")
+        }
+        if not patch:
+            return existing.username, None  # nothing to change, nothing to record
+        role_changed = "role" in patch
+
+        async def _save_existing() -> None:
+            # Only the fields this sign-in changes: an administrator's change to the
+            # account saved while the row is appended (active, password) is kept.
+            if await state.users.update(existing.username, **patch) is None:
+                raise _SsoAccountGone(f"user '{existing.username}' no longer exists")
+
+        try:
+            await audited_write(
+                state, sink="control",
+                action="user.role_changed" if role_changed else "user.updated",
+                target=_user_target(
+                    existing.username, getattr(existing, "display_name", "") or None
+                ),
+                expected_revision=None, changes=_account_changes(existing, patch),
+                write=_save_existing, action_type=ActionType.USER_MGMT, actor=method,
+                actor_type="system", surface="auth", context=context,
+                tool_input={"method": method},
+                result_summary=(
+                    f"single sign-on changed the role of '{existing.username}' from {old_role} "
+                    f"to {new_role} ({provider_id} group map)"
+                    if role_changed
+                    else f"single sign-on linked '{existing.username}' to {provider_id}"
+                ),
+            )
+        except _SsoAccountGone:
+            # Deleted while the row was appended: its failure row is written and the
+            # sign-in fails as "not provisioned".
+            return None, None
+        return existing.username, None
 
     if not auto_create:
-        return None
-    # Atomic create-if-absent at our single-process scale (create() raises on a
-    # concurrent duplicate, which we treat as "already provisioned").
+        return None, None
+    unusable_hash = await ahash_password(secrets_token())
+
+    async def _create() -> str:
+        # Atomic create-if-absent at our single-process scale: create() raises on a
+        # concurrent duplicate, which becomes the failure row of this attempt (the
+        # racing callback's own row records the creation) and is then reused.
+        try:
+            created = await state.users.create(
+                username=username,
+                password_hash=unusable_hash,
+                role=role,
+                active=True,
+                must_change_password=False,
+            )
+        except ValueError as exc:
+            raise _SsoAccountExists(str(exc)) from exc
+        if await state.users.update(
+            created.username, oauth_provider=provider_id, oauth_sub=sub,
+        ) is None:
+            raise _SsoAccountGone(f"user '{created.username}' no longer exists")
+        return created.username
+
+    if await state.users.get(username) is not None:
+        # Provisioned by a racing callback since the lookups above: reuse it.
+        return username, None
     try:
-        created = await state.users.create(
-            username=username,
-            password_hash=hash_password(secrets_token()),
-            role=role,
-            active=True,
-            must_change_password=False,
+        created_name = await audited_write(
+            state, sink="control", action="user.created",
+            target=_user_target(username), expected_revision=None,
+            changes=diff_changes({}, {
+                "role": role, "active": True, "oauth_provider": provider_id, "oauth_sub": sub,
+            }),
+            write=_create, action_type=ActionType.USER_MGMT, actor=method, actor_type="system",
+            surface="auth", context=context, tool_input={"method": method},
+            result_summary=f"single sign-on created user '{username}' ({role}) for {provider_id}",
         )
-    except ValueError:
-        # Raced with another callback that just created it — fetch + return.
+    except _SsoAccountExists:
         again = await state.users.get(username)
-        return again.username if again else None
-    await state.users.save(created.model_copy(update={
-        "oauth_provider": provider_id, "oauth_sub": sub,
-    }))
-    return created.username
+        return (again.username if again else None), None
+    except _SsoAccountGone:
+        return None, None
+    # Round 16 (SPEC D7): a new account starts with What's new marked seen (best effort).
+    await stamp_new_account(state, created_name)
+    return created_name, None
+
+
+class _SsoAccountGone(Exception):
+    """The account a single sign-on write targets was deleted before the write ran."""
+
+
+class _SsoAccountExists(Exception):
+    """``users.create`` found the account already provisioned by a racing callback."""
 
 
 def secrets_token() -> str:
@@ -4010,11 +6195,27 @@ async def set_sso_provider_secret(
 ) -> dict[str, Any]:
     """Set/clear one OIDC provider's client secret (super_admin only). The value goes
     to the SECRET tier (in memory), NEVER to Preferences/the config doc; only a
-    configured-boolean is returned."""
-    state.secrets.set_sso_client_secret(provider_id, body.client_secret)
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=current_username(request),
-        result_summary=f"sso client secret {'set' if body.client_secret else 'cleared'} for '{provider_id}'",
+    configured-boolean is returned.
+
+    Round 16 (B15): a stored Super admin with a strict fresh sign-in only, otherwise
+    ``403 super_admin_only`` and nothing changes."""
+    await _require_super_admin_for(request, state, message=SSO_SUPER_ADMIN_MESSAGE)
+
+    async def _write() -> None:
+        state.secrets.set_sso_client_secret(provider_id, body.client_secret)
+
+    # Round 14 (SPEC §3.6): audited before it applies; the value is never recorded.
+    await audited_write(
+        state, sink="control", action="settings.updated",
+        target={"type": "setting", "id": "sso", "label": "Single sign-on"},
+        expected_revision=None,
+        changes=[{"field": f"sso.{provider_id}.client_secret", "before": None, "after": None,
+                  "secret": True}],
+        write=_write, action_type=ActionType.AUTH_EVENT, actor=current_username(request),
+        surface="auth", context=audit_context(request),
+        result_summary=(
+            f"sso client secret {'set' if body.client_secret else 'cleared'} for '{provider_id}'"
+        ),
     )
     return {"ok": True, "configured": bool(state.secrets.sso_client_secret(provider_id))}
 
@@ -4023,7 +6224,10 @@ async def set_sso_provider_secret(
 # RBAC: roles matrix (for the UI) + multi-user administration
 # --------------------------------------------------------------------------- #
 @router.get("/roles")
-async def list_roles(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def list_roles(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("roles", "read")),
+) -> dict[str, Any]:
     """The role -> resource -> [actions] matrix (default merged with any operator
     override + the admin-managed custom roles) for the webui's permission checks + the
     RBAC settings view. Folds the out-of-band :class:`CustomRoleStore` roles into the
@@ -4058,6 +6262,18 @@ class UserCreateBody(BaseModel):
     username: str
     password: str
     role: str = UserRole.ANALYST_TIER1.value
+    # Admin-set profile/contact fields (optional, additive — plain text, #9).
+    # ``display_name`` doubles as the full name (the existing field — no duplicate).
+    display_name: str = ""
+    email: str = ""
+    phone: str = ""
+    # The MFA-enrollment MANDATE (required ≠ enrolled — never mints a secret; the
+    # ``mfa_enabled`` admin-enable guard below does NOT apply to this flag).
+    mfa_required: bool = False
+    # Existing CUSTOM roles to assign at creation (by name; validated exactly like
+    # PUT /api/users/{u}/roles and persisted into prefs["custom_roles"] the same
+    # way). The BASE ``role`` must remain one of the six built-ins.
+    custom_roles: list[str] | None = None
 
 
 class UserUpdateBody(BaseModel):
@@ -4068,6 +6284,12 @@ class UserUpdateBody(BaseModel):
     # device). Only False is honored here; enabling MFA is always a self-service
     # enroll (setup→confirm) so the user actually possesses the authenticator.
     mfa_enabled: bool | None = None
+    # Admin-set profile/contact fields + the MFA mandate (None = leave unchanged;
+    # clearing a text field is an explicit empty string).
+    display_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    mfa_required: bool | None = None
 
 
 _VALID_ROLES = {r.value for r in UserRole}
@@ -4077,6 +6299,107 @@ def _validate_role(role: str) -> str:
     if role not in _VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown role: {role}")
     return role
+
+
+SUPER_ADMIN_ACCOUNT_MESSAGE = (
+    "Only a Super admin can give an account the Super admin role or change a Super admin "
+    "account."
+)
+
+
+def _role_text(role: Any) -> str:
+    return str(getattr(role, "value", role) or "")
+
+
+async def _require_super_admin_for(
+    request: Request, state: AppState, *, message: str = SUPER_ADMIN_ACCOUNT_MESSAGE,
+) -> None:
+    """Granting the Super admin role, or changing, disabling or deleting a Super admin
+    account, is for a Super admin only (Round 15 review, security). ``users:manage``
+    alone is not enough: a SOC manager holds it by default, and a Super admin account
+    is the one boundary of the role-based access switch (``PUT /api/rbac``) and of
+    system updates, both of which trust the STORED role. So this reads the verified
+    principal's stored role, never the RBAC-off "everyone is Super admin" view, writes
+    an Access denied row and answers ``403 super_admin_only`` otherwise, then asks the
+    strict fresh sign-in the switch asks (``401 reauth_required``). Called before the
+    audited write, so a refusal changes nothing. A no-op with sign-in off. ``message``
+    names what was refused (the single sign-on settings pass their own, Round 16 B15)."""
+    auth = getattr(state, "auth", None)
+    if auth is None or not auth.is_enabled:
+        return
+    user = current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="authentication required")
+    if _role_text(getattr(user, "role", "")) != UserRole.SUPER_ADMIN.value:
+        from .deps import record_access_denied
+
+        await record_access_denied(request, "role:super_admin")
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "super_admin_only", "message": message},
+        )
+    from .routes_rbac import require_strict_fresh_sign_in
+
+    await require_strict_fresh_sign_in(request, state)
+
+
+def _validate_email_text(value: str) -> str:
+    """Lenient contact-email sanity: capped plain text that contains an ``@`` and no
+    whitespace. Contact metadata, not an auth identifier — kept deliberately loose."""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    _validate_profile_text(v, "email")
+    if "@" not in v or any(ch.isspace() for ch in v):
+        raise HTTPException(
+            status_code=400, detail="email must contain '@' and no whitespace"
+        )
+    return v
+
+
+_PHONE_CHARSET = frozenset("+0123456789 -()")
+
+
+def _validate_phone_text(value: str) -> str:
+    """Lenient phone sanity: capped plain text over the charset ``+ 0-9 space - ( )``."""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    _validate_profile_text(v, "phone")
+    if not all(ch in _PHONE_CHARSET for ch in v):
+        raise HTTPException(
+            status_code=400,
+            detail="phone may only contain digits, spaces, and + - ( )",
+        )
+    return v
+
+
+async def _validate_custom_role_names(
+    state: AppState, names: list[str]
+) -> list[str]:
+    """Validate a custom-role assignment list EXACTLY like the assign path in
+    routes_roles.py (``PUT /api/users/{u}/roles``): reject a built-in name (400) and
+    a name absent from the resolved matrix (400); de-duplicate, preserve order."""
+    from ..rbac.policy import resolve_matrix
+
+    from .deps import _rbac_config_with_custom_roles
+
+    matrix = resolve_matrix(await _rbac_config_with_custom_roles(state))
+    cleaned: list[str] = []
+    for nm in names:
+        nm_s = str(nm).strip()
+        if not nm_s:
+            continue
+        if nm_s in _VALID_ROLES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{nm_s}' is a built-in role, not a custom role",
+            )
+        if nm_s not in matrix:
+            raise HTTPException(status_code=400, detail=f"unknown custom role: {nm_s}")
+        if nm_s not in cleaned:
+            cleaned.append(nm_s)
+    return cleaned
 
 
 @router.get("/users")
@@ -4095,27 +6418,88 @@ async def create_user(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("users", "manage")),
 ) -> dict[str, Any]:
+    # No control character (``\u0000`` among them) and at most 160 characters: every
+    # row the account writes carries its name as the audit actor. Answered here, not by
+    # a model validator, so the 422 never echoes the value (a lone surrogate in an
+    # echoed value cannot be encoded and turned the answer into a 500).
+    name_problem = username_problem(body.username)
+    if name_problem is not None:
+        raise HTTPException(status_code=422, detail=name_problem)
     pw = (body.password or "").strip()
     if len(pw) < 8:
         raise HTTPException(status_code=400, detail="password must be at least 8 characters")
     _validate_role(body.role)
-    from ..auth.passwords import hash_password
+    display_name = _validate_profile_text((body.display_name or "").strip(), "display_name")
+    email = _validate_email_text(body.email)
+    phone = _validate_phone_text(body.phone)
+    if body.role == UserRole.SUPER_ADMIN.value:
+        await _require_super_admin_for(request, state)
+    # Custom roles at creation: validated exactly like the assign path and carried
+    # in prefs["custom_roles"] (the same shape PUT /users/{u}/roles writes). No
+    # lockout guard is needed here — creation can only ADD grants, never remove.
+    custom_roles: list[str] = []
+    if body.custom_roles is not None:
+        custom_roles = await _validate_custom_role_names(state, body.custom_roles)
+    from ..auth.passwords import ahash_password
 
-    try:
-        user = await state.users.create(
-            username=body.username,
-            password_hash=hash_password(pw),
-            role=body.role,
-            active=True,
-            must_change_password=True,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await state.refresh_users()
-    await state.control_audit.record(
-        action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
-        result_summary=f"created user '{user.username}' ({user.role})",
+    # Pre-checks (no row): a missing or taken name is refused before anything is
+    # attempted, with the answers the store gave before Round 14.
+    if not (body.username or "").strip():
+        raise HTTPException(status_code=409, detail="username is required")
+    if await state.users.get(body.username) is not None:
+        raise HTTPException(status_code=409, detail=f"user '{body.username}' already exists")
+    extras = []
+    if bool(body.mfa_required):
+        extras.append("mfa_required")
+    if custom_roles:
+        extras.append(f"custom={custom_roles}")
+    # What the new account holds, as the row records it (empty fields left out).
+    created_fields = {
+        key: value for key, value in {
+            "role": body.role, "active": True, "must_change_password": True,
+            "display_name": display_name, "email": email, "phone": phone,
+            "mfa_required": bool(body.mfa_required), "custom_roles": custom_roles,
+        }.items() if value not in ("", [], None)
+    }
+
+    password_hash = await ahash_password(pw)
+
+    async def _write() -> Any:
+        try:
+            created = await state.users.create(
+                username=body.username,
+                password_hash=password_hash,
+                role=body.role,
+                active=True,
+                must_change_password=True,
+                display_name=display_name,
+                email=email,
+                phone=phone,
+                mfa_required=bool(body.mfa_required),
+                prefs=({"custom_roles": custom_roles} if custom_roles else None),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return created
+
+    # Round 14 (SPEC §3.6): the account exists only once its audit row does.
+    user = await audited_write(
+        state, sink="control", action="user.created",
+        target=_user_target(body.username, display_name or None), expected_revision=None,
+        changes=[
+            *diff_changes({}, created_fields),
+            {"field": "password", "before": None, "after": None, "secret": True},
+        ],
+        write=_write, action_type=ActionType.USER_MGMT, actor=current_username(request),
+        surface="users", context=audit_context(request),
+        result_summary=(
+            f"created user '{body.username}' ({body.role})"
+            + (f" [{' '.join(extras)}]" if extras else "")
+        ),
     )
+    # Round 16 (SPEC D7): a new account starts with What's new marked seen (best effort).
+    await stamp_new_account(state, user.username)
+    await state.refresh_users()
     return {"ok": True, "user": user.public()}
 
 
@@ -4151,35 +6535,96 @@ async def update_user(
         pw = body.password.strip()
         if len(pw) < 8:
             raise HTTPException(status_code=400, detail="password must be at least 8 characters")
-        from ..auth.passwords import hash_password
+        from ..auth.passwords import ahash_password
 
-        patch["password_hash"] = hash_password(pw)
+        patch["password_hash"] = await ahash_password(pw)
         patch["must_change_password"] = True
     if body.mfa_enabled is False:
-        # Force-disable: clear the secret material too (the user re-enrolls later).
+        # Force-disable: clear the secret material too (the user re-enrolls later), and
+        # the second-factor failure count and lock (Round 16, B19), so the person can
+        # enrol again at once.
         patch.update({
             "mfa_enabled": False, "mfa_secret": "", "mfa_recovery_hashes": [], "mfa_last_step": 0,
+            "mfa_failed_count": 0, "mfa_locked_until": "",
         })
     elif body.mfa_enabled is True:
         raise HTTPException(
             status_code=400,
             detail="MFA can only be enabled by the user via self-service enrollment",
         )
+    # The MFA-enrollment MANDATE is admin-settable BOTH ways (required ≠ enrolled —
+    # it never mints a secret, so the enable-guard above does not apply to it).
+    if body.mfa_required is not None:
+        patch["mfa_required"] = bool(body.mfa_required)
+    if body.display_name is not None:
+        patch["display_name"] = _validate_profile_text(
+            str(body.display_name).strip(), "display_name"
+        )
+    if body.email is not None:
+        patch["email"] = _validate_email_text(body.email)
+    if body.phone is not None:
+        patch["phone"] = _validate_phone_text(body.phone)
     if not patch:
         raise HTTPException(status_code=400, detail="no changes provided")
+    if UserRole.SUPER_ADMIN.value in (_role_text(target.role), body.role):
+        # Granting the role, or any change to a Super admin account (its role, active
+        # state, password, MFA or profile): a Super admin only.
+        await _require_super_admin_for(request, state)
     demoting = body.role is not None and body.role != UserRole.SUPER_ADMIN.value
     disabling = body.active is False
     if await _would_orphan_super_admin(state, target, demoting=demoting, disabling=disabling):
         raise HTTPException(
             status_code=409, detail="cannot demote or disable the last active super_admin"
         )
-    updated = await state.users.update(username, **patch)
-    await state.refresh_users()
-    await state.control_audit.record(
-        action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
-        result_summary=f"updated user '{username}'",
+
+    async def _write() -> Any:
+        return await _patch_user_or_404(state, username, **patch)
+
+    old_role = getattr(target.role, "value", target.role)
+    role_changed = "role" in patch and str(patch["role"]) != str(old_role)
+    # Round 14 (SPEC §3.6): audited before the change is visible.
+    updated = await audited_write(
+        state, sink="control",
+        action="user.role_changed" if role_changed else "user.updated",
+        target=_user_target(username, getattr(target, "display_name", "") or None),
+        expected_revision=None, changes=_account_changes(target, patch), write=_write,
+        action_type=ActionType.USER_MGMT, actor=current_username(request), surface="users",
+        context=audit_context(request),
+        result_summary=(
+            f"updated user '{username}': role changed from {old_role} to {patch['role']}"
+            if role_changed else f"updated user '{username}'"
+        ),
     )
-    return {"ok": True, "user": (updated or target).public()}
+    await state.refresh_users()
+    sessions_revoked: int | None = None
+    if "password_hash" in patch:
+        # Round 16 (B21): an administrator reset signs the account out everywhere
+        # (every session revoked and its token version bumped, so even a token the
+        # registry never saw is refused) and stops its chat answers.
+        by = current_username(request)
+        sessions_revoked = int(await state.sessions.revoke_all(
+            username, by=by, reason="admin_password_reset",
+        ) or 0)
+        await state.refresh_sessions()
+        await _stop_chat_turns(state, username)
+        await _record_identity_event(
+            state, request, action="session.revoked", actor=by, surface="session",
+            target=_user_target(username),
+            summary=_session_summary(
+                "session_admin_revoke_all", "",
+                f"password reset: revoked {sessions_revoked} session(s) for {username}",
+            ),
+            tool_input={"scope": "all", "count": sessions_revoked,
+                        "reason": "admin_password_reset"},
+        )
+    if "role" in patch or "active" in patch:
+        # A disabled account's running chat answers stop now; a role change stops
+        # only those that relied on a grant the account no longer holds.
+        await _recheck_chat_turns(state, username)
+    out: dict[str, Any] = {"ok": True, "user": (updated or target).public()}
+    if sessions_revoked is not None:
+        out["sessions_revoked"] = sessions_revoked
+    return out
 
 
 @router.delete("/users/{username}")
@@ -4192,13 +6637,63 @@ async def delete_user(
     target = await state.users.get(username)
     if target is None:
         raise HTTPException(status_code=404, detail="user not found")
+    if _role_text(target.role) == UserRole.SUPER_ADMIN.value:
+        await _require_super_admin_for(request, state)
     if await _would_orphan_super_admin(state, target, demoting=True, disabling=True):
         raise HTTPException(status_code=409, detail="cannot delete the last active super_admin")
-    await state.users.delete(username)
-    await state.refresh_users()
-    await state.control_audit.record(
-        action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
+    from ..engine.jobs import account_generation
+
+    async def _write() -> None:
+        # The deletion itself: the account's jobs and artifacts are retired and the
+        # account removed. Only these persisting steps are the audited unit. An
+        # account deleted (or deleted and made again) while the row was appended
+        # answers 404, so its failure row is written instead of a deletion this
+        # request never made.
+        current = await state.users.get(username)
+        if current is None or current.created_at != target.created_at:
+            raise HTTPException(status_code=404, detail="user not found")
+        generation = account_generation(target.username, target.created_at)
+        artifacts, _removed_jobs = await state.jobs.retire_actor(username, generation)
+        await state.job_runner.delete_artifacts(artifacts)
+        if not await state.users.delete(username):
+            raise HTTPException(status_code=404, detail="user not found")
+
+    old_role = getattr(target.role, "value", target.role)
+    # Round 14 (SPEC §3.6): the account and its data are removed only once the
+    # deletion is on the audit log.
+    await audited_write(
+        state, sink="control", action="user.deleted",
+        target=_user_target(username, getattr(target, "display_name", "") or None),
+        expected_revision=None,
+        changes=[{"field": "role", "before": str(old_role or ""), "after": None}],
+        write=_write, action_type=ActionType.USER_MGMT, actor=current_username(request),
+        surface="users", context=audit_context(request),
         result_summary=f"deleted user '{username}'",
+    )
+    # After the deletion is saved and recorded: the account is gone from the synced
+    # view first (its token now fails every request, so no new chat turn can start),
+    # then its running chat answers stop and unwind before its chat material is
+    # purged, so none of them writes it back. An error here keeps its pre-Round-14
+    # behaviour and never pairs the saved deletion with a "not applied" row.
+    await state.refresh_users()
+    await _stop_chat_turns(state, username)
+    from ..stores.chat_feedback import feedback_store_for
+    from ..stores.chat_starters import starters_store_for
+
+    real_chat = state.real_chat_conversations
+    real_chat_kv = getattr(real_chat, "_kv", None) or state.kv
+    await state.auth.purge_user_side_state(
+        username,
+        inbox=state.real_inbox,
+        notif_prefs=state.notif_prefs,
+        user_prefs=state.user_prefs,
+        custom_roles=state.custom_roles,
+        chat_conversations=real_chat,
+        chat_feedback=feedback_store_for(real_chat_kv),
+        reports=state.real_reports,
+        # Round 13 (SPEC-chat §3.2.3): the user's chat starter state goes with the
+        # ratings, over the same REAL chat KV.
+        chat_starters=starters_store_for(real_chat_kv),
     )
     return {"ok": True}
 
@@ -4212,40 +6707,94 @@ class CaseListResponse(BaseModel):
 
     cases: list[Case]
     total: int
+    # ADDITIVE: whether ``total`` is the PROVEN count of rows matching the requested
+    # ``from``/``to`` window across the whole corpus. ``True`` on the bundled
+    # Elasticsearch/SQL stores, which push the window down as a real backend clause.
+    # ``False`` means ``total`` answers a DIFFERENT question than the one asked and must
+    # not be presented as the window's count — either a third-party case repository fell
+    # back to the bounded-scan compatibility path (``total`` is a lower bound), or a
+    # supplied ``from``/``to`` bound could not be parsed and was dropped, so the applied
+    # window is wider than the requested one (an unreadable bound is never silently
+    # resolved to ``now()``, which would empty the window instead). ``null`` when NO
+    # window was requested — the windowless response is otherwise unchanged, so a client
+    # can distinguish "not applicable" from "not proven".
+    window_total_exact: bool | None = None
 
 
-def _window_cases_by_created(
-    cases: list[Case], from_expr: str | None, to_expr: str | None
-) -> list[Case]:
-    """Keep only cases whose ``created_at`` is within [from, to] (each bound optional).
+class CaseListEcho(BaseModel):
+    """The ADDITIVE keys a case-list response gains when the request engaged one of the
+    paging/sort parameters (``sort_field`` / ``sort_order`` / ``status_group``).
 
-    Bounds accept an ISO timestamp OR a relative ``now-24h`` expression (whatever the
-    TimeRangePicker emits). Best-effort + never-drop-on-error (#4): a case with a
-    missing/unparseable ``created_at`` is KEPT rather than silently excluded."""
-    lo = relative_to_millis(from_expr) if from_expr else None
-    hi = relative_to_millis(to_expr) if to_expr else None
-    if lo is None and hi is None:
-        return cases
-    out: list[Case] = []
-    for c in cases:
-        ts = getattr(c, "created_at", "") or ""
-        if not ts:
-            out.append(c)
-            continue
-        try:
-            ms = relative_to_millis(ts)
-        except Exception:  # noqa: BLE001 — unparseable ts → keep (never silently drop)
-            out.append(c)
-            continue
-        if lo is not None and ms < lo:
-            continue
-        if hi is not None and ms > hi:
-            continue
-        out.append(c)
-    return out
+    They are echoes of what the server actually applied. Every one exists because the
+    matching server decision was previously INVISIBLE, and an invisible clamp is
+    indistinguishable from a small result set.
+
+    They are appended to the response ONLY for a request that asked for them, so a
+    client that sends none of the new parameters keeps receiving the exact
+    :class:`CaseListResponse` envelope it has always received — key for key. Answering a
+    question nobody asked is not additive to a caller that has to parse the answer.
+    """
+
+    # Which fields this deployment can actually sort a case listing by. The console
+    # builds its sort menu from THIS, so a deployment whose store supports a different
+    # set gets the right menu with no client change and no client-side literal list.
+    sortable_fields: list[str]
+    # What the server sorted by, after the allow-list. A request that asked for an
+    # unsupported field is answered in the DEFAULT order, and this says so rather than
+    # letting the client believe its sort was honoured.
+    sort_field: str
+    sort_order: str
+    # What the server actually paged with, after clamping.
+    limit_applied: int
+    offset_applied: int
+    # The largest ``offset`` this endpoint will accept for ``limit_applied``, so a
+    # client can stop before it asks for a page the store cannot serve.
+    max_offset: int
+    # The multi-status lifecycle group that was applied, if any.
+    status_group_applied: str | None = None
 
 
-def _with_advisory_bands(case: Case, prefs: Preferences) -> Case:
+# The case-list SORT ALLOW-LIST, enforced at this HTTP boundary and nowhere lower.
+#
+# It has to live ABOVE both bundled stores because the two disagree about an unknown
+# field and NEITHER disagreement is safe to expose:
+#
+#   * the Elasticsearch store interpolates the field name straight into the query
+#     document as a KEY (``{"sort": [{field: {...}}]}``). A mapped ``text`` field, an
+#     ``enabled: false`` object, or an unmapped name is a 400 from the cluster, which
+#     would surface as a 500 from this route; and no escaping can make an attacker-chosen
+#     document key safe after the fact, so the name must be CHOSEN, not sanitised.
+#   * the SQL repository silently falls back to ``created_at``, which means it answers a
+#     different question than it was asked and never says so.
+#
+# The in-memory Elasticsearch double accepts ANY key and resolves an unplaceable value to
+# a sentinel, so an allow-list asserted only against it would pass offline and 400 in
+# production. Membership below is therefore chosen against the REAL contracts: every
+# entry is a universal ``Case`` field that is sortably mapped in ``es/indices``
+# ``CASES_MAPPING`` AND has a real ORDER BY expression in the SQL repository's
+# ``_case_sort_column`` (``risk_score`` via its numeric JSON extraction). ``severity_band``
+# is deliberately absent: it is derived at READ time after paging and is not stored,
+# mapped or materialised anywhere, so no store can order by it.
+CASE_SORT_FIELDS: tuple[str, ...] = ("created_at", "updated_at", "risk_score")
+CASE_SORT_ORDERS: tuple[str, ...] = ("desc", "asc")
+CASE_SORT_FIELD_DEFAULT = CASE_SORT_FIELDS[0]
+CASE_SORT_ORDER_DEFAULT = CASE_SORT_ORDERS[0]
+
+# The largest page this endpoint serves. Naming the existing literal changes nothing
+# about the clamp; it makes the clamp quotable in the response (``limit_applied``).
+CASE_PAGE_LIMIT = 200
+
+# Elasticsearch/OpenSearch reject a ``from + size`` deeper than ``index.max_result_window``
+# (default 10 000) rather than truncating, so offset paging has a hard ceiling on the
+# bundled default backend. Basis: the same default this repository already pins for the
+# LOG read path (``connectors/elastic._MAX_RESULT_WINDOW``); the case path had no ceiling
+# at all, so a deep page surfaced as an unhandled backend error on real Elasticsearch and
+# as plausible-looking wrong rows on the in-memory double. Refusing here is legible and
+# identical on every backend.
+CASE_RESULT_WINDOW = 10_000
+
+
+def _with_advisory_bands(case: Case, prefs: Preferences | None) -> Case:
     """Populate the five READ-TIME advisory band fields (severity/impact/urgency/
     priority) on a Case copy for the presentation surfaces (Round-7 W0.7).
 
@@ -4259,6 +6808,483 @@ def _with_advisory_bands(case: Case, prefs: Preferences) -> Case:
         return case
 
 
+async def _case_spend_visible(request: Request | None) -> bool:
+    """Whether this caller may read a case's own AI spend, ``Case.token_cost``.
+
+    Round 14 (roles-11, second acceptance integration): AI spend follows one rule,
+    ``cost:view``, wherever it is shown, and a case's cumulative investigation cost is
+    spend like the cost and tokens on its timeline (``GET /cases/{id}/timeline``) and
+    chat's case figures (``agents/chat_tools/cases.py``). Every case read and every
+    single-case response consults this. ``None`` is a direct in-process call (tests,
+    jobs), which has no caller to withhold from. Never raises for a missing grant and
+    writes no audit row: the case is still answered, only the figure is left out."""
+    if request is None:
+        return True
+    from .deps import has_permission
+
+    return await has_permission(request, "cost", "view")
+
+
+def _withhold_case_spend(view: dict[str, Any]) -> dict[str, Any]:
+    """Leave a case's own AI spend out of one serialised case: the ``token_cost`` key
+    stays and its value is ``null``, the shape the timeline totals and the budget
+    windows use for a caller without ``cost:view``. Display only (#3).
+
+    Round 16 (WP16): a budget refusal that sent the case to a person keeps its reason in
+    ``error`` (``daily spend $1.2345 + est $0.0100 would exceed the $10.00 daily
+    ceiling``); its figures read ``(amount hidden)`` (``api.cost_text``), so the reason
+    still reads and the spend is not shown."""
+    if "token_cost" in view:
+        view["token_cost"] = None
+    if isinstance(view.get("error"), str):
+        from .cost_text import withhold_cost_text
+
+        view["error"] = withhold_cost_text(view["error"])
+    return view
+
+
+def _case_view(case: Case, state: AppState, *, spend: bool = True) -> dict[str, Any]:
+    """The JSON every single-case MUTATION returns (Round 12 final review): the same
+    shape as ``GET /cases/{id}``, the stored case plus its read-time advisory bands
+    under ``execution_prefs``. A client that renders the response (the Case Manager
+    header after Acknowledge or Close) otherwise saw ``severity_band: null`` and fell
+    back to a risk-score band, so a source-asserted Critical case read as Info until a
+    reload. Display only: nothing here is stored or read by ``decide()`` (#3).
+
+    ``spend=False`` (a caller without ``cost:view``, see :func:`_case_spend_visible`)
+    answers ``token_cost: null``, as ``GET /cases/{id}`` does for that caller.
+
+    Fail-open like the read path: the mutation is already saved when this runs, so a
+    preference lookup that fails degrades to the prefs-free severity axis
+    (``advisory_bands(case, None)``) instead of reporting a saved action as an error."""
+    try:
+        prefs: Preferences | None = state.execution_prefs
+    except Exception:  # noqa: BLE001 — advisory only; never fail a saved mutation
+        prefs = None
+    view = _with_advisory_bands(case, prefs).model_dump(mode="json")
+    return view if spend else _withhold_case_spend(view)
+
+
+# --------------------------------------------------------------------------- #
+# Round 12 (WP-CM): the Case Manager queue's server-side search / owner / severity
+# filters and its Title A–Z order.
+#
+# The queue used to load the newest 200 cases and filter Active, search and status in
+# the BROWSER, so an open case older than the newest 200 was silently absent from the
+# Active queue and no search could find it. The lifecycle group, sort and paging were
+# already server-side; these four were not, because none of them is a push-down every
+# store can answer exactly: free-text search spans ten fields (two nested), the owner
+# match is case-insensitive, severity is a READ-TIME band (``engine.priority``, never
+# stored or mapped), and ``title`` is a text field no store can order by.
+#
+# They are therefore answered by ONE exact scan over the store's own ``scan_page``
+# (the same streaming read the exact aggregates use), with the lifecycle statuses
+# pushed down as its pre-filter and every predicate re-checked here. The total is the
+# true matching count over the whole corpus — never a page-bounded lower bound — and
+# a request that sends none of these parameters never reaches this path.
+# --------------------------------------------------------------------------- #
+CASE_QUEUE_SEARCH_MAX_CHARS = 200
+CASE_QUEUE_SEVERITIES: tuple[str, ...] = ("critical", "high", "medium", "low", "info")
+# The AI verdict values (``constants.Verdict``) the queue's exact ``verdict`` filter
+# accepts — a STRUCTURED match on the stored field, never the free-text search, so a
+# title/summary/entity value that merely contains "needs_human" can never be counted.
+CASE_QUEUE_VERDICTS: tuple[str, ...] = ("FALSE_POSITIVE", "TRUE_POSITIVE", "NEEDS_HUMAN")
+CASE_QUEUE_SCAN_SORTS: tuple[str, ...] = ("title",)
+CASE_QUEUE_SCAN_PAGE = 1000
+# Round 12 final review (L1): the scan reads a PROJECTION, never whole case documents
+# (which carry evidence and can be tens of kB each). These are the stored fields its
+# predicates and sort keys read: the ten search fields, the filter inputs, every sort
+# key, the severity-band inputs (``engine.priority.severity_band_from_events``) and the
+# fields a ``Case`` requires, so a projected row validates exactly like the full one
+# for every field a predicate reads. A transfer hint (``scan_page`` ``fields``): a
+# store that ignores it returns whole documents, which is equally correct.
+CASE_QUEUE_SCAN_FIELDS: tuple[str, ...] = (
+    "case_id", "case_number", "title", "summary", "status", "verdict", "entity",
+    "entity_type", "source_name", "assignee", "source_surface", "cluster_signature",
+    "created_at", "updated_at", "risk_score", "severity_band", "trigger_reason",
+    "source_id",
+    # Round 14 (SPEC §4.6.1): the rule filter and search read ``rule_ids``; the
+    # ``closed_by`` filter reads the decider and the analyst-policy payload.
+    "rule_ids", "decision_by", "analyst_policy",
+)
+# Round 14 (SPEC §4.6.1, D27): who closed a terminal case, the engine's own values
+# (``case_aggregate`` ``closed_by``): ``agent`` (an automatic close), ``analyst`` (a
+# person), ``analyst_policy`` (an operator's declared-benign policy) and ``system``
+# (deterministic routing and older rows with no recorded decider).
+# These four are the only accepted values (SPEC §11.1 contract resolution 8): any other
+# value, ``human`` included, is refused with a 400 rather than guessed at.
+CASE_QUEUE_CLOSED_BY: tuple[str, ...] = ("agent", "analyst", "analyst_policy", "system")
+# A scan page with at least this many rows has its predicate work (decoding, the
+# validation a window or severity filter needs) run in a worker thread, so a broad
+# search never stalls the event loop that also serves chat streams, SSE and ingest
+# (the dashboards' ``_OFFLOAD_AT`` idea, applied per page).
+CASE_QUEUE_OFFLOAD_AT = 200
+# How many cases of the requested page are fetched at once when the store has no
+# batch read (``get_many``).
+CASE_QUEUE_FETCH_CONCURRENCY = 16
+
+
+def _queue_value(row: Any, key: str) -> Any:
+    """Read ``key`` off a raw stored document or a :class:`Case` (enum → value)."""
+    value = row.get(key) if isinstance(row, dict) else getattr(row, key, None)
+    return getattr(value, "value", value)
+
+
+def _queue_entity(row: Any) -> tuple[str, str]:
+    entity = _queue_value(row, "entity")
+    if isinstance(entity, dict):
+        etype, evalue = entity.get("type"), entity.get("value")
+    else:
+        etype, evalue = getattr(entity, "type", None), getattr(entity, "value", None)
+    return str(etype or _queue_value(row, "entity_type") or ""), str(evalue or "")
+
+
+def _queue_search_terms(q: str | None) -> list[str]:
+    """Whitespace-separated, case-folded search terms (every term must match)."""
+    text = str(q or "").strip()[:CASE_QUEUE_SEARCH_MAX_CHARS]
+    return [t for t in text.casefold().split() if t]
+
+
+def _queue_search_haystack(row: Any) -> str:
+    """The ten fields the queue search has always matched, plus (Round 14, SPEC §4.6.1)
+    the case's rule values, case-folded."""
+    etype, evalue = _queue_entity(row)
+    parts = [
+        _queue_value(row, "case_id"), _queue_value(row, "case_number"),
+        _queue_value(row, "title"), _queue_value(row, "summary"),
+        _queue_value(row, "status"), _queue_value(row, "verdict"),
+        etype, evalue, _queue_value(row, "source_name"), _queue_value(row, "assignee"),
+    ]
+    rules = _queue_value(row, "rule_ids")
+    if isinstance(rules, (list, tuple)):
+        parts.extend(rules)
+    return " ".join(str(p) for p in parts if p not in (None, "")).casefold()
+
+
+def _queue_rule_closed_by_check(
+    rule: str | None, closed_by: str | None, prefs: Preferences,
+) -> Callable[[Any], bool] | None:
+    """The Round 14 ``rule`` and ``closed_by`` queue filters as one predicate over a raw
+    row or a :class:`Case`, compiled by the exact-aggregation engine
+    (``case_aggregate``: ``rule_exact`` is a value of ``Case.rule_ids`` exactly as
+    stored, ``closed_by`` its terminal-close owner), so the Cases list, the rule summary
+    and every case breakdown count the same cases. ``None`` when neither is asked for."""
+    filters: dict[str, Any] = {}
+    if rule is not None:
+        filters["rule_exact"] = [rule]
+    if closed_by is not None:
+        filters["closed_by"] = [closed_by]
+    if not filters:
+        return None
+    from ..engine.case_aggregate import _CaseView, _compile_case_filters
+
+    predicate = _compile_case_filters(filters, prefs)
+    return lambda row: bool(predicate(_CaseView(row, prefs)))
+
+
+def _queue_title(row: Any) -> str:
+    """The queue's display title chain (title → summary → number → id), case-folded."""
+    for key in ("title", "summary", "case_number", "case_id"):
+        value = _queue_value(row, key)
+        if value not in (None, ""):
+            return str(value).casefold()
+    return ""
+
+
+def _queue_score_band(score: float) -> str:
+    """The console's ONE severity ladder for a 0..100 number (``badges.severityBand``)."""
+    scaled = max(0.0, min(100.0, float(score)))
+    if scaled >= 74:
+        return "critical"
+    if scaled >= 48:
+        return "high"
+    if scaled >= 22:
+        return "medium"
+    return "info" if scaled < 8 else "low"
+
+
+def _queue_severity(case: Case) -> str:
+    """The band the queue row DISPLAYS: the read-time severity band, else the risk
+    band, else ``info`` — the same chain as the console's ``caseSeverity``."""
+    return _queue_band(getattr(case, "severity_band", ""), getattr(case, "risk_score", None))
+
+
+def _queue_band(band: Any, risk: Any) -> str:
+    raw = str(band or "").strip().lower()
+    aliases = {"crit": "critical", "med": "medium", "moderate": "medium",
+               "informational": "info", "none": "info"}
+    raw = aliases.get(raw, raw)
+    if raw in CASE_QUEUE_SEVERITIES:
+        return raw
+    if isinstance(risk, (int, float)) and not isinstance(risk, bool):
+        return _queue_score_band(risk)
+    return "info"
+
+
+def _queue_row_severity(case: Case, prefs: Preferences) -> str:
+    """The band the list response shows for ``case`` — exactly what
+    ``_queue_severity(_with_advisory_bands(case, prefs))`` returns (the advisory
+    severity axis replaces the stored band; a failed derivation leaves none, and the
+    risk band applies) — without deriving the impact, urgency and priority axes the
+    filter never reads."""
+    from ..engine.priority import severity_band_from_events
+
+    try:
+        band = severity_band_from_events(case, prefs).get("band")
+    except Exception:  # noqa: BLE001 — advisory only, as in ``advisory_bands``
+        band = None
+    return _queue_band(band, getattr(case, "risk_score", None))
+
+
+def _queue_sort_key(row: Any, field: str) -> tuple[Any, str]:
+    tiebreak = str(_queue_value(row, "case_id") or "")
+    if field == "title":
+        return (_queue_title(row), tiebreak)
+    if field == "risk_score":
+        risk = _queue_value(row, "risk_score")
+        number = float(risk) if isinstance(risk, (int, float)) and not isinstance(risk, bool) else -1.0
+        return (number, tiebreak)
+    millis = parse_millis_strict(_queue_value(row, field))
+    return (millis if millis is not None else -1, tiebreak)
+
+
+class _QueueDesc:
+    """A sort key in REVERSED order (``heapq`` keeps the smallest item on top)."""
+
+    __slots__ = ("key",)
+
+    def __init__(self, key: Any) -> None:
+        self.key = key
+
+    def __lt__(self, other: "_QueueDesc") -> bool:
+        return self.key > other.key
+
+
+def _queue_page_matches(
+    rows: list[Any],
+    *,
+    statuses: tuple[str, ...] | None,
+    surface: str | None,
+    entity: str | None,
+    terms: list[str],
+    assignee_key: str,
+    verdict: str | None,
+    severity: str | None,
+    lo: int | None,
+    hi: int | None,
+    sort_field: str,
+    prefs: Preferences,
+    rule: str | None = None,
+    closed_by: str | None = None,
+) -> list[tuple[Any, str]]:
+    """The ``(sort key, case id)`` of every row of one scan page that matches the
+    queue filters. Pure and synchronous, so a large page runs in a worker thread.
+    Only a row that a window or severity filter must judge is validated, and only
+    its projected fields."""
+    from ..stores.base import case_in_created_window
+
+    extra = _queue_rule_closed_by_check(rule, closed_by, prefs)
+    out: list[tuple[Any, str]] = []
+    for row in rows:
+        if statuses and str(_queue_value(row, "status") or "") not in statuses:
+            continue
+        if extra is not None and not extra(row):
+            continue
+        if surface and str(_queue_value(row, "source_surface") or "") != surface:
+            continue
+        if entity and _queue_entity(row)[1] != entity:
+            continue
+        if assignee_key and str(_queue_value(row, "assignee") or "").strip().casefold() != assignee_key:
+            continue
+        if verdict and str(_queue_value(row, "verdict") or "").strip().upper() != verdict:
+            continue
+        if terms:
+            hay = _queue_search_haystack(row)
+            if not all(term in hay for term in terms):
+                continue
+        validated: Case | None = row if isinstance(row, Case) else None
+        if lo is not None or hi is not None:
+            validated = validated or Case.model_validate(row)
+            if not case_in_created_window(validated, lo, hi):
+                continue
+        if severity:
+            validated = validated or Case.model_validate(row)
+            if _queue_row_severity(validated, prefs) != severity:
+                continue
+        key = _queue_sort_key(row, sort_field)
+        out.append((key, key[1]))
+    return out
+
+
+async def _queue_cases_by_id(store: Any, case_ids: list[str]) -> dict[str, Case]:
+    """The full cases of one queue page, by id: the store's batch read when it has
+    one (``get_many``), else bounded concurrent ``get`` calls."""
+    import asyncio
+
+    batch = getattr(store, "get_many", None)
+    found: dict[str, Case] = {}
+    if callable(batch):
+        found = dict(await batch(case_ids))
+    missing = [cid for cid in case_ids if cid not in found]
+    if missing:
+        gate = asyncio.Semaphore(CASE_QUEUE_FETCH_CONCURRENCY)
+
+        async def one(case_id: str) -> tuple[str, Case | None]:
+            async with gate:
+                return case_id, await store.get(case_id)
+
+        for case_id, case in await asyncio.gather(*(one(cid) for cid in missing)):
+            if case is not None:
+                found[case_id] = case
+    return found
+
+
+async def _scan_case_queue(
+    state: AppState,
+    *,
+    statuses: tuple[str, ...] | None,
+    surface: str | None,
+    entity: str | None,
+    terms: list[str],
+    assignee: str,
+    severity: str | None,
+    lo: int | None,
+    hi: int | None,
+    sort_field: str,
+    sort_order: str,
+    limit: int,
+    offset: int,
+    verdict: str | None = None,
+    rule: str | None = None,
+    closed_by: str | None = None,
+) -> tuple[list[Case], int]:
+    """One exact pass over the case store for the queue filters → (page, total).
+
+    Bounded by design (Round 12 final review, L1): the scan reads only
+    :data:`CASE_QUEUE_SCAN_FIELDS` (a projection, never the evidence-bearing whole
+    documents), keeps only the ``offset + limit`` best ``(sort key, case id)`` pairs
+    while counting every match (memory is bounded by the page, not by the store),
+    runs each large page's predicate work in a worker thread, and finally reads the
+    requested page's full cases by id. The total stays the exact number of matching
+    cases over the whole store."""
+    import asyncio
+    import functools
+    import heapq
+
+    prefs = state.execution_prefs
+    assignee_key = assignee.casefold()
+    store = state.cases
+    descending = sort_order == "desc"
+    keep = max(0, offset + limit) if limit > 0 else 0
+    best: list[tuple[Any, str]] = []   # a heap: the WORST kept match on top
+    total = 0
+    cursor: Any = None
+    started = False
+    match = functools.partial(
+        _queue_page_matches, statuses=statuses, surface=surface, entity=entity,
+        terms=terms, assignee_key=assignee_key, verdict=verdict, severity=severity,
+        lo=lo, hi=hi, sort_field=sort_field, prefs=prefs, rule=rule, closed_by=closed_by,
+    )
+    try:
+        while not started or cursor is not None:
+            started = True
+            rows, cursor, _total, _consistency = await store.scan_page(
+                limit=CASE_QUEUE_SCAN_PAGE,
+                cursor=cursor,
+                raw=True,
+                statuses=list(statuses) if statuses else None,
+                fields=list(CASE_QUEUE_SCAN_FIELDS),
+            )
+            rows = list(rows)
+            if len(rows) >= CASE_QUEUE_OFFLOAD_AT:
+                matched = await asyncio.to_thread(match, rows)
+            else:
+                matched = match(rows)
+            total += len(matched)
+            for key, case_id in matched:
+                # The heap's top is the WORST kept match: for a descending order the
+                # smallest key, for an ascending one the largest (``_QueueDesc``).
+                item = (key if descending else _QueueDesc(key), case_id)
+                if len(best) < keep:
+                    heapq.heappush(best, item)
+                elif best and best[0][0] < item[0]:
+                    heapq.heapreplace(best, item)
+        page_items = sorted(
+            best, key=lambda item: item[0] if descending else item[0].key, reverse=descending,
+        )[offset: offset + limit] if limit > 0 else []
+        page_ids = [case_id for _key, case_id in page_items]
+        found = await _queue_cases_by_id(store, page_ids) if page_ids else {}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — a partial scan must never pass as exact
+        logger.warning("case queue scan failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not search every case right now; try again.",
+        ) from exc
+    finally:
+        # Round 14: an unfinished scan releases its read snapshot on EVERY exit, a
+        # cancellation included (a caller's time budget, ``asyncio.wait_for``), which
+        # ``except Exception`` never sees. A cluster caps its open snapshots, so a
+        # stranded one (kept alive for minutes) can break every other case scan.
+        if cursor is not None:
+            from ..engine.case_aggregate import _close_cursor
+
+            await _close_cursor(store, cursor)
+    # A case removed between the scan and the page read is simply absent from the page.
+    return [found[case_id] for case_id in page_ids if case_id in found], total
+
+
+# --------------------------------------------------------------------------- #
+# Round 15 (SPEC D6.12, WP5): the Case Manager's Review scope, ``GET /api/cases?review=``.
+# The ledger (``routes_auto_close_review.review_queue_cases``) names the cases; they are
+# read by id (``_queue_cases_by_id``: ES ``terms``, SQL ``IN``), the other queue filters
+# run on them in Python, then they are sorted, paged and counted here. Review behaves
+# like All for the status options.
+# --------------------------------------------------------------------------- #
+async def _review_case_queue(
+    state: AppState,
+    *,
+    review: str,
+    statuses: tuple[str, ...] | None,
+    surface: str | None,
+    entity: str | None,
+    terms: list[str],
+    assignee: str,
+    severity: str | None,
+    verdict: str | None,
+    rule: str | None,
+    closed_by: str | None,
+    lo: int | None,
+    hi: int | None,
+    sort_field: str,
+    sort_order: str,
+    limit: int,
+    offset: int,
+) -> tuple[list[Case], int]:
+    """One Review scope page and its exact total over the ledger's cases."""
+    from .routes_auto_close_review import review_queue_cases
+
+    try:
+        rows = await review_queue_cases(state, review)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a partial queue must never pass as exact
+        logger.warning("review queue read failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="Could not read the review queue right now; try again.",
+        ) from exc
+    matched = _queue_page_matches(
+        rows, statuses=statuses, surface=surface, entity=entity, terms=terms,
+        assignee_key=assignee.casefold(), verdict=verdict, severity=severity, lo=lo, hi=hi,
+        sort_field=sort_field, prefs=state.execution_prefs, rule=rule, closed_by=closed_by,
+    )
+    by_id = {str(row.case_id): row for row in rows}
+    ordered = sorted(matched, key=lambda item: item[0], reverse=sort_order == "desc")
+    page = ordered[offset: offset + limit] if limit > 0 else []
+    return [by_id[case_id] for _key, case_id in page if case_id in by_id], len(matched)
+
+
 @router.get("/cases", response_model=CaseListResponse)
 async def list_cases(
     status: str | None = None,
@@ -4268,27 +7294,313 @@ async def list_cases(
     offset: int = 0,
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
+    # Plain defaults, matching the filter parameters above: this route is also called
+    # directly as a coroutine by in-process callers and tests, where a ``Query(...)``
+    # default would arrive as the FieldInfo object itself.
+    sort_field: str | None = None,
+    sort_order: str | None = None,
+    status_group: str | None = None,
+    # Round 12 (WP-CM) — the Case Manager queue's server-side filters. Each is optional
+    # and additive: a request that sends none of them is answered exactly as before.
+    q: str | None = None,
+    assignee: str | None = None,
+    severity: str | None = None,
+    # Round 12 (WP-CM) — an exact AI-verdict filter (``CASE_QUEUE_VERDICTS``), so a
+    # "needs an analyst" count is a structured match rather than a text search.
+    verdict: str | None = None,
+    # Round 14 (SPEC §4.6.1): an exact rule value of ``Case.rule_ids`` and the
+    # terminal-close owner (``CASE_QUEUE_CLOSED_BY``; the ``#/scans`` redirect, D27).
+    rule: str | None = None,
+    closed_by: str | None = None,
+    # Round 15 (SPEC D6.12): the Review scope (``pending``, ``completed``, ``disagreed``
+    # or ``expired`` auto-close reviews), echoed as ``review_applied``.
+    review: str | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
-) -> CaseListResponse:
-    cases, total = await state.cases.list(
-        status=status, source_surface=surface, entity_value=entity,
-        limit=min(limit, 200), offset=offset,
-    )
+    request: Request = None,  # type: ignore[assignment]
+) -> CaseListResponse | JSONResponse:
+    """List cases, optionally windowed, sorted, paged and narrowed to a lifecycle group.
+
+    The declared 200 schema is the envelope EVERY caller has always received. A request
+    that engages one of ``sort_field`` / ``sort_order`` / ``status_group`` additionally
+    receives the :class:`CaseListEcho` keys — ``sortable_fields``, ``sort_field``,
+    ``sort_order``, ``limit_applied``, ``offset_applied``, ``max_offset`` and
+    ``status_group_applied`` — describing what the server actually applied.
+
+    They are additive and opt-in rather than always present, because a caller that sends
+    none of the new parameters must keep receiving its envelope key for key. They are
+    deliberately not folded into the declared response model: as optional fields there
+    they would be emitted as nulls to every legacy caller, and declaring the extended
+    envelope as a second response model splits the shared ``Case`` component into
+    validation and serialisation variants, which changes every generated case type.
+
+    Round 14 (SPEC §4.6.1): ``rule`` keeps the cases whose ``rule_ids`` hold that exact
+    value (as stored: never trimmed or case-folded; 1 to 256 characters on one line), the
+    population the rule sheet's "Show the N cases" opens and its case count measures.
+    ``closed_by`` keeps terminal cases closed by ``agent``, ``analyst``,
+    ``analyst_policy`` or ``system`` (the exact-aggregation engine's values, and only
+    those; ``system`` also covers older rows with no recorded decider). Both are answered
+    by the exact queue scan and echoed as ``rule_applied`` / ``closed_by_applied``; any
+    other value is a 400. The free-text ``q`` now also matches a case's rule values.
+
+    Round 14 (roles-11): for a caller without ``cost:view`` every row's ``token_cost``
+    (the case's own AI spend) is ``null``; the rows, counts and echoes are unchanged.
+    """
     # ADDITIVE (Round-6 #37): an OPTIONAL created_at time window so Overview widgets can
-    # honor the TimeRangePicker. Default (both None) == byte-identical prior behaviour.
-    # Cases sort created_at-desc, so a recent [from..to] window captures the front of the
-    # returned page; when a window is active, ``total`` reflects the windowed count (what
-    # the KPI widgets want). Full store-level windowing (accurate paged totals across the
-    # whole corpus) is a follow-up handoff on the case store (foreign file).
-    if from_ or to:
-        cases = _window_cases_by_created(cases, from_, to)
-        total = len(cases)
+    # honor the TimeRangePicker. Default (both None) == byte-identical prior behaviour:
+    # the windowless call below is untouched.
+    #
+    # The window is pushed into the STORE (``list_window``), not applied in Python to the
+    # page we happened to fetch. That was the defect: filtering one bounded page and then
+    # overwriting ``total = len(cases)`` meant a windowed total could never exceed the page
+    # cap, the window only ever saw the newest rows, and every page past the first was
+    # wrong — so a previous-window comparison fetch at 7d/30d could report ZERO while the
+    # true count was in the hundreds, and every delta at those ranges was measured against
+    # an empty set. ``window_total_exact`` reports whether the store could PROVE the total.
+    #
+    # ADDITIVE: an OPTIONAL server-side sort, a bounded ``offset``, and an OPTIONAL scalar
+    # multi-status ``status_group``, so a drill-down can page and order the whole matching
+    # population instead of re-sorting one page of the newest rows in the browser. A
+    # request that sends NONE of them takes byte-identical parameters into the store and
+    # gets the byte-identical base envelope back.
+    search_terms = _queue_search_terms(q)
+    assignee_filter = str(assignee or "").strip()[:80]
+    severity_filter = str(severity or "").strip().lower() or None
+    if severity_filter and severity_filter not in CASE_QUEUE_SEVERITIES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown severity '{severity_filter}'; "
+                f"expected one of {list(CASE_QUEUE_SEVERITIES)}"
+            ),
+        )
+    verdict_filter = str(verdict or "").strip().upper() or None
+    if verdict_filter and verdict_filter not in CASE_QUEUE_VERDICTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown verdict '{verdict_filter}'; "
+                f"expected one of {list(CASE_QUEUE_VERDICTS)}"
+            ),
+        )
+    # Round 14: the rule value is exact text (never trimmed or case-folded: a stored
+    # rule id is matched as it is); an empty parameter means no filter.
+    rule_filter = rule if rule not in (None, "") else None
+    if rule_filter is not None and not _valid_rule_value(rule_filter):
+        raise HTTPException(
+            status_code=400,
+            detail="rule must be 1 to 256 characters on one line, without control characters",
+        )
+    # Validated against the engine's four closer values (case-folded like the sibling
+    # ``severity`` filter); anything else, ``human`` included, is refused.
+    closed_by_filter = str(closed_by or "").strip().lower() or None
+    if closed_by_filter and closed_by_filter not in CASE_QUEUE_CLOSED_BY:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown closed_by '{closed_by_filter}'; "
+                f"expected one of {list(CASE_QUEUE_CLOSED_BY)}"
+            ),
+        )
+    # Round 15 (SPEC D6.12): the Review scope; any other value is a 400.
+    from .routes_auto_close_review import REVIEW_QUEUE_STATES
+
+    review_filter = str(review or "").strip().lower() or None
+    if review_filter and review_filter not in REVIEW_QUEUE_STATES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown review '{review_filter}'; expected one of {list(REVIEW_QUEUE_STATES)}",
+        )
+    queue_scan = bool(
+        search_terms or assignee_filter or severity_filter or verdict_filter
+        or rule_filter is not None or closed_by_filter
+        or sort_field in CASE_QUEUE_SCAN_SORTS
+    )
+    extended = (
+        sort_field is not None or sort_order is not None or status_group is not None
+        or queue_scan or review_filter is not None
+    )
+
+    if status_group is not None:
+        if status:
+            # The two answer the same question with different arities. Applying both
+            # would either intersect them (silently emptying the list whenever the single
+            # status is outside the group) or pick a winner, and neither is something a
+            # caller can predict from the request.
+            raise HTTPException(
+                status_code=400,
+                detail="status and status_group are mutually exclusive; send one",
+            )
+        if status_group not in CASE_STATUS_GROUPS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unknown status_group '{status_group}'; "
+                    f"expected one of {sorted(CASE_STATUS_GROUPS)}"
+                ),
+            )
+
+    # An unsupported sort is answered in the DEFAULT order rather than refused: a sort is
+    # a presentation preference, and a deployment that cannot honour one should still
+    # return the operator's cases. The echo below is what keeps that honest.
+    applied_sort_field = (
+        sort_field
+        if sort_field in CASE_SORT_FIELDS or sort_field in CASE_QUEUE_SCAN_SORTS
+        else CASE_SORT_FIELD_DEFAULT
+    )
+    applied_sort_order = (
+        sort_order if sort_order in CASE_SORT_ORDERS else CASE_SORT_ORDER_DEFAULT
+    )
+    # ``limit`` keeps its existing upper clamp exactly (including the pre-existing
+    # tolerance of a zero/negative limit). ``offset`` gains the lower bound it never had:
+    # real Elasticsearch rejects a negative ``from`` while the in-memory double slices
+    # from the END of the result and returns plausible WRONG rows, so an unbounded
+    # negative offset was a silent-corruption path on the default backend. The same
+    # ``max(0, ...)`` the compatibility ``list_window`` already applies.
+    applied_limit = min(limit, CASE_PAGE_LIMIT)
+    applied_offset = max(0, offset)
+    max_offset = max(0, CASE_RESULT_WINDOW - max(1, applied_limit))
+    if applied_offset > max_offset:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"offset {applied_offset} with limit {applied_limit} crosses the "
+                f"{CASE_RESULT_WINDOW}-row result window this endpoint pages within; "
+                f"the deepest offset for this limit is {max_offset}"
+            ),
+        )
+
+    window_total_exact: bool | None = None
+    if review_filter:
+        from ..utils import relative_to_millis_strict
+        from ..stores.base import status_group_statuses, window_bounds_proven
+
+        lo = relative_to_millis_strict(from_) if from_ else None
+        hi = relative_to_millis_strict(to) if to else None
+        if from_ or to:
+            window_total_exact = window_bounds_proven(from_, to, lo, hi)
+        review_statuses = (str(status),) if status else status_group_statuses(status_group)
+        cases, total = await _review_case_queue(
+            state,
+            review=review_filter,
+            statuses=review_statuses,
+            surface=surface,
+            entity=entity,
+            terms=search_terms,
+            assignee=assignee_filter,
+            severity=severity_filter,
+            verdict=verdict_filter,
+            rule=rule_filter,
+            closed_by=closed_by_filter,
+            lo=lo,
+            hi=hi,
+            sort_field=applied_sort_field,
+            sort_order=applied_sort_order,
+            limit=applied_limit,
+            offset=applied_offset,
+        )
+    elif queue_scan:
+        from ..utils import relative_to_millis_strict
+        from ..stores.base import status_group_statuses, window_bounds_proven
+
+        lo = relative_to_millis_strict(from_) if from_ else None
+        hi = relative_to_millis_strict(to) if to else None
+        if from_ or to:
+            window_total_exact = window_bounds_proven(from_, to, lo, hi)
+        group_statuses = status_group_statuses(status_group)
+        scan_statuses = (str(status),) if status else group_statuses
+        if closed_by_filter and scan_statuses is None:
+            # Only a terminal case has a closer: push that pre-filter down.
+            from ..constants import TERMINAL_CASE_STATUSES
+
+            scan_statuses = tuple(TERMINAL_CASE_STATUSES)
+        cases, total = await _scan_case_queue(
+            state,
+            statuses=scan_statuses,
+            surface=surface,
+            entity=entity,
+            terms=search_terms,
+            assignee=assignee_filter,
+            severity=severity_filter,
+            verdict=verdict_filter,
+            rule=rule_filter,
+            closed_by=closed_by_filter,
+            lo=lo,
+            hi=hi,
+            sort_field=applied_sort_field,
+            sort_order=applied_sort_order,
+            limit=applied_limit,
+            offset=applied_offset,
+        )
+    elif from_ or to or status_group:
+        # ``status_group`` is passed ONLY when one was asked for. ``list_window`` is a
+        # non-abstract method a third-party repository MAY override, and unconditionally
+        # handing an override a keyword it predates would break a deployment that never
+        # uses the group at all.
+        group_kw: dict[str, Any] = {"status_group": status_group} if status_group else {}
+        cases, total, window_total_exact = await state.cases.list_window(
+            created_from=from_, created_to=to,
+            status=status, source_surface=surface, entity_value=entity,
+            limit=applied_limit, offset=applied_offset,
+            sort_field=applied_sort_field, sort_order=applied_sort_order,
+            **group_kw,
+        )
+    else:
+        cases, total = await state.cases.list(
+            status=status, source_surface=surface, entity_value=entity,
+            limit=applied_limit, offset=applied_offset,
+            sort_field=applied_sort_field, sort_order=applied_sort_order,
+        )
     # ADDITIVE (Round-7 W0.7): populate the read-time advisory bands (severity/impact/
     # urgency/priority) for the list surface. Fail-open per case — never 500 (#3).
     prefs = state.execution_prefs
     cases = [_with_advisory_bands(c, prefs) for c in cases]
-    return CaseListResponse(cases=cases, total=total)
+    payload = CaseListResponse(cases=cases, total=total, window_total_exact=window_total_exact)
+    spend = await _case_spend_visible(request)
+    # A request that engaged NONE of the new parameters is answered by the declared
+    # response model, exactly as before — same keys, same bytes, same object for the
+    # in-process callers that await this coroutine directly.
+    if not extended and spend:
+        return payload
+    # A request that DID engage them gets the same envelope plus the echoes. Encoding
+    # through ``jsonable_encoder`` is the same step FastAPI's own response-model path
+    # takes, so the shared keys are byte for byte what they always were. A caller
+    # without ``cost:view`` gets the same envelope with each row's spend left out.
+    body = jsonable_encoder(payload)
+    if not spend:
+        for row in body.get("cases") or []:
+            _withhold_case_spend(row)
+    if not extended:
+        return JSONResponse(body)
+    body.update(
+        jsonable_encoder(
+            CaseListEcho(
+                sortable_fields=list(CASE_SORT_FIELDS),
+                sort_field=applied_sort_field,
+                sort_order=applied_sort_order,
+                limit_applied=applied_limit,
+                offset_applied=applied_offset,
+                max_offset=max_offset,
+                status_group_applied=status_group,
+            )
+        )
+    )
+    # Round 12 (WP-CM): echo the queue filters the server applied, only when asked.
+    if search_terms:
+        body["search_applied"] = " ".join(search_terms)
+    if assignee_filter:
+        body["assignee_applied"] = assignee_filter
+    if severity_filter:
+        body["severity_applied"] = severity_filter
+    if verdict_filter:
+        body["verdict_applied"] = verdict_filter
+    if rule_filter is not None:
+        body["rule_applied"] = rule_filter
+    if closed_by_filter:
+        body["closed_by_applied"] = closed_by_filter
+    if review_filter:
+        body["review_applied"] = review_filter
+    return JSONResponse(body)
 
 
 @router.get("/cases/{case_id}", response_model=Case)
@@ -4296,15 +7608,30 @@ async def get_case(
     case_id: str,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
-) -> Case:
+    request: Request = None,  # type: ignore[assignment]
+) -> Case | JSONResponse:
+    """One case. For a caller without ``cost:view`` its ``token_cost`` (the case's own
+    AI spend) is ``null`` (Round 14 roles-11); every other field is unchanged."""
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     # ADDITIVE (Round-7 W0.7): read-time advisory bands, fail-open (never 500) (#3).
-    return _with_advisory_bands(case, state.prefs)
+    # ``execution_prefs`` (NOT ``prefs``) — the SAME authority the list surface above
+    # uses. The two diverged, so under an active demo sandbox one case could band
+    # differently in the list and in its own detail view.
+    banded = _with_advisory_bands(case, state.execution_prefs)
+    if await _case_spend_visible(request):
+        return banded
+    # The declared model's own encoding with the one figure left out: a ``null`` would
+    # not validate as the stored ``float``, so the body is sent as encoded.
+    return JSONResponse(_withhold_case_spend(jsonable_encoder(banded)))
 
 
-class CaseAction(BaseModel):
+class _CaseActionFields(BaseModel):
+    # The fields a single-case action and a bulk action share (Round 15 split them so
+    # ``CaseAction.review_via`` stays single-case only, SPEC D6.9). No docstring, so
+    # the generated ``CaseAction`` schema keeps its exact description.
+    #
     # Lifecycle/disposition actions. Original: close | reopen | escalate |
     # confirm_fp | acknowledge. Added (F8): hold | resume | resolve |
     # set_disposition | deescalate | set_status.
@@ -4322,6 +7649,27 @@ class CaseAction(BaseModel):
     # F8 fields (additive, optional):
     disposition: str | None = None         # set_disposition target (a Disposition value)
     status: str | None = None              # set_status target (a CaseStatus value)
+    # GROUND-TRUTH INTENT (additive, defaults False — absent flag = today's behaviour,
+    # no migration and no backfill).
+    #
+    # ``disposition`` alone cannot express intent. ``case_manager.apply()`` derives a
+    # disposition from the LLM verdict, so a client that reads a case and posts its
+    # stored disposition straight back is echoing the MODEL, not labelling anything. A
+    # value on the wire is therefore evidence of nothing: only an affirmative
+    # declaration is. Set this true ONLY when a human actually chose the disposition in
+    # this very interaction; when it is false the disposition is still applied to the
+    # case, but the action records no analyst classification and
+    # ``engine.analyst_outcomes`` will not read the case as ground truth.
+    disposition_declared: bool = Field(
+        default=False,
+        title="The analyst chose this disposition in this action",
+        description=(
+            "True only when a human affirmatively selected `disposition` as part of this "
+            "action. The disposition is applied either way; this flag is what makes it "
+            "independent analyst evidence rather than a value echoed back from the "
+            "model-derived disposition already stored on the case."
+        ),
+    )
     # Deprecated compatibility input retained for older API clients. The Console
     # intentionally exposes only Escalate/Escalated, never a numbered tier.
     level: int | None = Field(
@@ -4332,6 +7680,64 @@ class CaseAction(BaseModel):
             "Escalated state; operator surfaces do not display numbered tiers."
         ),
         json_schema_extra={"deprecated": True},
+    )
+    # Round 14 (SPEC §4.10.15, D34): closing by hand never blocks. When an active
+    # runbook run still has required steps open, a terminal move records why
+    # (``case.closed_with_open_steps``). Only ``require_open_steps_reason`` (the Console
+    # sends it so it can show its dialog) turns a missing reason into ``409
+    # runbook_steps_open``; every other caller closes exactly as before.
+    open_steps_reason: str | None = Field(
+        default=None,
+        max_length=500,
+        title="Why the case closes with required runbook steps open",
+        description="1 to 500 characters; audited on case.closed_with_open_steps.",
+    )
+    require_open_steps_reason: bool = Field(
+        default=False,
+        title="Refuse the close when required runbook steps are open and no reason is given",
+        description="The Console sets it to show its close dialog; the default never blocks a close.",
+    )
+    # Round 15 (SPEC D4.2): what the person did about the case, from a fixed vocabulary
+    # (``constants.CASE_ACTIONS_TAKEN``). Optional and additive: stored on the
+    # ``analyst_action`` history entry and in the audit row's ``changes``, shown in the
+    # case Markdown export; never model text and never read by ``decide()`` (#3).
+    actions_taken: list[CaseActionTaken] | None = Field(
+        default=None,
+        max_length=CASE_ACTIONS_TAKEN_MAX,
+        title="What was done about the case",
+        description=(
+            f"At most {CASE_ACTIONS_TAKEN_MAX} values from the fixed vocabulary; an unknown "
+            "value answers 422 and a repeated value is kept once."
+        ),
+    )
+
+    @field_validator("open_steps_reason")
+    @classmethod
+    def _clean_open_steps_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = " ".join(str(value).split())
+        return text or None
+
+    @field_validator("actions_taken")
+    @classmethod
+    def _dedupe_actions_taken(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return list(dict.fromkeys(value))
+
+
+class CaseAction(_CaseActionFields):
+    # Round 15 (SPEC D6.9): an action taken from an auto-close review ("Reopen case",
+    # "Reopen and escalate"). Recorded on the ``analyst_action`` history entry and in
+    # the audit row's ``changes`` ONLY: it never sets the internal ``via=`` parameter of
+    # ``_perform_case_action`` (so it can never fake the bulk marker or skip the open
+    # steps check) and the open-steps logic never reads it. Any other value answers
+    # 422; bulk bodies do not accept it.
+    review_via: Literal["auto_close_review"] | None = Field(
+        default=None,
+        title="The action was taken from an auto-close review",
+        description='"auto_close_review" or null; recorded on the history entry and the audit row only.',
     )
 
 
@@ -4361,17 +7767,71 @@ _ACTION_STATUS: dict[str, CaseStatus | None] = {
 # need cases:close; everything else needs cases:write.
 _CLOSE_ACTIONS = {"close", "confirm_fp", "resolve", "reopen"}
 
+# Actions that may carry an EXPLICIT analyst disposition in ``body.disposition``.
+#
+# ``set_disposition`` is the dedicated verb. ``close`` is here because the Console's
+# PRIMARY close — "Close with a disposition" — posts ``action="close"`` with the
+# disposition the analyst picked. That value used to be parsed off the wire and then
+# silently discarded: only ``set_disposition``/``confirm_fp`` ever assigned
+# ``case.disposition``, so the main close path could never produce analyst-confirmed
+# ground truth (``engine/analyst_outcomes``) and the precedent corpus it feeds could
+# never be refreshed. Assigning it here is what the dialog has always claimed to do.
+#
+# This is the analyst layer only: it never calls ``decide()`` and never changes the
+# deterministic close-axis (#3). An action NOT listed here still ignores the field, so
+# no lifecycle verb silently acquires classification power.
+#
+# APPLYING the disposition and CLASSIFYING the case are two different things. Every
+# action here applies it; only :data:`_SELF_DECLARING_ACTIONS` — or an explicit
+# ``disposition_declared`` — classifies. See ``_perform_case_action``.
+#
+# ``resolve`` (Round 12, WP-CM / SPEC D15): resolving a case is a terminal move, and a
+# terminal move must be able to capture the investigative outcome. Before this, "Mark
+# resolved" (single and bulk) could only leave the triage-time disposition that
+# ``case_manager.apply()`` mapped from the model's verdict — for a NEEDS_HUMAN verdict
+# that is ``undetermined`` — which is exactly the "Undetermined after I resolved it as a
+# false positive" report. Same apply-vs-classify split as ``close``: the value is applied
+# when sent, and it CLASSIFIES only on an affirmative ``disposition_declared``.
+_DISPOSITION_ACTIONS = {"set_disposition", "close", "resolve"}
+
+# Actions whose VERB is itself the analyst's declaration, so they need no separate
+# intent flag. ``set_disposition`` exists for no other purpose than classifying a case
+# and the wire rejects it without a disposition, so performing it IS the declaration —
+# and it is already in ``analyst_outcomes.CLASSIFICATION_ACTIONS``, so this only keeps
+# the history entry self-describing.
+#
+# ``close`` is deliberately ABSENT: closing is a lifecycle move that most analysts
+# perform without classifying anything, and the disposition it carries may simply be
+# the one ``case_manager.apply()`` derived from the model's own verdict, read off the
+# case and posted straight back. For ``close`` the classification is recorded only on
+# an affirmative ``disposition_declared``.
+_SELF_DECLARING_ACTIONS = {"set_disposition"}
+
 # Terminal lifecycle statuses (a case here is DONE). A backward move out of a
 # terminal status is only allowed via an explicit reopen.
 _TERMINAL = {CaseStatus.CLOSED, CaseStatus.RESOLVED}
 
+# The ONE forward move between terminal statuses: RESOLVED means "worked to
+# completion, pending final close", so the dedicated close verbs may take it to
+# CLOSED. Every other move out of a terminal status still needs ``reopen``; the
+# generic ``set_status`` can never reach CLOSED; CLOSED → RESOLVED stays blocked.
+# Analyst layer only (RBAC: both verbs already need ``cases:close``); never decide() (#3).
+_FINAL_CLOSE_ACTIONS = frozenset({"close", "confirm_fp"})
+
 
 def _guard_transition(action: str, current: CaseStatus, target: CaseStatus | None) -> None:
     """Reject illegal lifecycle moves (e.g. CLOSED→NEW without reopen). Allows
-    reopen explicitly out of a terminal status; allows same-status no-ops."""
+    reopen explicitly out of a terminal status, the final close of a RESOLVED case
+    through ``close``/``confirm_fp``, and same-status no-ops."""
     if target is None or target == current:
         return
-    # Moving OUT of a terminal status is only legal via reopen/deescalate→reopen.
+    if (
+        current == CaseStatus.RESOLVED
+        and target == CaseStatus.CLOSED
+        and action in _FINAL_CLOSE_ACTIONS
+    ):
+        return
+    # Moving OUT of a terminal status is otherwise only legal via reopen.
     if current in _TERMINAL and action not in ("reopen",):
         raise HTTPException(
             status_code=400,
@@ -4425,6 +7885,24 @@ def _grant_for_body(body: CaseAction) -> str:
     return _case_action_grant(body.action, target)
 
 
+# Case tag bounds: ``CASE_TAG_MAX_CHARS`` / ``CASE_TAG_MAX_COUNT`` live in
+# ``engine/case_tags.py`` (imported above) and the web console mirrors them in
+# ``webui/src/lib/tags.ts`` under the same names.
+def _merge_case_tags(existing: list[str], incoming: list[Any], *, replace: bool) -> list[str]:
+    """Trim and de-duplicate case tags; refuse (422) what the bounds refuse.
+
+    A NEW tag over 40 characters, or new tags that would take the case past 25, answer
+    422 with a detail that says why. Nothing is cut and nothing is dropped: a shortened
+    label is a different tag, and a tag left off silently is a change the analyst asked
+    for and did not get. A tag the case already carries passes unchanged.
+    ``replace`` takes ``incoming`` as the whole list (``/tags``); otherwise it is merged
+    after ``existing`` (a lifecycle action's additive tags)."""
+    try:
+        return merge_case_tags(existing, incoming, replace=replace)
+    except CaseTagError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("/cases/{case_id}/action")
 async def case_action(
     case_id: str,
@@ -4445,11 +7923,99 @@ async def case_action(
 
         user = await _enforce(request, "cases", _grant_for_body(body))
     actor = getattr(user, "username", "") or body.analyst or "analyst"
-    return await _perform_case_action(case_id, body, actor, state)
+    view = await _perform_case_action(case_id, body, actor, state, context=_request_audit_context(request))
+    return view if await _case_spend_visible(request) else _withhold_case_spend(view)
+
+
+def _request_audit_context(request: Request | None) -> Any:
+    """The request's audit context (client, session, role, request id) for the rows a
+    case action writes, or ``None`` for an in-process call without a request."""
+    if request is None:
+        return None
+    from ..audit.context import audit_context
+
+    return audit_context(request)
+
+
+# Round 15 (SPEC D7.3): the bulk marker of the audit rows a bulk JOB writes through the
+# single-case collaboration routes (``case_assign`` and ``case_tag`` call ``case_assign``
+# and ``case_tags`` directly, with no request). Carried in a context variable, never a
+# route or query parameter, so no client can mark its own rows as bulk; only the job
+# runner sets it, around one item, through :func:`_bulk_audit_run`.
+_BULK_AUDIT_RUN: contextvars.ContextVar[str] = contextvars.ContextVar("case_bulk_audit_run", default="")
+
+
+@contextlib.contextmanager
+def _bulk_audit_run(run_id: str):
+    """Stamp ``run_id`` (``bulk-<job_id>``) on every case-work audit row written inside
+    the block, in this task only. A value without the bulk prefix stamps nothing."""
+    value = run_id if isinstance(run_id, str) and run_id.startswith(BULK_RUN_ID_PREFIX) else ""
+    token = _BULK_AUDIT_RUN.set(value)
+    try:
+        yield
+    finally:
+        _BULK_AUDIT_RUN.reset(token)
+
+
+def _bulk_run_id(batch_id: str = "") -> str | None:
+    """The ``run_id`` of a case-work audit row (SPEC D7.3): the bulk action's existing
+    ``batch_id`` when one was passed, else the bulk job's marker, else ``None`` (a
+    single action is never bulk)."""
+    for value in (batch_id, _BULK_AUDIT_RUN.get()):
+        if isinstance(value, str) and value.startswith(BULK_RUN_ID_PREFIX):
+            return value
+    return None
+
+
+def _case_audit_fields(case: Any, context: Any = None, *, batch_id: str = "") -> dict[str, Any]:
+    """The structured fields of a human case-work audit row (Round 15 SPEC D7.1): the
+    case as its ``target`` (labelled by its number), the request context when the row
+    has one (``audit_context(request).record_fields()``: client, session, role, request
+    id; a job has none) and the bulk ``run_id`` (D7.3). ``action_type``, ``surface`` and
+    ``result_summary`` are the caller's, unchanged."""
+    case_id = str(getattr(case, "case_id", "") or "")
+    label = str(getattr(case, "case_number", "") or "") or case_id
+    fields: dict[str, Any] = {"target": AuditTarget(type="case", id=case_id, label=label)}
+    record = getattr(context, "record_fields", None)
+    if callable(record):
+        try:
+            fields.update({k: v for k, v in record().items() if v is not None})
+        except Exception as exc:  # noqa: BLE001 (the row is written without it)
+            logger.debug("case audit context unavailable: %s", exc)
+    run_id = _bulk_run_id(batch_id)
+    if run_id:
+        fields["run_id"] = run_id
+    return fields
+
+
+def _case_write_lock(state: Any, case_id: str) -> Any:
+    """The case's write lock (Round 16 SPEC §4.5 WP08): a person's action holds it
+    alone, across its read and save; an AI run takes it only inside its signature lock.
+    A state without one (a stub) gets a no-op context."""
+    lock_for = getattr(state, "case_lock", None)
+    return lock_for(case_id) if callable(lock_for) else contextlib.nullcontext()
+
+
+def _case_work_actor(user: Any, fallback: str | None) -> str:
+    """The audit actor of a human case-work row (Round 15 SPEC D7.2): the verified
+    principal when the request has one, else the body or caller value (a job passes
+    ``job.actor``, verified at submit), else ``"analyst"`` (sign-in off)."""
+    return str(getattr(user, "username", "") or "") or (fallback or "").strip() or "analyst"
+
+
+def _change_value(value: Any) -> Any:
+    """An enum's value, a datetime's ISO text, anything else as is (``AuditChange``
+    stores a value that is not text as canonical JSON text)."""
+    if hasattr(value, "value"):
+        return value.value
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
 
 
 async def _perform_case_action(
-    case_id: str, body: CaseAction, actor: str, state: AppState
+    case_id: str, body: CaseAction, actor: str, state: AppState, batch_id: str = "",
+    via: str | None = None, context: Any = None,
 ) -> dict[str, Any]:
     """Apply ONE human lifecycle action to ONE case — the SINGLE source of truth for
     the analyst-action path (used by the single-case endpoint AND the bulk endpoint).
@@ -4457,111 +8023,275 @@ async def _perform_case_action(
     #3-safe: this is the HUMAN analyst layer ONLY. It NEVER calls
     ``case_manager.decide()`` and never runs the deterministic auto-close path; the
     close-axis truth table is untouched. Caller has already done the RBAC check +
-    resolved ``actor``. Each call audits the transition individually (#2)."""
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    if body.action not in _ACTION_STATUS:
-        raise HTTPException(status_code=400, detail=f"Unknown action: {body.action}")
+    resolved ``actor``. Each call audits the transition individually (#2).
 
-    prev_status = case.status
+    ``batch_id`` marks the cases that one bulk action touched as ONE operator
+    transaction. A bulk action is a single human decision applied to hundreds of cases,
+    and the bounded precedent window has to be able to tell that apart from hundreds of
+    independent decisions — otherwise one bulk action buys the whole window. Stamped
+    only when supplied, so a single-case action's history entry is unchanged.
 
-    # Resolve the lifecycle target.
-    target = _ACTION_STATUS[body.action]
-    if body.action == "set_status":
-        if not body.status:
-            raise HTTPException(status_code=400, detail="set_status requires a status")
-        try:
-            target = CaseStatus(body.status)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"unknown status: {body.status}")
-    if body.action == "escalate" and body.level is not None:
-        case.escalation_level = max(int(body.level), 1)
-    elif body.action == "escalate":
-        case.escalation_level = max(case.escalation_level, 1)
-    elif body.action == "deescalate":
-        case.escalation_level = 0
-    # BUG #3 (R4W4): stamp the acknowledgement instant for SLA/MTTA derivation. Note
-    # the Case model asymmetry — created_at/updated_at are ISO STRINGS, but
-    # acknowledged_at is a ``datetime | None`` (the SLA-interval anchors), so use a
-    # datetime here, only on the first acknowledge (idempotent).
-    if body.action == "acknowledge" and case.acknowledged_at is None:
-        case.acknowledged_at = now_utc()
+    ``via`` (Round 14, D34) names how a close with required runbook steps open was
+    made (``bulk`` for the bulk endpoint and the ``case_lifecycle`` job, ``proposal``
+    for an approved proposal); a single action derives ``console`` or ``api`` from
+    ``require_open_steps_reason``. A bulk close never fails an item for open steps.
+    ``context`` is the request's audit context, carried onto the
+    ``case.closed_with_open_steps`` row (a job has none). The runbook state is read
+    only on this human path: automatic closes never read it and ``decide()`` /
+    ``AutoClosePolicy`` are untouched (#3)."""
+    # Round 16 (SPEC §4.5 WP08, research R11): the read, the change and the save hold
+    # the case's write lock, so an AI run that re-reads the case just before its own
+    # save cannot erase this action (and this action cannot erase the run's save).
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        if body.action not in _ACTION_STATUS:
+            raise HTTPException(status_code=400, detail=f"Unknown action: {body.action}")
+        # Checked before anything changes, so a refused tag leaves the case untouched.
+        merged_tags = (
+            _merge_case_tags(case.tags, body.tags, replace=False) if body.tags is not None else None
+        )
+        previous_tags = list(case.tags or [])
 
-    _guard_transition(body.action, prev_status, target)
+        prev_status = case.status
+        # Round 15 (SPEC D7.1): the values the audit row's ``changes`` compare against.
+        prev_disposition = case.disposition
+        prev_acknowledged_at = case.acknowledged_at
+        prev_assignee = case.assignee or ""
 
-    # set_disposition: validate + set the investigative outcome (no status move).
-    if body.action == "set_disposition":
-        if not body.disposition:
+        # Resolve the lifecycle target.
+        target = _ACTION_STATUS[body.action]
+        if body.action == "set_status":
+            if not body.status:
+                raise HTTPException(status_code=400, detail="set_status requires a status")
+            try:
+                target = CaseStatus(body.status)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"unknown status: {body.status}")
+        if body.action == "escalate" and body.level is not None:
+            case.escalation_level = max(int(body.level), 1)
+        elif body.action == "escalate":
+            case.escalation_level = max(case.escalation_level, 1)
+        elif body.action == "deescalate":
+            case.escalation_level = 0
+        # BUG #3 (R4W4): stamp the acknowledgement instant for SLA/MTTA derivation. Note
+        # the Case model asymmetry: created_at/updated_at are ISO STRINGS, but
+        # acknowledged_at is a ``datetime | None`` (the SLA-interval anchors), so use a
+        # datetime here, only on the first acknowledge (idempotent).
+        if body.action == "acknowledge" and case.acknowledged_at is None:
+            case.acknowledged_at = now_utc()
+
+        _guard_transition(body.action, prev_status, target)
+
+        # The request is validated in full before the runbook check below, so a request
+        # that can never succeed is answered with its own 400, never with the close
+        # dialog's 409 (a reason would not make it valid). Nothing is applied here.
+        if body.action == "set_disposition" and not body.disposition:
             raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
-        try:
-            case.disposition = Disposition(body.disposition)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
+        requested_disposition: Disposition | None = None
+        if body.action in _DISPOSITION_ACTIONS and body.disposition:
+            try:
+                requested_disposition = Disposition(body.disposition)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
+        # "Mark duplicate" (SPEC §4.10.15): a terminal move that carries the duplicate
+        # disposition. Decided once from the request, so the 409 exemption and the audit
+        # row's ``via`` and note always agree, whatever the case carried before.
+        marks_duplicate = requested_disposition == Disposition.DUPLICATE
 
-    # confirm_fp records the FALSE_POSITIVE disposition (an analyst confirming an FP),
-    # overriding only an unset / UNDETERMINED auto-mapping — never a deliberate
-    # analyst classification.
-    if body.action == "confirm_fp" and case.disposition in (None, Disposition.UNDETERMINED):
-        case.disposition = Disposition.FALSE_POSITIVE
+        # Round 14 (D34): the first terminal move of a case with required runbook steps
+        # still open. Read before anything changes so a 409 leaves the case untouched; an
+        # unreadable run store never blocks a close (``None``).
+        open_steps = None
+        if target is not None and target in _TERMINAL and prev_status not in _TERMINAL:
+            from ..engine import runbook_runs
 
-    # Apply the lifecycle status move (analyst layer — NOT decide()/#3).
-    if target is not None:
-        case.status = target
-    case.decision_by = DecisionBy.ANALYST
-    case.updated_at = iso_now()
-    reason = (body.reason or body.note or "").strip()[:500]
-    if reason and body.action in ("hold", "resolve", "set_status"):
-        case.status_reason = reason
+            open_steps = await runbook_runs.open_required_steps(state, case_id)
+            if (open_steps and body.require_open_steps_reason and not body.open_steps_reason
+                    and via != "bulk" and not marks_duplicate):
+                raise HTTPException(status_code=409, detail={
+                    "code": "runbook_steps_open",
+                    "message": (
+                        f"{len(open_steps)} required runbook "
+                        f"{'step is' if len(open_steps) == 1 else 'steps are'} still open. "
+                        "Say why you are closing the case."
+                    ),
+                    "required_open": len(open_steps),
+                    "steps": [step.model_dump(mode="json") for step in open_steps],
+                })
 
-    # --- Additive optional fields (persisted without touching status logic) -----
-    # assignee → set the case owner when provided (non-empty).
-    if body.assignee is not None:
-        case.assignee = str(body.assignee).strip()[:80]
-    # tags → merge into the case's tags (trim, de-dupe, bounded — same tidy rules
-    # as the dedicated /tags route).
-    if body.tags is not None:
-        merged = list(case.tags)
-        for t in body.tags:
-            t = str(t).strip()[:40]
-            if t and t not in merged:
-                merged.append(t)
-        case.tags = merged[:25]
+        # A disposition supplied with the action. ``set_disposition`` requires one; ``close``
+        # accepts one (the Console's unified Close-with-disposition flow sends it).
+        #
+        # APPLY and CLASSIFY are separated on purpose. Applying is unconditional: the case
+        # carries the disposition the caller sent, which is what the dialog has always
+        # claimed to do. Classifying is what makes ``engine.analyst_outcomes`` treat that
+        # disposition as INDEPENDENT ground truth, and the presence of the field cannot
+        # establish it: ``case_manager.apply()`` derives a disposition from the LLM verdict,
+        # so a client echoing the stored value back is quoting the model to itself. Only the
+        # verb (``set_disposition``) or an affirmative ``disposition_declared`` says a human
+        # chose it. Absent both, the case is applied-but-unlabelled, exactly as before this
+        # path existed.
+        #
+        # One exception keeps the analyst's word final: an UNDECLARED value never replaces a
+        # disposition an analyst explicitly classified and the case still carries
+        # (``standing_analyst_disposition``). It may be the model-derived value read off the
+        # case before the analyst classified it and posted back, and applying it would turn
+        # the analyst's label into the model's while the classification entry still vouches
+        # for it. The lifecycle move itself still happens; only the echo is not applied.
+        classified_disposition = ""
+        if requested_disposition is not None:
+            if body.action in _SELF_DECLARING_ACTIONS or body.disposition_declared:
+                case.disposition = requested_disposition
+                classified_disposition = requested_disposition.value
+            elif standing_analyst_disposition(case) is None:
+                case.disposition = requested_disposition
 
-    # Record the lifecycle transition on the append-only status timeline.
+        # confirm_fp is its own classification: the verb IS the analyst's declaration (it is
+        # in ``analyst_outcomes.CLASSIFICATION_ACTIONS``), and the newest decision wins. It
+        # therefore replaces every non-false-positive disposition, including the
+        # ``true_positive`` that ``case_manager.apply()`` mapped from a TRUE_POSITIVE verdict
+        # and any earlier analyst value, and keeps ``benign``, which is the analyst's
+        # false-positive-class refinement. Stamping the value on the history entry makes the
+        # entry self-describing, so ``caseOutcome``, the facts rail and
+        # ``analyst_confirmed_outcome`` all read the same false-positive class.
+        if body.action == "confirm_fp":
+            if case.disposition not in (Disposition.FALSE_POSITIVE, Disposition.BENIGN):
+                case.disposition = Disposition.FALSE_POSITIVE
+            classified_disposition = case.disposition.value
+
+        # Apply the lifecycle status move (analyst layer, NOT decide()/#3).
+        if target is not None:
+            case.status = target
+        case.decision_by = DecisionBy.ANALYST
+        case.updated_at = iso_now()
+        reason = (body.reason or body.note or "").strip()[:500]
+        if reason and body.action in ("hold", "resolve", "set_status"):
+            case.status_reason = reason
+
+        # --- Additive optional fields (persisted without touching status logic) -----
+        # assignee → set the case owner when provided (non-empty).
+        assigned = None
+        if body.assignee is not None:
+            assigned = str(body.assignee).strip()[:80]
+            # The same owner again (trimmed, any letter case) changes nothing and records
+            # no new assignment time.
+            assigned = assigned if _owner_changed(case.assignee, assigned) else None
+            if assigned is not None:
+                case.assignee = assigned
+        # tags → merge into the case's tags (trim, de-dupe, bounded; the same rules as
+        # the dedicated /tags route, checked above by ``_merge_case_tags``).
+        if merged_tags is not None:
+            case.tags = merged_tags
+
+        # Record the lifecycle transition on the append-only status timeline.
+        if case.status != prev_status:
+            case.status_history.append(StatusHistoryEntry(
+                from_status=(prev_status.value if prev_status else ""),
+                to_status=case.status.value,
+                by=actor,
+                at=case.updated_at,
+                reason=reason,
+            ))
+
+        # Build the history entry, recording resolution/priority when supplied (they
+        # have no dedicated Case field, so the audited history entry is their home).
+        entry: dict[str, Any] = {
+            "ts": case.updated_at, "event": "analyst_action", "action": body.action,
+            "analyst": actor, "note": body.note,
+        }
+        if batch_id:
+            entry["batch"] = batch_id
+        if classified_disposition:
+            # The DECLARED classification made by THIS action (see the apply/classify split
+            # above: set only for a self-declaring verb or an affirmative
+            # ``disposition_declared``). The action token alone cannot carry it, because the
+            # primary close posts ``action="close"``, which is not a classification verb, so
+            # ``engine.analyst_outcomes.is_classification_entry`` reads this key instead.
+            # Append-only (#2): a new key on a NEW entry; no existing history row is
+            # rewritten and no past case is relabelled.
+            entry[CLASSIFIED_DISPOSITION_KEY] = classified_disposition
+        if body.resolution is not None:
+            entry["resolution"] = str(body.resolution)
+        if body.priority is not None:
+            entry["priority"] = str(body.priority)
+        if assigned is not None:
+            # A new owner set by this action: its time, for the "my cases" starter.
+            entry["assignee"] = assigned
+        # Round 15 (SPEC D4.2, D6.9): what the person did, from the fixed vocabulary, and
+        # whether they acted from an auto-close review. Both new keys on a NEW entry only
+        # (#2); ``review_via`` is recorded and never read by the close logic above.
+        if body.actions_taken:
+            entry["actions_taken"] = list(body.actions_taken)
+        review_via = getattr(body, "review_via", None)
+        if review_via:
+            entry["review_via"] = review_via
+        case.history.append(entry)
+        await state.cases.save(case)
+    # Round 15 (SPEC D7.1): the row's structured fields. ``action_type``, ``surface`` and
+    # the positional ``result_summary`` below stay byte-identical.
+    changes: list[AuditChange] = []
     if case.status != prev_status:
-        case.status_history.append(StatusHistoryEntry(
-            from_status=(prev_status.value if prev_status else ""),
-            to_status=case.status.value,
-            by=actor,
-            at=case.updated_at,
-            reason=reason,
-        ))
-
-    # Build the history entry, recording resolution/priority when supplied (they
-    # have no dedicated Case field, so the audited history entry is their home).
-    entry: dict[str, Any] = {
-        "ts": case.updated_at, "event": "analyst_action", "action": body.action,
-        "analyst": actor, "note": body.note,
-    }
-    if body.resolution is not None:
-        entry["resolution"] = str(body.resolution)
-    if body.priority is not None:
-        entry["priority"] = str(body.priority)
-    case.history.append(entry)
-    await state.cases.save(case)
+        changes.append(AuditChange(field="status", before=_change_value(prev_status),
+                                   after=case.status.value))
+    if case.disposition != prev_disposition:
+        changes.append(AuditChange(field="disposition", before=_change_value(prev_disposition),
+                                   after=_change_value(case.disposition)))
+    if classified_disposition:
+        changes.append(AuditChange(field=CLASSIFIED_DISPOSITION_KEY, after=classified_disposition))
+    if prev_acknowledged_at is None and case.acknowledged_at is not None:
+        changes.append(AuditChange(field="acknowledged_at",
+                                   after=_change_value(case.acknowledged_at)))
+    if assigned is not None:
+        changes.append(AuditChange(field="assignee", before=prev_assignee or None, after=assigned))
+    if merged_tags is not None and list(merged_tags) != previous_tags:
+        changes.append(AuditChange(field="tags", before=previous_tags, after=list(merged_tags)))
+    if body.actions_taken:
+        changes.append(AuditChange(field="actions_taken", after=list(body.actions_taken)))
+    if review_via:
+        changes.append(AuditChange(field="review_via", after=review_via))
     # Append-only audit of the lifecycle transition (#2) — best-effort.
     try:
         await state.audit.record(
             action_type=ActionType.STATUS, surface="case", actor=actor, case_id=case_id,
+            actor_type="human", outcome="success",
+            action=CASE_LIFECYCLE_AUDIT_ACTIONS.get(body.action),
+            changes=changes or None,
+            **_case_audit_fields(case, context, batch_id=batch_id),
             result_summary=(
                 f"action={body.action} status {prev_status.value if prev_status else '?'}"
                 f"→{case.status.value} disposition={case.disposition.value if case.disposition else 'none'}"
                 + (f" reason={reason}" if reason else "")
+                # APPENDED at the end (never reordered — this summary is read
+                # positionally elsewhere): whether the analyst classified the case in
+                # this very action, which is what makes the disposition above
+                # independent evidence rather than an inherited value.
+                + (f" classified={classified_disposition}" if classified_disposition else "")
             ),
         )
     except Exception as exc:  # noqa: BLE001 — audit is best-effort, never blocks the action
         logger.warning("Status audit failed for %s: %s", case_id, exc)
+    # Round 14 (D34, SPEC §4.10.15): a person closed with required runbook steps open,
+    # so record why (#2), whoever closed and however; the close itself already stands.
+    if open_steps and case.status in _TERMINAL:
+        from ..engine import runbook_runs
+
+        # A reason the person gave is always recorded, a duplicate included.
+        how = via or ("console" if (body.require_open_steps_reason or marks_duplicate) else "api")
+        await runbook_runs.record_closed_with_open_steps(
+            state, case, actor=actor, via=how, reason=body.open_steps_reason,
+            steps=open_steps, note="Duplicate" if marks_duplicate else None, context=context,
+        )
+    # Round 14 (SPEC §4.10.4): a human move that leaves the case needing a person
+    # (reopen, escalate, a status change) or changes its tags is a re-evaluation
+    # trigger: the matching runbook attaches when the case has none yet, or a more
+    # specific one does. Never raises and never changes the action's outcome.
+    tags_changed = merged_tags is not None and list(merged_tags) != list(previous_tags)
+    if case.status not in _TERMINAL and (case.status != prev_status or tags_changed):
+        from ..engine import runbook_runs
+
+        await runbook_runs.reevaluate_case(state, case, trigger=f"action:{body.action}")
     # On close / confirm-FP, index the resolved case as RAG baseline memory (C3-5)
     # so future investigations of similar entities learn from this decision + note.
     # Fail-safe: a RAG/embedding failure must NEVER break the analyst's action.
@@ -4589,6 +8319,7 @@ async def _perform_case_action(
                 await state.proposals.add(proposal)
                 await state.audit.record(
                     action_type=ActionType.PROPOSAL, surface="case", actor="agent",
+                    actor_type="agent", outcome="success",
                     case_id=case_id,
                     result_summary=(
                         f"drafted suppression proposal {proposal.id} "
@@ -4613,20 +8344,29 @@ async def _perform_case_action(
             _trig = TRIGGER_CLOSED
         notifier: NotificationService | None = getattr(state, "notifications", None)
         if _trig and notifier is not None and not state.demo_active:
-            import asyncio
-
-            asyncio.create_task(notifier.dispatch(case, _trig))
+            state.spawn_mutation_task(
+                notifier.dispatch(case, _trig),
+                name=f"case-lifecycle-notify:{case_id}",
+            )
     except Exception as exc:  # noqa: BLE001 — notifications never affect the action
         logger.debug("lifecycle notification scheduling skipped for %s: %s", case_id, exc)
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
-class BulkCaseAction(CaseAction):
+class BulkCaseAction(_CaseActionFields):
     """A :class:`CaseAction` applied to many cases at once. ``ids`` is the set of
     target case ids; the action/payload fields are inherited verbatim so a bulk move
-    is IDENTICAL to N single-case moves."""
+    is IDENTICAL to N single-case moves. The one exception is ``review_via`` (Round 15
+    SPEC D6.9): a review is about one case, so a bulk body that sends it answers 422."""
 
     ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_review_via(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("review_via") is not None:
+            raise ValueError("review_via is accepted on a single-case action only")
+        return data
 
 
 @router.post("/cases/bulk")
@@ -4667,6 +8407,13 @@ async def cases_bulk_action(
     # applied identically to each target.
     single = CaseAction(**{k: v for k, v in body.model_dump().items() if k != "ids"})
 
+    # ONE transaction id for the whole bulk move, stamped onto every history entry it
+    # writes. This is what lets the bounded precedent window treat a bulk action as the
+    # single operator decision it is instead of N independent ones; see
+    # ``PrecedentWindowConfig.max_transaction_fraction``.
+    batch_id = new_id("bulk-")
+    bulk_context = _request_audit_context(request)
+
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
     for cid in ids:
@@ -4674,7 +8421,8 @@ async def cases_bulk_action(
             continue  # de-dupe so a repeated id isn't applied (and audited) twice
         seen.add(cid)
         try:
-            await _perform_case_action(cid, single, actor, state)
+            await _perform_case_action(cid, single, actor, state, batch_id=batch_id, via="bulk",
+                                       context=bulk_context)
             results.append({"id": cid, "ok": True})
         except HTTPException as exc:
             results.append({"id": cid, "ok": False, "error": str(exc.detail)})
@@ -4710,6 +8458,12 @@ class AssignBody(BaseModel):
     analyst: str = ""
 
 
+def _owner_changed(previous: str | None, new: str | None) -> bool:
+    """True when ``new`` names a different case owner from ``previous``: trimmed and
+    compared without case, as usernames are (the user store lower-cases them)."""
+    return (previous or "").strip().casefold() != (new or "").strip().casefold()
+
+
 @router.post("/cases/{case_id}/feedback")
 async def case_feedback(
     case_id: str,
@@ -4731,27 +8485,31 @@ async def case_feedback(
 
         user = await _enforce(request, "cases", "write")
     actor = getattr(user, "username", "") or body.analyst or "analyst"
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    entry = FeedbackEntry(
-        analyst=actor,
-        assessment=body.assessment,
-        accuracy=max(0.0, min(1.0, body.accuracy)),
-        reasoning_quality=max(0.0, min(1.0, body.reasoning_quality)),
-        action_appropriateness=max(0.0, min(1.0, body.action_appropriateness)),
-        actual_outcome=body.actual_outcome.value,
-        time_saved_minutes=max(0, int(body.time_saved_minutes)),
-        comment=body.comment,
-        ai_verdict=case.verdict.value if case.verdict else "",
-        ai_confidence=case.confidence,
-    )
-    case.feedback.append(entry)
-    case.updated_at = iso_now()
-    await state.cases.save(case)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        entry = FeedbackEntry(
+            analyst=actor,
+            assessment=body.assessment,
+            accuracy=max(0.0, min(1.0, body.accuracy)),
+            reasoning_quality=max(0.0, min(1.0, body.reasoning_quality)),
+            action_appropriateness=max(0.0, min(1.0, body.action_appropriateness)),
+            actual_outcome=body.actual_outcome.value,
+            time_saved_minutes=max(0, int(body.time_saved_minutes)),
+            comment=body.comment,
+            ai_verdict=case.verdict.value if case.verdict else "",
+            ai_confidence=case.confidence,
+        )
+        case.feedback.append(entry)
+        case.updated_at = iso_now()
+        await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.FEEDBACK, surface="case", actor=actor,
+        actor_type="human", outcome="success", action=CASE_GRADED_AUDIT_ACTION,
         case_id=case_id,
+        **_case_audit_fields(case, _request_audit_context(request)),
         result_summary=f"assessment={entry.assessment} outcome={entry.actual_outcome} "
                        f"accuracy={entry.accuracy}",
     )
@@ -4764,7 +8522,7 @@ async def case_feedback(
             await state.rag_service.index_resolved_case(case, note=body.comment)
         except Exception as exc:  # noqa: BLE001 — feedback must survive RAG outages
             logger.warning("Feedback RAG refresh failed for %s: %s", case_id, exc)
-    return case.model_dump(mode="json")
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.post("/cases/{case_id}/comment")
@@ -4776,23 +8534,35 @@ async def case_comment(
 ) -> dict[str, Any]:
     # RBAC: commenting needs cases:comment. No-op when auth off; ``request`` is None
     # only for direct in-process test calls, where RBAC would be a no-op anyway.
+    user = None
     if request is not None:
         from .deps import _enforce
 
-        await _enforce(request, "cases", "comment")
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    if not body.body.strip():
-        raise HTTPException(status_code=400, detail="comment body is required")
-    case.comments.append(CaseComment(author=body.author, body=body.body.strip()[:4000]))
-    case.updated_at = iso_now()
-    await state.cases.save(case)
+        user = await _enforce(request, "cases", "comment")
+    # Round 15 (SPEC D7.2): the audit actor is the verified principal when the request
+    # has one, never a name the body claims; the body value only without sign-in.
+    actor = _case_work_actor(user, body.author)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        if not body.body.strip():
+            raise HTTPException(status_code=400, detail="comment body is required")
+        # The stored author follows the same rule as the audit actor, so a signed-in user
+        # cannot post a comment the case shows as someone else's. Without sign-in the body
+        # value is stored exactly as before.
+        author = str(getattr(user, "username", "") or "") or body.author
+        case.comments.append(CaseComment(author=author, body=body.body.strip()[:4000]))
+        case.updated_at = iso_now()
+        await state.cases.save(case)
     await state.audit.record(
-        action_type=ActionType.COLLAB, surface="case", actor=body.author or "analyst",
+        action_type=ActionType.COLLAB, surface="case", actor=actor,
+        actor_type="human", outcome="success", action=CASE_COMMENTED_AUDIT_ACTION,
+        **_case_audit_fields(case, _request_audit_context(request)),
         case_id=case_id, result_summary="comment added",
     )
-    return case.model_dump(mode="json")
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.post("/cases/{case_id}/tags")
@@ -4804,27 +8574,43 @@ async def case_tags(
 ) -> dict[str, Any]:
     # RBAC: editing tags needs cases:write. No-op when auth off; ``request`` is None
     # only for direct in-process test calls, where RBAC would be a no-op anyway.
+    user = None
     if request is not None:
         from .deps import _enforce
 
-        await _enforce(request, "cases", "write")
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    # De-dupe, trim, cap length/count — tags are operator labels, kept tidy.
-    seen: list[str] = []
-    for t in body.tags:
-        t = str(t).strip()[:40]
-        if t and t not in seen:
-            seen.append(t)
-    case.tags = seen[:25]
-    case.updated_at = iso_now()
-    await state.cases.save(case)
+        user = await _enforce(request, "cases", "write")
+    # Round 15 (SPEC D7.2): the verified principal, else the body or caller value (the
+    # ``case_tag`` job passes ``job.actor``, verified at submit).
+    actor = _case_work_actor(user, body.analyst)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        # De-dupe, trim and bound the count; a new tag over the length limit is refused,
+        # never cut (``_merge_case_tags``).
+        previous_tags = list(case.tags or [])
+        case.tags = _merge_case_tags(case.tags, body.tags, replace=True)
+        case.updated_at = iso_now()
+        await state.cases.save(case)
+    tag_changes = (
+        [AuditChange(field="tags", before=previous_tags, after=list(case.tags or []))]
+        if list(case.tags or []) != previous_tags else None
+    )
     await state.audit.record(
-        action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
+        action_type=ActionType.COLLAB, surface="case", actor=actor,
+        actor_type="human", outcome="success", action=CASE_TAGGED_AUDIT_ACTION,
+        changes=tag_changes,
+        **_case_audit_fields(case, _request_audit_context(request)),
         case_id=case_id, result_summary=f"tags set ({len(case.tags)})",
     )
-    return case.model_dump(mode="json")
+    # Round 14 (SPEC §4.10.4): a tag change is a re-evaluation trigger (a runbook may
+    # apply by tag). Never raises and never changes the tag write.
+    if list(case.tags or []) != previous_tags:
+        from ..engine import runbook_runs
+
+        await runbook_runs.reevaluate_case(state, case, trigger="tags")
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.post("/cases/{case_id}/assign")
@@ -4836,29 +8622,58 @@ async def case_assign(
 ) -> dict[str, Any]:
     # RBAC: reassigning needs cases:assign. No-op when auth off; ``request`` is None
     # only for direct in-process test calls, where RBAC would be a no-op anyway.
+    user = None
     if request is not None:
         from .deps import _enforce
 
-        await _enforce(request, "cases", "assign")
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    case.assignee = body.assignee.strip()[:80]
-    case.updated_at = iso_now()
-    await state.cases.save(case)
+        user = await _enforce(request, "cases", "assign")
+    # Round 15 (SPEC D7.2): the verified principal, else the body or caller value (the
+    # ``case_assign`` job passes ``job.actor``, verified at submit). It is the audit actor
+    # and the ``analyst`` of the "assigned" history entry.
+    actor = _case_work_actor(user, body.analyst)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        new_owner = body.assignee.strip()[:80]
+        previous_owner = case.assignee or ""
+        changed = _owner_changed(case.assignee, new_owner)
+        if changed:
+            case.assignee = new_owner
+        case.updated_at = iso_now()
+        # The assignment time, on the case's append-only history (Round 13 polish PB3): the
+        # "my cases" starter states how long the oldest of a caller's cases has been theirs
+        # only from this record ("Oldest assigned …"), never from the case's age. Recorded
+        # only when the owner changes: assigning a case to its current owner (Assign again,
+        # or a bulk assign over cases the person already holds) keeps the earlier time.
+        if changed:
+            case.history.append({"ts": case.updated_at, "event": "assigned", "assignee": case.assignee,
+                                 "analyst": actor})
+        await state.cases.save(case)
     await state.audit.record(
-        action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
+        action_type=ActionType.COLLAB, surface="case", actor=actor,
+        actor_type="human", outcome="success", action=CASE_ASSIGNED_AUDIT_ACTION,
+        changes=(
+            [AuditChange(field="assignee", before=previous_owner or None, after=case.assignee or None)]
+            if changed else None
+        ),
+        **_case_audit_fields(case, _request_audit_context(request)),
         case_id=case_id, result_summary=f"assigned to {case.assignee or '(unassigned)'}",
     )
-    return case.model_dump(mode="json")
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.get("/cases/{case_id}/export")
 async def case_export(
-    case_id: str, format: str = "json", state: AppState = Depends(get_state)
+    case_id: str, format: str = "json", state: AppState = Depends(get_state),
+    request: Request = None,  # type: ignore[assignment]
+    _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     """Export a case for handoff/ticketing as JSON or a Markdown report. Returns
-    ``{filename, content_type, content}`` so the UI can trigger a download."""
+    ``{filename, content_type, content}`` so the UI can trigger a download. The JSON
+    leaves ``token_cost`` out (``null``) for a caller without ``cost:view``; the
+    Markdown report carries no spend."""
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -4872,12 +8687,38 @@ async def case_export(
     if fmt == "json":
         import json as _json
 
+        dumped = case.model_dump(mode="json")
         return {
             "filename": f"{case_id}.json",
             "content_type": "application/json",
-            "content": _json.dumps(case.model_dump(mode="json"), indent=2, default=str),
+            "content": _json.dumps(
+                dumped if await _case_spend_visible(request) else _withhold_case_spend(dumped),
+                indent=2, default=str,
+            ),
         }
     raise HTTPException(status_code=400, detail=f"unsupported format: {format}")
+
+
+def _case_runbook_label(case) -> str:
+    """The runbook line of the case Markdown report (Round 14 SPEC §4.10.18): the
+    Published runbook whose guidance the investigator received and its version
+    (``Case.runbook_id``), else the procedure id an earlier investigation recorded
+    (``Case.playbook_id``, kept readable and never rewritten), shown with the built-in
+    runbook that replaced it when it was a retired bundled procedure
+    (``LEGACY_BUNDLED_RUNBOOK_MAP``, §4.10.16), else "none"."""
+    from ..engine.runbook_model import resolve_legacy_runbook_id
+
+    runbook_id = str(getattr(case, "runbook_id", None) or "").strip()
+    if runbook_id:
+        version = getattr(case, "runbook_version", None)
+        return f"{runbook_id} v{version}" if isinstance(version, int) and version > 0 else runbook_id
+    legacy = str(getattr(case, "playbook_id", "") or "").strip()
+    if not legacy:
+        return "none"
+    successor = resolve_legacy_runbook_id(legacy)
+    if successor:
+        return f"{successor} (recorded as {legacy}, an earlier procedure)"
+    return f"{legacy} (an earlier procedure)"
 
 
 def _case_markdown(case) -> str:
@@ -4891,7 +8732,7 @@ def _case_markdown(case) -> str:
         f"(confidence {round(case.confidence, 2)})",
         f"- **Status:** {case.status.value} · decided by {case.decision_by.value if case.decision_by else '—'}",
         f"- **Risk score:** {round(case.risk_score, 1)}",
-        f"- **Persona:** {case.agent_persona or 'generalist'} · **Playbook:** {case.playbook_id or '—'}",
+        f"- **Persona:** {case.agent_persona or 'generalist'} · **Runbook:** {_case_runbook_label(case)}",
         f"- **Rules:** {', '.join(case.rule_ids) or '—'}",
         f"- **MITRE:** {', '.join(case.mitre) or '—'}",
         f"- **Assignee:** {case.assignee or '—'} · **Tags:** {', '.join(case.tags) or '—'}",
@@ -4920,56 +8761,121 @@ def _case_markdown(case) -> str:
                 f"- _{f.ts}_ {f.analyst or 'analyst'}: {f.assessment} "
                 f"(outcome {f.actual_outcome or '—'}, accuracy {f.accuracy})"
             )
+    # Round 15 (SPEC D4.2): what people did about the case, from the fixed vocabulary
+    # recorded on each lifecycle action (never model text).
+    taken = _case_actions_taken_lines(case)
+    if taken:
+        lines += ["", "## Actions taken"]
+        lines += taken
     return "\n".join(lines)
+
+
+def _case_actions_taken_lines(case) -> list[str]:
+    """One Markdown line per lifecycle action that recorded what was done, oldest
+    first: ``- _<ts>_ **<analyst>** (<action>): Blocked an indicator, Isolated a host``.
+    A value outside the vocabulary (a hand-edited history) is shown as stored."""
+    out: list[str] = []
+    for entry in case.history or []:
+        if not isinstance(entry, dict) or entry.get("event") != "analyst_action":
+            continue
+        values = entry.get("actions_taken")
+        if not isinstance(values, list) or not values:
+            continue
+        words = ", ".join(CASE_ACTIONS_TAKEN_LABELS.get(str(v), str(v)) for v in values)
+        action = str(entry.get("action") or "").replace("_", " ")
+        out.append(f"- _{entry.get('ts') or ''}_ **{entry.get('analyst') or 'analyst'}** ({action}): {words}")
+    return out
 
 
 @router.post("/cases/{case_id}/investigate")
 async def case_investigate(
     case_id: str,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("cases", "reinvestigate")),
+    principal=Depends(require_permission("cases", "reinvestigate")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Human-triggered (re-)investigation of a stored case (C3-4).
 
-    Rebuilds the cluster from the case — preferring an exact id-based re-query,
-    falling back to a config-windowed entity re-query — then re-runs the SAME
+    Rebuilds the cluster from the case (preferring an exact id-based re-query,
+    falling back to a config-windowed entity re-query), then re-runs the SAME
     shared pipeline with ``force=True`` so an already-investigated OPEN case is
     re-investigated in place. The case's ORIGINAL provenance (``source_surface`` /
     ``origin_surface``) is preserved by the pipeline, so an automated-scan case
     stays in the Automated Scans tab. Returns a NEUTRAL 400 if no events remain
     (the cluster aged out of the configured window).
+
+    Round 16 (SPEC §4.5 WP08): a closed case is investigated in place unless an open
+    case holds its signature (``409 open_case_exists``), and a second request while a
+    run on the case is queued or running answers ``409 investigation_running``; both
+    are checked before the rebuild.
     """
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    query_source = state.active_source_for_id(case.source_id)
-    cluster = await _cluster_for_case(
-        state, case, query_source=query_source
+    from ..agents.pipeline import INVESTIGATION_RUN_PREFIX
+    from .routes_investigations import open_case_conflict, reserve_manual_run
+
+    await open_case_conflict(state.cases, case)
+    run_id = new_id(INVESTIGATION_RUN_PREFIX)
+    requested_by = str(getattr(principal, "username", "") or "") or None
+    reservation = await reserve_manual_run(
+        request, state.investigations, case, run_id=run_id, requested_by=requested_by,
     )
-    if cluster is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"No events remain for {case.entity.type.value} {case.entity.value} "
-                f"in the last {state.prefs.investigate_lookback}; the activity may have "
-                "aged out of the retained log window."
-            ),
+    try:
+        query_source = state.active_source_for_id(case.source_id)
+        cluster = await _cluster_for_case(
+            state, case, query_source=query_source
         )
-    # force=True so an already-investigated OPEN case is genuinely re-investigated.
-    updated = await state.pipeline.investigate_cluster(
-        cluster, case.source_surface, state.execution_prefs,
-        force=True, query_source=query_source,
-    )
-    return updated.model_dump(mode="json")
+        if cluster is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No events remain for {case.entity.type.value} {case.entity.value} "
+                    f"in {_window_words(state.prefs.investigate_lookback)}; the activity may have "
+                    "aged out of the retained log window."
+                ),
+            )
+        # force=True so an already-investigated OPEN case is genuinely re-investigated.
+        updated = await state.pipeline.investigate_cluster(
+            cluster, case.source_surface, state.execution_prefs,
+            force=True, query_source=query_source,
+            trigger="manual", requested_by=requested_by, known_case_id=case_id,
+            target_case_id=case_id, run_id=run_id,
+        )
+    finally:
+        reservation.release()
+    return _case_view(updated, state, spend=await _case_spend_visible(request))
 
 
 class ReinvestigateRequest(BaseModel):
     """Re-run the investigation on an existing case. Optional ``model`` overrides
     the investigation-role models (router/investigator/formatter) for THIS run via a
-    prefs copy (the per-call model-override technique) — no gateway plumbing change."""
+    prefs copy (the per-call model-override technique); no gateway plumbing change.
+
+    ``wait`` (Round 16 SPEC §4.5 WP08): true (the default) answers when the run ends,
+    with the updated case; false answers ``202 {run_id, case_id, state: "queued"}`` at
+    once and the run goes on in the background (its result arrives as a case update,
+    a ``case.investigation`` frame and an Inbox notice)."""
 
     model: str | None = None
     analyst: str = "analyst"
+    wait: bool = True
+
+
+async def _run_manual_investigation(pipeline: Any, cluster: Any, surface: Any, prefs: Any, *,
+                                    query_source: Any, reservation: Any, **tracking: Any) -> None:
+    """A ``wait=false`` reinvestigation, run as a tracked task (factory reset cancels
+    it). The pipeline never raises for a failed investigation (it routes the case to a
+    person); anything else is logged. The reservation ends with the run."""
+    try:
+        await pipeline.investigate_cluster(
+            cluster, surface, prefs, force=True, query_source=query_source, **tracking,
+        )
+    except Exception as exc:  # noqa: BLE001 - the 202 is answered; the run is logged
+        logger.warning("Background reinvestigation of %s failed: %s",
+                       tracking.get("target_case_id"), exc)
+    finally:
+        reservation.release()
 
 
 @router.post("/cases/{case_id}/reinvestigate")
@@ -4977,111 +8883,120 @@ async def case_reinvestigate(
     case_id: str,
     body: ReinvestigateRequest | None = None,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("cases", "reinvestigate")),
-) -> dict[str, Any]:
+    principal=Depends(require_permission("cases", "reinvestigate")),
+    request: Request = None,  # type: ignore[assignment]
+) -> Any:
     """Manually re-run the SHARED investigation pipeline on a stored case (force).
 
     Loads the case (404 if missing), reconstructs the cluster from the case's stored
     fields (member event ids → exact id re-query, else a config-windowed entity
-    re-query — via the same robust ``_cluster_for_case`` helper the legacy
+    re-query, via the same robust ``_cluster_for_case`` helper the legacy
     ``/investigate`` route uses), then calls ``investigate_cluster(..., force=True)``
     so it re-runs even on an already-verdicted case. An optional ``{"model": "<id>"}``
     body overrides the investigation-role models for this run only via a prefs copy
     (still through the one gateway, #6). The case's ORIGINAL provenance
     (``source_surface``) is preserved by the pipeline. The deterministic
     close/escalate decision in the Case Manager is untouched (#3). Returns the
-    updated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster."""
+    updated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster.
+
+    Round 16 (SPEC §4.5 WP08, D10), each checked before the audit row and the rebuild:
+    a closed case is reinvestigated IN PLACE unless an open case holds its signature
+    (``409 open_case_exists`` with that case's id); a second request while a run on the
+    case or its signature is queued or running answers ``409 investigation_running``
+    with the run. ``wait=false`` answers ``202 {run_id, case_id, state}`` at once."""
     body = body or ReinvestigateRequest()
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    # Rebuild the cluster from live logs; if the events aged out, fall back to a
-    # minimal reconstruction from the case's STORED evidence so the re-investigation
-    # runs over what we retained rather than dead-ending (#3 untouched).
-    query_source = state.active_source_for_id(case.source_id)
-    cluster = await _cluster_for_case(
-        state, case, allow_stored_reconstruction=True, query_source=query_source
+    from ..agents.pipeline import INVESTIGATION_RUN_PREFIX
+    from .routes_investigations import open_case_conflict, reserve_manual_run
+
+    await open_case_conflict(state.cases, case)
+    run_id = new_id(INVESTIGATION_RUN_PREFIX)
+    requested_by = str(getattr(principal, "username", "") or "") or None
+    reservation = await reserve_manual_run(
+        request, state.investigations, case, run_id=run_id, requested_by=requested_by,
     )
-    if cluster is None:
-        raise HTTPException(
-            status_code=400,
-            detail="This case has no stored evidence to reinvestigate.",
+    spawned = False
+    try:
+        # Rebuild the cluster from live logs; if the events aged out, fall back to a
+        # minimal reconstruction from the case's STORED evidence so the re-investigation
+        # runs over what we retained rather than dead-ending (#3 untouched).
+        query_source = state.active_source_for_id(case.source_id)
+        cluster = await _cluster_for_case(
+            state, case, allow_stored_reconstruction=True, query_source=query_source
         )
-    # Per-call model override (additive): swap the investigation-role models for this
-    # run only. Unchanged when body.model is None.
-    prefs_eff = _override_models(
-        state.execution_prefs, body.model, ("router", "investigator", "formatter")
-    )
-    # Audit the manual reinvestigation BEFORE the run so the trigger is recorded even
-    # if the pipeline later fails-to-human (the pipeline never raises).
-    await state.audit.record(
-        action_type=ActionType.DECISION, surface=case.source_surface.value,
-        actor="reinvestigate", case_id=case_id,
-        result_summary=(
-            f"manual reinvestigation requested by {body.analyst or 'analyst'}"
-            + (f"; model override={body.model}" if body.model else "")
-        ),
-    )
-    # force=True so an already-verdicted case is genuinely re-investigated in place;
-    # the pipeline preserves the original source_surface/origin_surface.
-    updated = await state.pipeline.investigate_cluster(
-        cluster, case.source_surface, prefs_eff, force=True, query_source=query_source
-    )
-    return updated.model_dump(mode="json")
+        if cluster is None:
+            raise HTTPException(
+                status_code=400,
+                detail="This case has no stored evidence to reinvestigate.",
+            )
+        # Per-call model override (additive): swap the investigation-role models for this
+        # run only. Unchanged when body.model is None.
+        prefs_eff = _override_models(
+            state.execution_prefs, body.model, ("router", "investigator", "formatter")
+        )
+        # Audit the manual reinvestigation BEFORE the run so the trigger is recorded even
+        # if the pipeline later fails-to-human (the pipeline never raises).
+        await state.audit.record(
+            action_type=ActionType.DECISION, surface=case.source_surface.value,
+            actor="reinvestigate", case_id=case_id,
+            # The agent pipeline's own token (``audit/event_categories.json``): the row
+            # stays in Agent activity, as before; the person is named in the summary.
+            actor_type="agent", outcome="success", run_id=run_id,
+            result_summary=(
+                # Round 15 (SPEC D7.2): the verified principal when the request has one,
+                # else the body value; only this name changes, the row stays the agent's.
+                f"manual reinvestigation requested by {_case_work_actor(principal, body.analyst)}"
+                + (f"; model override={body.model}" if body.model else "")
+            ),
+        )
+        tracking = {
+            "trigger": "manual", "requested_by": requested_by, "known_case_id": case_id,
+            "target_case_id": case_id, "run_id": run_id,
+        }
+        if not body.wait:
+            # Round 16 (WP08, research R4): the run goes on as a tracked task (factory
+            # reset cancels it); the Console follows it through the registry route and
+            # the ``case.investigation`` frames.
+            task = state.spawn_mutation_task(
+                _run_manual_investigation(
+                    state.pipeline, cluster, case.source_surface, prefs_eff,
+                    query_source=query_source, reservation=reservation, **tracking,
+                ),
+                name=f"case-reinvestigate:{case_id}",
+            )
+            spawned = True
+            # The reservation ends with the task however it ends: a task cancelled
+            # before its first step (a factory reset or a shutdown right after this
+            # answer) never runs the coroutine's own ``finally``.
+            task.add_done_callback(lambda _task: reservation.release())
+            return JSONResponse(
+                status_code=202,
+                content={"run_id": run_id, "case_id": case_id, "state": "queued"},
+            )
+        # force=True so an already-verdicted case is genuinely re-investigated in place;
+        # the pipeline preserves the original source_surface/origin_surface.
+        updated = await state.pipeline.investigate_cluster(
+            cluster, case.source_surface, prefs_eff, force=True, query_source=query_source,
+            **tracking,
+        )
+    finally:
+        if not spawned:
+            reservation.release()
+    return _case_view(updated, state, spend=await _case_spend_visible(request))
 
 
-class RunPlaybookRequest(BaseModel):
-    """Manually RUN a specific playbook on a case (F10). ``playbook_id`` selects the
-    playbook to FORCE-inject as TRUSTED operator procedure for a re-investigation."""
-
-    playbook_id: str
-    analyst: str = "analyst"
-
-
-@router.post("/cases/{case_id}/run-playbook")
+@router.post("/cases/{case_id}/run-playbook", deprecated=True, status_code=410)
 async def case_run_playbook(
     case_id: str,
-    body: RunPlaybookRequest,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "run")),
-) -> dict[str, Any]:
-    """Manually run a chosen playbook on a case (F10) — CONTEXT-ONLY, #3-safe.
-
-    Re-investigates the case through the SHARED pipeline with ``playbook_id`` FORCED
-    as the injected TRUSTED operator procedure. The playbook can only RECOMMEND; the
-    deterministic close/escalate decision in the Case Manager is untouched (#3). 404
-    if the case or playbook is unknown; 400 (NEUTRAL) when no events remain to rebuild
-    the cluster. Returns the updated Case. Gated by ``playbooks:run``."""
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    if state.playbooks.get(body.playbook_id) is None:
-        raise HTTPException(status_code=404, detail=f"Unknown playbook: {body.playbook_id}")
-    # Rebuild the cluster from live logs; if the events aged out, fall back to a
-    # minimal reconstruction from the case's STORED evidence so the playbook can still
-    # be run over what we retained rather than dead-ending (#3 untouched).
-    query_source = state.active_source_for_id(case.source_id)
-    cluster = await _cluster_for_case(
-        state, case, allow_stored_reconstruction=True, query_source=query_source
-    )
-    if cluster is None:
-        raise HTTPException(
-            status_code=400,
-            detail="This case has no stored evidence to reinvestigate.",
-        )
-    await state.audit.record(
-        action_type=ActionType.DECISION, surface=case.source_surface.value,
-        actor="run_playbook", case_id=case_id,
-        result_summary=(
-            f"manual playbook run requested by {body.analyst or 'analyst'}: "
-            f"playbook={body.playbook_id}"
-        ),
-    )
-    updated = await state.playbooks.run(
-        state.pipeline, cluster, case.source_surface, state.execution_prefs, body.playbook_id,
-        query_source=query_source,
-    )
-    return updated.model_dump(mode="json")
+    _=Depends(require_permission("runbooks", "run")),
+) -> Any:
+    """Retired (Round 14 SPEC §4.10.16): ``410 runbooks_moved``. Start a runbook on a
+    case with ``POST /api/cases/{case_id}/runbooks``; re-investigate with ``POST
+    /api/cases/{case_id}/reinvestigate``."""
+    del case_id
+    return _runbooks_moved()
 
 
 @router.get("/cases/{case_id}/threat-context")
@@ -5134,6 +9049,7 @@ async def threat_context_import(
     result = await state.rag_service.import_threat_context(title, content, tags=body.tags)
     await state.audit.record(
         action_type=ActionType.CONTEXT, surface="rag", actor="analyst",
+        actor_type="human", outcome="success",
         result_summary=(
             f"imported threat_context document {result.get('document_id')} "
             f"({result.get('chunk_count')} chunk(s))"
@@ -5143,17 +9059,30 @@ async def threat_context_import(
 
 
 @router.get("/cases/{case_id}/trace")
-async def case_trace(case_id: str, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def case_trace(
+    case_id: str,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
     """Ordered agent-pipeline trace for a case (C3-3).
 
     Projects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator
     → tool calls → verdict → formatter → case-manager decision) into a timeline.
-    Read-only on the management-scoped audit index. NEVER 404s — an unknown or
+    Read-only on the management-scoped audit index. NEVER 404s: an unknown or
     not-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is
-    omitted when ``prefs.trace.include_prompts`` is false."""
+    omitted when ``prefs.trace.include_prompts`` is false. For a caller without
+    ``cost:view`` the cost figures a spend writer put into a row's ``result_summary``
+    are replaced (Round 16, WP16: ``api.cost_text``); tool output is never changed."""
     rows = await state.audit.records_for_case(case_id)
     include_prompts = state.prefs.trace.include_prompts
     steps = [_trace_step(row, include_prompts) for row in rows]
+    if not await _case_spend_visible(request):
+        from .cost_text import withhold_row_cost_text
+
+        steps = [step.model_copy(update={
+            "result_summary": withhold_row_cost_text(step.action_type, step.result_summary),
+        }) for step in steps]
     return {
         "case_id": case_id,
         "steps": [s.model_dump(mode="json") for s in steps],
@@ -5162,20 +9091,45 @@ async def case_trace(case_id: str, state: AppState = Depends(get_state)) -> dict
 
 
 @router.get("/cases/{case_id}/rationale")
-async def case_rationale(case_id: str, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def case_rationale(
+    case_id: str,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
     """Case EXPLAINABILITY: a clean, human-readable "why" object assembled from the
-    case + its audit records — WITHOUT calling the LLM.
+    case + its audit records, WITHOUT calling the LLM.
 
     Surfaces exactly how a case reached its verdict: the persona/playbook chosen, the
     operator MEMORY facts consulted, the RAG knowledge retrieved (source + snippet),
     the IP enrichment/reputation, the read-only tools/queries the agent ran, the
     investigator's reasoning excerpt, the deterministic close/escalate rationale, the
     MITRE techniques, and the evidence. Every piece is parsed DEFENSIVELY from the
-    audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields — a
-    missing piece degrades to an empty value, never an error. NEVER 404s."""
+    audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields; a
+    missing piece degrades to an empty value, never an error. NEVER 404s.
+
+    Round 16 (WP16, [dv] R14): additive ``returned``, ``rows_total``,
+    ``rows_total_relation`` and ``truncated``, as the timeline answers them, say when
+    the rationale was read from only the newest audit records of a long-lived case.
+    For a caller without ``cost:view`` the cost figure in ``decision_rationale`` (the
+    case manager's DECISION row text) is replaced (``api.cost_text``)."""
+    from .routes_triage import _audit_row_total, _trace_truncated
+
     case = await state.cases.get(case_id)
     rows = await state.audit.records_for_case(case_id)
-    return _build_rationale(case_id, case, rows)
+    rows_total, rows_relation = await _audit_row_total(state, case_id)
+    rationale = _build_rationale(case_id, case, rows)
+    if not await _case_spend_visible(request):
+        from .cost_text import withhold_cost_text
+
+        rationale["decision_rationale"] = withhold_cost_text(rationale.get("decision_rationale"))
+    rationale.update({
+        "returned": len(rows),
+        "rows_total": rows_total,
+        "rows_total_relation": rows_relation,
+        "truncated": _trace_truncated(len(rows), rows_total),
+    })
+    return rationale
 
 
 @router.get("/cases/{case_id}/forwarding")
@@ -5215,6 +9169,11 @@ async def case_forwarding(
             "source_id": case.source_id,
             "is_alert": False,
             "notes": [],
+            # Round 16 (WP16): the same keys as a reconstructed answer. Nothing was
+            # walked, so there is no routing score or floor to report.
+            "routing_total": None,
+            "risk_floor": None,
+            "routing_gate_applied": False,
         }
     explanation = explain_forwarding(cluster, state.prefs)
     return {"case_id": case_id, **explanation.to_dict()}
@@ -5224,14 +9183,22 @@ async def case_forwarding(
 # Automated scans (Surface 3)
 # --------------------------------------------------------------------------- #
 @router.get("/scans")
-async def scans(limit: int = 50, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def scans(
+    limit: int = 50, state: AppState = Depends(get_state),
+    request: Request = None,  # type: ignore[assignment]
+    _=Depends(require_permission("cases", "read")),
+) -> dict[str, Any]:
     cases, total = await state.cases.list_scans(limit=min(limit, 200))
-    return {"cases": [c.model_dump(mode="json") for c in cases], "total": total}
+    rows = [c.model_dump(mode="json") for c in cases]
+    if not await _case_spend_visible(request):
+        rows = [_withhold_case_spend(row) for row in rows]
+    return {"cases": rows, "total": total}
 
 
 @router.get("/scans/notifications")
 async def scan_notifications(
-    since: str = "now-24h", state: AppState = Depends(get_state)
+    since: str = "now-24h", state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     since_iso = _millis_to_iso(relative_to_millis(since))
     new_count = await state.cases.count_new_scans(since_iso)
@@ -5243,12 +9210,18 @@ async def scan_notifications(
 # --------------------------------------------------------------------------- #
 @router.get("/standup")
 async def standup(
-    window_hours: int | None = None, state: AppState = Depends(get_state)
+    window_hours: int | None = None, state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Daily standup summary. ALWAYS returns HTTP 200 with a renderable payload:
     a clear ``{enabled: false}`` shape when disabled, the full happy-path result
     when data is present, or a graceful ``degraded: true`` + ``error`` + a short
-    summary note when the aggregation/summary step is unavailable (never a 500)."""
+    summary note when the aggregation/summary step is unavailable (never a 500).
+
+    The summary's AI spend, ``cost``, follows the one spend rule, ``cost:view``
+    (Round 16 cross-cutting review): without it the key stays and its value is
+    ``null``, the withheld-spend shape of ``_withhold_case_spend``."""
     prefs = state.execution_prefs
     if not prefs.standup.enabled:
         return {
@@ -5274,6 +9247,8 @@ async def standup(
         }
     result["enabled"] = True
     result.setdefault("degraded", False)
+    if "cost" in result and not await _case_spend_visible(request):
+        result["cost"] = None
     return result
 
 
@@ -5282,8 +9257,15 @@ async def standup(
 # --------------------------------------------------------------------------- #
 @router.get("/usage/summary")
 async def usage_summary(
-    window_hours: int = 24, case_id: str | None = None, state: AppState = Depends(get_state)
+    window_hours: int = 24,
+    case_id: str | None = None,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cost", "view")),
 ) -> dict[str, Any]:
+    """AI spend and token use over the window, or for one case with ``case_id``.
+    Needs ``cost:view``, the grant every view of AI spend needs."""
+    # Round 14 roles-11 (SPEC §3.7 and the permission matrix): the same grant the
+    # usage breakdown, the Executive board and chat's usage answers need.
     return await state.usage_store.summary(window_hours=window_hours, case_id=case_id)
 
 
@@ -5350,52 +9332,23 @@ def _deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
 
 
 def _millis_to_iso(millis: int) -> str:
+    """Epoch millis as ISO-8601 UTC. An instant outside the representable range clamps
+    to its first or last instant (``utils.millis_to_iso_utc``) instead of raising, so
+    an out-of-range ``since`` answers 200 (Round 16 B02)."""
     from datetime import datetime, timezone
 
-    return datetime.fromtimestamp(millis / 1000.0, tz=timezone.utc).isoformat()
+    from ..utils import millis_to_iso_utc
+
+    try:
+        return datetime.fromtimestamp(millis / 1000.0, tz=timezone.utc).isoformat()
+    except (OverflowError, ValueError, OSError):
+        return millis_to_iso_utc(int(millis))
 
 
-# Auto-widen ladder (BUG-2): increasing windows tried IN ORDER on 0 hits. The
-# configured/requested start window is always tried first; ladder rungs narrower
-# than the start are skipped so we never shrink the search below what was asked.
-# ``now-365d`` is the ~1-year widest rung (the relative-time parser supports
-# s/m/h/d/w, not a ``y`` unit, so a year is expressed in days).
-_WIDEN_LADDER = ("now-7d", "now-30d", "now-365d")
-
-
-def _entity_field(prefs: Preferences, entity_type: EntityType) -> str:
-    return {
-        EntityType.IP: prefs.source_ip_field,
-        EntityType.USER: prefs.user_field,
-        EntityType.HOST: prefs.host_field,
-    }[entity_type]
-
-
-def _scoped_entity_body(prefs: Preferences, field: str, value: str, from_millis: int) -> dict[str, Any]:
-    """Entity query with the SAME scope + suppression filters the poller uses, so a
-    manual investigation never pulls out-of-scope or suppressed events."""
-    body = entity_query(
-        prefs, field, value, from_millis=from_millis, size=200,
-        extra_filters=scope_filters(prefs),
-    )
-    must_not = scope_must_not(prefs)
-    if must_not:
-        body["query"]["bool"]["must_not"] = must_not
-    return body
-
-
-def _widen_windows(start_window: str) -> list[str]:
-    """Ordered windows to try: the configured/requested start, then each ladder
-    rung that is WIDER than (i.e. reaches further back than) the start."""
-    windows = [start_window]
-    start_ms = relative_to_millis(start_window)
-    for rung in _WIDEN_LADDER:
-        # A wider window resolves to an EARLIER epoch (further in the past).
-        if relative_to_millis(rung) < start_ms:
-            windows.append(rung)
-    return windows
-
-
+# The auto-widen ladder and the entity-query helpers (``_WIDEN_LADDER``,
+# ``_entity_field``, ``_scoped_entity_body``, ``_widen_windows``) live in
+# ``engine/case_cluster.py`` (chat revamp SPEC §5.3) and are re-exported at the top
+# of this module under their historical names.
 async def _entity_events_widening(
     state: AppState,
     entity_type: EntityType,
@@ -5404,47 +9357,14 @@ async def _entity_events_widening(
     *,
     query_source=None,
 ) -> tuple[list[RawEvent], str]:
-    """Fetch an entity's in-scope events, auto-widening the lookback on 0 hits.
-
-    Returns (events, widest_window_tried). Stops at the first window that yields
-    events; if all are empty the events list is empty and widest_window_tried is
-    the broadest window attempted."""
-    prefs = state.execution_prefs
-    windows = _widen_windows(start_window)
-    widest = windows[-1]
-    for window in windows:
-        if query_source is not None:
-            from ..connectors.base import StructuredQuery
-
-            filters: dict[str, Any] = {
-                "time_from": window,
-                "time_to": "now",
-                "size": 200,
-                "sort_desc": True,
-            }
-            if entity_type == EntityType.IP:
-                filters["ip"] = value
-            elif entity_type == EntityType.USER:
-                filters["user"] = value
-            elif entity_type == EntityType.HOST:
-                filters["host"] = value
-            elif entity_type == EntityType.RULE:
-                filters["rule"] = value
-            else:
-                # The current source-neutral query IR has no hash/domain field;
-                # do not silently query a different source as a fallback.
-                return [], widest
-            result = await query_source.search(prefs, StructuredQuery(**filters))
-            events = result.events
-        else:
-            field = _entity_field(prefs, entity_type)
-            body = _scoped_entity_body(prefs, field, value, relative_to_millis(window))
-            resp = await state.es.search_logs(prefs.data_view_pattern, body)
-            hits = resp.get("hits", {}).get("hits", [])
-            events = [RawEvent.from_hit(h, prefs) for h in hits]
-        if events:
-            return events, window
-    return [], widest
+    """Route-compat wrapper: :func:`app.engine.case_cluster.entity_events_widening`
+    over ``state.es`` and the active stack's ``state.execution_prefs``."""
+    return await entity_events_widening(
+        entity_type, value, start_window,
+        es=getattr(state, "es", None),
+        prefs=state.execution_prefs,
+        query_source=query_source,
+    )
 
 
 async def _cluster_for_request(
@@ -5495,6 +9415,101 @@ async def _cluster_for_request(
     return cluster, window
 
 
+#: The events of a push source's live-tail ring an entity lookup reads: the whole ring
+#: (``IngestService`` keeps the last 500 events of each source).
+_PUSH_RING_SCAN = 500
+#: The most member events one manual investigation takes, as the pull entity query does.
+_ENTITY_MEMBERS_MAX = 200
+
+
+async def _cluster_from_other_sources(
+    state: AppState, req: InvestigateRequest, *, tried: Any = None,
+) -> tuple[Cluster, str, Any] | None:
+    """An entity the default source does not hold, looked up in the other sources the
+    Logs page shows (FXE): each other Demo source while Demo Mode is on, else each
+    enabled push source's live-tail ring. The first source with events in the widening
+    windows wins, so the case stays single-source like every other case. Returns
+    ``(cluster, window, query_source)``; a push source has no search of its own, so its
+    query source is ``None``, as push ingestion investigates it. Read-only (#1)."""
+    if req.entity is None:
+        return None
+    if getattr(state, "demo_active", False):
+        from ..engine.demo_sources import DEMO_SOURCE_SPECS
+
+        for spec in DEMO_SOURCE_SPECS.values():
+            adapter = state.demo_source_connector(spec.source_id)
+            if adapter is None or adapter is tried:
+                continue
+            cluster, window = await _cluster_for_request(state, req, query_source=adapter)
+            if cluster is not None:
+                return cluster, window, adapter
+        return None
+    found = _push_ring_cluster(state, req)
+    return (found[0], found[1], None) if found is not None else None
+
+
+def _push_ring_cluster(state: AppState, req: InvestigateRequest) -> tuple[Cluster, str] | None:
+    """The entity's events in an enabled push source's live-tail ring, read with that
+    source's own field mapping (the normalised value the Logs page shows), walking the
+    same widening windows as a search. A muted (``ignore``) source is skipped, and an
+    event a live suppression rule or an excluded rule matches is left out, as the
+    search's scope filters leave it out. An event without a time counts as recent: it
+    is in the ring of the newest events. A delivery the source sent again sits in the
+    ring twice under one id; it counts once, as push ingestion correlates it."""
+    from ..engine.ingest import _push_source_role, dedup_by_id
+    from ..utils import dotted_get
+
+    entity = req.entity
+    if entity is None or entity.type not in (EntityType.IP, EntityType.USER, EntityType.HOST):
+        return None
+    ingest = getattr(state, "ingest_service", None)
+    if ingest is None:
+        return None
+    prefs = state.execution_prefs
+    registry = get_registry()
+    windows = _widen_windows(req.lookback or prefs.investigate_lookback)
+    live_rules = [rule for rule in prefs.suppression_rules if rule.is_live()]
+    excluded = set(prefs.excluded_rules or ())
+
+    def kept(ev: RawEvent) -> bool:
+        if ev.entity_value(entity.type) != entity.value:
+            return False
+        if ev.rule and ev.rule in excluded:
+            return False
+        return not any(str(dotted_get(ev.source, rule.field)) == rule.value for rule in live_rules)
+
+    for src in prefs.sources:
+        if not src.enabled or not registry.is_receiver(src.source_type):
+            continue
+        if _push_source_role(src) == "ignore":
+            continue
+        held = dedup_by_id(
+            [ev for ev in ingest.recent_events_for_source(src.id, _PUSH_RING_SCAN) if kept(ev)]
+        )
+        if not held:
+            continue
+        for window in windows:
+            floor = relative_to_millis(window)
+            members = [ev for ev in held if ev.timestamp_millis <= 0 or ev.timestamp_millis >= floor]
+            if members:
+                cluster = cluster_from_events(entity.type, entity.value, members[:_ENTITY_MEMBERS_MAX])
+                cluster.trigger_reason = _manual_trigger_reason(cluster, window)
+                return cluster, window
+    return None
+
+
+def _window_words(window: str) -> str:
+    """A trailing window in words: ``now-365d`` reads "the last 365 days", never the raw
+    token (FXE). Read with the shared window grammar (``engine.time_windows``, through
+    ``case_cluster.window_words``, FXF), so a sentence here and a manual case's trigger
+    sentence word a window alike. Anything else is returned as it is."""
+    import re
+
+    if re.fullmatch(r"now-\d+[mhdw]", str(window or "").strip()) is None:
+        return str(window)
+    return _window_phrase(window).removeprefix("in ")
+
+
 async def _cluster_for_case(
     state: AppState,
     case,
@@ -5502,204 +9517,22 @@ async def _cluster_for_case(
     allow_stored_reconstruction: bool = False,
     query_source=None,
 ) -> Cluster | None:
-    """Rebuild a cluster from a stored case for a human-triggered re-investigation.
-
-    Prefers an exact id-based re-query of the case's member events; falls back to a
-    config-windowed (``prefs.investigate_lookback``) entity re-query using the same
-    scope filters as the manual investigate path. Read-only on the log surface.
-
-    When both live re-queries come back empty (the originating events aged out of the
-    retained log window) AND ``allow_stored_reconstruction`` is set, a MINIMAL cluster
-    is rebuilt from the case's STORED fields (see :func:`_reconstruct_cluster_from_case`)
-    so an operator-triggered re-investigation can still run the LLM over the retained
-    evidence instead of dead-ending on a 400. Callers that must NOT fabricate a cluster
-    from stale state (e.g. the read-only forwarding explainer) leave the flag off and
-    still get ``None``.
-
-    The original deterministic trigger reason (if the case has one) is PRESERVED so
-    a re-investigate never overwrites a scan-derived "Why this fired"; only a case
-    lacking one gets a synthesized MANUAL trigger reason. Nothing here touches the
-    deterministic close/escalate decision (#3)."""
-    prefs = state.execution_prefs
-    entity_type, value = case.entity.type, case.entity.value
-    has_trigger = case.trigger_reason is not None
-    # ``query_source=None`` is intentional for push/deleted sources: they have no
-    # upstream search surface. Only legacy cases without source provenance may use
-    # the implicit global ES client as a compatibility fallback.
-    implicit_legacy_source = (
-        not prefs.sources
-        and case.source_id == getattr(state.log_source, "connector_id", None)
+    """Route-compat wrapper: :func:`app.engine.case_cluster.cluster_for_case` with
+    ``state.es``, ``state.log_source`` and ``state.execution_prefs`` as its explicit
+    dependencies (moved there by chat revamp SPEC §5.3). ``query_source`` is still
+    resolved by the caller (``state.active_source_for_id(case.source_id)``)."""
+    return await cluster_for_case(
+        case,
+        es=getattr(state, "es", None),
+        log_source=getattr(state, "log_source", None),
+        prefs=state.execution_prefs,
+        allow_stored_reconstruction=allow_stored_reconstruction,
+        query_source=query_source,
     )
-    can_query_live = query_source is not None or not case.source_id or implicit_legacy_source
-
-    def _finalize(cluster: Cluster, window: str) -> Cluster:
-        # Re-investigation is an update of this exact stored case, not a fresh
-        # correlation pass. Pin identity and provenance even when live events were
-        # found; otherwise a legacy/manual case (or a source-scoping change) can
-        # compute a new signature and mint a duplicate case.
-        cluster.signature = case.cluster_signature
-        cluster.source_id = case.source_id
-        cluster.source_name = case.source_name
-        # Only synthesize a manual reason when the case lacks one; otherwise leave
-        # the cluster's reason None so the pipeline's _trigger() keeps the existing.
-        if not has_trigger:
-            cluster.trigger_reason = _manual_trigger_reason(cluster, window)
-        else:
-            cluster.trigger_reason = None
-        return cluster
-
-    # Preferred: re-fetch the exact member events by id (read-only).
-    if case.member_event_ids and can_query_live:
-        fetch_size = max(len(case.member_event_ids), len(case.member_event_keys or []))
-        if query_source is not None:
-            result = await query_source.fetch_by_ids(
-                prefs, case.member_event_ids, size=fetch_size
-            )
-            events = result.events
-        else:
-            resp = await state.es.search_logs(
-                prefs.data_view_pattern,
-                ids_query(case.member_event_ids, size=fetch_size),
-            )
-            hits = resp.get("hits", {}).get("hits", [])
-            events = [RawEvent.from_hit(h, prefs) for h in hits]
-        members = [e for e in events if e.entity_value(entity_type) == value] or events
-        if members:
-            cluster = cluster_from_events(entity_type, value, members)
-            return _finalize(cluster, prefs.investigate_lookback)
-
-    # Fallback: re-query the entity over the configured window (with auto-widen).
-    if can_query_live:
-        events, window = await _entity_events_widening(
-            state, entity_type, value, prefs.investigate_lookback,
-            query_source=query_source,
-        )
-        if events:
-            members = [e for e in events if e.entity_value(entity_type) == value] or events
-            cluster = cluster_from_events(entity_type, value, members)
-            return _finalize(cluster, window)
-
-    # Last resort: the live logs aged out of the retained window. For an operator-
-    # triggered re-investigation (reinvestigate / run-playbook), optionally rebuild a
-    # MINIMAL cluster from the case's STORED evidence so the LLM can still re-reason
-    # over what we retained. Read-only + fail-open; ``None`` only when the case carries
-    # NO stored evidence at all. #3 untouched — this only reassembles evidence.
-    if allow_stored_reconstruction:
-        reconstructed = _reconstruct_cluster_from_case(case)
-        if reconstructed is not None:
-            return _finalize(reconstructed, prefs.investigate_lookback)
-    return None
 
 
-def _reconstruct_cluster_from_case(case: Case) -> Cluster | None:
-    """Rebuild a MINIMAL cluster from a case's STORED fields when the live log
-    re-query is empty (the originating events aged out of the retained window).
-
-    Lets an operator-triggered re-investigation still run the investigator over the
-    case's retained evidence rather than dead-ending. Synthetic member events are
-    reconstructed (capped at 200) from the stored ``member_event_ids`` (falling back
-    to the ``evidence[].event_ids``), each carrying the case entity + a stored rule so
-    the investigator prompt and the deterministic risk model see faithful inputs. The
-    cluster SIGNATURE is PINNED to the case's stored ``cluster_signature`` so the
-    re-investigation updates THIS case in place and never mints a duplicate (#4).
-
-    Read-only + fail-open: returns ``None`` only when the case carries no stored
-    evidence at all. Nothing here touches the deterministic decision (#3)."""
-    entity_type = case.entity.type
-    value = case.entity.value
-
-    # Stored evidence ids: prefer the member events, else the verdict evidence ids.
-    raw_ids: list[str] = list(case.member_event_ids or [])
-    if not raw_ids:
-        for item in case.evidence:
-            raw_ids.extend(item.event_ids or [])
-    ordered_ids: list[str] = []
-    seen: set[str] = set()
-    for eid in raw_ids:
-        if eid and eid not in seen:
-            seen.add(eid)
-            ordered_ids.append(eid)
-        if len(ordered_ids) >= 200:
-            break
-    if not ordered_ids:
-        return None  # truly-empty case — nothing to reconstruct.
-
-    # Window from the stored trigger reason (else collapse to a point-in-time window).
-    tr = case.trigger_reason
-    win_start = int(tr.window_start) if (tr and tr.window_start) else 0
-    win_end = int(tr.window_end) if (tr and tr.window_end) else 0
-    if win_end < win_start:
-        win_start, win_end = win_end, win_start
-
-    rules = [r for r in (case.rule_ids or []) if r]
-    n = len(ordered_ids)
-    members: list[RawEvent] = []
-    for i, eid in enumerate(ordered_ids):
-        if win_start and win_end and n > 1:
-            ts = win_start + (win_end - win_start) * i // (n - 1)
-        else:
-            ts = win_start or win_end or 0
-        ev = RawEvent(
-            id=eid,
-            timestamp_millis=ts,
-            rule=(rules[i % len(rules)] if rules else None),
-            source={"reconstructed": True},
-        )
-        # Carry the case entity onto its projection field so the investigator prompt
-        # + reproduce query render the concrete entity (UNTRUSTED log data downstream).
-        if entity_type == EntityType.IP:
-            ev.ip = value
-        elif entity_type == EntityType.USER:
-            ev.user = value
-        elif entity_type == EntityType.HOST:
-            ev.host = value
-        members.append(ev)
-
-    cluster = cluster_from_events(entity_type, value, members)
-    # Preserve stored provenance + counts the synthetic events cannot carry, and PIN
-    # the signature so the re-investigation updates THIS case in place (#4).
-    cluster.signature = case.cluster_signature
-    if case.rule_ids:
-        cluster.rule_values = list(case.rule_ids)
-    cluster.source_id = case.source_id
-    cluster.source_name = case.source_name
-    cluster.member_event_keys = list(case.member_event_keys or cluster.member_event_keys)
-    # The stored member id list may exceed the 200-event synthetic cap — keep the
-    # faithful volume for the deterministic risk model (recomputed by the pipeline).
-    cluster.count = max(
-        len(members), len(case.member_event_keys or case.member_event_ids)
-    )
-    if case.risk_score:
-        cluster.risk_score = case.risk_score
-        cluster.risk_breakdown = case.risk_breakdown
-    return cluster
-
-
-def _manual_trigger_reason(cluster: Cluster, window: str) -> TriggerReason:
-    """Synthesize a MANUAL TriggerReason so "Why this fired" renders for manually
-    investigated cases (Feature 3 / IMPROVEMENT). Mode is ``manual``; structured
-    fields are filled from the resolved cluster."""
-    entity_type = cluster.entity.type.value
-    entity_value = cluster.entity.value
-    n = cluster.count
-    rules = ", ".join(cluster.rule_values) or "no specific rule"
-    sentence = (
-        f"Manually investigated: {n} event{'s' if n != 1 else ''} for "
-        f"{entity_type} {entity_value} in the last {window} across rules [{rules}]"
-    )
-    return TriggerReason(
-        rule_value=(cluster.rule_values[0] if cluster.rule_values else ""),
-        mode="manual",
-        n=n,
-        window_seconds=0,
-        group_by=entity_type,
-        observed_count=n,
-        window_start=cluster.first_seen_millis,
-        window_end=cluster.last_seen_millis,
-        entity=f"{entity_type}:{entity_value}",
-        rule_values=list(cluster.rule_values),
-        sentence=sentence,
-    )
+# ``_reconstruct_cluster_from_case`` and ``_manual_trigger_reason`` live in
+# ``engine/case_cluster.py`` and are re-exported at the top of this module.
 
 
 def _no_events_detail(req: InvestigateRequest, widest: str) -> str:
@@ -5707,287 +9540,15 @@ def _no_events_detail(req: InvestigateRequest, widest: str) -> str:
     if req.entity:
         return (
             f"No events found for {req.entity.type.value} {req.entity.value} "
-            f"in the last {widest}"
+            f"in {_window_words(widest)}"
         )
     if req.event_ids:
         return "No events found for the selected document ids"
     return "Could not resolve events for this request"
 
 
-def _audit_get(row: Any, key: str, default: Any = None) -> Any:
-    """Read a field from an audit row that may be a dict OR a pydantic AuditDoc."""
-    if isinstance(row, dict):
-        return row.get(key, default)
-    return getattr(row, key, default)
-
-
-def _build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
-    """Assemble the explainability "why" object from a case + its audit rows.
-
-    Pure + defensive: any missing audit piece degrades to an empty value. Reads the
-    CONTEXT record (knowledge/memory/enrichment), TOOL_CALL records (tools/queries),
-    the VERDICT record (reasoning excerpt), the playbook_selector DECISION (playbook
-    reason) and the case_manager DECISION (deterministic rationale)."""
-    # Audit rows are OLDEST-first.  A case can be re-investigated many times, so
-    # project only the LATEST run instead of mixing the first run's context/tools
-    # with the current Case fields.  ``playbook_selector`` is the durable run
-    # boundary written before every real investigation (including the cheap path).
-    # Legacy audit histories without that row fall back to their full history.
-    run_start = 0
-    for idx, row in enumerate(rows):
-        if _audit_get(row, "actor") == "playbook_selector":
-            run_start = idx
-    run_rows = rows[run_start:]
-
-    selector_row = next(
-        (row for row in reversed(run_rows) if _audit_get(row, "actor") == "playbook_selector"),
-        None,
-    )
-    context_row = next(
-        (
-            row
-            for row in reversed(run_rows)
-            if _audit_get(row, "action_type") == ActionType.CONTEXT.value
-            and _audit_get(row, "actor") == "context"
-        ),
-        None,
-    )
-    procedure_row = next(
-        (
-            row
-            for row in reversed(run_rows)
-            if _audit_get(row, "action_type") == ActionType.CONTEXT.value
-            and _audit_get(row, "actor") == "procedure_provenance"
-        ),
-        None,
-    )
-
-    # --- from the CONTEXT record (investigator-injected context) -------------
-    knowledge: list[dict[str, Any]] = []
-    memory_used: list[str] = []
-    enrichment: dict[str, Any] | None = None
-    playbook_id = ""
-    playbook_version = ""
-    playbook_consulted = False
-    if context_row is not None:
-        ti = _audit_get(context_row, "tool_input") or {}
-        if isinstance(ti, dict):
-            for k in (ti.get("knowledge") or []):
-                if isinstance(k, dict):
-                    knowledge.append({
-                        "source": str(k.get("source", "unknown")),
-                        "snippet": str(k.get("snippet", "")),
-                    })
-            for m in (ti.get("memory") or []):
-                if isinstance(m, str) and m.strip():
-                    memory_used.append(m)
-            enr = ti.get("enrichment")
-            if isinstance(enr, dict):
-                enrichment = {
-                    "reputation_score": enr.get("reputation_score"),
-                    "is_malicious": enr.get("is_malicious"),
-                    "country": enr.get("country"),
-                }
-            detail = ti.get("playbook_detail")
-            if isinstance(detail, dict) and str(detail.get("id") or "").strip():
-                playbook_id = str(detail.get("id") or "").strip()
-                playbook_version = str(detail.get("version") or "").strip()
-                playbook_consulted = True
-            elif ti.get("playbook"):
-                # Backward compatibility for pre-structured CONTEXT rows.  The Case
-                # id belongs to the latest run, and a truthy context value proves it
-                # was actually injected (selection alone does not).
-                playbook_id = str(getattr(case, "playbook_id", "") or "").strip()
-                playbook_consulted = bool(playbook_id)
-
-    # --- exact selected-vs-consulted procedure provenance ------------------
-    # New runs write this independently of the legacy investigator CONTEXT row,
-    # including cheap-router, kill-switch, and timeout paths where a persona or
-    # playbook may be selected but never consulted.  Keep a stable empty shape for
-    # old audit histories so consumers do not need to infer usage from Case fields.
-    procedure_provenance: dict[str, Any] = {
-        "persona": {"selected_id": "", "selection_reason": "", "consulted": False},
-        "playbook": {"selected_id": "", "selection_reason": "", "consulted": False},
-        "consultation_path": "",
-        "retrieval_query_groups": [],
-        "knowledge": [],
-    }
-    if procedure_row is not None:
-        procedure_input = _audit_get(procedure_row, "tool_input") or {}
-        if isinstance(procedure_input, dict):
-            for key in ("persona", "playbook"):
-                raw = procedure_input.get(key)
-                if not isinstance(raw, dict):
-                    continue
-                procedure_provenance[key] = {
-                    "selected_id": str(raw.get("selected_id") or ""),
-                    "selection_reason": str(raw.get("selection_reason") or ""),
-                    "consulted": bool(raw.get("consulted", False)),
-                }
-            procedure_provenance["consultation_path"] = str(
-                procedure_input.get("consultation_path") or ""
-            )
-            for item in procedure_input.get("retrieval_query_groups") or []:
-                if not isinstance(item, dict):
-                    continue
-                procedure_provenance["retrieval_query_groups"].append({
-                    "group": str(item.get("group") or ""),
-                    "query": str(item.get("query") or ""),
-                })
-            for item in procedure_input.get("knowledge") or []:
-                if not isinstance(item, dict):
-                    continue
-                procedure_provenance["knowledge"].append({
-                    "source": str(item.get("source") or "unknown"),
-                    "score": item.get("score"),
-                    "document_id": str(item.get("document_id") or ""),
-                    "revision": item.get("revision"),
-                    "content_hash": str(item.get("content_hash") or ""),
-                    "query_groups": [
-                        str(value)
-                        for value in (item.get("query_groups") or [])
-                        if str(value)
-                    ],
-                    "snippet": str(item.get("snippet") or ""),
-                })
-
-        # The explicit row is authoritative. A selected procedure on a cheap path
-        # must not be resurrected as "used" from mutable Case fields or an older
-        # context row. Structured knowledge also supersedes the legacy two-field list.
-        playbook_provenance = procedure_provenance["playbook"]
-        playbook_consulted = bool(playbook_provenance["consulted"])
-        if playbook_consulted:
-            playbook_id = str(playbook_provenance["selected_id"] or playbook_id)
-        else:
-            playbook_id = ""
-            playbook_version = ""
-        knowledge = list(procedure_provenance["knowledge"])
-
-    # --- platform threshold tuning snapshot (run-boundary audit row) ---------
-    platform_tuning_status = "not_recorded"
-    platform_tuning: list[dict[str, Any]] = []
-    if selector_row is not None:
-        selector_input = _audit_get(selector_row, "tool_input") or {}
-        if isinstance(selector_input, dict):
-            raw_tuning = selector_input.get("platform_tuning")
-            if isinstance(raw_tuning, dict):
-                raw_status = str(raw_tuning.get("status") or "not_recorded")
-                if raw_status in {"recorded", "not_recorded", "unavailable"}:
-                    platform_tuning_status = raw_status
-                for item in raw_tuning.get("records") or []:
-                    if not isinstance(item, dict):
-                        continue
-                    platform_tuning.append({
-                        "record_id": str(item.get("record_id") or ""),
-                        "target": str(item.get("target") or ""),
-                        "rule_id": str(item.get("rule_id") or ""),
-                        "before": item.get("before"),
-                        "after": item.get("after"),
-                        "applied_at": str(item.get("applied_at") or ""),
-                        "rationale": str(item.get("rationale") or ""),
-                    })
-
-    # --- tools / queries (TOOL_CALL + ES_QUERY rows) -------------------------
-    tools: list[dict[str, Any]] = []
-    for row in run_rows:
-        at = _audit_get(row, "action_type")
-        if at not in (ActionType.TOOL_CALL.value, ActionType.ES_QUERY.value):
-            continue
-        tools.append({
-            "tool": _audit_get(row, "tool_name") or (
-                "es_query" if at == ActionType.ES_QUERY.value else ""
-            ),
-            "query": _audit_get(row, "query_text") or "",
-            "summary": _audit_get(row, "tool_output_summary") or "",
-        })
-
-    # --- reasoning excerpt (VERDICT record, written after "reasoning=") -------
-    reasoning = ""
-    for row in reversed(run_rows):
-        if _audit_get(row, "action_type") != ActionType.VERDICT.value:
-            continue
-        rs = str(_audit_get(row, "result_summary") or "")
-        marker = "reasoning="
-        if marker in rs:
-            reasoning = rs.split(marker, 1)[1].strip()
-        break
-
-    # --- playbook reason (playbook_selector DECISION) ------------------------
-    playbook_reason = ""
-    if selector_row is not None:
-        selector_input = _audit_get(selector_row, "tool_input") or {}
-        if isinstance(selector_input, dict):
-            selection = selector_input.get("playbook_selection")
-            if isinstance(selection, dict):
-                playbook_reason = str(selection.get("reason") or "")
-        if not playbook_reason:
-            playbook_reason = str(_audit_get(selector_row, "result_summary") or "")
-
-    # --- deterministic decision rationale (case_manager DECISION, then the
-    #     case.history "decision" event as a fallback) ------------------------
-    decision_rationale = ""
-    for row in reversed(run_rows):
-        if (
-            _audit_get(row, "actor") == "case_manager"
-            and _audit_get(row, "action_type") == ActionType.DECISION.value
-        ):
-            decision_rationale = str(_audit_get(row, "result_summary") or "")
-            break
-
-    # --- case-derived fields (defensive: case may be None) -------------------
-    verdict = ""
-    confidence = 0.0
-    status = ""
-    decision_by = None
-    persona = ""
-    mitre: list[str] = []
-    evidence: list[dict[str, Any]] = []
-    if case is not None:
-        verdict = case.verdict.value if case.verdict else ""
-        confidence = case.confidence
-        status = case.status.value if case.status else ""
-        decision_by = case.decision_by.value if case.decision_by else None
-        persona = case.agent_persona or ""
-        mitre = list(case.mitre or [])
-        evidence = [
-            {
-                "summary": e.summary,
-                "event_ids": list(e.event_ids or []),
-                "query": e.query,
-            }
-            for e in (case.evidence or [])
-        ]
-        if not decision_rationale:
-            for h in reversed(case.history or []):
-                if isinstance(h, dict) and h.get("event") == "decision" and h.get("rationale"):
-                    decision_rationale = str(h.get("rationale"))
-                    break
-
-    return {
-        "case_id": case_id,
-        "verdict": verdict,
-        "confidence": confidence,
-        "status": status,
-        "decision_by": decision_by,
-        "persona": persona,
-        "procedure_provenance": procedure_provenance,
-        "playbook": {
-            "id": playbook_id,
-            "version": playbook_version,
-            "reason": playbook_reason,
-            "consulted": playbook_consulted,
-        },
-        "memory_used": memory_used,
-        "knowledge": knowledge,
-        "platform_tuning_status": platform_tuning_status,
-        "platform_tuning": platform_tuning,
-        "enrichment": enrichment,
-        "tools": tools,
-        "reasoning": reasoning,
-        "decision_rationale": decision_rationale,
-        "mitre": mitre,
-        "evidence": evidence,
-    }
+# ``_audit_get`` and ``_build_rationale`` live in ``engine/case_rationale.py`` (chat
+# revamp SPEC §5.3) and are re-exported at the top of this module.
 
 
 def _trace_step(row: dict[str, Any], include_prompts: bool) -> TraceStep:
@@ -5995,6 +9556,8 @@ def _trace_step(row: dict[str, Any], include_prompts: bool) -> TraceStep:
     toggle by dropping the (untrusted) prompt excerpt when disabled."""
     return TraceStep(
         ts=str(row.get("ts", "")),
+        app_version=row.get("app_version"),
+        build_sha=row.get("build_sha"),
         actor=str(row.get("actor", "")),
         action_type=row.get("action_type"),
         model=row.get("model"),

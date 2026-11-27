@@ -1,6 +1,6 @@
 ---
 title: Notifications
-description: Configure channels, triggers, templates, digests, and delivery tests in Agentic SOC 0.1.
+description: Configure channels, triggers, templates, digests, and delivery tests in Agentic SOC 0.2.
 ---
 
 # Notifications
@@ -11,7 +11,7 @@ saved and never determine whether a case closes or escalates.
 
 ## Configure a channel
 
-1. Open **Settings → Notifications**.
+1. Open **Settings → Integrations → Alerting & notifications**.
 2. Choose a provider/channel type.
 3. Configure non-secret routing fields and trigger conditions.
 4. Enter the channel secret or webhook URL in the secret field.
@@ -41,6 +41,46 @@ provider.
 In-app notifications are stored per user in a bounded inbox. Users can control their
 notification preferences, mark items read, dismiss them, or mark all read.
 
+The navigation group that holds them is **Communication**: **Inbox** and **What's new**.
+Its row opens Inbox. The top-bar bell keeps the name **Notifications**. **What's new**
+lists every release with its highlights and screenshots, newest first, and opens the
+release's notes; the same notes are in the Help Center under
+[What's new](../releases/whats-new.md). After an update, a short welcome shows once when
+a person signs in; **Show What's new after updates**, on the **What's new** page or under
+**Settings → Account → Appearance**, turns it off for that person. With sign-in turned
+off, everyone shares one set of preferences, so the welcome shows once per installation.
+A new account starts with the current release marked as seen. So does the built-in
+`Admin` account the backend creates when sign-in is turned on after setup is complete.
+Before setup completes (a fresh installation, or the local demo) it is not marked, so
+its first sign-in shows the welcome once.
+
+AI investigations add Inbox items too: the person who started a run gets one when it
+finishes, and a person whose close the run replaced gets one that says so. Runs started
+by a background job or automatically send none.
+
+Server-owned application jobs update one stable Inbox item in place with status,
+completed/total progress, bounded result counts, and a curated same-app result link.
+Terminal status is audit-before-visible: the Inbox and matching SSE projection wait
+until the terminal transition audit is confirmed, and reconciliation repairs an audit
+gap before publishing it.
+Marking that item read does not stop the job or remove its active-work indicator.
+Actor-scoped SSE provides live nudges and polling is the fallback; navigation and
+reload do not cancel accepted work. Terminal toasts are transient and deduplicated,
+so Inbox and **Analytics → Jobs** remain the durable truth. Active job rows are
+protected from ordinary bounded-Inbox eviction; a terminal update that arrives while
+the operator is offline or logged out is available on return.
+
+Scheduler worker health is list-only and never creates personal notifications.
+Newly accepted local LLM Batch rows freeze a strict, maximum-200 audience of active
+effective-`models:read` accounts and reconcile one stable, generation-bound note per
+recipient. It carries safe provider/model labels, progress, and terminal counts only;
+there is no Batch Cancel, Download, or completion toast. Strict authorization-store
+outage remains pending/retryable, and permission or account-generation loss removes and
+fail-closed filters the note. Later users/grants, legacy Batch rows, and recipients past
+the bound remain Jobs-list-only. The bounded path is regression-backed across strict
+store outage, stable retry, revocation, generation changes, and factory-reset fencing.
+See [Background jobs](../operations/background-jobs.md).
+
 ## Secret persistence
 
 Notification credentials entered through the UI are memory-only and disappear on
@@ -56,5 +96,6 @@ the deployment environment and protect it like any other credential.
 - Confirm deduplication and digest expectations before enabling high-volume triggers.
 - Re-test after changing templates, channels, proxy rules, or certificates.
 
-See [Configuration reference](../operations/configuration.md) and
+See [Configuration reference](../operations/configuration.md),
+[Background jobs](../operations/background-jobs.md), and
 [Troubleshooting](../operations/troubleshooting.md).

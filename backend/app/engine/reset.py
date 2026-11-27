@@ -6,16 +6,23 @@ each a strict SUPERSET of the previous (see the tier table in
 
 * ``cases``    — clear the case store + the case-adjacent collaboration/observability
                  KV stores (campaigns, baseline sketches, noise-reduction counters,
-                 inbox, case thread/activity/tasks, batch jobs) + the in-memory
-                 live-tail rings. KEEP sources, settings, users, RAG, secrets, cost
-                 ledger, audit.
+                 inbox, case thread/activity/tasks, batch jobs, and, since Round 14,
+                 every runbook RUN: the per-case run documents and the run ledger,
+                 SPEC §4.10.6, and, since Round 15, every case screenshot) + the
+                 in-memory live-tail rings. KEEP sources,
+                 settings, users, RAG, secrets, cost ledger, audit and the runbook
+                 LIBRARY (operator runbooks are not case state).
 * ``sources``  — the cases tier PLUS ``Preferences.sources[]`` (configured feeds) +
                  the polling cursors. KEEP secrets, users, settings, the ``setup``
-                 flag.
+                 flag and the runbook library.
 * ``factory``  — the sources tier PLUS users/sessions/user-prefs/custom-roles/
-                 proposals/memory + branding, resets prefs to defaults with
+                 proposals/memory, Workspace chat history and chat REPORTS (the
+                 ``REPORTS_NS`` per-report and per-user index documents, SPEC §9.1) +
+                 branding, resets prefs to defaults with
                  ``setup_complete=False`` (→ fresh OOBE), and (ONLY at this tier)
                  resets the append-only audit index. KEEP env-provided secrets.
+                 Like chat history, reports are personal documents, not case state:
+                 the cases/sources tiers keep them.
 
 ⛔ HARD RULE (code-enforced): this service **NEVER reads or writes any env-provided
 secret** — ``Secrets`` (``ES_API_KEY`` / the LLM keys / ``STATE_DB_URL`` / any
@@ -36,8 +43,11 @@ Invariants held (mirroring the platform rails):
     history survives a case reset); only a FULL factory reset resets the audit index.
     No LLM call is made.
 
-Everything degrades gracefully: a single store glitch is logged and the reset
-continues, so a best-effort reset never half-crashes the app.
+The cases and sources tiers remain best-effort. Factory reset is different: every
+privacy-critical clear uses a confirmed strict write, later identity/audit/OOBE
+steps stop after the first failure, and the caller receives an explicit failed
+receipt. The Jobs runner keeps the factory fence until that boundary is confirmed,
+so a partial clear is never presented as a clean new tenant.
 """
 
 from __future__ import annotations
@@ -47,11 +57,9 @@ from typing import Any, Protocol, runtime_checkable
 
 from ..constants import (
     AUDIT_INDEX,
-    AUDIT_WRITE_ALIAS,
+    AUDIT_READ_PATTERN,
     BASELINE_KEY,
     BASELINE_NS,
-    BATCH_JOBS_KEY,
-    BATCH_JOBS_NS,
     CAMPAIGNS_KEY,
     CAMPAIGNS_NS,
     CASE_ACTIVITY_KEY,
@@ -62,25 +70,16 @@ from ..constants import (
     CASE_THREAD_NS,
     CASES_READ_PATTERN,
     CASES_WRITE_ALIAS,
-    CUSTOM_ROLES_KEY,
-    CUSTOM_ROLES_NS,
+    CONFIG_INDEX,
     CURSOR_INDEX,
-    INBOX_KEY,
-    INBOX_NS,
-    MEMORY_KEY,
-    MEMORY_NS,
     NOISE_KEY,
     NOISE_NS,
-    PROPOSALS_KEY,
-    PROPOSALS_NS,
+    RUNBOOK_RUNS_NS,
+    USAGE_INDEX,
+    USAGE_READ_PATTERN,
     ResetScope,
-    SESSIONS_KEY,
-    SESSIONS_NS,
-    USER_PREFS_KEY,
-    USER_PREFS_NS,
-    USERS_KEY,
-    USERS_NS,
 )
+from ..stores.ledger_claims import clear_ledger_claims
 
 logger = logging.getLogger("tlsoc.engine.reset")
 
@@ -107,6 +106,12 @@ class ResetHost(Protocol):
     def sql_engine(self) -> Any: ...
     @property
     def real_ingest_service(self) -> Any: ...
+    @property
+    def real_batch_job_store(self) -> Any: ...
+    @property
+    def replay_fixtures(self) -> Any: ...
+    @property
+    def rag(self) -> Any: ...
 
     def is_sql_backend(self) -> bool: ...
     async def update_prefs(self, prefs: Any) -> Any: ...
@@ -124,28 +129,17 @@ _CASES_KV: tuple[tuple[str, str], ...] = (
     (CAMPAIGNS_NS, CAMPAIGNS_KEY),      # cross-case campaign clustering (references case ids)
     (BASELINE_NS, BASELINE_KEY),        # anomaly-baseline sketches (pure math state)
     (NOISE_NS, NOISE_KEY),              # durable Noise-Reduction ingest counters (advisory, #3-safe)
-    (INBOX_NS, INBOX_KEY),              # per-user in-app notification fan-out
     (CASE_THREAD_NS, CASE_THREAD_KEY),  # per-case threaded discussion
     (CASE_ACTIVITY_NS, CASE_ACTIVITY_KEY),  # per-case activity feed
     (CASE_TASKS_NS, CASE_TASKS_KEY),    # per-case checklist / tasks
-    (BATCH_JOBS_NS, BATCH_JOBS_KEY),    # durable async LLM batch-job registry
 )
 
-# The ADDITIONAL KV documents cleared ONLY at the ``factory`` tier — the identity /
-# personalisation / operator-knowledge stores. Users/sessions/user-prefs/custom-roles/
-# proposals/memory. (Secrets never live in any of these — they are the env/in-memory
-# tier and are never touched here.)
-_FACTORY_KV: tuple[tuple[str, str], ...] = (
-    (USERS_NS, USERS_KEY),
-    (SESSIONS_NS, SESSIONS_KEY),
-    (USER_PREFS_NS, USER_PREFS_KEY),
-    (CUSTOM_ROLES_NS, CUSTOM_ROLES_KEY),
-    (PROPOSALS_NS, PROPOSALS_KEY),
-    (MEMORY_NS, MEMORY_KEY),
-)
-
-
-async def reset_service(app_state: ResetHost, scope: ResetScope | str) -> dict[str, Any]:
+async def reset_service(
+    app_state: ResetHost,
+    scope: ResetScope | str,
+    *,
+    factory_owner: str | None = None,
+) -> dict[str, Any]:
     """Execute a tiered StateStore reset and return WHAT WAS CLEARED.
 
     ``app_state`` is the live :class:`app.state.AppState` (typed as the narrow
@@ -161,42 +155,180 @@ async def reset_service(app_state: ResetHost, scope: ResetScope | str) -> dict[s
     """
     scope = ResetScope(scope) if not isinstance(scope, ResetScope) else scope
     cleared: list[str] = []
+    attempted: list[str] = []
+    failed: list[str] = []
 
     # ---- Tier 1: cases + case-adjacent KV + live-tail rings (all tiers). ---------
-    n = await _clear_cases(app_state)
-    cleared.append(f"cases:{n}")
-    for ns, key in _CASES_KV:
-        if await _clear_kv(app_state, ns, key):
-            cleared.append(f"kv:{ns}")
+    attempted.append("cases")
+    n, cases_ok = await _clear_cases(
+        app_state, strict=scope == ResetScope.FACTORY
+    )
+    if cases_ok:
+        cleared.append(f"cases:{n}")
+    else:
+        failed.append("cases")
+    # Round 16 (WP16): the dashboards keep the all-time case population for up to two
+    # minutes, so drop it now; otherwise they show the cases this reset just removed.
+    _invalidate_case_caches()
+    # A factory reset default-deletes the complete KV surface later. Avoid writing
+    # empty placeholders first: doing so creates more stale-writer windows and makes
+    # a transient per-store error falsely fail a boundary the strict wholesale purge
+    # could prove. Cases/sources retain their existing scoped semantics.
+    if scope != ResetScope.FACTORY:
+        for ns, key in _CASES_KV:
+            attempted.append(f"kv:{ns}")
+            if await _clear_kv(app_state, ns, key):
+                cleared.append(f"kv:{ns}")
+            else:
+                failed.append(f"kv:{ns}")
+    # Round 14 (SPEC §4.10.6): runbook runs belong to cases, so the cases tier (and
+    # therefore the sources tier) removes every per-case run document and the run
+    # ledger. Factory is skipped, as for the case-adjacent KV above: the wholesale KV
+    # purge covers it. The runbook LIBRARY is never touched below the factory tier.
+    if scope != ResetScope.FACTORY:
+        attempted.append("kv:runbook_runs")
+        removed_runs, runs_ok = await _clear_runbook_runs(app_state)
+        if runs_ok:
+            cleared.append(f"kv:runbook_runs:{removed_runs}")
+        else:
+            failed.append("kv:runbook_runs")
+    # Round 15 (SPEC D6.4): the auto-close review ledger names cases, so the cases tier
+    # (and the sources tier) empties it. Factory is skipped: the wholesale KV purge
+    # covers it.
+    if scope != ResetScope.FACTORY:
+        attempted.append("kv:auto_close_review")
+        removed_reviews, reviews_ok = await _clear_auto_close_review(app_state)
+        if reviews_ok:
+            cleared.append(f"kv:auto_close_review:{removed_reviews}")
+        else:
+            failed.append("kv:auto_close_review")
+
+    # Round 15 WP4 (SPEC D5.9): screenshots belong to cases, so the cases tier (and
+    # therefore the sources tier) removes every document of the ``case_files``
+    # namespace: the per-case indexes, the image and thumbnail content and the storage
+    # totals. Factory is skipped, as above: the wholesale KV purge covers it.
+    if scope != ResetScope.FACTORY:
+        attempted.append("kv:case_files")
+        removed_files, files_ok = await _clear_case_files(app_state)
+        if files_ok:
+            cleared.append(f"kv:case_files:{removed_files}")
+        else:
+            failed.append("kv:case_files")
+    # Frozen replay fixtures hold each member event's complete raw record — strictly
+    # more log content than the Case it came from retained — so a cases/sources reset
+    # that left them behind would keep raw records for cases the operator just deleted.
+    # The store's own purge is called rather than blanking its catalog document: the
+    # records live in separate body slots, and blanking the catalog first would strand
+    # them permanently. Factory is skipped — the wholesale KV purge covers it, and
+    # pre-blanking only widens the stale-writer window.
+    if scope != ResetScope.FACTORY and getattr(app_state, "replay_fixtures", None):
+        attempted.append("kv:replay_fixtures")
+        try:
+            removed_fixtures = await app_state.replay_fixtures.clear()
+            cleared.append(f"kv:replay_fixtures:{removed_fixtures}")
+        except Exception as exc:  # noqa: BLE001 - reported; scoped reset continues
+            logger.warning("replay fixture reset failed (%s); continuing", exc)
+            failed.append("kv:replay_fixtures")
+    # Batch work is a separate strict-CAS document. Its embedded reset epoch is
+    # preserved while rows are cleared, so an already-admitted scheduler mutation
+    # cannot recreate a pre-reset provider job after this boundary.
+    attempted.append("kv:batch_jobs")
+    try:
+        removed_batches = await app_state.real_batch_job_store.clear_all_strict(
+            factory_owner=(
+                factory_owner if scope == ResetScope.FACTORY else None
+            )
+        )
+        cleared.append(f"kv:batch_jobs:{removed_batches}")
+    except Exception as exc:  # noqa: BLE001 - reported; factory fails closed
+        logger.warning("batch-job reset failed (%s); continuing", exc)
+        failed.append("kv:batch_jobs")
+    # Active/personal Job anchors survive only cases/sources resets. Factory clears
+    # the entire Inbox (including pending digests) before the Jobs registry is
+    # replaced with one system-owned sanitized receipt.
+    try:
+        from ..stores.inbox import InboxStore
+
+        if scope != ResetScope.FACTORY:
+            attempted.append("kv:inbox")
+            inbox_store = InboxStore(app_state.kv)
+            batch_notes = await inbox_store.purge_batch_entries_strict()
+            await inbox_store.clear_non_job()
+            cleared.append(f"kv:inbox_batch_jobs:{batch_notes}")
+            cleared.append("kv:inbox_except_jobs")
+    except Exception as exc:  # noqa: BLE001 - reported; scoped reset continues
+        logger.warning("inbox reset failed (%s); continuing", exc)
+        failed.append("kv:inbox")
+    attempted.append("live_tail_rings")
     if _clear_live_tail(app_state):
         cleared.append("live_tail_rings")
+    else:
+        failed.append("live_tail_rings")
 
     # ---- Tier 2: sources + polling cursors. --------------------------------------
     if scope in (ResetScope.SOURCES, ResetScope.FACTORY):
-        if await _clear_cursors(app_state):
+        attempted.append("cursors")
+        if await _clear_cursors(
+            app_state, strict=scope == ResetScope.FACTORY
+        ):
             cleared.append("cursors")
+        else:
+            failed.append("cursors")
+        attempted.append("sources")
         if await _clear_sources(app_state):
             cleared.append("sources")
+        else:
+            failed.append("sources")
 
     # ---- Tier 3: identity/personalisation KV + branding + prefs→defaults + audit. -
     if scope == ResetScope.FACTORY:
-        # Chat history is partitioned by hashed principal. Its registry and every
-        # registered partition must be cleared; overwriting only the legacy root
-        # document would leave durable transcripts behind.
-        if await _clear_chat_history(app_state):
-            cleared.append("kv:chat_conversations")
-        for ns, key in _FACTORY_KV:
-            if await _clear_kv(app_state, ns, key):
-                cleared.append(f"kv:{ns}")
-        if await _reset_audit(app_state):
-            cleared.append("audit")
-        # Prefs → factory defaults with setup_complete=False (→ fresh OOBE). Done LAST
-        # so the source/cursor clears above ran against the live prefs first. This also
-        # drops branding (part of the fresh Preferences()) — env secrets are untouched.
-        if await _reset_prefs_to_factory(app_state):
-            cleared.append("preferences")
-            cleared.append("branding")
-            cleared.append("setup_flag")
+        # Persistent knowledge and cost history are tenant state too. Clear and
+        # verify them before the generic KV boundary so ledger claims cannot later
+        # resurrect a row from their payload.
+        attempted.append("rag")
+        if await _reset_rag(app_state):
+            cleared.append("rag")
+        else:
+            failed.append("rag")
+        attempted.append("usage")
+        if not failed and await _reset_usage(app_state):
+            cleared.append("usage")
+        else:
+            failed.append("usage")
+        # Default-delete EVERY application KV/config row, including future/dynamic
+        # partitions, while preserving only the exact fenced Jobs + Batch documents
+        # and updater operation state. The backend primitive verifies the protected
+        # bytes and the absence of all disallowed rows before it commits/returns.
+        # This is what purges the chat REPORTS namespace (``REPORTS_NS``: one doc per
+        # report plus each user's index doc, keyed by a hashed user partition): the
+        # docs are discovered by the wholesale scan, so no per-user enumeration and no
+        # pre-blanking write (which would only widen the stale-writer window) is needed.
+        attempted.append("kv:tenant")
+        try:
+            if failed:
+                raise RuntimeError("earlier privacy clear was not confirmed")
+            removed = await app_state.kv.factory_purge_strict()
+            cleared.append(f"kv:tenant:{removed}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("factory KV purge failed (%s)", exc)
+            failed.append("kv:tenant")
+        # Do not open a fresh tenant or erase the old audit lineage unless every
+        # preceding state/privacy clear was confirmed. Partial destructive work is
+        # reported as failed and remains fenced for operator recovery.
+        if not failed:
+            attempted.append("audit")
+            if await _reset_audit(app_state):
+                cleared.append("audit")
+            else:
+                failed.append("audit")
+        if not failed:
+            # Prefs → factory defaults with setup_complete=False (→ fresh OOBE).
+            # Done last so source/cursor clears ran against the live prefs first.
+            attempted.append("preferences")
+            if await _reset_prefs_to_factory(app_state):
+                cleared.append("preferences")
+            else:
+                failed.append("preferences")
 
     # Keep the AuthService view of users current after a factory user-store wipe so the
     # next request doesn't authenticate a now-deleted account (best-effort, never
@@ -207,15 +339,50 @@ async def reset_service(app_state: ResetHost, scope: ResetScope | str) -> dict[s
         except Exception as exc:  # noqa: BLE001 — refresh is best-effort
             logger.warning("post-reset user refresh failed (%s); continuing", exc)
 
+    # Again at the end: a read made while the stores were being cleared is dropped too,
+    # and a factory reset has also cleared the usage ledger the cost tiles read.
+    _invalidate_case_caches()
     logger.info("RESET scope=%s cleared=%s", scope.value, cleared)
-    return {"scope": scope.value, "cleared": cleared}
+    return {
+        "scope": scope.value,
+        "attempted": attempted,
+        "cleared": cleared,
+        "failed": failed,
+        # A sanitized post-reset receipt is safe only after every identity,
+        # session, personal projection, and preference clear was confirmed.
+        "privacy_boundary_confirmed": (
+            scope != ResetScope.FACTORY
+            or (
+                not failed
+                and "rag" in cleared
+                and "usage" in cleared
+                and any(item.startswith("kv:tenant:") for item in cleared)
+                and "audit" in cleared
+                and "preferences" in cleared
+            )
+        ),
+    }
+
+
+def _invalidate_case_caches() -> None:
+    """Drop the shared case page, case population and ledger caches the dashboards and
+    chat read (``api.metrics_shared``), so no figure outlives the cases a reset removed.
+    Never raises: a reset never fails on a cache."""
+    try:
+        from ..api.metrics_shared import invalidate_case_page_cache
+
+        invalidate_case_page_cache()  # also drops the populations and the ledger memo
+    except Exception as exc:  # noqa: BLE001 (best-effort, like the rest of a reset)
+        logger.warning("metric cache invalidation after reset failed (%s)", exc)
 
 
 # --------------------------------------------------------------------------- #
 # Per-store clears — each backend-agnostic + best-effort (logs + continues on a
 # glitch). All ride the mgmt/StateStore path; NONE touches the read-only log key (#1).
 # --------------------------------------------------------------------------- #
-async def _clear_cases(app_state: Any) -> int:
+async def _clear_cases(
+    app_state: Any, *, strict: bool = False
+) -> tuple[int, bool]:
     """Delete every persisted case from the REAL case store (never the demo store).
 
     Backend-dispatched: SQL truncates the ``cases`` table in one statement; ES pages
@@ -224,9 +391,13 @@ async def _clear_cases(app_state: Any) -> int:
     can be saved immediately after). Returns the number of cases removed. Best-effort:
     a glitch is logged and the partial count returned — reset never hard-fails."""
     if _is_sql(app_state):
-        return await _sql_delete_all(app_state, "cases")
+        try:
+            return await _sql_delete_all(app_state, "cases", strict=strict), True
+        except Exception:
+            return 0, False
     es = app_state.es
     deleted = 0
+    ok = True
     try:
         # Page defensively (a case reset is rare + operator-scale). Re-query each page
         # from offset 0 because we are deleting as we go (the total shrinks).
@@ -239,39 +410,73 @@ async def _clear_cases(app_state: Any) -> int:
             hits = resp.get("hits", {}).get("hits", [])
             if not hits:
                 break
+            page_deleted = 0
             for h in hits:
                 cid = (h.get("_source") or {}).get("case_id") or h.get("_id")
                 if not cid:
                     continue
                 try:
-                    if await es.delete_doc(CASES_WRITE_ALIAS, str(cid), refresh=True):
+                    remove = (
+                        es.delete_doc_strict if strict else es.delete_doc
+                    )
+                    if await remove(CASES_WRITE_ALIAS, str(cid), refresh=True):
                         deleted += 1
+                        page_deleted += 1
                     else:
                         # Fall back to the doc's own index (a rolled backing index the
                         # write alias no longer points at) so an old case still clears.
                         idx = h.get("_index") or CASES_WRITE_ALIAS
-                        if await es.delete_doc(str(idx), str(cid), refresh=True):
+                        if await remove(str(idx), str(cid), refresh=True):
                             deleted += 1
+                            page_deleted += 1
+                        else:
+                            ok = False
                 except Exception as exc:  # noqa: BLE001
+                    ok = False
                     logger.warning("case delete %s failed (%s); continuing", cid, exc)
             # Guard against a store that ignores delete (would loop forever): stop when
             # a full page produced no deletions.
-            if deleted == 0 and len(hits) > 0:
+            if page_deleted == 0 and len(hits) > 0:
+                ok = False
                 logger.warning("case clear made no progress on a %d-hit page; aborting", len(hits))
                 break
     except Exception as exc:  # noqa: BLE001 — never hard-fail the reset
+        ok = False
         logger.warning("case clear failed (%s); cleared %d so far", exc, deleted)
-    return deleted
+    if strict:
+        try:
+            remaining = await es.count(
+                CASES_READ_PATTERN, {"query": {"match_all": {}}}
+            )
+            if int(remaining or 0) != 0:
+                ok = False
+                logger.warning(
+                    "case clear verification found %d retained rows", remaining
+                )
+        except Exception as exc:  # noqa: BLE001
+            ok = False
+            logger.warning("case clear verification failed (%s)", exc)
+    return deleted, ok
 
 
-async def _clear_kv(app_state: Any, namespace: str, key: str) -> bool:
+async def _clear_kv(
+    app_state: Any, namespace: str, key: str, *, strict: bool = False
+) -> bool:
     """Clear ONE shared-KV document (``put(ns, key, {})``) — backend-agnostic (ES doc
     in the config index / SQL KVRow). Best-effort; returns True on a successful put."""
     kv = getattr(app_state, "kv", None)
     if kv is None:
         return False
     try:
-        await kv.put(namespace, key, {})
+        put = (getattr(kv, "put_strict", None) if strict else None) or kv.put
+        get = (getattr(kv, "get_strict", None) if strict else None) or kv.get
+        await put(namespace, key, {})
+        if strict:
+            persisted = await get(namespace, key)
+            if not isinstance(persisted, dict):
+                raise RuntimeError("clear could not be confirmed")
+            if any(name != "_rev" for name in persisted):
+                raise RuntimeError("clear verification found retained state")
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("kv clear %s/%s failed (%s); continuing", namespace, key, exc)
@@ -293,6 +498,124 @@ async def _clear_chat_history(app_state: Any) -> bool:
         return False
 
 
+async def _clear_runbook_runs(app_state: Any) -> tuple[int, bool]:
+    """Remove every document of the ``runbook_runs`` KV namespace (the per-case run
+    documents and the run ledger months, ``stores.runbook_runs``). The namespace holds
+    one document per case, so it is cleared by enumeration on the backend rather than
+    by key: SQL deletes the namespace's KV rows in one statement; Elasticsearch pages
+    the config index for the documents tagged ``runbook_store: runbook_runs`` (every
+    run document carries it) and deletes each by id. Raw log rows a lookup kept as
+    evidence go with them, so a cases reset leaves no case's evidence behind.
+    Best-effort like the rest of the cases tier: returns ``(removed, ok)``."""
+    if _is_sql(app_state):
+        try:
+            removed = await _sql_delete_all(
+                app_state, "kv", where=f"namespace = '{RUNBOOK_RUNS_NS}'", strict=True,
+            )
+            return removed, True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("runbook run clear failed (%s); continuing", exc)
+            return 0, False
+    es = getattr(app_state, "es", None)
+    if es is None:
+        return 0, False
+    query = {"bool": {"should": [
+        {"term": {"runbook_store": RUNBOOK_RUNS_NS}},
+        {"term": {"runbook_store.keyword": RUNBOOK_RUNS_NS}},
+    ], "minimum_should_match": 1}}
+    removed = 0
+    try:
+        while True:
+            resp = await es.search(CONFIG_INDEX, {"size": 500, "from": 0, "query": query,
+                                                  "_source": False})
+            hits = resp.get("hits", {}).get("hits", [])
+            if not hits:
+                return removed, True
+            progress = 0
+            for hit in hits:
+                doc_id = hit.get("_id")
+                if not doc_id or not str(doc_id).startswith(f"{RUNBOOK_RUNS_NS}:"):
+                    continue
+                if await es.delete_doc(CONFIG_INDEX, str(doc_id), refresh=True):
+                    removed += 1
+                    progress += 1
+            if progress == 0:
+                logger.warning("runbook run clear made no progress on a %d-hit page", len(hits))
+                return removed, False
+    except Exception as exc:  # noqa: BLE001 - reported; the cases reset continues
+        logger.warning("runbook run clear failed (%s); cleared %d so far", exc, removed)
+        return removed, False
+
+
+async def _clear_auto_close_review(app_state: Any) -> tuple[int, bool]:
+    """Empty the REAL auto-close review ledger (Round 15 SPEC D6.4; one strict
+    compare-and-set document, ``stores.auto_close_review``). Returns ``(entries
+    removed, ok)``; best-effort like the rest of the cases tier."""
+    kv = getattr(app_state, "kv", None)
+    if kv is None:
+        return 0, False
+    try:
+        store = getattr(app_state, "real_auto_close_review", None)
+        if store is None:
+            from ..stores.auto_close_review import AutoCloseReviewStore
+
+            store = AutoCloseReviewStore(kv)
+        return await store.clear(), True
+    except Exception as exc:  # noqa: BLE001 - reported; the cases reset continues
+        logger.warning("auto-close review ledger clear failed (%s); continuing", exc)
+        return 0, False
+
+async def _clear_case_files(app_state: Any) -> tuple[int, bool]:
+    """Round 15 WP4: remove every document of the ``case_files`` KV namespace (case
+    screenshot indexes, content and the storage totals, ``stores.case_files``), the
+    ``runbook_runs`` way: SQL deletes the namespace's KV rows in one statement;
+    Elasticsearch pages the config index for the documents tagged
+    ``case_file_store: case_files`` (every document of the namespace carries it),
+    reading ids only (``_source: false``: content documents hold megabytes), and
+    deletes each by id. Best-effort like the rest of the cases tier: returns
+    ``(removed, ok)``."""
+    from ..constants import CASE_FILES_NS
+
+    if _is_sql(app_state):
+        try:
+            removed = await _sql_delete_all(
+                app_state, "kv", where=f"namespace = '{CASE_FILES_NS}'", strict=True,
+            )
+            return removed, True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("case screenshot clear failed (%s); continuing", exc)
+            return 0, False
+    es = getattr(app_state, "es", None)
+    if es is None:
+        return 0, False
+    query = {"bool": {"should": [
+        {"term": {"case_file_store": CASE_FILES_NS}},
+        {"term": {"case_file_store.keyword": CASE_FILES_NS}},
+    ], "minimum_should_match": 1}}
+    removed = 0
+    try:
+        while True:
+            resp = await es.search(CONFIG_INDEX, {"size": 500, "from": 0, "query": query,
+                                                  "_source": False})
+            hits = resp.get("hits", {}).get("hits", [])
+            if not hits:
+                return removed, True
+            progress = 0
+            for hit in hits:
+                doc_id = hit.get("_id")
+                if not doc_id or not str(doc_id).startswith(f"{CASE_FILES_NS}:"):
+                    continue
+                if await es.delete_doc(CONFIG_INDEX, str(doc_id), refresh=True):
+                    removed += 1
+                    progress += 1
+            if progress == 0:
+                logger.warning("case screenshot clear made no progress on a %d-hit page", len(hits))
+                return removed, False
+    except Exception as exc:  # noqa: BLE001 - reported; the cases reset continues
+        logger.warning("case screenshot clear failed (%s); cleared %d so far", exc, removed)
+        return removed, False
+
+
 def _clear_live_tail(app_state: Any) -> bool:
     """Drop the in-memory per-source live-tail ring buffers on the REAL ingest service
     (the demo stack has its own throwaway rings). Purely in-process; never raises."""
@@ -307,17 +630,29 @@ def _clear_live_tail(app_state: Any) -> bool:
     return False
 
 
-async def _clear_cursors(app_state: Any) -> bool:
+async def _clear_cursors(app_state: Any, *, strict: bool = False) -> bool:
     """Clear the durable polling cursors so a re-added source cold-starts (no skip/dup).
 
     SQL: delete every ``cursor`` KV row. ES: drop + recreate the cursor index (it holds
     the primary + every per-feed cursor doc; a wholesale reset is the right semantic and
-    the index is re-created empty so the next poll writes a fresh cursor). Best-effort."""
+    the index is re-created empty so the next poll writes a fresh cursor). Cases and
+    sources resets remain best-effort; ``strict=True`` makes bootstrap failure a
+    confirmed factory failure."""
     if _is_sql(app_state):
-        return await _sql_delete_all(app_state, "kv", where="namespace = 'cursor'")
+        try:
+            await _sql_delete_all(
+                app_state,
+                "kv",
+                where="namespace = 'cursor'",
+                strict=strict,
+            )
+            return True
+        except Exception:
+            return False
     es = app_state.es
     try:
-        await es.delete_index(CURSOR_INDEX)
+        delete = es.delete_index_strict if strict else es.delete_index
+        await delete(CURSOR_INDEX)
     except Exception as exc:  # noqa: BLE001
         logger.warning("cursor index delete failed (%s); continuing", exc)
         return False
@@ -328,6 +663,8 @@ async def _clear_cursors(app_state: Any) -> bool:
         await bootstrap_indices(es)
     except Exception as exc:  # noqa: BLE001
         logger.warning("cursor index re-bootstrap failed (%s); continuing", exc)
+        if strict:
+            return False
     return True
 
 
@@ -364,7 +701,30 @@ async def _reset_prefs_to_factory(app_state: Any) -> bool:
         fresh = Preferences()
         fresh.setup_complete = False
         fresh.demo = DemoConfig()  # mode='off' — never leave a demo run on a wiped store
-        await app_state.update_prefs(fresh)
+        # The generic factory KV purge removed the old document. Persist the fresh
+        # OOBE defaults through a confirmed backend write before considering the
+        # privacy boundary complete; the ordinary config-store save is intentionally
+        # compatibility/fail-soft on some backends.
+        if app_state.is_sql_backend():
+            await app_state.kv.put("config", "preferences", fresh.model_dump(mode="json"))
+            persisted = await app_state.kv.get("config", "preferences")
+        else:
+            from ..constants import CONFIG_DOC_ID, CONFIG_INDEX
+
+            await app_state.es.index_doc(
+                CONFIG_INDEX,
+                fresh.model_dump(mode="json"),
+                doc_id=CONFIG_DOC_ID,
+                refresh=True,
+            )
+            persisted = await app_state.es.get_doc_strict(CONFIG_INDEX, CONFIG_DOC_ID)
+        if not isinstance(persisted, dict):
+            raise RuntimeError("factory preferences were not confirmed")
+        confirmed = Preferences.model_validate(persisted)
+        if confirmed.model_dump(mode="json") != fresh.model_dump(mode="json"):
+            raise RuntimeError("factory preference verification mismatch")
+        app_state.prefs = fresh
+        app_state.rag.set_prefs(fresh)
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("prefs factory reset failed (%s); continuing", exc)
@@ -381,21 +741,133 @@ async def _reset_audit(app_state: Any) -> bool:
     (append-only means there is no per-row delete; a whole-index reset is the semantic).
     Best-effort; never raises."""
     if _is_sql(app_state):
-        return await _sql_delete_all(app_state, "audit")
+        try:
+            await _sql_delete_all(app_state, "audit", strict=True)
+            return True
+        except Exception:
+            return False
     es = app_state.es
+    deleted = True
     try:
-        # Delete both the write alias' backing index and the base name defensively.
-        await es.delete_index(AUDIT_WRITE_ALIAS)
-        await es.delete_index(AUDIT_INDEX)
+        # Clear the stable, non-rolling idempotency authority first. If this fails,
+        # retain the ledger too: deleting rows while old claims survive would allow a
+        # later retry to resurrect pre-reset audit evidence from the recovery payload.
+        await clear_ledger_claims(es, "audit")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("audit claim reset failed (%s); retaining audit ledger", exc)
+        return False
+    try:
+        # Rollover can leave several concrete backing indices. Delete the full owned
+        # read pattern, then the pre-rollover/base spelling defensively.
+        await es.delete_index_strict(AUDIT_READ_PATTERN)
+        await es.delete_index_strict(AUDIT_INDEX)
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit index delete failed (%s); continuing", exc)
+        deleted = False
     try:
         from ..es.indices import bootstrap_indices
 
         await bootstrap_indices(es)
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit index re-bootstrap failed (%s); continuing", exc)
-    return True
+        deleted = False
+    try:
+        # Catch a claim created by an in-flight pre-reset writer between the first
+        # cleanup and index deletion. A post-reset row is left intact and will be
+        # safely adopted if its deterministic id is retried.
+        await clear_ledger_claims(es, "audit")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("post-reset audit claim cleanup failed (%s)", exc)
+        return False
+    try:
+        remaining = await es.count(
+            AUDIT_READ_PATTERN, {"query": {"match_all": {}}}
+        )
+        if int(remaining or 0) != 0:
+            logger.warning("audit reset verification found %d retained rows", remaining)
+            return False
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("audit reset verification failed (%s)", exc)
+        return False
+    return deleted
+
+
+async def _reset_usage(app_state: Any) -> bool:
+    """Strictly clear and verify the complete usage/cost ledger and claims."""
+
+    if _is_sql(app_state):
+        try:
+            await _sql_delete_all(app_state, "usage", strict=True)
+            return await _sql_count(app_state, "usage") == 0
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("SQL usage reset failed (%s)", exc)
+            return False
+    es = app_state.es
+    try:
+        await clear_ledger_claims(es, "usage")
+        await es.delete_index_strict(USAGE_READ_PATTERN)
+        await es.delete_index_strict(USAGE_INDEX)
+        from ..es.indices import bootstrap_indices
+
+        await bootstrap_indices(es)
+        await clear_ledger_claims(es, "usage")
+        remaining = await es.count(
+            USAGE_READ_PATTERN, {"query": {"match_all": {}}}
+        )
+        if int(remaining or 0) != 0:
+            raise RuntimeError(f"usage reset retained {remaining} rows")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("usage reset failed (%s)", exc)
+        return False
+
+
+async def _reset_rag(app_state: Any) -> bool:
+    """Clear and prove absence of persistent/in-memory RAG chunks."""
+
+    try:
+        from ..tools.vectorstore import ESVectorStore, RAG_INDEX
+
+        service = getattr(app_state, "rag", None)
+        store = getattr(service, "_store", None)
+        if store is None:
+            raise RuntimeError("RAG store is unavailable")
+        if isinstance(store, ESVectorStore):
+            await app_state.es.delete_index_strict(RAG_INDEX)
+            remaining = await app_state.es.count(
+                RAG_INDEX, {"query": {"match_all": {}}}
+            )
+            if int(remaining or 0) != 0:
+                raise RuntimeError(
+                    f"RAG index retained {remaining} chunks after strict delete"
+                )
+            store._ensured_dim = None  # noqa: SLF001 - reset owns store lifecycle
+        else:
+            await store.clear()
+            if int(await store.count()) != 0:
+                raise RuntimeError("RAG store retained chunks after clear")
+        # The corpus is now empty, so the service's seed cache is a LIE: without this
+        # it still reports "seeded" with a matching signature and ``ensure_seeded``
+        # short-circuits forever, leaving a reset deployment permanently corpus-less
+        # whenever the pre-reset preferences already matched the factory defaults.
+        service._seeded = False           # noqa: SLF001 - reset owns store lifecycle
+        service._seed_signature = None    # noqa: SLF001
+        service.corpus_known_empty = True
+        # An empty corpus straight after a reset is EXPECTED, not a degradation.
+        service.corpus_degraded = False
+        service.last_refusal = None
+        # Forget any provider-outage run too: the deployment is being returned to a
+        # clean state, and stale failure evidence must not follow it there.
+        tracker = getattr(app_state, "_provider_health", None)
+        if tracker is not None:
+            try:
+                tracker.reset()
+            except Exception as exc:  # noqa: BLE001 — never fail a reset on telemetry
+                logger.warning("provider-health reset failed (%s); continuing", exc)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG reset failed (%s)", exc)
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -408,12 +880,20 @@ def _is_sql(app_state: Any) -> bool:
         return False
 
 
-async def _sql_delete_all(app_state: Any, table: str, *, where: str | None = None) -> int:
+async def _sql_delete_all(
+    app_state: Any,
+    table: str,
+    *,
+    where: str | None = None,
+    strict: bool = False,
+) -> int:
     """``DELETE FROM <table> [WHERE <where>]`` on the SQL state engine. ``table`` +
     ``where`` are code-controlled constants (never user input) so this is not an
     injection surface. Returns the rowcount (0 on a glitch). Best-effort; never raises."""
     engine = getattr(app_state, "sql_engine", None)
     if engine is None:
+        if strict:
+            raise RuntimeError("SQL state engine is unavailable")
         return 0
     try:
         from sqlalchemy import text
@@ -424,4 +904,19 @@ async def _sql_delete_all(app_state: Any, table: str, *, where: str | None = Non
             return int(getattr(result, "rowcount", 0) or 0)
     except Exception as exc:  # noqa: BLE001
         logger.warning("SQL delete on %s failed (%s); continuing", table, exc)
+        if strict:
+            raise
         return 0
+
+
+async def _sql_count(app_state: Any, table: str) -> int:
+    """Strict code-controlled row count used to confirm a factory clear."""
+
+    engine = getattr(app_state, "sql_engine", None)
+    if engine is None:
+        raise RuntimeError("SQL state engine is unavailable")
+    from sqlalchemy import text
+
+    async with engine.connect() as conn:
+        value = await conn.scalar(text(f"SELECT COUNT(*) FROM {table}"))
+    return int(value or 0)

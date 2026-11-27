@@ -15,9 +15,11 @@ describe('compact icon-control target standard', () => {
       />,
     );
 
+    // Round 14 (W9a): the allowlist is the shared TagInput, so its chips use the same
+    // labelled remove button as every other tag field (24px target, 12px glyph).
     const remove = screen.getByRole('button', { name: 'Remove suspicious-login' });
-    expect(remove).toHaveClass('min-h-6', 'min-w-6');
-    expect(remove.querySelector('svg')).toHaveClass('h-3', 'w-3');
+    expect(remove).toHaveClass('min-h-6', 'min-w-6', '[&_svg]:size-3');
+    expect(remove.querySelector('svg')).not.toBeNull();
     fireEvent.click(remove);
     expect(update).toHaveBeenCalledWith({ auto_forward_allowlist: [] });
   });
@@ -28,11 +30,11 @@ describe('compact icon-control target standard', () => {
     fireEvent.change(input, { target: { value: 'cloud' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
-    const remove = screen.getByRole('button', { name: 'Remove tag cloud' });
-    expect(remove).toHaveClass('min-h-6', 'min-w-6');
-    expect(remove.querySelector('svg')).toHaveClass('size-3');
+    // The shared TagInput (Round 12 polish): chips name their remove button "Remove {tag}".
+    const remove = screen.getByRole('button', { name: 'Remove cloud' });
+    expect(remove).toHaveClass('min-h-6', 'min-w-6', '[&_svg]:size-3');
     fireEvent.click(remove);
-    expect(screen.queryByRole('button', { name: 'Remove tag cloud' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove cloud' })).toBeNull();
   });
 
   it('keeps threat-intel tag removal labelled and at least 24px', () => {
@@ -41,10 +43,9 @@ describe('compact icon-control target standard', () => {
     fireEvent.change(input, { target: { value: 'campaign' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
-    const remove = screen.getByRole('button', { name: 'Remove tag campaign' });
-    expect(remove).toHaveClass('min-h-6', 'min-w-6');
-    expect(remove.querySelector('svg')).toHaveClass('size-3');
+    const remove = screen.getByRole('button', { name: 'Remove campaign' });
+    expect(remove).toHaveClass('min-h-6', 'min-w-6', '[&_svg]:size-3');
     fireEvent.click(remove);
-    expect(screen.queryByRole('button', { name: 'Remove tag campaign' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove campaign' })).toBeNull();
   });
 });

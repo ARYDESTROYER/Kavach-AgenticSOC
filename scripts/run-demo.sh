@@ -63,8 +63,14 @@ case "$(printf '%s' "${TLSOC_RELEASE_CHANNEL}" | tr '[:upper:]' '[:lower:]')" in
     ;;
 esac
 
-TLSOC_BUILD_SHA="${TLSOC_BUILD_SHA:-$(git -C "${REPO_ROOT}" rev-parse --verify HEAD 2>/dev/null || echo unknown)}"
-TLSOC_BUILD_DATE="${TLSOC_BUILD_DATE:-$(git -C "${REPO_ROOT}" show -s --format=%cI HEAD 2>/dev/null || echo unknown)}"
+# ONE derivation, shared with scripts/agentic-soc-compose.sh, so the demo and a
+# Compose source build stamp the same revision string. It never overwrites an
+# identity the caller already supplied, and it flags a dirty or unknown revision on
+# stderr rather than letting `unknown` reach the records silently.
+# shellcheck source=scripts/lib/build-identity.sh
+. "${SCRIPT_DIR}/lib/build-identity.sh"
+tlsoc_derive_build_identity "${REPO_ROOT}"
+tlsoc_report_build_identity "[demo]"
 export TLSOC_VERSION TLSOC_RELEASE_CHANNEL TLSOC_BUILD_SHA TLSOC_BUILD_DATE
 
 BACKEND_PORT="${BACKEND_PORT:-8088}"
@@ -247,7 +253,7 @@ cat <<BANNER
   Login  :   username  ${ADMIN_USER}
              password  ${ADMIN_PASS}     (demo super_admin — change for real use)
 
-  Auth is ENABLED and deterministic Demo Mode is ${DEMO_MODE} (forced $0 mock LLM).
+  Auth is ENABLED and deterministic Demo Mode is ${DEMO_MODE} (forced \$0 mock LLM).
   Release:    v${TLSOC_VERSION} · ${TLSOC_RELEASE_CHANNEL} (${SOURCE_BRANCH:-detached})
   Both services are bound to loopback only; they are not exposed on your LAN.
   Press Ctrl-C to stop both services.

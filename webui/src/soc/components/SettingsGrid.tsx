@@ -1,12 +1,21 @@
 /**
- * Settings layout primitives — the shared flat Console composition contract.
+ * Settings layout primitives: the shared flat Console composition contract.
  *
- * - `SettingsGrid`   — a responsive settings-section grid (1 → 2 → 3 cols).
- * - `SettingsCard`   — a flat, divider-led section with an anchor id (for the TOC),
- *                      optional description + header actions + footer.
- * - `StickySaveBar`  — a bottom sticky bar with Save / Discard, shown only when a
- *                      page is dirty; respects busy + disabled states.
- * - `SettingsTOC`    — an in-section anchor table-of-contents that scrolls to the
+ * - `SettingsGrid`:   a responsive settings-section grid (1 → 2 → 3 cols).
+ * - `SettingsCard`:   a flat, divider-led section with an anchor id (for the TOC),
+ *                      optional description + header actions + footer. Round 14: replaced
+ *                      by `SettingsSection` / `SettingsGroup` / `SettingRow`
+ *                      (`pages/settings/primitives.tsx`, operator choice C9 option A);
+ *                      kept only until every section has moved (WP-W9a).
+ * - `SETTINGS_FORM_MAX_WIDTH`, `SETTINGS_ROW_CONTENT_MAX_WIDTH`: the 44rem form section
+ *                      and the content width of a row inside one (a full-width section
+ *                      caps its labelled control rows' content at the same width).
+ * - `StickySaveBar`:  a bottom sticky bar with Save / Discard, shown only when a
+ *                      page is dirty; respects busy + disabled states. `width="form"`
+ *                      caps it to a form section (44rem), so it sits under the settings it
+ *                      saves rather than across the whole pane. While it shows, the bottom
+ *                      toasts stack above it (`useToastClearance`).
+ * - `SettingsTOC`:    an in-section anchor table-of-contents that scrolls to the
  *                      matching `SettingsCard` and highlights the active section.
  *
  * All copy is caller-supplied UI text (plain). Tokenised + AA + reduced-motion via
@@ -17,8 +26,29 @@ import * as React from 'react';
 import { cn } from '@/lib/cn';
 import { LoadingGlyph } from '@/design-system';
 import { Button } from '@/ui/button';
+import { useToastClearance } from '@/soc/hooks/useToastClearance';
 import type { LucideIcon } from 'lucide-react';
 import { Check, RotateCcw } from 'lucide-react';
+
+/**
+ * The width of a form section in Settings (Round 14, SPEC §4.9.6): 44rem (704px), so a
+ * switch or field sits within reach of its label at every width. Table sections take the
+ * full content width.
+ */
+export const SETTINGS_FORM_MAX_WIDTH = 'max-w-[44rem]';
+
+/**
+ * The content width of a Settings row inside a 44rem form section: `SETTINGS_FORM_MAX_WIDTH`
+ * less the row's inset on each side (`SettingRow` pads `px-4 xl:px-5`: 16px, 20px from
+ * 1280px), so 42rem, then 41.5rem from 1280px. A labelled control row in a full-width
+ * section (Enrichment, Roles) caps its content box at this width while the row itself, its
+ * hairline and hover, still spans the panel: the control sits as near its label as in a
+ * form section. A block row of form-like content (`SettingRow variant="block"
+ * width="form"`) takes the same cap, so its edge meets theirs. Inside a form section the
+ * cap equals the content width and changes nothing. Keep it in step with the form width
+ * and the row inset.
+ */
+export const SETTINGS_ROW_CONTENT_MAX_WIDTH = 'max-w-[42rem] xl:max-w-[41.5rem]';
 
 /* ------------------------------------------------------------------------- */
 /* SettingsGrid                                                               */
@@ -152,6 +182,11 @@ export interface StickySaveBarProps {
   /** Save / discard button labels. */
   saveLabel?: string;
   discardLabel?: string;
+  /**
+   * `form`: capped to a form section's width (44rem), under the settings it saves.
+   * `full` (default): the full pane, for a table section or a page.
+   */
+  width?: 'form' | 'full';
   className?: string;
 }
 
@@ -159,18 +194,39 @@ export interface StickySaveBarProps {
  * Bottom sticky save/discard bar. Sticks to the bottom of its scroll container
  * (`sticky bottom-0`); render it as the LAST child of the settings scroll region.
  * Hidden entirely when `!visible` so it never occupies space on a clean page.
+ *
+ * The bar is a size container: under 40rem (a phone, a narrow pane) the message takes a
+ * full line of its own above Discard and Save, instead of being squeezed beside them
+ * into a column a word or two wide. While the bar shows, the bottom toasts stack above
+ * it instead of covering Discard and Save (`useToastClearance`: one rule for every page
+ * that pins this bar). The ref reaches the bar while it shows.
  */
-export function StickySaveBar({
-  visible,
-  onSave,
-  onDiscard,
-  busy = false,
-  saveDisabled = false,
-  message,
-  saveLabel = 'Save changes',
-  discardLabel = 'Discard',
-  className,
-}: StickySaveBarProps) {
+export const StickySaveBar = React.forwardRef<HTMLDivElement, StickySaveBarProps>(function StickySaveBar(
+  {
+    visible,
+    onSave,
+    onDiscard,
+    busy = false,
+    saveDisabled = false,
+    message,
+    saveLabel = 'Save changes',
+    discardLabel = 'Discard',
+    width = 'full',
+    className,
+  },
+  ref,
+) {
+  // The bar, for the toast clearance, and the host's ref to it while it shows.
+  const barRef = React.useRef<HTMLDivElement | null>(null);
+  const setBarRef = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      barRef.current = node;
+      if (typeof ref === 'function') ref(node);
+      else if (ref) ref.current = node;
+    },
+    [ref],
+  );
+  useToastClearance(barRef, visible);
   // A PERSISTENT (always-mounted) polite live region: screen readers only announce
   // content that changes INSIDE a region that already existed in the DOM, so a live
   // region inserted at the same instant as its text (the old `!visible → null` path)
@@ -188,21 +244,26 @@ export function StickySaveBar({
       </div>
       {visible ? (
         <div
+          ref={setBarRef}
           role="region"
           aria-label="Unsaved changes"
           aria-busy={busy || undefined}
           className={cn(
-            'sticky bottom-0 z-20 -mx-1 mt-6 flex flex-wrap items-center gap-3 border-y border-border/90 bg-background px-4 py-3',
+            '@container/savebar sticky bottom-0 z-20 -mx-1 mt-6 flex flex-wrap items-center gap-3 border-y border-border/90 bg-background px-4 py-3',
+            width === 'form' && SETTINGS_FORM_MAX_WIDTH,
             className,
           )}
         >
-          <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
+          <span
+            className="min-w-0 grow basis-full text-sm font-medium text-foreground @[40rem]/savebar:basis-0"
+            data-save-bar-message=""
+          >
             {message ?? 'You have unsaved changes.'}
           </span>
-          <div className="flex items-center gap-2">
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             <Button type="button" variant="outline" size="sm" onClick={onDiscard} disabled={busy}>
               {/* No size override: the shared Button's `[&_svg]:size-4` wins on specificity,
-                  so an `h-3.5 w-3.5` here would be dead — rely on the uniform 16px icon. */}
+                  so an `h-3.5 w-3.5` here would be dead; rely on the uniform 16px icon. */}
               <RotateCcw aria-hidden />
               {discardLabel}
             </Button>
@@ -219,7 +280,8 @@ export function StickySaveBar({
       ) : null}
     </>
   );
-}
+});
+StickySaveBar.displayName = 'StickySaveBar';
 
 /* ------------------------------------------------------------------------- */
 /* SettingsTOC                                                               */
@@ -241,8 +303,8 @@ export interface SettingsTOCProps {
   /** Called with the clicked anchor (caller may smooth-scroll / setActive). */
   onSelect?: (anchor: string) => void;
   /**
-   * Active-item accent orientation. `vertical` (default) draws a left rail — correct for
-   * the stacked rail; `horizontal` draws a bottom underline — correct when the TOC is laid
+   * Active-item accent orientation. `vertical` (default) draws a left rail, correct for
+   * the stacked rail; `horizontal` draws a bottom underline, correct when the TOC is laid
    * out as a `flex-row` tab strip. `responsive` uses that compact horizontal strip below
    * `md`, then becomes the full vertical rail once the editor has enough width.
    */

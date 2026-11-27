@@ -60,8 +60,73 @@ describe('WhyPanel — knowledge source fallback (#31)', () => {
   });
 });
 
+describe('WhyPanel — honest retrieval observation states', () => {
+  it('renders missing legacy telemetry as unavailable, never as no retrieval', () => {
+    render(
+      <WhyPanel
+        c={CASE}
+        rationale={{ case_id: 'legacy-case', knowledge: [] }}
+        loading={false}
+        error={null}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Retrieval history unavailable')).toBeInTheDocument();
+    expect(screen.getByText(/never counted as zero/i)).toBeInTheDocument();
+    expect(screen.queryByText('No knowledge retrieved')).toBeNull();
+  });
+
+  it('distinguishes an instrumented empty result from unavailable history', () => {
+    const rationale = {
+      case_id: 'measured-zero',
+      knowledge: [],
+      procedure_provenance: {
+        persona: { selected_id: '', selection_reason: '', consulted: false },
+        playbook: { selected_id: '', selection_reason: '', consulted: false },
+        consultation_path: 'strong_investigator',
+        retrieval_status: 'measured',
+        retrieval_reason: 'completed',
+        retrieval_query_groups: [],
+        knowledge: [],
+      },
+    } as CaseRationale;
+
+    render(
+      <WhyPanel c={CASE} rationale={rationale} loading={false} error={null} onRetry={vi.fn()} />,
+    );
+
+    expect(screen.getByText('No references matched')).toBeInTheDocument();
+    expect(screen.getByText(/This is a measured zero/i)).toBeInTheDocument();
+    expect(screen.queryByText('Retrieval history unavailable')).toBeNull();
+  });
+
+  it('labels a skipped path as not run instead of zero', () => {
+    const rationale = {
+      case_id: 'not-attempted',
+      knowledge: [],
+      procedure_provenance: {
+        persona: { selected_id: '', selection_reason: '', consulted: false },
+        playbook: { selected_id: '', selection_reason: '', consulted: false },
+        consultation_path: 'kill_switch',
+        retrieval_status: 'not_attempted',
+        retrieval_reason: 'kill_switch',
+        retrieval_query_groups: [],
+        knowledge: [],
+      },
+    } as CaseRationale;
+
+    render(
+      <WhyPanel c={CASE} rationale={rationale} loading={false} error={null} onRetry={vi.fn()} />,
+    );
+
+    expect(screen.getByText('Knowledge retrieval was not run')).toBeInTheDocument();
+    expect(screen.getByText(/not counted as a zero/i)).toBeInTheDocument();
+  });
+});
+
 describe('WhyPanel — latest-run investigation input provenance', () => {
-  it('separates runbooks from general knowledge and shows only a consulted playbook', () => {
+  it('separates runbook passages from general knowledge and shows a consulted procedure from before Round 14 under its legacy label', () => {
     const rationale = {
       verdict: 'true_positive',
       status: 'open',
@@ -78,11 +143,13 @@ describe('WhyPanel — latest-run investigation input provenance', () => {
 
     expect(screen.getByText('Knowledge')).toBeInTheDocument();
     expect(screen.getByText('Runbook references')).toBeInTheDocument();
-    expect(screen.getByText('Playbook consulted')).toBeInTheDocument();
+    expect(screen.getByText('Older runbook consulted')).toBeInTheDocument();
+    // The stored id is shown verbatim.
     expect(screen.getByText('credential-response · v3')).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/playbook/i);
   });
 
-  it('does not present a selected-only playbook as used', () => {
+  it('does not present a selected-only procedure from before Round 14 as used', () => {
     const rationale = {
       verdict: 'true_positive',
       status: 'open',
@@ -93,7 +160,7 @@ describe('WhyPanel — latest-run investigation input provenance', () => {
       <WhyPanel c={CASE} rationale={rationale} loading={false} error={null} onRetry={vi.fn()} />,
     );
 
-    expect(screen.queryByText('Playbook consulted')).toBeNull();
+    expect(screen.queryByText('Older runbook consulted')).toBeNull();
     expect(screen.queryByText('selected-only')).toBeNull();
   });
 
@@ -145,7 +212,78 @@ describe('WhyPanel — latest-run investigation input provenance', () => {
     expect(screen.getByText('Runbook references')).toBeInTheDocument();
     expect(screen.getByText('runbook:web_scanner · rev 4')).toBeInTheDocument();
     expect(screen.getByText('0.912')).toBeInTheDocument();
-    expect(screen.queryByText('Playbook consulted')).toBeNull();
+    expect(screen.queryByText('Older runbook consulted')).toBeNull();
+    // A selected-only procedure from before Round 14 keeps its stored id under the legacy label.
+    expect(screen.getByText('Older runbook')).toBeInTheDocument();
+  });
+
+  it('shows the Published runbook the latest run received, with its version (Round 14)', () => {
+    const rationale = {
+      verdict: 'true_positive',
+      status: 'open',
+      runbook: {
+        id: 'brute-force',
+        version: 4,
+        title: 'Brute force and password spray',
+        reason: 'Matched rule auth-failures',
+        consulted: true,
+        selected_id: 'brute-force',
+        status: 'matched',
+        tier: 1,
+        explanation: null,
+      },
+      procedure_provenance: {
+        persona: { selected_id: '', selection_reason: '', consulted: false },
+        playbook: { selected_id: '', selection_reason: '', consulted: false },
+        runbook: {
+          selected_id: 'brute-force',
+          version: 4,
+          title: 'Brute force and password spray',
+          selection_reason: 'Matched rule auth-failures',
+          consulted: true,
+        },
+        consultation_path: 'strong_investigator',
+        retrieval_query_groups: [],
+        knowledge: [],
+      },
+      playbook: { id: '', consulted: false },
+    } as unknown as CaseRationale;
+
+    const { container } = render(
+      <WhyPanel c={CASE} rationale={rationale} loading={false} error={null} onRetry={vi.fn()} />,
+    );
+
+    const row = container.querySelector('[data-procedure="runbook"]') as HTMLElement;
+    expect(row).not.toBeNull();
+    expect(row).toHaveTextContent('Runbook');
+    expect(row).toHaveTextContent('Brute force and password spray · v4');
+    expect(row).toHaveTextContent('Matched rule auth-failures');
+    expect(row).toHaveTextContent('Consulted');
+    expect(container.textContent).not.toMatch(/playbook|\u2014/i);
+  });
+
+  it('says a matched runbook the run never received was selected only', () => {
+    const rationale = {
+      verdict: 'benign',
+      status: 'open',
+      runbook: { id: '', version: null, title: '', reason: '', consulted: false, selected_id: 'brute-force' },
+      procedure_provenance: {
+        persona: { selected_id: '', selection_reason: '', consulted: false },
+        playbook: { selected_id: '', selection_reason: '', consulted: false },
+        runbook: { selected_id: 'brute-force', version: 4, title: '', selection_reason: '', consulted: false },
+        consultation_path: 'router_benign_shortcut',
+        retrieval_query_groups: [],
+        knowledge: [],
+      },
+    } as unknown as CaseRationale;
+
+    const { container } = render(
+      <WhyPanel c={CASE} rationale={rationale} loading={false} error={null} onRetry={vi.fn()} />,
+    );
+    const row = container.querySelector('[data-procedure="runbook"]') as HTMLElement;
+    expect(row).toHaveTextContent('brute-force');
+    expect(row).toHaveTextContent('Selected only');
+    expect(row).not.toHaveTextContent('v4');
   });
 
   it('explains the applied platform threshold without calling it model fine-tuning', () => {

@@ -47,12 +47,14 @@ from app.engine.update_supervisor import (
 )
 from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
+from app.middleware.request_id import RequestIdMiddleware
 from app.state import AppState
 from app.stores.sql import SqlKVStore, build_async_engine, create_all
 from app.stores.update_operations import (
     UpdateOperationConflict,
     UpdateOperationStore,
 )
+from tests._auth_helpers import ready_user
 
 _SHA = "a" * 40
 _IDEMPOTENCY = "request-key-0000000000000001"
@@ -65,7 +67,7 @@ def _release() -> UpdateRelease:
         version="0.1.3",
         tag="v0.1.3",
         commit_sha=_SHA,
-        repository_url="https://github.com/ARYDESTROYER/Agentic-Kibana",
+        repository_url="https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
     )
 
 
@@ -219,6 +221,9 @@ def _client(
     api = FastAPI(lifespan=lifespan)
     api.include_router(base_router, dependencies=[Depends(require_auth)])
     api.include_router(updates_router, dependencies=[Depends(require_auth)])
+    # The production stack (main.py): every request gets its own request id, so the
+    # same-key retries below run exactly as they do in a deployment.
+    api.add_middleware(RequestIdMiddleware)
     return TestClient(api), service
 
 
@@ -248,27 +253,45 @@ def test_browser_update_bodies_are_minimal_and_forbid_artifact_inputs() -> None:
     ).id == "updater"
 
 
-def test_explicit_login_super_admin_can_preflight_and_audit_is_idempotent(
+def test_explicit_login_super_admin_can_preflight_and_each_request_is_audited_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The audit is idempotent per request: the same request sent again (its request
+    id, session and address) confirms its rows, while a retry as a new request (a new
+    request id) is recorded with its own rows (Round 14 SPEC §4.5.3: who asked, from
+    where). The supervisor is idempotent on the key either way."""
     client, service = _client(monkeypatch, rbac_enabled=True)
     with client:
         _login(client)
         body = {"release_id": "v0.1.3", "idempotency_key": _IDEMPOTENCY}
-        first = client.post("/api/system-updates/preflight", json=body)
-        second = client.post("/api/system-updates/preflight", json=body)
-        assert first.status_code == second.status_code == 200
+        same = {"X-Request-ID": "update-request-0001"}
+        first = client.post("/api/system-updates/preflight", json=body, headers=same)
+        resent = client.post("/api/system-updates/preflight", json=body, headers=same)
+        assert first.status_code == resent.status_code == 200
         state = _STATE["state"]
         # The actual append-only store is queried below with a tiny event-loop helper.
         import asyncio
 
-        rows = asyncio.run(
-            state.control_audit.records(
-                action_type=ActionType.SYSTEM_UPDATE.value, limit=50
+        def _rows() -> list[dict]:
+            return asyncio.run(
+                state.control_audit.records(
+                    action_type=ActionType.SYSTEM_UPDATE.value, limit=50
+                )
             )
-        )
+
+        rows = _rows()
         assert len(rows) == 2
-        assert len(service.calls) == 2
+        assert {r["request_id"] for r in rows} == {"update-request-0001"}
+        retry = client.post("/api/system-updates/preflight", json=body)
+        assert retry.status_code == 200
+        rows = _rows()
+        assert len(rows) == 4
+        assert sorted(r["action"] for r in rows) == [
+            "update.preflight_accepted", "update.preflight_accepted",
+            "update.preflight_requested", "update.preflight_requested",
+        ]
+        assert len({r["request_id"] for r in rows}) == 2
+        assert len(service.calls) == 3
 
 
 def test_direct_mint_lazy_session_is_not_deployment_authority(
@@ -319,6 +342,7 @@ def test_non_owner_is_denied_even_when_rbac_is_disabled(
             },
         )
         assert created.status_code == 200, created.text
+        ready_user(client, "analyst", "Analyst-pass-123!")
         client.cookies.clear()
         _login(client, "analyst", "Analyst-pass-123!")
         response = client.post(
@@ -906,7 +930,7 @@ class _Discovery:
     async def discover(self, _config):
         return ReleaseDiscoveryResponse(
             enabled=True,
-            repository_url="https://github.com/ARYDESTROYER/Agentic-Kibana",
+            repository_url="https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
             checked_at="2026-08-03T00:00:00Z",
             cache=ReleaseCacheStatus(hit=False, stale=False, max_age_seconds=3600),
             channels={
@@ -1017,6 +1041,45 @@ async def test_source_or_unstamped_build_requires_host_bootstrap(
     }
 
 
+class _AbsentSupervisorClient:
+    """No supervisor socket on the host: the bootstrap has never run."""
+
+    def socket_is_available(self) -> bool:
+        return False
+
+    async def status(self) -> SupervisorStatus:
+        return SupervisorStatus(available=False, message="Not installed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state_backend", "bootstrap_required"),
+    [("sqlite", False), ("elasticsearch", False), ("postgres", True)],
+)
+async def test_bootstrap_is_offered_only_where_it_can_enable_updates(
+    monkeypatch: pytest.MonkeyPatch,
+    state_backend: str,
+    bootstrap_required: bool,
+) -> None:
+    """B52: a deployment that can never update itself must not offer the bootstrap.
+
+    Without a supervisor socket the status used to report ``bootstrap_required``
+    on every state backend, so the top bar offered "Enable updates" on SQLite and
+    Elasticsearch deployments that the bootstrap cannot support.
+    """
+    service = _policy_service(monkeypatch, _Discovery())
+    service.state.secrets.state_backend = state_backend
+    service.client = _AbsentSupervisorClient()
+
+    status = await service.status()
+
+    codes = {issue.code for issue in status.capability.blockers}
+    assert status.capability.supported is False
+    assert "supervisor_unavailable" in codes
+    assert status.capability.bootstrap_required is bootstrap_required
+    assert ("postgres_state_required" in codes) is (state_backend != "postgres")
+
+
 @pytest.mark.asyncio
 async def test_capability_uses_stable_only_and_truthfully_includes_updater(
     monkeypatch: pytest.MonkeyPatch,
@@ -1052,7 +1115,7 @@ async def test_candidate_uses_immutable_annotated_tag_when_main_advances(
     tag_sha = "c" * 40
     response = ReleaseDiscoveryResponse(
         enabled=True,
-        repository_url="https://github.com/ARYDESTROYER/Agentic-Kibana",
+        repository_url="https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
         checked_at="2026-08-03T00:00:00Z",
         cache=ReleaseCacheStatus(hit=False, stale=False, max_age_seconds=3600),
         channels={
@@ -1171,7 +1234,7 @@ async def test_release_discovery_projection_is_explicit_and_untrusted(
 ) -> None:
     response = ReleaseDiscoveryResponse(
         enabled=True,
-        repository_url="https://github.com/ARYDESTROYER/Agentic-Kibana",
+        repository_url="https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
         checked_at="2026-08-03T00:00:00Z",
         cache=ReleaseCacheStatus(
             hit=False, stale=cache_stale, max_age_seconds=3600

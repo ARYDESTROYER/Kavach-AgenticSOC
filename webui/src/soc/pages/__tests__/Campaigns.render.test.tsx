@@ -93,6 +93,7 @@ function renderCampaigns(onNavigate = vi.fn()) {
 describe('Campaigns page', () => {
   beforeEach(() => {
     listMock.mockReset();
+    getMock.mockReset();
     recorrelateMock.mockReset();
     apiGetMock.mockReset();
     apiPutMock.mockReset();
@@ -125,7 +126,7 @@ describe('Campaigns page', () => {
     );
     renderCampaigns();
 
-    fireEvent.keyDown(await screen.findByRole('tab', { name: /policy & schedule/i }), {
+    fireEvent.keyDown(await screen.findByRole('tab', { name: /policy and schedule/i }), {
       key: 'Enter',
     });
 
@@ -144,7 +145,7 @@ describe('Campaigns page', () => {
 
   it('keeps administrator policy controls out of the default review workspace', async () => {
     renderCampaigns();
-    await screen.findByText('Lateral movement — 10.0.0.5');
+    await screen.findByText('10.0.0.5 · 3 cases');
 
     expect(screen.getByRole('tab', { name: /campaign review/i })).toHaveAttribute(
       'aria-selected',
@@ -153,7 +154,7 @@ describe('Campaigns page', () => {
     expect(screen.queryByRole('switch', { name: /enable scheduled correlation/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /run correlation now/i })).toBeNull();
 
-    fireEvent.keyDown(screen.getByRole('tab', { name: /policy & schedule/i }), {
+    fireEvent.keyDown(screen.getByRole('tab', { name: /policy and schedule/i }), {
       key: 'Enter',
     });
     expect(
@@ -184,7 +185,7 @@ describe('Campaigns page', () => {
   it('keeps an unsaved policy visible across workspaces and saves the exact draft', async () => {
     renderCampaigns();
 
-    fireEvent.keyDown(await screen.findByRole('tab', { name: /policy & schedule/i }), {
+    fireEvent.keyDown(await screen.findByRole('tab', { name: /policy and schedule/i }), {
       key: 'Enter',
     });
     fireEvent.click(
@@ -211,16 +212,67 @@ describe('Campaigns page', () => {
     await waitFor(() => expect(listMock).toHaveBeenCalled());
 
     expect(await screen.findByText('Campaigns')).toBeInTheDocument();
-    expect(screen.getByText('Lateral movement — 10.0.0.5')).toBeInTheDocument();
+    expect(screen.getByText('10.0.0.5 · 3 cases')).toBeInTheDocument();
     // Entity value renders as plain text (InlineCode).
     expect(screen.getAllByText('10.0.0.5').length).toBeGreaterThan(0);
     // MITRE ids render as plain text badges.
     expect(screen.getByText('T1021')).toBeInTheDocument();
   });
 
+  it('reads like the Overview (Round 14): one count and Refresh in the header, the list on the "Active campaigns" panel', async () => {
+    renderCampaigns();
+    const h1 = await screen.findByRole('heading', { level: 1, name: 'Campaigns' });
+    const header = h1.closest('[data-page-header]') as HTMLElement;
+    expect(within(header).getByRole('button', { name: 'About Campaigns' })).toBeInTheDocument();
+    expect(await within(header).findByTestId('campaigns-count')).toHaveTextContent('1 campaign');
+    expect(within(header).getByRole('button', { name: 'Refresh campaigns' })).toBeInTheDocument();
+    const panel = screen.getByRole('region', { name: 'Active campaigns' });
+    expect(panel).toHaveClass('surface-panel');
+    expect(within(panel).getByRole('table', { name: 'Campaigns' })).toBeInTheDocument();
+    // Page sections are underline tabs with no icons.
+    const tabs = screen.getByRole('tablist', { name: 'Campaign workspaces' });
+    expect(tabs).toHaveAttribute('data-variant', 'underline');
+    expect(tabs.querySelector('svg')).toBeNull();
+  });
+
+  it('names a campaign by its shared entity and case count, the stored name and id only in the detail (D29)', async () => {
+    renderCampaigns();
+    const label = await screen.findByText('10.0.0.5 · 3 cases');
+    const row = label.closest('tr') as HTMLElement;
+    expect(within(row).getByText('Open · shared IP')).toBeInTheDocument();
+    expect(within(row).queryByText('camp-abc123')).toBeNull();
+    expect(screen.queryByText(CAMPAIGN.name)).toBeNull();
+    fireEvent.click(label);
+    const sheet = await screen.findByRole('dialog');
+    expect(within(sheet).getByRole('heading', { name: '10.0.0.5 · 3 cases' })).toBeInTheDocument();
+    expect(within(sheet).getByTestId('campaign-id')).toHaveTextContent(CAMPAIGN.name);
+  });
+
+  it('falls back to a shared MITRE technique, then to the display number', async () => {
+    listMock.mockResolvedValue({
+      campaigns: [
+        { ...CAMPAIGN, id: 'camp-2', name: 'CAMPAIGN-000002', entities: [], mitre: ['T1110'], case_count: 1 },
+        { ...CAMPAIGN, id: 'camp-3', name: '', entities: [], mitre: [], case_count: 2 },
+      ],
+      total: 2,
+      enabled: true,
+    });
+    renderCampaigns();
+    expect(await screen.findByText('T1110 · 1 case')).toBeInTheDocument();
+    expect(screen.getByText('Open · shared MITRE technique')).toBeInTheDocument();
+    expect(screen.getByText('camp-3')).toBeInTheDocument();
+  });
+
+  it('says when automatic correlation is off, in a warning', async () => {
+    listMock.mockResolvedValue({ campaigns: [CAMPAIGN], total: 1, enabled: false });
+    renderCampaigns();
+    const title = await screen.findByText('Automatic campaign correlation is off');
+    expect(title.closest('[role="status"]')).toHaveTextContent(/Policy and schedule/);
+  });
+
   it('opens the detail sheet with member cases on row click', async () => {
     renderCampaigns();
-    const row = await screen.findByText('Lateral movement — 10.0.0.5');
+    const row = await screen.findByText('10.0.0.5 · 3 cases');
     fireEvent.click(row);
 
     // Member case ids appear in the detail sheet.
@@ -230,19 +282,78 @@ describe('Campaigns page', () => {
 
   it('deep-links to a member case via onNavigate', async () => {
     const { onNavigate } = renderCampaigns();
-    const row = await screen.findByText('Lateral movement — 10.0.0.5');
+    const row = await screen.findByText('10.0.0.5 · 3 cases');
     fireEvent.click(row);
     await screen.findByText('case-1');
 
-    const openButtons = screen.getAllByRole('button', { name: /^open$/i });
-    fireEvent.click(openButtons[0]);
+    // Each Open names its case (the visible word first, label in name).
+    fireEvent.click(screen.getByRole('button', { name: /^open case-1$/i }));
     expect(onNavigate).toHaveBeenCalledWith('cases', { caseId: 'case-1' });
+  });
+
+  it('names member cases by their case number, the internal id only in the tooltip and description', async () => {
+    getMock.mockResolvedValue({ campaign: CAMPAIGN, case_numbers: { 'case-1': 'CASE-000045', 'case-2': 'CASE-000046' } });
+    const { onNavigate } = renderCampaigns();
+    fireEvent.click(await screen.findByText('10.0.0.5 · 3 cases'));
+
+    const number = await screen.findByText('CASE-000045');
+    expect(getMock).toHaveBeenCalledWith('camp-abc123');
+    expect(number).toHaveAttribute('title', 'Internal id: case-1');
+    expect(screen.getByText('CASE-000046')).toBeInTheDocument();
+    // No visible internal id for a numbered member; a member without a number keeps its id.
+    expect(screen.queryByText('case-1')).toBeNull();
+    expect(screen.queryByText('case-2')).toBeNull();
+    expect(screen.getByText('case-3')).toBeInTheDocument();
+
+    const open = screen.getByRole('button', { name: 'Open CASE-000045' });
+    expect(open).toHaveAccessibleDescription('Internal id case-1');
+    expect(screen.getByRole('button', { name: 'Open case-3' })).not.toHaveAttribute('aria-describedby');
+    fireEvent.click(open);
+    expect(onNavigate).toHaveBeenCalledWith('cases', { caseId: 'case-1' });
+  });
+
+  it('lists members in case-number order once the numbers arrive, unnumbered members last (re-shoot PW3-7)', async () => {
+    // Stored by internal id, the numbers read shuffled (CASE-000085, CASE-000087, CASE-000086).
+    const shuffled: Campaign = { ...CAMPAIGN, case_ids: ['case-b7', 'case-0f', 'case-zz', 'case-a1', 'case-c3'] };
+    listMock.mockResolvedValue({ campaigns: [shuffled], total: 1, enabled: true });
+    getMock.mockResolvedValue({
+      campaign: shuffled,
+      case_numbers: { 'case-b7': 'CASE-000087', 'case-0f': 'CASE-000085', 'case-a1': 'CASE-000100', 'case-c3': 'CASE-000086' },
+    });
+    renderCampaigns();
+    fireEvent.click(await screen.findByText('10.0.0.5 · 3 cases'));
+    await screen.findByText('CASE-000085');
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-member-case]'));
+    expect(rows.map((row) => row.dataset.memberCase)).toEqual(['case-0f', 'case-c3', 'case-b7', 'case-a1', 'case-zz']);
+    // The label each row shows (its first child; the description is hidden text).
+    expect(rows.map((row) => row.firstElementChild?.textContent)).toEqual([
+      'CASE-000085',
+      'CASE-000086',
+      'CASE-000087',
+      'CASE-000100',
+      'case-zz',
+    ]);
+    // Each row still opens its own case.
+    expect(screen.getByRole('button', { name: 'Open CASE-000086' })).toHaveAccessibleDescription('Internal id case-c3');
+  });
+
+  it('holds each member row while the numbers load, then falls back to the id when the read fails', async () => {
+    let fail: (reason: unknown) => void = () => {};
+    getMock.mockReturnValue(new Promise((_resolve, reject) => (fail = reject)));
+    renderCampaigns();
+    fireEvent.click(await screen.findByText('10.0.0.5 · 3 cases'));
+
+    expect(await screen.findAllByTestId('member-case-pending')).toHaveLength(3);
+    expect(screen.queryByText('case-1')).toBeNull();
+    fail(new Error('offline'));
+    expect(await screen.findByText('case-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('member-case-pending')).toBeNull();
   });
 
   it('Refresh reloads the campaign list without discarding unsaved policy edits', async () => {
     renderCampaigns();
 
-    fireEvent.keyDown(await screen.findByRole('tab', { name: /policy & schedule/i }), {
+    fireEvent.keyDown(await screen.findByRole('tab', { name: /policy and schedule/i }), {
       key: 'Enter',
     });
     const toggle = await screen.findByRole('switch', { name: /enable scheduled correlation/i });
@@ -261,7 +372,7 @@ describe('Campaigns page', () => {
     await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
     expect(apiGetMock).toHaveBeenCalledTimes(1);
 
-    fireEvent.keyDown(screen.getByRole('tab', { name: /policy & schedule/i }), {
+    fireEvent.keyDown(screen.getByRole('tab', { name: /policy and schedule/i }), {
       key: 'Enter',
     });
     expect(
@@ -271,9 +382,9 @@ describe('Campaigns page', () => {
 
   it('recorrelates via campaignsApi.recorrelate', async () => {
     renderCampaigns();
-    await screen.findByText('Lateral movement — 10.0.0.5');
+    await screen.findByText('10.0.0.5 · 3 cases');
 
-    fireEvent.keyDown(screen.getByRole('tab', { name: /policy & schedule/i }), {
+    fireEvent.keyDown(screen.getByRole('tab', { name: /policy and schedule/i }), {
       key: 'Enter',
     });
     const btn = await screen.findByRole('button', { name: /run correlation now/i });

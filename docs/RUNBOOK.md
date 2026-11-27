@@ -3,7 +3,7 @@
 Operating **Agentic SOC** after it is deployed. This is the
 day-2 companion to [`DEPLOY.md`](../DEPLOY.md) (cold deploy),
 [`docs/USAGE.md`](USAGE.md) (how to use the surfaces),
-[`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md) (symptom → fix playbook), and
+[`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md) (symptom → fix guide), and
 [`SECURITY.md`](../SECURITY.md) (posture).
 
 The suite is **vendor-agnostic**. It owns its **own state** in one of three
@@ -22,7 +22,7 @@ below are therefore **backend-conditional** — the section flags which.
 ```bash
 # Direct (the agnostic stack publishes :8088; or exec into the container)
 curl -s localhost:8088/api/health ; echo
-#   -> {"status":"ok","version":"0.1.12","es_connected":...,"store_type":"...","setup_complete":true}
+#   -> {"status":"ok","version":"0.2.0","es_connected":...,"store_type":"...","setup_complete":true}
 
 # THROUGH the web UI's nginx (proves the SPA → backend path end-to-end)
 curl -fsS http://localhost:8080/api/health ; echo
@@ -73,11 +73,16 @@ machine identifier, so the effective volume name remains
 migration; changing display nomenclature does not rename stored state.
 
 ```bash
-# Backup
-docker exec tlsoc-postgres pg_dump -U tlsoc -d tlsoc -Fc > tlsoc-$(date +%F).dump
+# Backup (reads POSTGRES_USER and POSTGRES_DB inside the container, so it follows
+# TLSOC_PG_USER and TLSOC_PG_DB)
+docker exec tlsoc-postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > tlsoc-$(date +%F).dump
 
-# Restore (into a fresh, empty db)
-docker exec -i tlsoc-postgres pg_restore -U tlsoc -d tlsoc --clean --if-exists < tlsoc-YYYY-MM-DD.dump
+# Restore into an empty database, with the backend stopped
+./scripts/agentic-soc-compose.sh stop tlsoc-backend
+docker exec tlsoc-postgres sh -c 'dropdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker exec tlsoc-postgres sh -c 'createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker exec -i tlsoc-postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --exit-on-error' < tlsoc-YYYY-MM-DD.dump
+./scripts/agentic-soc-compose.sh start tlsoc-backend
 
 # Volume-level backup (cold): stop the backend first to quiesce writes
 ./scripts/agentic-soc-compose.sh stop tlsoc-backend
@@ -87,9 +92,12 @@ docker run --rm -v tlsoc-agentic-soc_tlsoc-pgdata:/data -v "$PWD":/backup alpine
 
 - `STATE_DB_URL` must be the async URL
   `postgresql+asyncpg://user:pass@host:5432/tlsoc`.
-- pgvector is **best-effort**: if `CREATE EXTENSION vector` fails the suite logs a
-  warning and uses JSON+Python cosine for RAG (functional, slower). Use the
-  `pgvector/pgvector:pg16` image to get native kNN.
+- pgvector is **best-effort**. Since 0.2.0 knowledge search ranks in the backend process
+  on SQLite and PostgreSQL alike, with a cached in-memory float32 matrix (single-threaded
+  numpy, then an exact re-score, so near ties are kept): about 10 to 20 ms at 2,000 chunks.
+  pgvector ranks only a corpus too large for that matrix, or a process without numpy. If
+  `CREATE EXTENSION vector` fails the suite logs a warning; search still works, and only a
+  very large corpus is slower. The `pgvector/pgvector:pg16` image installs the extension.
 - Schema is created idempotently on startup (`SQL state schema ensured`).
 
 ### 2.2 SQLite (`STATE_BACKEND=sqlite`)
@@ -113,7 +121,7 @@ management key:
 | `tlsoc-agent-cursor` | single-doc (`primary`) | constant |
 
 - Use **Settings → Organization → Storage & retention** to preview and explicitly
-  apply the owned-state ILM policy. In 0.1.12 it applies only to the append-only audit
+  apply the owned-state ILM policy. In 0.2.0 it applies only to the append-only audit
   and usage aliases; mutable cases and live metadata remain Hot. The desired default
   is 180 days Hot + 90 days Warm, with deletion always off. Do not attach a blanket
   ILM policy to every `tlsoc-agent-*` alias.
@@ -212,6 +220,92 @@ per-rule `correlation_rules`, `risk_weights`, `asset_criticality`,
 (the live auto-close policy knob — `fp_auto_close` is deprecated and auto-migrated
 into it), caps.
 
+### 4.5 Repairing precedent whose stored text drifted
+
+The precedent corpus (`resolved_case`) stores a rendered snippet per case. When the
+renderer changes, chunks written by the older one keep serving their old wording — and
+nothing surfaces it: the composition report compares metadata tallies, the collapse
+guard is a size guard, and the per-rule distribution reads metadata with the text
+discarded. No metadata key records which generation produced a chunk, so the only way
+to detect drift is to render each case again and compare.
+
+**1. Look, for free.** The dry run is the default: it embeds nothing, writes nothing
+and deletes nothing.
+
+```bash
+curl -s -X POST localhost:8088/api/rag/precedent/repair \
+  -H 'content-type: application/json' -d '{}' | jq '{complete, scanned, tiers}'
+```
+
+Read the per-tier counts (`analyst_confirmed` and `model_unconfirmed`):
+
+| count | means |
+|---|---|
+| `current` | the stored text is exactly what the projector renders today. Nothing to do. |
+| `stale` | the re-render differs. `would_repair` of these fit in this run's cap. |
+| `undetermined` | the backing case could not be read, or the chunk has no case id / no durable chunk id. Never touched. |
+| `not_projecting` | broken out as `excluded` / `withdrawn` / `absent`. Only `absent` is removable. |
+| `complete` | `false` means this run could not cover everything — a truncated backend read, an undetermined chunk, or candidates past the cap. A `false` here is never "0 stale remain". |
+
+`GET /api/diagnostics` publishes the same per-tier counts as
+`precedent_corpus.stale_text_chunks` if you would rather watch it than poll the repair.
+
+**2. Then repair.** Same route, `dry_run: false`, `rag:manage`, audited.
+
+```bash
+curl -s -X POST localhost:8088/api/rag/precedent/repair \
+  -H 'content-type: application/json' -d '{"dry_run": false}' | jq '{repaired, evicted, remaining, complete}'
+```
+
+Each repaired chunk costs exactly one embedding, through the single gateway and the
+cost ledger — that is what `embedded_chunks` reports; `embedding_calls` counts gateway
+round trips, and one batch is one call, so the two are different numbers and only the
+first is proportional to spend. A byte-identical re-render costs nothing. Embeddings
+are metered but are not pre-flight budget-gated, so the run carries its own bound —
+four times the configured precedent window — and reports `remaining` when it hits it.
+**Re-run until `remaining` is 0**; the pass is resumable and each run re-classifies
+from scratch.
+
+`repaired` is a VERIFIED count. Both mutations are confirmed by re-reading the corpus
+afterwards rather than trusting the store's own return value, so a chunk that was
+written but does not come back is listed in `unverified_repairs`, stays counted as
+outstanding, and keeps `complete`/`ok` false. Re-running is the fix: the pass will
+simply classify it stale again.
+
+**3. Refusals are answers, not errors.** A refusal reports `refused: true` with a
+`reason_code` and changes nothing:
+
+| `reason_code` | what to do |
+|---|---|
+| `repair_embedding_space_changed` | the embedding model changed; let the ordinary reseed run — it re-derives every chunk from the current builder anyway. |
+| `repair_embedding_degraded` | the embedding provider is degraded. Fix it first; hash-space vectors must never become durable. |
+| `repair_mass_eviction` / `repair_tier_emptied` | the case store says most (or all) of a tier's cases are gone. Treat that as a case-store problem, not corpus drift. Tier-emptying is refused unconditionally and cannot be configured away. |
+| `repair_exclusion_set_unknown` | the precedent exclusion set could not be read and this process has never held it. Restore the state backend first. |
+
+**4. Know what is and is not reversible.** A repair is **idempotent and re-derivable**
+— running it again renders the same text from the same case — but it is **not
+reversible to the prior render**. The store upserts, and the prior render is by
+definition the stale one nobody wants back. For the **delete** path only, the evicted
+document id, text and metadata are written to the append-only audit trail *before* the
+removal, and **that record is the only reconstruction path**; if it cannot be written,
+the removal does not happen. Find it with
+`GET /api/audit?surface=rag_precedent_repair` (rows carrying
+`tool_name=precedent_evicted_chunk`). That row is written before the delete, so when the
+re-read afterwards still finds the chunk, a second row follows it under the same case:
+`tool_name=precedent_eviction_incomplete`, outcome Failed, document id only. The chunk is
+then still in the corpus and the document id is listed in `incomplete_evictions`.
+
+Ground truth is never touched: no feedback row, no disposition, no `decision_by`, no
+status, no history rewrite. To remove a precedent *deliberately*, use the exclusion API
+(§ `POST /api/rag/precedent/exclusions`) — that is the supported path, and it is the
+only one that holds across a reprojection.
+
+**5. Expect extra case-store reads during an embedding-model migration.** Changing the
+embedding model re-derives the precedent it carries forward, so a reseed now issues one
+case-store read per distinct archived-precedent case (memoised within the run, so it is
+bounded by the number of distinct cases, not by chunks) where it previously issued
+none — plan a migration on an estate with a long archived-precedent tail accordingly.
+
 ## 5. Scaling notes
 
 - **The poller is single, in-process.** **Do not run two backend replicas** — there
@@ -224,8 +318,15 @@ into it), caps.
 - **Redis** backs enrichment dedup/cache; without it the backend degrades to an
   in-memory cache. Keep TTLs generous to protect free-tier enrichment limits.
 - **Embeddings / vector store** flow through the gateway (local-hashing fallback)
-  and persist in the state backend (pgvector kNN on Postgres, JSON cosine
-  otherwise).
+  and persist in the state backend as JSON. The backend ranks them in process with an
+  in-memory matrix; on PostgreSQL with pgvector, only a very large corpus is ranked in
+  the database.
+- **Watch the event loop and the case figures.** `GET /api/diagnostics/health` reports
+  `event_loop` (the worst and 99th-percentile event-loop lag over the last minute) and
+  `case_population` (when the all-time case figures were read; they are re-read at most
+  once a minute, and the last reading is served, marked with its read time, while one
+  background read replaces it). A lag that stays high means slow synchronous work on the
+  loop; an old `case_population` read time means the background read is failing.
 
 ## 6. Incident response (for the tool itself)
 

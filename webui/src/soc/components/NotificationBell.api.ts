@@ -17,6 +17,12 @@
  * this module's shape is unchanged.
  */
 import { api } from '@/lib/api';
+import type {
+  BackgroundJobProgress,
+  BackgroundJobResult,
+  BackgroundJobStatus,
+} from '@/lib/types';
+import { isActiveJobStatus } from '@/soc/jobs/jobs';
 
 /** The read lifecycle of an inbox item (mirrors the backend `InAppNotification.state`). */
 export type InboxItemState = 'unseen' | 'seen' | 'read' | 'archived';
@@ -38,6 +44,11 @@ export interface InboxItem {
   state?: InboxItemState;
   created_at?: string;
   read_at?: string | null;
+  ref?: Record<string, unknown>;
+  job_id?: string | null;
+  job_status?: BackgroundJobStatus | null;
+  progress?: BackgroundJobProgress | null;
+  result?: BackgroundJobResult | null;
 }
 
 /** GET /api/notifications/inbox response. */
@@ -62,6 +73,16 @@ export function fetchInbox(limit = 8): Promise<InboxResponse> {
 /** The unread badge count (state in {unseen, seen}). */
 export function fetchUnreadCount(): Promise<UnreadCountResponse> {
   return api.get<UnreadCountResponse>('notifications/inbox/unread-count');
+}
+
+/** Active personal work is independent of notification read/unread state. */
+export async function fetchActiveJobCount(): Promise<number> {
+  const response = await api.jobs.list({ limit: 100, offset: 0 });
+  const personal = (response.jobs ?? []).filter((job) => isActiveJobStatus(job.status)).length;
+  const related = (response.related?.llm_batches ?? []).filter((job) =>
+    ['submitted', 'polling', 'retrieving'].includes(job.state),
+  ).length;
+  return personal + related;
 }
 
 /** Mark every not-yet-read item in the caller's inbox read. */

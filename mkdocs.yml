@@ -1,8 +1,8 @@
 site_name: Agentic SOC Help Center
 site_description: Version-matched product, administration, operations, reference, and release documentation for Agentic SOC.
-site_url: !ENV [TLSOC_DOCS_SITE_URL, "https://arydestroyer.github.io/Agentic-Kibana/"]
-repo_url: https://github.com/ARYDESTROYER/Agentic-Kibana
-repo_name: ARYDESTROYER/Agentic-Kibana
+site_url: !ENV [TLSOC_DOCS_SITE_URL, "https://arydestroyer.github.io/Kavach-AgenticSOC/"]
+repo_url: https://github.com/ARYDESTROYER/Kavach-AgenticSOC
+repo_name: ARYDESTROYER/Kavach-AgenticSOC
 edit_uri: !ENV [TLSOC_DOCS_EDIT_URI, "edit/Testing/docs/"]
 docs_dir: docs
 site_dir: site
@@ -75,20 +75,23 @@ extra_javascript:
   - javascripts/extra.js
 
 extra:
-  product_version: "0.1.12"
-  docs_version: "0.1"
-  stable_docs_url: !ENV [TLSOC_DOCS_STABLE_URL, "https://arydestroyer.github.io/Agentic-Kibana/stable/"]
+  product_version: "0.2.0"
+  docs_version: "0.2"
+  stable_docs_url: !ENV [TLSOC_DOCS_STABLE_URL, "https://arydestroyer.github.io/Kavach-AgenticSOC/stable/"]
   release:
     channel: !ENV [TLSOC_DOCS_CHANNEL, "Testing"]
     stable_branch: main
     testing_branch: Testing
   version:
-    provider: mike
+    # The published site lists its versions through Mike. The Console's bundled Help
+    # Center holds one installed line and has no version list, so its build sets
+    # TLSOC_DOCS_VERSION_PROVIDER empty and the page never asks for versions.json.
+    provider: !ENV [TLSOC_DOCS_VERSION_PROVIDER, mike]
     default: stable
     alias: true
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/ARYDESTROYER/Agentic-Kibana
+      link: https://github.com/ARYDESTROYER/Kavach-AgenticSOC
       name: Agentic SOC on GitHub
   status:
     new: Recently added
@@ -108,6 +111,18 @@ exclude_docs: |
   VIGIL_STUDY.md
   requirements.txt
   research/
+  # The curated What's new notes are generator input (scripts/build_release_notes.py
+  # renders releases/whats-new.md from them), not Help Center files.
+  releases/notes/
+  # Screenshots used only by the repository README.md and INSTALL.md, kept out
+  # of the bundled Help Center and so out of the Console image.
+  assets/screenshots/audit-log.webp
+  assets/screenshots/dashboards-library.webp
+  assets/screenshots/runbooks.webp
+  assets/screenshots/settings-models.webp
+  assets/screenshots/users-add-user.webp
+  assets/screenshots/users-rbac.webp
+  assets/screenshots/workspace-chat.webp
 
 nav:
   - Use the product:
@@ -120,6 +135,7 @@ nav:
           - Your first case: getting-started/first-case.md
       - User and analyst guide:
           - Start a shift: analyst/overview.md
+          - Dashboards: analyst/dashboards.md
           - Cases: analyst/cases.md
           - Case Manager: analyst/case-manager.md
           - Investigation: analyst/investigation.md
@@ -128,11 +144,16 @@ nav:
           - Collaboration: analyst/collaboration.md
           - Campaigns: analyst/campaigns.md
           - Analytics: analyst/analytics.md
+          - Team activity: analyst/team-activity.md
+          - KPI glossary: analyst/kpi-glossary.md
+          - Explainable numbers: analyst/explainable-numbers.md
       - Automation:
           - Overview: automation/index.md
           - Detection rules: automation/rules.md
           - Tuning and baselines: automation/tuning-baselines.md
-          - Playbooks and approvals: automation/playbooks-approvals.md
+          - Approvals: automation/approvals.md
+          - Auto-close review: automation/auto-close-review.md
+          - Page moved (approvals and runbooks): automation/playbooks-approvals.md
       - Threat intelligence:
           - Knowledge and memory: intelligence/knowledge-memory.md
           - Runbooks: intelligence/runbooks.md
@@ -142,6 +163,7 @@ nav:
       - Console administration:
           - Settings: administration/settings.md
           - Users and RBAC: administration/users-rbac.md
+          - Audit log: administration/audit-log.md
           - Authentication: administration/authentication.md
           - Models and spend: administration/models-spend.md
           - Notifications: administration/notifications.md
@@ -159,6 +181,7 @@ nav:
       - Install: getting-started/install.md
       - Deployment: operations/deployment.md
       - Configuration: operations/configuration.md
+      - Background jobs: operations/background-jobs.md
       - Security hardening: operations/security.md
       - Health and backup: operations/health-backup.md
       - Upgrades: operations/upgrades.md
@@ -185,9 +208,14 @@ nav:
           - Console design system: development/design-system.md
           - Extensions: development/extensions.md
           - Testing and contracts: development/testing.md
+          - Replay harness: development/replay-harness.md
   - Releases and versions:
+      - What's new: releases/whats-new.md
+      - Agentic SOC 0.2: releases/0.2.md
+      - Agentic SOC 0.2.0: releases/0.2.0.md
       - Agentic SOC 0.1: releases/0.1.md
-      - Agentic SOC 0.1.12: releases/0.1.12.md
+      - Agentic SOC 0.1.13 (unpublished candidate): releases/0.1.13.md
+      - Agentic SOC 0.1.12 (bootstrap blocked): releases/0.1.12.md
       - Agentic SOC 0.1.11 (failed publication): releases/0.1.11.md
       - Agentic SOC 0.1.10 (failed publication): releases/0.1.10.md
       - Agentic SOC 0.1.9 (failed publication): releases/0.1.9.md

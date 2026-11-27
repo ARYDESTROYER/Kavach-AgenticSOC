@@ -13,7 +13,7 @@
  * (`aria-hidden`) — the badge TEXT already carries the meaning — and can be turned
  * off per call with `icon={false}` for the rare space-constrained inline use.
  */
-import { Bot, type LucideIcon } from 'lucide-react';
+import { Bot, UserCheck, type LucideIcon } from 'lucide-react';
 import { Badge, type BadgeProps } from '@/ui/badge';
 import { cn } from '@/lib/cn';
 import { DASH, humanizeToken, fmtPercent, toPercentValue, formatTimestamp } from '@/lib/format';
@@ -25,6 +25,15 @@ import {
   scoreBand,
   type ScoreBand,
 } from './palette';
+import { ProvenanceTag } from './ProvenanceTag';
+import { SEVERITY_LABEL, statusLabel, verdictLabel, type SeverityBand } from './semantic-labels';
+import {
+  canonicalVerdict,
+  confidencePercent,
+  outcomeCellText,
+  verdictWords,
+  type CaseOutcome,
+} from './outcome';
 
 type Variant = NonNullable<BadgeProps['variant']>;
 
@@ -67,8 +76,8 @@ function tokenVariant(name: string): Variant {
 // --------------------------------------------------------------------------- //
 // Severity — accepts a number (0..100 or a 1..4/1..5 bucket) or a string label
 // ("critical"/"high"/"medium"/"low"/"info"). Normalises to one severity band.
+// The band words live in `semantic-labels.ts`, shared with the report exports.
 // --------------------------------------------------------------------------- //
-type SeverityBand = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 /** Normalise a numeric severity into a band via the ONE 0-100 ladder (palette.ts
  *  scoreBand: 0-21 low / 22-47 medium / 48-73 high / 74-100 critical). A value at
@@ -133,14 +142,6 @@ const SEVERITY_VARIANT: Record<SeverityBand, Variant> = {
   medium: tokenVariant(SEVERITY_COLOR.medium),
   low: tokenVariant(SEVERITY_COLOR.low),
   info: tokenVariant(SEVERITY_COLOR.info),
-};
-
-const SEVERITY_LABEL: Record<SeverityBand, string> = {
-  critical: 'Critical',
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
-  info: 'Info',
 };
 
 export interface SeverityBadgeProps {
@@ -211,14 +212,8 @@ function statusVariant(status: string): Variant {
   }
 }
 
-/** Human-facing label for a status. The legacy NEEDS_HUMAN alias renders as a
- *  clearer "Open · awaiting analyst" per the F8 taxonomy. */
-function statusLabel(status: string): string {
-  const t = status.trim().toLowerCase();
-  if (t === 'needs_human') return 'Open · awaiting analyst';
-  if (t === 'on_hold') return 'On hold';
-  return humanizeToken(status);
-}
+// The status words (`statusLabel`: the legacy NEEDS_HUMAN alias reads "Open · awaiting
+// analyst" per the F8 taxonomy) live in `semantic-labels.ts`, shared with the exports.
 
 /** Normalise a status string to a SEMANTIC_ICON key (§6.1 non-color signaling). */
 function statusIconKey(status: string): string {
@@ -326,7 +321,7 @@ export function VerdictBadge({ verdict, className, icon = true }: VerdictBadgePr
   return (
     <Badge variant={verdictVariant(verdict)} className={className}>
       <SemanticGlyph iconKey={verdictIconKey(verdict)} show={icon} />
-      {humanizeToken(verdict)}
+      {verdictLabel(verdict)}
     </Badge>
   );
 }
@@ -688,6 +683,188 @@ export function AutoClosedBadge({
       <Bot className="size-3 shrink-0" aria-hidden />
       Auto-closed by AI
       {objection}
+    </Badge>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Case outcome (Round 12, SPEC D15) — the analyst's classification once a human
+// classifies, an attributed AI verdict otherwise. Three grammars, never mixed:
+// STATUS = glyph + text (StatusBadge), OUTCOME = filled disposition badge with an
+// `Analyst` provenance tag (OutcomeBadge), AI VERDICT = outline badge with the Bot
+// glyph (AiVerdictChip). All copy is controlled; `outcome.by` is never rendered here.
+// --------------------------------------------------------------------------- //
+
+export interface OutcomeBadgeProps {
+  outcome: CaseOutcome;
+  className?: string;
+  /** Render the `Analyst` provenance tag beside a human outcome. Default true. */
+  showProvenance?: boolean;
+  /**
+   * The table-cell form (the Cases Outcome column): ONE badge in the table badge size
+   * with a short label ({@link outcomeCellText}), the whole outcome as its tooltip and
+   * read to assistive technology, and the actor as its glyph (the Analyst person glyph
+   * in place of the separate tag, the Bot for an AI auto-close), so it fits its column
+   * and is never clipped.
+   */
+  compact?: boolean;
+}
+
+/** The table badge size, shared with the Cases Status column beside it. */
+const TABLE_BADGE = 'px-1.5 text-2xs';
+
+function CompactOutcomeBadge({ outcome, className }: { outcome: CaseOutcome; className?: string }) {
+  const text = outcomeCellText(outcome);
+  if (!text) return null;
+  const human = outcome.source === 'analyst' || outcome.source === 'analyst_policy';
+  const variant: Variant =
+    outcome.source === 'analyst'
+      ? outcome.disposition
+        ? dispositionVariant(outcome.disposition)
+        : 'outline'
+      : outcome.source === 'analyst_unrecorded'
+        ? 'outline'
+        : 'info';
+  return (
+    <Badge
+      variant={variant}
+      data-testid="case-outcome"
+      data-outcome-source={outcome.source}
+      data-provenance={human ? 'analyst' : undefined}
+      title={text.full}
+      className={cn(TABLE_BADGE, outcome.source === 'analyst_unrecorded' && 'text-muted-foreground', className)}
+    >
+      {human || outcome.source === 'review' ? (
+        <UserCheck className="size-3 shrink-0" aria-hidden />
+      ) : outcome.source === 'agent_auto' ? (
+        <Bot className="size-3 shrink-0" aria-hidden />
+      ) : (
+        <SemanticGlyph iconKey="undetermined" show />
+      )}
+      {text.label}
+      <span className="sr-only">{`, ${text.full.toLowerCase()}`}</span>
+    </Badge>
+  );
+}
+
+/**
+ * The outcome of record as a badge. Renders NOTHING while the outcome is pending —
+ * an open case has no outcome yet, and the AI verdict has its own chip.
+ */
+export function OutcomeBadge({ outcome, className, showProvenance = true, compact = false }: OutcomeBadgeProps) {
+  if (outcome.source === 'pending') return null;
+  if (compact) return <CompactOutcomeBadge outcome={outcome} className={className} />;
+  if (outcome.source === 'analyst') {
+    return (
+      <span
+        data-testid="case-outcome"
+        data-outcome-source="analyst"
+        className={cn('inline-flex items-center gap-1', className)}
+      >
+        <DispositionBadge disposition={outcome.disposition} />
+        {showProvenance ? <ProvenanceTag kind="analyst" /> : null}
+      </span>
+    );
+  }
+  if (outcome.source === 'analyst_policy') {
+    return (
+      <span
+        data-testid="case-outcome"
+        data-outcome-source="analyst_policy"
+        className={cn('inline-flex items-center gap-1', className)}
+      >
+        <Badge variant="info">
+          <SemanticGlyph iconKey="benign" show />
+          Declared benign
+        </Badge>
+        {showProvenance ? <ProvenanceTag kind="analyst" /> : null}
+      </span>
+    );
+  }
+  if (outcome.source === 'analyst_unrecorded') {
+    return (
+      <Badge
+        variant="outline"
+        data-testid="case-outcome"
+        data-outcome-source="analyst_unrecorded"
+        className={cn('text-muted-foreground', className)}
+      >
+        <SemanticGlyph iconKey="undetermined" show />
+        Outcome not recorded
+      </Badge>
+    );
+  }
+  // An automatic close, or (Round 15) its review, whose headline is the review's reading.
+  return (
+    <Badge
+      variant={outcome.agreement === 'overrides' ? 'warning' : 'info'}
+      data-testid="case-outcome"
+      data-outcome-source={outcome.source}
+      className={className}
+    >
+      <Bot className="size-3 shrink-0" aria-hidden />
+      {outcome.source === 'review'
+        ? outcome.headline
+        : outcome.aiVerdict === 'FALSE_POSITIVE'
+          ? 'Auto-closed as false positive'
+          : outcome.aiVerdict === 'TRUE_POSITIVE'
+            ? 'Auto-closed as true positive'
+            : 'Auto-closed'}
+    </Badge>
+  );
+}
+
+export interface AiVerdictChipProps {
+  verdict: string | null | undefined;
+  confidence?: number | null;
+  className?: string;
+  /** Prefix the words with "AI verdict" (default) — keeps the attribution explicit. */
+  labelled?: boolean;
+  /**
+   * Extra classes for the "AI verdict" prefix (a narrow header can hide it visually; the
+   * Bot glyph, the chip's title and its screen-reader text keep the attribution).
+   */
+  labelClassName?: string;
+  /** Extra classes for the verdict words (a narrow header lets only they truncate). */
+  wordsClassName?: string;
+}
+
+/**
+ * The AI verdict as an OUTLINE chip with the Bot glyph — visibly a machine
+ * recommendation, never styled like the analyst's filled outcome badge.
+ */
+export function AiVerdictChip({
+  verdict,
+  confidence,
+  className,
+  labelled = true,
+  labelClassName,
+  wordsClassName,
+}: AiVerdictChipProps) {
+  const words = verdictWords(verdict);
+  const pct = confidencePercent(confidence);
+  const hasVerdict = Boolean(canonicalVerdict(verdict));
+  return (
+    <Badge
+      variant="outline"
+      data-testid="case-ai-verdict"
+      className={cn('gap-1 font-normal text-foreground/85', className)}
+      title={hasVerdict ? 'The AI verdict is a recommendation; a person or the deterministic policy decides.' : undefined}
+    >
+      <Bot className="size-3 shrink-0 text-primary" aria-hidden />
+      {labelled ? (
+        <>
+          <span
+            className={cn('text-muted-foreground', labelClassName)}
+            aria-hidden={labelClassName ? true : undefined}
+          >
+            AI verdict
+          </span>
+          {labelClassName ? <span className="sr-only">AI verdict</span> : null}
+        </>
+      ) : null}
+      <span className={cn('font-medium', wordsClassName)}>{words}</span>
+      {hasVerdict && pct !== null ? <span className="tabular-nums text-muted-foreground">{pct}%</span> : null}
     </Badge>
   );
 }

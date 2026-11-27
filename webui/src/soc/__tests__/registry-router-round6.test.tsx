@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 
 import { ROUTES, renderRoute, FEATURES, type FeatureChild } from '../registry';
-import { pageHash, RouterProvider, useRoute } from '../router';
+import { optsFromHash, pageHash, RouterProvider, useRoute } from '../router';
 import { ThemeProvider } from '../theme';
 import { PrefsProvider } from '../prefs';
 import { AuthProvider } from '../auth';
@@ -66,10 +66,11 @@ describe('ROUTES — host-tab children route through their host with a forced ta
     ['knowledge', 'intelligence', 'knowledge'],
     ['runbooks', 'intelligence', 'runbooks'],
     ['memory', 'intelligence', 'memory'],
-    ['playbooks', 'intelligence', 'playbooks'],
     ['personas', 'intelligence', 'personas'],
-    // Compatibility deep-link: the retired combined Catalog lands on Playbooks.
-    ['catalog', 'intelligence', 'playbooks'],
+    // Round 14 (D44): `#/playbooks` and `#/catalog` redirect to `#/runbooks` in the
+    // router; their route entries are the defensive fallback and open Runbooks too.
+    ['playbooks', 'intelligence', 'runbooks'],
+    ['catalog', 'intelligence', 'runbooks'],
   ] as const)(
     '#/%s renders its host element with a forced tab',
     (child, host, tab) => {
@@ -103,18 +104,37 @@ describe('ROUTES — host-tab children route through their host with a forced ta
 /* -------------------------------------------------------------------------- */
 
 describe('registry — Analytics children RBAC gates match their backend routes', () => {
-  const metricsHost = FEATURES.find((f) => f.id === 'metrics')!;
+  const analyticsGroup = FEATURES.find((f) => f.id === 'analytics')!;
   const child = (id: string): FeatureChild | undefined =>
-    (metricsHost.children ?? []).find((c) => c.id === id);
+    (analyticsGroup.children ?? []).find((c) => c.id === id);
+
+  it('gives the group its own id and opens Metrics, so no child shares the group id', () => {
+    expect(analyticsGroup.label).toBe('Analytics');
+    expect(analyticsGroup.target).toBe('metrics');
+    expect((analyticsGroup.children ?? []).map((c) => c.id)).not.toContain('analytics');
+    // `#/analytics` is a registered page id that the router redirects to Metrics.
+    expect(renderRoute('analytics', { onRerunWizard: () => undefined }).type).toBe(ROUTES.metrics.element);
+  });
 
   it('gates the Metrics child on metrics:view (the grant GET /api/metrics requires)', () => {
     expect(child('metrics')?.perm).toEqual({ resource: 'metrics', action: 'view' });
     expect(child('effectiveness')?.perm).toEqual({ resource: 'metrics', action: 'view' });
   });
 
-  it('leaves Cost + Models ungated (their GET endpoints are auth-only)', () => {
-    expect(child('cost')?.perm).toBeUndefined();
-    expect(child('models')?.perm).toBeUndefined();
+  it('gates Cost on cost:view (the grant GET /api/usage/summary requires) and Models on models:read', () => {
+    // Round 14 roles-11: the server refuses the spend summary without cost:view, so the
+    // navigation, the palette and app help never offer the Cost page to such a role.
+    expect(child('cost')?.perm).toEqual({ resource: 'cost', action: 'view' });
+    // Round 15 (SPEC §3.1): the hidden copy of the Cost child is gone; the child's gate is
+    // the only one (no hidden entry repeats a visible child's id).
+    expect(FEATURES.find((f) => f.id === 'cost' && f.hidden)).toBeUndefined();
+    // GET /api/llm/models needs models:read (Round 16, B01), so the child asks for it.
+    expect(child('models')?.perm).toEqual({ resource: 'models', action: 'read' });
+  });
+
+  it('gates Sources on sources:read, as Logs is (roles-05)', () => {
+    expect(FEATURES.find((f) => f.id === 'sources')?.perm).toEqual({ resource: 'sources', action: 'read' });
+    expect(FEATURES.find((f) => f.id === 'logs')?.perm).toEqual({ resource: 'sources', action: 'read' });
   });
 });
 
@@ -124,13 +144,17 @@ describe('registry — Analytics children RBAC gates match their backend routes'
 
 describe('RouterProvider — initial hash normalization', () => {
   let currentPage = '';
+  let currentOpts: ReturnType<typeof useRoute>['opts'];
   function Reader() {
-    currentPage = useRoute().page;
+    const route = useRoute();
+    currentPage = route.page;
+    currentOpts = route.opts;
     return null;
   }
   afterEach(() => {
     window.location.hash = '';
     currentPage = '';
+    currentOpts = undefined;
   });
 
   it('preserves #/settings?s=<section> on initial load (no strip to bare #/settings)', () => {
@@ -178,6 +202,120 @@ describe('RouterProvider — initial hash normalization', () => {
       '#/case_manager?caseId=case%2Falpha%2001',
     );
     expect(pageHash('cases')).toBe('#/cases');
+    window.location.hash = '#/case_manager?caseId=case%2Falpha%2001';
+    expect(optsFromHash()).toEqual({
+      caseId: 'case/alpha 01',
+      status: undefined,
+      assignee: undefined,
+      tag: undefined,
+    });
+  });
+
+  it.each(['performance', 'posture'])('round-trips the Metrics %s tab across refresh', (tab) => {
+    expect(pageHash('metrics', { tab })).toBe(`#/metrics?tab=${tab}`);
+    window.location.hash = `#/metrics?tab=${tab}`;
+    expect(optsFromHash()).toEqual({ tab });
+    act(() => {
+      render(
+        <RouterProvider>
+          <Reader />
+        </RouterProvider>,
+      );
+    });
+    expect(currentPage).toBe('metrics');
+    expect(currentOpts).toEqual({ tab });
+    expect(window.location.hash).toBe(`#/metrics?tab=${tab}`);
+  });
+
+  it('writes Operational, the default tab, as the bare page and refuses unknown tabs', () => {
+    expect(pageHash('metrics', { tab: 'operational' })).toBe('#/metrics');
+    expect(pageHash('metrics', { tab: 'nope' })).toBe('#/metrics');
+    for (const hash of [
+      '#/metrics?tab=operational',
+      '#/metrics?tab=Posture',
+      '#/metrics?tab=posture&next=https%3A%2F%2Fevil.example',
+      '#/metrics?tab=posture&tab=performance',
+    ]) {
+      window.location.hash = hash;
+      expect(optsFromHash(), hash).toBeUndefined();
+    }
+  });
+
+  it.each([
+    ['effectiveness', 'effectiveness'],
+    ['cost', 'cost'],
+  ] as const)('replaces #/metrics?tab=%s with its own page #/%s', (tab, page) => {
+    // The former Metrics tabs are pages of their own: the nav and the h1 agree there. An
+    // href built for one is the page's own hash, so a new-tab open lands where a click does.
+    expect(pageHash('metrics', { tab })).toBe(`#/${page}`);
+    window.location.hash = `#/metrics?tab=${tab}`;
+    expect(optsFromHash()).toBeUndefined();
+    const replaceState = vi.spyOn(window.history, 'replaceState');
+    try {
+      act(() => {
+        render(
+          <RouterProvider>
+            <Reader />
+          </RouterProvider>,
+        );
+      });
+      expect(currentPage).toBe(page);
+      expect(currentOpts).toBeUndefined();
+      expect(window.location.hash).toBe(`#/${page}`);
+      expect(replaceState.mock.calls.map((call) => call[2])).toEqual([`#/${page}`]);
+    } finally {
+      replaceState.mockRestore();
+    }
+  });
+
+  it('redirects the Analytics group id to Metrics', () => {
+    window.location.hash = '#/analytics';
+    act(() => {
+      render(
+        <RouterProvider>
+          <Reader />
+        </RouterProvider>,
+      );
+    });
+    expect(currentPage).toBe('metrics');
+    expect(window.location.hash).toBe('#/metrics');
+  });
+
+  it('round-trips only allowlisted filtered-case result options', () => {
+    expect(
+      pageHash('cases', {
+        status: 'active',
+        assignee: 'tier-2@example.com',
+        tag: 'needs-review',
+      }),
+    ).toBe('#/cases?status=active&assignee=tier-2%40example.com&tag=needs-review');
+    window.location.hash = '#/cases?assignee=tier-2%40example.com';
+    expect(optsFromHash()).toEqual({
+      caseId: undefined,
+      status: undefined,
+      assignee: 'tier-2@example.com',
+      tag: undefined,
+    });
+    window.location.hash = '#/cases?tag=ok&next=javascript%3Aalert%281%29';
+    expect(optsFromHash()).toBeUndefined();
+
+    const unicodeHash = pageHash('cases', { assignee: 'アナリスト', tag: '要確認' });
+    expect(unicodeHash).toBe(
+      '#/cases?assignee=%E3%82%A2%E3%83%8A%E3%83%AA%E3%82%B9%E3%83%88&tag=%E8%A6%81%E7%A2%BA%E8%AA%8D',
+    );
+    window.location.hash = unicodeHash;
+    expect(optsFromHash()).toEqual({
+      caseId: undefined,
+      status: undefined,
+      assignee: 'アナリスト',
+      tag: '要確認',
+    });
+    window.location.hash = '#/cases?assignee=analyst%E2%80%AEexe';
+    expect(optsFromHash()).toBeUndefined();
+    window.location.hash = '#/cases?tag=review%2Furgent';
+    expect(optsFromHash()).toBeUndefined();
+    window.location.hash = '#/cases?tag=review%ZZ';
+    expect(optsFromHash()).toBeUndefined();
   });
 });
 
@@ -218,7 +356,7 @@ describe('CommandPalette — disclosure children are reachable jump targets', ()
     fireEvent.change(input, { target: { value: 'Cost' } });
     // The Cost child (a tab of Analytics — previously unreachable from Cmd-K) is present
     // with its unique `navc-<parent>-<id>` value.
-    const cost = document.querySelector('[cmdk-item][data-value="navc-metrics-cost"]');
+    const cost = document.querySelector('[cmdk-item][data-value="navc-analytics-cost"]');
     expect(cost).toBeTruthy();
     fireEvent.click(cost as HTMLElement);
     expect(onNavigate).toHaveBeenCalledWith('cost');

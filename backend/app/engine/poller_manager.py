@@ -86,6 +86,16 @@ _SUM_KEYS = (
     "window_events", "cross_source_linked", "drained",
 )
 
+#: Round 16 CDX1: the most deferred-queue pages one drain reads in a tick. It bounds the
+#: reads and the rebuild attempts a tick can spend on candidates it cannot rebuild;
+#: a tick that reads them all without filling its allowance hands the next tick the
+#: place to resume (``PollerManager._drain_resume_after``).
+DRAIN_PAGES_PER_TICK = 4
+#: The largest deferred-queue page the drain asks for: ``max(50, 2 * allowance)`` up
+#: to this, so a very large per-tick cap never asks one search for more rows than
+#: Elasticsearch's result window allows. Further pages carry the rest.
+DRAIN_PAGE_MAX = 1000
+
 
 class PollerManager:
     """Owns N per-source :class:`Poller` children and drives them as one poller."""
@@ -125,6 +135,12 @@ class PollerManager:
         # overlapping ticks. Per-signature locking (in the pipeline) still guards
         # concurrency WITHIN a tick across sources; this guards concurrency ACROSS ticks.
         self._poll_lock = asyncio.Lock()
+        # Round 16 CDX1: where the next deferred drain resumes, when the last one read
+        # every page it may without filling its allowance (a block of candidates it
+        # could not rebuild, such as a source that is down). ``None`` is the head of
+        # the queue. Process-local and opaque (the store's own marker); a restart
+        # starts at the head again.
+        self._drain_resume_after: Any = None
         self.rebuild()
 
     # ------------------------------------------------------------------ #
@@ -467,49 +483,99 @@ class PollerManager:
         so restart does not strand overflow. Candidates deferred for policy/risk
         reasons are intentionally excluded. ``limit`` is the unused allowance from
         normal handling in this manager tick, never a second independent cap.
+
+        Round 16 B11: the drain asks the store for the deferred queue itself (one query
+        per page on the bundled stores) instead of paging every OPEN case from offset 0
+        each tick, which stopped at the first 10,000 on a real cluster and skipped rows
+        that shifted while it paged. The store leaves out a candidate a person acted on
+        (B05: never drained), so those can never fill a page.
+
+        Round 16 CDX1: a page of candidates that cannot be rebuilt (their source is
+        down, or nothing is left to rebuild them from) no longer blocks the ones behind
+        it. The drain reads further pages with the store's keyset marker, oldest first,
+        at most :data:`DRAIN_PAGES_PER_TICK` pages of ``max(50, 2 * limit)`` (at most
+        :data:`DRAIN_PAGE_MAX`) rows. When it reads them all without filling the
+        allowance, the next tick resumes after the last row it read; a tick that fills
+        its allowance, or reaches the end of the queue, sends the next one back to the
+        head, so healthy candidates still drain oldest first and every candidate is
+        reached within a bounded number of ticks. A store whose answer carries no
+        marker (a plain list, such as a third-party store without the ``after``
+        parameter) gives the old single page.
         """
         if not prefs.background_scan_enabled or prefs.caps.kill_switch or limit <= 0:
             return 0
-        from ..constants import CaseStatus
+        from ..stores.base import is_deferred_candidate
 
+        store = self._state.real_cases
+        page_size = min(DRAIN_PAGE_MAX, max(50, 2 * limit))
+        after = self._drain_resume_after
+        seen: set[str] = set()
         drained = 0
-        offset = 0
-        page_size = max(50, limit * 2)
-        while drained < limit:
-            # Deferred candidates are always OPEN (verdict None). Filtering to OPEN skips
-            # the CLOSED/RESOLVED bulk, so a busy tenant's drain no longer pages
-            # oldest-first through tens of thousands of terminal cases (deep-pagination
-            # risk) to reach the handful of open candidates (audit #31).
-            page, total = await self._state.real_cases.list(
-                status=CaseStatus.OPEN.value,
-                limit=page_size,
-                offset=offset,
-                sort_field="created_at",
-                sort_order="asc",
-            )
-            if not page:
-                break
+        pages = 0
+        while drained < limit and pages < DRAIN_PAGES_PER_TICK:
+            try:
+                if after is None:
+                    page = await store.list_deferred_candidates(
+                        older_than=older_than, limit=page_size,
+                    )
+                else:
+                    page = await store.list_deferred_candidates(
+                        older_than=older_than, limit=page_size, after=after,
+                    )
+            except Exception as exc:  # noqa: BLE001 - a continuation only; see below
+                if after is None:
+                    raise
+                # A continuation the store cannot answer (a stale or unreadable
+                # marker) ends this tick's read and never wedges the drain: the next
+                # tick starts at the head of the queue.
+                logger.warning(
+                    "Deferred queue continuation failed; the next drain starts at the "
+                    "head: %s", exc,
+                )
+                self._drain_resume_after = None
+                return drained
+            pages += 1
             for case in page:
                 if drained >= limit:
                     break
-                if case.verdict is not None or not case.awaiting_reason.startswith("deferred:"):
+                # A store that hands back a row it already returned this tick never
+                # gives one candidate to two runs.
+                if case.case_id in seen:
                     continue
-                if case.updated_at >= older_than:
-                    continue  # created/deferred in this tick; preserve the cap
-                cluster = await self._state.cluster_for_case(case)
+                seen.add(case.case_id)
+                # The shared rule again, for a third-party store's answer: OPEN, no
+                # verdict, cap-deferred, not deferred in this tick (preserve the cap) and
+                # not a candidate a person acted on (it is theirs).
+                if not is_deferred_candidate(case, older_than=older_than):
+                    continue
+                try:
+                    cluster = await self._state.cluster_for_case(case)
+                except Exception as exc:  # noqa: BLE001 - skip; never block the rest
+                    logger.warning(
+                        "Deferred candidate %s could not be rebuilt; skipped this tick: %s",
+                        case.case_id, exc,
+                    )
+                    continue
                 if cluster is None:
                     continue
                 query_source = self.source_for_id(case.source_id)
+                # Round 16 (SPEC D10, WP08): the run re-reads this candidate inside its
+                # signature lock and skips it when a person closed or moved it meanwhile.
                 await self._state.real_pipeline.investigate_cluster(
                     cluster,
                     case.source_surface,
                     prefs,
                     query_source=query_source,
+                    trigger="drain",
+                    known_case_id=case.case_id,
                 )
                 drained += 1
-            offset += len(page)
-            if offset >= total:
-                break
+            after = getattr(page, "next_after", None)
+            if after is None:
+                break  # the end of the queue, or a store that does not page
+        # Every page read and the allowance still free: the rows read so far could not
+        # be drained, so the next tick resumes after them. Otherwise the head.
+        self._drain_resume_after = after if drained < limit else None
         return drained
 
     # ------------------------------------------------------------------ #

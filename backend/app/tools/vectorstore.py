@@ -87,6 +87,18 @@ class VectorStore(ABC):
         """All stored chunks belonging to ``document_id`` (chunk_index order)."""
 
     @abstractmethod
+    async def list_all_chunks(self) -> list[StoredChunk]:
+        """EVERY stored chunk, in ONE pass.
+
+        All three backends already materialise the whole corpus internally to answer
+        ``list_documents``/``list_chunks``, so a caller that needs corpus-wide metadata
+        must not fan out ``list_chunks`` per document: that turns one read into a full
+        scan PER DOCUMENT (O(documents x corpus)) on a corpus with thousands of
+        precedent documents. Strict, like its siblings: an outage raises rather than
+        degrading to an empty corpus.
+        """
+
+    @abstractmethod
     async def delete_document(self, document_id: str) -> int:
         """Remove every chunk of ``document_id``; return the number removed."""
 
@@ -200,6 +212,9 @@ class InMemoryVectorStore(VectorStore):
         out = [c for c in self._chunks if _document_id_of(c) == document_id]
         out.sort(key=lambda c: int((c.metadata or {}).get("chunk_index", 0) or 0))
         return out
+
+    async def list_all_chunks(self) -> list[StoredChunk]:
+        return list(self._chunks)
 
     async def delete_document(self, document_id: str) -> int:
         before = len(self._chunks)
@@ -364,6 +379,9 @@ class ESVectorStore(VectorStore):
         out = [c for _id, c in await self._scan_all() if _document_id_of(c) == document_id]
         out.sort(key=lambda c: int((c.metadata or {}).get("chunk_index", 0) or 0))
         return out
+
+    async def list_all_chunks(self) -> list[StoredChunk]:
+        return [c for _id, c in await self._scan_all()]
 
     async def delete_document(self, document_id: str) -> int:
         ids = [

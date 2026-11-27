@@ -30,11 +30,11 @@ import {
   TableHead,
   TableCell,
 } from '@/ui/table';
-import { humanizeToken } from '@/lib/format';
 import {
   RESOURCE_ACTIONS,
   RESOURCE_ORDER,
   ROLE_LABELS,
+  resourceLabel,
   BUILTIN_ROLES,
   type CustomRole,
   type GrantMap,
@@ -241,7 +241,7 @@ export function RoleMatrixEditor({
                 return (
                   <TableRow key={resource} className="hover:bg-transparent">
                     <TableCell className="whitespace-nowrap font-medium text-foreground">
-                      {humanizeToken(resource)}
+                      {resourceLabel(resource)}
                     </TableCell>
                     {actionCols.map((i) => {
                       const action = actions[i];

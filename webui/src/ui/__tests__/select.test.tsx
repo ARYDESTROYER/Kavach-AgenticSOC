@@ -24,11 +24,17 @@ describe('SelectItem — accent hover/selected token', () => {
     expect(tokens).toContain('focus:bg-accent');
     expect(tokens).toContain('focus:text-accent-foreground');
     expect(tokens).not.toContain('focus:bg-muted');
-    expect(tokens).toContain('rounded-[3px]');
+    // Round 12 concentric radii: a 6px option inside a 10px list with a 4px (`p-1`)
+    // inset (was a squared 3px on both).
+    expect(tokens).toContain('rounded-sm');
 
     const listbox = getAllByRole('listbox')[0];
     const surfaceTokens = listbox.className.split(/\s+/).filter(Boolean);
-    expect(surfaceTokens).toContain('rounded-[3px]');
+    expect(surfaceTokens).toContain('rounded-lg');
     expect(surfaceTokens).toContain('bg-popover');
+    // A select list is a menu: menu elevation, and it scales out of its trigger — the
+    // one popper origin rule in theme.css targets the wrapper Radix renders it in.
+    expect(surfaceTokens).toContain('shadow-menu');
+    expect(listbox.closest('[data-radix-popper-content-wrapper]')).not.toBeNull();
   });
 });

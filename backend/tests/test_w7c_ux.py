@@ -29,6 +29,7 @@ from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.models import Case, Entity
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 
 # --------------------------------------------------------------------------- #
@@ -226,6 +227,7 @@ def test_bulk_rbac_denies_non_permitted_action() -> None:
         _login(c, "Admin", "Admin@123")
         c.post("/api/users", json={"username": "t1", "password": "t1password",
                                    "role": "analyst_tier1"})
+        ready_user(c, "t1", "t1password")
         c.post("/api/auth/logout")
         assert _login(c, "t1", "t1password").status_code == 200
         # close-class action → needs cases:close → DENIED.
@@ -300,6 +302,7 @@ def test_audit_gated_without_view_permission() -> None:
         _login(c, "Admin", "Admin@123")
         c.post("/api/users", json={"username": "t1", "password": "t1password",
                                    "role": "analyst_tier1"})
+        ready_user(c, "t1", "t1password")
         c.post("/api/auth/logout")
         _login(c, "t1", "t1password")
         assert c.get("/api/audit").status_code == 403
@@ -308,6 +311,7 @@ def test_audit_gated_without_view_permission() -> None:
         _login(c, "Admin", "Admin@123")
         c.post("/api/users", json={"username": "aud", "password": "audpassword",
                                    "role": "auditor"})
+        ready_user(c, "aud", "audpassword")
         c.post("/api/auth/logout")
         _login(c, "aud", "audpassword")
         assert c.get("/api/audit").status_code == 200

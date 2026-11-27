@@ -28,11 +28,16 @@ Stdlib only — see :mod:`app.auth.tokens` and :mod:`app.auth.passwords`.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import secrets
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
-from app.auth.passwords import hash_password, verify_password
+from app.auth.passwords import averify_password, hash_password, verify_password
+from app.auth.session_limits import bounded_token_seconds
 from app.auth.tokens import TokenError, decode, encode
 from app.constants import UserRole
 
@@ -49,6 +54,26 @@ _DEFAULT_ROLE = UserRole.ANALYST_TIER1.value
 # pending token is short-lived and carries ``mfa: "pending"``.
 _MFA_PENDING_SECONDS = 5 * 60  # ~5 minutes to enter the second factor.
 _MFA_PENDING_CLAIM = "pending"
+# Round 16 (B19): each pending token carries a random ``jti``. A bounded process-local
+# map counts its failed second-factor attempts; after this many, or once it has been
+# used to mint a session, the token is refused.
+MFA_PENDING_MAX_FAILURES = 5
+_MFA_PENDING_TRACKED_MAX = 10_000
+
+# Round 12 (Remember me): a remembered session token carries ``rm: true`` and an
+# ``exp`` equal to the policy duration (never more than 24 h — the NIST AAL2 overall
+# ceiling, which also keeps the session prune-grace invariant). The same claim in the
+# SIGNED MFA pending token carries the user's request across the second-factor hop,
+# so a client can neither add nor strip it.
+_REMEMBER_CLAIM = "rm"
+_REMEMBER_MAX_SECONDS = 24 * 3600
+
+# Round 14 (SPEC §4.5.3): the audit log names a session by an HMAC of its id, never
+# by the id or the token. The key is derived from the signing secret with this label,
+# so the reference is stable for the life of the secret, cannot be reversed to a
+# session id, and is never a key that can sign anything.
+_SESSION_REF_LABEL = b"agentic-soc/audit/session-ref/v1"
+_SESSION_REF_HEX_CHARS = 16
 
 
 @dataclass
@@ -68,6 +93,8 @@ class AuthUser:
     must_change_password: bool = False
     mfa_enabled: bool = False
     sid: str | None = None
+    # Round 12: True when the token was minted by a "Remember me" sign-in (``rm``).
+    remember: bool = False
 
 
 @dataclass
@@ -76,7 +103,12 @@ class _Record:
 
     ``mfa_enabled`` is mirrored so :meth:`login` can decide synchronously whether to
     return a pending half-session; the TOTP SECRET itself is NEVER mirrored here (it
-    stays on the persistent User record and is read by the route layer for phase 2)."""
+    stays on the persistent User record and is read by the route layer for phase 2).
+    ``mfa_required`` mirrors the admin-set per-user enrollment MANDATE (distinct from
+    ``mfa_enabled`` = actually enrolled). ``env_managed`` marks a BASE-layer
+    (env-supplied) account with NO persisted User record — such an account can never
+    complete MFA enrollment, so :meth:`requires_mfa` must never demand it (lockout
+    guard); a store record overlaying the same username clears the flag."""
 
     password_hash: str
     role: str = _DEFAULT_ROLE
@@ -84,6 +116,8 @@ class _Record:
     must_change_password: bool = False
     groups: list[str] = field(default_factory=list)
     mfa_enabled: bool = False
+    mfa_required: bool = False
+    env_managed: bool = False
 
 
 class AuthService:
@@ -100,7 +134,8 @@ class AuthService:
         ephemeral secret is generated and a clear WARNING is logged (sessions
         will not survive a process restart — set a stable secret in production).
     token_hours:
-        Session token lifetime in hours.
+        Standard (not remembered) session token lifetime in hours; clamped to
+        ``session_limits.MAX_SESSION_TOKEN_SECONDS`` (below the registry prune grace).
     users:
         Env-supplied ``username -> password_hash`` map (``auth_users`` + the single
         admin). Forms the BASE layer of the synced view; the persistent store
@@ -122,7 +157,9 @@ class AuthService:
         mfa_enforce_roles: list[str] | None = None,
     ) -> None:
         self._enabled = bool(enabled)
-        self._token_seconds = max(1, int(token_hours) * 3600)
+        # Clamped below the session-registry prune grace (with a warning) so a revoked
+        # token can never outlive its registry row (ASVS 7.4.1, Round 12).
+        self._token_seconds = bounded_token_seconds(token_hours)
         self._admin_username = admin_username
         # Roles for which an MFA challenge is required even before the user enrolled
         # (they'll be routed to set up MFA). Refreshed via set_mfa_enforce_roles().
@@ -141,7 +178,11 @@ class AuthService:
         self._base: dict[str, _Record] = {}
         for uname, h in (users or {}).items():
             role = UserRole.SUPER_ADMIN.value if uname == admin_username else _DEFAULT_ROLE
-            self._base[uname.strip().lower()] = _Record(password_hash=h, role=role, active=True)
+            # env_managed=True: no persisted User record exists for a base-layer
+            # account, so it can never complete MFA enrollment (see requires_mfa).
+            self._base[uname.strip().lower()] = _Record(
+                password_hash=h, role=role, active=True, env_managed=True,
+            )
         # The live, lookup-keyed-by-lowercase view (base, store overlay on top).
         self._records: dict[str, _Record] = dict(self._base)
 
@@ -155,11 +196,30 @@ class AuthService:
                 "TLSOC_AUTH_JWT_SECRET when using the Compose stack) for production."
             )
         self._jwt_secret = secret
+        self._session_ref_key: bytes | None = (
+            hmac.new(secret.encode("utf-8"), _SESSION_REF_LABEL, hashlib.sha256).digest()
+            if secret else None
+        )
+        # Round 16 (B19): pending-token jti -> [expires_epoch, failures, used].
+        # Process local and bounded (oldest evicted first); the per-account counter on
+        # the stored user record is the durable bound.
+        self._pending_attempts: OrderedDict[str, list] = OrderedDict()
 
     @property
     def is_enabled(self) -> bool:
         """Whether authentication enforcement is turned on."""
         return self._enabled
+
+    def session_ref(self, sid: str | None) -> str | None:
+        """The audit reference of a session (SPEC §4.5.3): the first 16 hex
+        characters of HMAC-SHA-256 of the session id, keyed by a key derived from the
+        signing secret. ``None`` without a session id or a signing secret (sign-in
+        off). Never the token, never the id itself."""
+        key = self._session_ref_key
+        if key is None or not isinstance(sid, str) or not sid:
+            return None
+        digest = hmac.new(key, sid.encode("utf-8"), hashlib.sha256).hexdigest()
+        return digest[:_SESSION_REF_HEX_CHARS]
 
     def set_users(self, store_users: list, *, allow_empty: bool = False) -> None:
         """Refresh the synced view from the persistent ``UserStore`` (call after the
@@ -187,6 +247,7 @@ class AuthService:
                 must_change_password=bool(u.must_change_password),
                 groups=list(getattr(u, "groups", []) or []),
                 mfa_enabled=bool(getattr(u, "mfa_enabled", False)),
+                mfa_required=bool(getattr(u, "mfa_required", False)),
             )
         if not (store_users or []) and not allow_empty:
             # Records in the LIVE view that are not identical to the env base layer are
@@ -243,6 +304,10 @@ class AuthService:
         notif_prefs: object | None = None,
         user_prefs: object | None = None,
         custom_roles: object | None = None,
+        chat_conversations: object | None = None,
+        chat_feedback: object | None = None,
+        reports: object | None = None,
+        chat_starters: object | None = None,
     ) -> None:
         """Best-effort cleanup of a deleted user's per-user side-state.
 
@@ -261,6 +326,17 @@ class AuthService:
         the delete itself (the account record is already gone). The cleared stores
         are the per-user KV buckets ONLY — the authoritative audit / case feed is
         untouched (it intentionally retains the actor's historical rows, #2).
+
+        Round 12 final review (L1): the user's chat material is keyed by the username
+        too, so it goes with the account — ``chat_conversations.purge_owner`` (every
+        Workspace conversation, its exchange/archive/summary documents, request
+        receipts, step observations and live state), ``chat_feedback.clear`` (the
+        answer ratings and their comments) and ``reports.clear`` (the user's reports).
+        The caller stops the user's running chat turns first, so none writes back.
+
+        Round 13 (SPEC-chat §3.2.3): ``chat_starters.clear`` drops the user's chat
+        starter state (visit clock, opaque starter keys and hidden families), keyed by
+        the username like the ratings, so it is cleared wherever they are.
         """
         uname = (username or "").strip()
         if not uname:
@@ -275,6 +351,10 @@ class AuthService:
             # so there is nothing username-keyed to drop; the parameter is accepted
             # for forward-compat / symmetry and only used if a delete(user) exists.
             ("custom_roles", custom_roles, "delete_assignment", (uname,)),
+            ("chat_conversations", chat_conversations, "purge_owner", (uname,)),
+            ("chat_feedback", chat_feedback, "clear", (uname,)),
+            ("chat_starters", chat_starters, "clear", (uname,)),
+            ("reports", reports, "clear", (uname,)),
         ]
         for label, store, method, args in targets:
             if store is None:
@@ -290,6 +370,33 @@ class AuthService:
                 log.warning("purge_user_side_state(%s): clearing %s failed: %s",
                             uname, label, exc)
 
+    @property
+    def token_seconds(self) -> int:
+        """The STANDARD (not remembered) session-token lifetime in seconds."""
+        return self._token_seconds
+
+    def _session_lifetime(self, remember_seconds: int) -> tuple[int, bool]:
+        """``(expires_in_s, remembered)`` for a new session token. A positive
+        ``remember_seconds`` mints a remembered token bounded to 24 h; otherwise the
+        standard ``token_hours`` lifetime applies (unchanged behaviour)."""
+        try:
+            wanted = int(remember_seconds or 0)
+        except (TypeError, ValueError):
+            wanted = 0
+        if wanted > 0:
+            return (max(60, min(wanted, _REMEMBER_MAX_SECONDS)), True)
+        return (self._token_seconds, False)
+
+    def _session_claims(self, username: str, rec: _Record, sid: str,
+                        remembered: bool) -> dict:
+        claims = {
+            "sub": username, "role": rec.role, "mc": rec.must_change_password,
+            "sid": sid, "tv": self._token_version_for(username),
+        }
+        if remembered:
+            claims[_REMEMBER_CLAIM] = True
+        return claims
+
     @staticmethod
     def _new_sid() -> str:
         """A fresh opaque 128-bit session id (hex) for the JWT ``sid`` claim."""
@@ -300,8 +407,13 @@ class AuthService:
     def _lookup(self, username: str) -> _Record | None:
         return self._records.get((username or "").strip().lower())
 
-    def authenticate(self, username: str, password: str) -> str | None:
+    def authenticate(self, username: str, password: str, *,
+                     remember_seconds: int = 0) -> str | None:
         """Verify credentials; return a signed JWT on success, else ``None``.
+
+        Round 12: a positive ``remember_seconds`` mints a REMEMBERED token (``rm``
+        claim, ``exp`` = that lifetime, at most 24 h). The route decides eligibility
+        (:func:`app.api.routes._remember_decision`); the default is unchanged.
 
         SYNCHRONOUS (reads the synced view, never the async store). A disabled
         account never authenticates. The JWT embeds the role + must-change flag plus
@@ -317,14 +429,31 @@ class AuthService:
             return None
         if not verify_password(password or "", rec.password_hash):
             return None
+        lifetime, remembered = self._session_lifetime(remember_seconds)
         return encode(
-            {
-                "sub": username, "role": rec.role, "mc": rec.must_change_password,
-                "sid": self._new_sid(), "tv": self._token_version_for(username),
-            },
+            self._session_claims(username, rec, self._new_sid(), remembered),
             self._jwt_secret,
-            expires_in_s=self._token_seconds,
+            expires_in_s=lifetime,
         )
+
+    def check_password(self, username: str, password: str) -> bool:
+        """Constant-cost credential check WITHOUT minting a token (same timing
+        equaliser as :meth:`authenticate`)."""
+        rec = self._lookup(username)
+        if rec is None or not rec.active or not rec.password_hash:
+            verify_password(password or "", _DUMMY_HASH)
+            return False
+        return verify_password(password or "", rec.password_hash)
+
+    async def acheck_password(self, username: str, password: str) -> bool:
+        """:meth:`check_password` with the PBKDF2 work off the event loop (Round 16,
+        B18). The same lookup and the same dummy-hash equaliser for an unknown or
+        disabled account, so the timing still says nothing about the name."""
+        rec = self._lookup(username)
+        if rec is None or not rec.active or not rec.password_hash:
+            await averify_password(password or "", _DUMMY_HASH)
+            return False
+        return await averify_password(password or "", rec.password_hash)
 
     def claims_of(self, token: str) -> dict | None:
         """Decode a token and return its raw claims (incl. ``sid``/``tv``), or None on
@@ -337,6 +466,32 @@ class AuthService:
             return decode(token, self._jwt_secret)
         except TokenError:
             return None
+
+    def expired_session_claims(self, token: str) -> dict | None:
+        """The claims of a SESSION token whose signature is valid but whose ``exp``
+        has passed, else ``None`` (a live, forged, malformed or pending token).
+
+        Lets ``/auth/me`` tell a browser "your session ended after N hours" instead
+        of silently showing the sign-in page. Only a token this server signed can
+        reach here, so the claims are trustworthy; the token itself stays unusable
+        (:meth:`verify` still rejects it)."""
+        if not token:
+            return None
+        try:
+            decode(token, self._jwt_secret)
+            return None  # still live — not expired
+        except TokenError:
+            pass
+        try:
+            claims = decode(token, self._jwt_secret, verify_exp=False)
+        except TokenError:
+            return None
+        if claims.get("mfa") == _MFA_PENDING_CLAIM:
+            return None
+        sub = claims.get("sub")
+        if not isinstance(sub, str) or not sub:
+            return None
+        return claims
 
     def principal(self, username: str) -> AuthUser | None:
         """The :class:`AuthUser` for ``username`` from the synced view (role +
@@ -368,11 +523,21 @@ class AuthService:
     # ----- MFA (Wave 2 / F3) -------------------------------------------------- #
     def requires_mfa(self, username: str) -> bool:
         """Whether ``username`` must clear a second factor before getting a session:
-        the user has MFA enabled, OR its role is in the enforce-for-roles set."""
+        the user has MFA ENROLLED, OR is under an enrollment MANDATE — the admin-set
+        per-user ``mfa_required`` flag, or its role in the enforce-for-roles set.
+
+        LOCKOUT GUARD: an env-managed base-layer account (no persisted ``User``
+        record) can NEVER complete enrollment — /auth/mfa/confirm + the login-phase
+        enroll routes 400 for it — so a role/per-user mandate is never applied to it
+        (demanding a factor it cannot set up would permanently lock it out)."""
         rec = self._lookup(username)
         if rec is None or not rec.active:
             return False
-        return bool(rec.mfa_enabled) or (rec.role in self._mfa_enforce_roles)
+        if rec.mfa_enabled:
+            return True
+        if rec.env_managed:
+            return False
+        return bool(rec.mfa_required) or (rec.role in self._mfa_enforce_roles)
 
     def mfa_enabled(self, username: str) -> bool:
         """Whether ``username`` currently has MFA ENROLLED (from the synced view).
@@ -380,15 +545,98 @@ class AuthService:
         rec = self._lookup(username)
         return bool(rec and rec.mfa_enabled)
 
-    def begin_mfa(self, username: str) -> str:
+    def begin_mfa(self, username: str, *, remember: bool = False) -> str:
         """Mint a SHORT-LIVED pending half-session token (``mfa:"pending"``) for
         ``username``. It is NOT a full session — :meth:`verify` rejects it — so it
-        can only be exchanged via :meth:`mint_session` after the second factor."""
-        return encode(
-            {"sub": username, "mfa": _MFA_PENDING_CLAIM},
-            self._jwt_secret,
-            expires_in_s=_MFA_PENDING_SECONDS,
-        )
+        can only be exchanged via :meth:`mint_session` after the second factor.
+
+        Round 12: ``remember`` stores the user's "Remember me" REQUEST as a signed
+        ``rm`` claim, so it survives the MFA hop without the client re-sending it
+        and cannot be added or stripped (the signature covers it). Eligibility is
+        re-decided against the live policy when the session is finally minted."""
+        claims: dict = {
+            "sub": username, "mfa": _MFA_PENDING_CLAIM, "jti": secrets.token_urlsafe(16),
+        }
+        if remember:
+            claims[_REMEMBER_CLAIM] = True
+        return encode(claims, self._jwt_secret, expires_in_s=_MFA_PENDING_SECONDS)
+
+    def _pending_claims(self, pending_token: str) -> dict | None:
+        if not pending_token:
+            return None
+        try:
+            claims = decode(pending_token, self._jwt_secret)
+        except TokenError:
+            return None
+        if claims.get("mfa") != _MFA_PENDING_CLAIM:
+            return None
+        return claims
+
+    def _pending_entry(self, claims: dict) -> list | None:
+        jti = claims.get("jti")
+        if not isinstance(jti, str) or not jti:
+            return None
+        now = time.time()
+        # Drop expired entries from the oldest end, then bound the size.
+        while self._pending_attempts:
+            first_key = next(iter(self._pending_attempts))
+            if self._pending_attempts[first_key][0] >= now:
+                break
+            self._pending_attempts.popitem(last=False)
+        entry = self._pending_attempts.get(jti)
+        if entry is None:
+            try:
+                exp = float(claims.get("exp", now + _MFA_PENDING_SECONDS))
+            except (TypeError, ValueError):
+                exp = now + _MFA_PENDING_SECONDS
+            entry = [exp, 0, False]
+            self._pending_attempts[jti] = entry
+            while len(self._pending_attempts) > _MFA_PENDING_TRACKED_MAX:
+                self._pending_attempts.popitem(last=False)
+        return entry
+
+    def pending_usable(self, pending_token: str) -> bool:
+        """Whether a pending token may still be tried: it carries a ``jti``, has not
+        been used to mint a session and has fewer than
+        :data:`MFA_PENDING_MAX_FAILURES` failed attempts (Round 16, B19)."""
+        claims = self._pending_claims(pending_token)
+        if claims is None:
+            return False
+        entry = self._pending_entry(claims)
+        if entry is None:
+            return False
+        return not entry[2] and entry[1] < MFA_PENDING_MAX_FAILURES
+
+    def note_pending_failure(self, pending_token: str) -> None:
+        """Count one failed second-factor attempt against a pending token."""
+        claims = self._pending_claims(pending_token)
+        entry = self._pending_entry(claims) if claims is not None else None
+        if entry is not None:
+            entry[1] += 1
+
+    def mark_pending_used(self, pending_token: str) -> bool:
+        """Spend a pending token: it is never accepted again. Returns False when it
+        was already spent (a concurrent request won) or cannot be tracked, so only one
+        request can mint a session from one pending token."""
+        claims = self._pending_claims(pending_token)
+        entry = self._pending_entry(claims) if claims is not None else None
+        if entry is None or entry[2]:
+            return False
+        entry[2] = True
+        return True
+
+    def pending_remember(self, pending_token: str) -> bool:
+        """Whether a VALID pending token carries the signed ``rm`` request. False
+        for any invalid, expired, tampered or non-pending token."""
+        if not pending_token:
+            return False
+        try:
+            claims = decode(pending_token, self._jwt_secret)
+        except TokenError:
+            return False
+        if claims.get("mfa") != _MFA_PENDING_CLAIM:
+            return False
+        return claims.get(_REMEMBER_CLAIM) is True
 
     def pending_subject(self, pending_token: str) -> str | None:
         """Validate a pending token and return its subject username, or ``None``.
@@ -411,27 +659,28 @@ class AuthService:
             return None
         return sub
 
-    def mint_session(self, username: str) -> tuple[str, AuthUser] | None:
+    def mint_session(self, username: str, *,
+                     remember_seconds: int = 0) -> tuple[str, AuthUser] | None:
         """Mint a FULL session token for ``username`` WITHOUT a password check —
         used after a second factor (TOTP/recovery) or a verified SSO login has
         already established the identity. Returns ``(token, AuthUser)`` or ``None``
-        if the user is unknown/inactive."""
+        if the user is unknown/inactive. A positive ``remember_seconds`` mints a
+        remembered token (see :meth:`authenticate`)."""
         rec = self._lookup(username)
         if rec is None or not rec.active:
             return None
         sid = self._new_sid()
+        lifetime, remembered = self._session_lifetime(remember_seconds)
         token = encode(
-            {
-                "sub": username, "role": rec.role, "mc": rec.must_change_password,
-                "sid": sid, "tv": self._token_version_for(username),
-            },
+            self._session_claims(username, rec, sid, remembered),
             self._jwt_secret,
-            expires_in_s=self._token_seconds,
+            expires_in_s=lifetime,
         )
         user = self.principal(username)
         if user is None:  # pragma: no cover — rec exists, so principal exists
             return None
         user.sid = sid
+        user.remember = remembered
         return token, user
 
     def verify(self, token: str) -> AuthUser | None:
@@ -464,4 +713,5 @@ class AuthService:
             must_change_password=rec.must_change_password,
             mfa_enabled=rec.mfa_enabled,
             sid=sid if isinstance(sid, str) and sid else None,
+            remember=claims.get(_REMEMBER_CLAIM) is True,
         )

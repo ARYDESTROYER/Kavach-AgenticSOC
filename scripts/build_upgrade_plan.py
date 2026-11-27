@@ -42,7 +42,7 @@ def main() -> None:
     # through the explicit host-authorized bootstrap. Newer installations use
     # the same plan through the Console.
     parser.add_argument("--min-version", default="0.1.1")
-    parser.add_argument("--max-version-exclusive", default="0.2.0")
+    parser.add_argument("--max-version-exclusive", default="0.3.0")
     parser.add_argument("--backend-timeout", type=int, default=300)
     parser.add_argument("--webui-timeout", type=int, default=180)
     parser.add_argument("--observation-seconds", type=int, default=30)

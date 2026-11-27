@@ -15,13 +15,17 @@
       crossorigin
     />
     <title>Agentic SOC</title>
+    <!-- An empty favicon: browsers stop requesting /favicon.ico (a 404 in every console).
+         A white-label favicon (Settings → Branding) replaces this link's href at runtime. -->
+    <link rel="icon" href="data:," />
     <!-- Pre-paint theme stamp (WS-F task 8c). The body background is
          `hsl(var(--canvas))`, which differs light↔dark, so a dark-preferring user
          would flash a light body before React's first commit stamps `.dark`. This
          tiny BLOCKING script stamps the SAME `.dark` class + `colorScheme` the
          ThemeProvider uses (storage key `soc.theme`; 'system'/unset → OS), BEFORE
          first paint, so there is no flash. It is intentionally a pure mirror of
-         theme.tsx's readStoredMode()+resolveDark(no branding)+applyDarkClass. -->
+         theme.tsx's readStoredMode()+resolveDark(no branding)+applyDarkClass, plus
+         the "Reduce transparency" device mirror (design-system/transparency.ts). -->
     <script>
       (function () {
         try {
@@ -38,6 +42,12 @@
           var el = document.documentElement;
           el.classList.toggle('dark', !!dark);
           el.style.colorScheme = dark ? 'dark' : 'light';
+          // "Reduce transparency: On" (design-system/transparency.ts, storage key
+          // `soc.transparency`): stamp the solid-material override before first paint so
+          // the top bar never flashes translucent for an operator who turned it off.
+          if (window.localStorage.getItem('soc.transparency') === 'reduced') {
+            el.setAttribute('data-transparency', 'reduced');
+          }
         } catch (e) {
           /* storage/matchMedia unavailable — leave the default light theme */
         }

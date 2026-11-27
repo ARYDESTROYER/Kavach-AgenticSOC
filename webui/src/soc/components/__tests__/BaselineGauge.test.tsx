@@ -143,3 +143,38 @@ describe('BaselineStatsOverview', () => {
     expect(screen.getAllByText(/Hour of week/i).length).toBeGreaterThan(0);
   });
 });
+
+describe('BaselineGauge on the Round 14 grammar (BL2, BL4, F13)', () => {
+  it('uses no text under 11px and no tracked capitals', () => {
+    const { container } = render(
+      <>
+        <BaselineSignatureCard data={SIGNATURE} />
+        <BaselineSignatureCard data={SIGNATURE} embedded />
+        <BaselineStatsOverview stats={STATS} />
+      </>,
+    );
+    const html = container.innerHTML;
+    expect(html).not.toMatch(/text-\[(?:[0-9]|10)px\]/);
+    expect(html).not.toMatch(/uppercase/);
+    expect(container.textContent ?? '').not.toContain('—');
+  });
+
+  it('renders the overview as a KpiStrip of counts with seasonality as context text', () => {
+    render(<BaselineStatsOverview stats={STATS} />);
+    const strip = screen.getByRole('group', { name: 'Baseline summary' });
+    expect(strip).toHaveAttribute('data-kpi-strip', 'compact');
+    expect(strip.textContent).not.toMatch(/Seasonality/);
+    expect(screen.getByText('Baseline on')).toBeInTheDocument();
+    expect(screen.getByText('observations per bucket')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Overall warm-up' })).toHaveClass('surface-panel');
+    expect(screen.getByTestId('baseline-context')).toHaveTextContent(/Seasonality Hour of week/);
+  });
+
+  it('draws the standalone signature view as a panel, not a nested card', () => {
+    render(<BaselineSignatureCard data={SIGNATURE} />);
+    const panel = screen.getByRole('region', { name: 'Signature baseline' });
+    expect(panel).toHaveClass('surface-panel');
+    expect(screen.getByText('Warming')).toBeInTheDocument();
+    expect(screen.getByText('p95 over the season')).toBeInTheDocument();
+  });
+});

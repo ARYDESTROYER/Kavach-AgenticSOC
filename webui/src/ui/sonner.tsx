@@ -6,22 +6,29 @@ type ToasterProps = React.ComponentProps<typeof SonnerToaster>;
 /**
  * Pre-themed sonner Toaster. Drives toast colors from our CSS-var tokens so it
  * matches both light and dark themes. sonner's own `theme` prop is NOT tied to our
- * `.dark` class — left as `system` it reads the OS `prefers-color-scheme` directly,
+ * `.dark` class: left as `system` it reads the OS `prefers-color-scheme` directly,
  * which diverges whenever the operator forces Light/Dark (or a branding default
  * overrides the OS). So the ThemeProvider mount passes the app's RESOLVED theme in;
  * `system` remains only as the standalone default. Import `toast` directly from
  * 'sonner' to fire toasts.
+ *
+ * Bottom clearance: theme.css lifts the bottom toaster by `--soc-toast-clearance` (a
+ * transform that glides as the value changes, sonner's own offset untouched), so a page
+ * that pins a Save and Discard bar to the bottom of the viewport keeps its toasts stacked
+ * above the bar (soc/hooks/useToastClearance.ts); no prop here.
  */
 function Toaster({ theme = 'system', ...props }: ToasterProps) {
   return (
     <SonnerToaster
       theme={theme}
       className="toaster group"
+      // Toasts are 10px (`--radius`, set on `[data-sonner-toaster]` in theme.css), like
+      // menus and popovers, with the detached-portal `shadow-overlay` elevation.
       toastOptions={{
         classNames: {
           toast:
             'group toast group-[.toaster]:bg-card group-[.toaster]:text-foreground ' +
-            'group-[.toaster]:border group-[.toaster]:border-border group-[.toaster]:shadow-elev2',
+            'group-[.toaster]:border group-[.toaster]:border-border group-[.toaster]:shadow-overlay',
           description: 'group-[.toast]:text-muted-foreground',
           actionButton:
             'group-[.toast]:bg-primary group-[.toast]:text-primary-foreground',

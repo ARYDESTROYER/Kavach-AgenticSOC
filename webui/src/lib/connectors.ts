@@ -17,7 +17,7 @@
  * A connector's `auth_fields` mark secrets with `secret: true`.
  */
 import { api } from './api';
-import type { ConnectorManifest, SecretsUpdate, SourceUpsert } from './types';
+import type { ConnectorManifest, SecretsUpdate, SourceInstance, SourceUpsert } from './types';
 
 /** A connector form's value: non-secret config + secret values typed this session. */
 export interface ConnectorFormValue {
@@ -117,8 +117,15 @@ export async function saveSource(
     enabled: boolean;
     isPrimary: boolean;
     ingestMode?: string | null;
+    /**
+     * The source's DECLARED native severity-ladder ceiling. THREE-state, and the
+     * distinction matters: `undefined` OMITS the key (the backend then carries the
+     * stored declaration forward), while `null` explicitly CLEARS it. Only the source
+     * editor passes this; a toggle/bulk/make-primary path must leave it undefined.
+     */
+    severityScaleMax?: number | null;
   },
-): Promise<void> {
+): Promise<{ ok: boolean; sources: SourceInstance[] }> {
   const { globalSecrets, sourceSecrets, config } = splitFormValue(manifest, value, {
     isPrimary: opts.isPrimary,
   });
@@ -133,12 +140,19 @@ export async function saveSource(
     is_primary: opts.isPrimary,
     ingest_mode: opts.ingestMode ?? null,
     config,
+    // Spread, never assign: an assigned `undefined` still serializes as an ABSENT key
+    // today, but spreading makes the omit-vs-null contract explicit at the call site
+    // instead of relying on that.
+    ...('severityScaleMax' in opts ? { severity_scale_max: opts.severityScaleMax } : {}),
   };
-  await api.upsertSource(upsert);
+  // The upsert's answer is returned so the caller says only what the server confirmed
+  // (the source is in the list; it is primary only when the list says so).
+  const saved = await api.upsertSource(upsert);
   const secretEntries = Object.entries(sourceSecrets).filter(([, v]) => v);
   if (secretEntries.length) {
     await api.setSourceSecrets(opts.id, Object.fromEntries(secretEntries));
   }
+  return saved;
 }
 
 /** A URL-safe slug from a display name (for a default source id). */

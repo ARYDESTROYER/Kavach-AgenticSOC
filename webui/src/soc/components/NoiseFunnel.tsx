@@ -1,19 +1,19 @@
 /**
- * NoiseFunnel — the "Noise Reduction" flow ribbon for the Security Command Center
- * (restored from the Round-8 horizontal-Sankey ribbon, then tuned as an
- * operational instrument rather than a decorative illustration).
+ * NoiseFunnel — the selected-window Noise Reduction instrument in the Security
+ * Command Center.
  *
- * Tells the value-prop story of how the agent thins raw alert volume down to the
- * handful of cases a human sees, as a left-to-right flow:
+ * Simple draws a full, filled alert-to-case flow. Alerts, clusters, and cases remain
+ * different units, so those first two ribbons use a disclosed compressed display scale;
+ * exact counts stay in their labels. From opened cases onward, the case-unit ribbons
+ * conserve the backend outcome partitions:
  *
- *     ingested → clustered → cases → { auto_cleared | escalated → closed }
+ *     alerts → clusters → cases ⇉ auto-cleared | escalated ⇉ human-closed | remainder
  *
- * The processing spine is intentionally one quiet, proportional stream. Severity is
- * evidence about each stage (available in the stage detail), not a second competing
- * visual encoding. At `cases`, the stream fans into the three terminal operational
- * views: auto-cleared and escalated are the conserved split; closed by a human is an
- * overlapping subset of escalated. The labelled count/share rail is authoritative;
- * the restored ribbon fan provides directional context for the operator.
+ * Simple is the default direct-labelled graph. Detailed intentionally restores the
+ * Testing renderer as a separate compatibility presentation: its 640x220 stretched
+ * canvas, processing spine, overlapping outcome fan, loss badges, and complete evidence
+ * rail remain unchanged. Open cases are shown as separate selected-window lifecycle
+ * context because they are not equal to the conserved escalated remainder.
  *
  * Binds VERBATIM to the §D `GET /api/metrics/noise-reduction` contract (the
  * `NoiseReduction` type). When the durable ingest counters are still warming up
@@ -21,16 +21,16 @@
  *
  * #9: every value shown is an aggregate count or a fixed stage label (no raw log
  * text), rendered as plain text — UNTRUSTED-safe by construction. Colours resolve
- * from approved theme/semantic tokens only (no raw hex; design gate). The SVG flow is
- * decorative (`aria-hidden`); ALL meaning is carried by the focusable stage
- * buttons/groups in the label rail, so assistive tech gets the numbers, not the
- * beziers. Reduced-motion is honoured globally (theme.css neutralises the keyframes).
+ * from approved theme/semantic tokens only (no raw hex; design gate). The SVG is
+ * decorative; graph labels or the Detailed evidence rail carry the accessible values.
+ * Refresh feedback is one-shot, data-keyed, and absent under reduced motion.
  */
 import * as React from 'react';
 import { Eye, EyeOff, Maximize2 } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { fmtNumber } from '@/lib/format';
+import { percentOf } from '@/lib/explain/rounding';
 import { api } from '@/lib/api';
 import type {
   NoiseLineage,
@@ -50,7 +50,21 @@ import {
 import { token, SEVERITY_COLOR, VERDICT_COLOR } from './palette';
 import { CountUp } from './CountUp';
 import { HelpTip } from './HelpTip';
+import { AskAboutThis } from './AskAboutThis';
+import { alertReduction, type AlertReduction } from './alert-reduction';
+import { PARTIAL_COVERAGE_NOTE } from './coverage-notes';
+import { KPI_TOPICS } from './ask-topics';
 import { NoiseLineageView } from './NoiseLineage';
+import { SegmentedControl } from './SegmentedControl';
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainNeverReachedPerson } from './metrics-explain/builders';
+import { usePrefersReducedMotion } from '@/soc/hooks/usePrefersReducedMotion';
+import {
+  placeFlowLabels,
+  type FlowLabelForm,
+  type FlowLabelInput,
+  type FlowLabelSizes,
+} from './noise-flow-labels';
 
 /* ------------------------------------------------------------------------- */
 /* Severity + outcome → token-name maps (routed through the palette authority  */
@@ -85,6 +99,9 @@ const OUTCOME_TOKEN: Record<string, string> = {
   auto_cleared: VERDICT_COLOR.false_positive, // blue-grey (a cleared false positive)
   escalated: VERDICT_COLOR.suspicious, // amber-orange
   closed: 'success', // green — a human drove it to a terminal state
+  // An operator's rule-level declaration closed it deterministically, with no model
+  // call and no human case work. Its own colour so it never reads as either.
+  policy_closed: VERDICT_COLOR.false_positive,
   needs_human: VERDICT_COLOR.needs_human, // warning (back-compat; no longer a spine chip)
   true_positive: VERDICT_COLOR.true_positive, // critical-red (back-compat)
 };
@@ -100,6 +117,7 @@ const STAGE_LABEL: Record<string, string> = {
   auto_cleared: 'Auto-cleared',
   escalated: 'Escalated',
   closed: 'Closed by human',
+  policy_closed: 'Closed by analyst policy',
   needs_human: 'Needs human',
   true_positive: 'True positive',
 };
@@ -114,6 +132,7 @@ const DASHBOARD_STAGE_LABEL: Record<string, string> = {
   auto_cleared: 'Auto-cleared by AI',
   escalated: 'Escalated',
   closed: 'Closed by human',
+  policy_closed: 'Closed by analyst policy',
 };
 
 /** One-line "what this stage means" copy for the per-stage hover card (plain text). */
@@ -124,32 +143,45 @@ const STAGE_MEANING: Record<string, string> = {
   // but they have NOT been reasoned over by the strong LLM yet (they sit below the
   // auto-investigate risk floor). They stay $0 candidates until risk/anomaly promotes them.
   candidate:
-    'Clusters the agent risk-scored but kept below the auto-investigate floor — seen and ' +
+    'Clusters the agent risk-scored but kept below the auto-investigate floor; seen and ' +
     'tracked as $0 candidates, not yet reasoned over by the AI.',
   awaiting:
-    'Clusters the agent risk-scored but kept below the auto-investigate floor — seen and ' +
+    'Clusters the agent risk-scored but kept below the auto-investigate floor; seen and ' +
     'tracked as $0 candidates, not yet reasoned over by the AI.',
   cases: 'Clusters the agent promoted into investigable cases.',
-  auto_cleared: 'Cases the agent auto-closed as false positives — no human needed.',
+  auto_cleared: 'Cases the agent auto-closed as false positives, with no human needed.',
   escalated:
     'Every case not false-positive auto-cleared by the agent, including analyst-owned, ' +
     'needs-human, and confirmed residual cases.',
   closed: 'Cases a human analyst drove to a terminal state (resolved / closed).',
+  policy_closed:
+    'Cases closed by an operator declaration that the detection is benign here. No ' +
+    'model was called and no analyst worked the case. Excluded from agent performance.',
   needs_human: 'Cases routed to a human for the final decision.',
   true_positive: 'Cases confirmed as real, actionable threats.',
 };
 
 /** The terminal case views rendered after `cases` (AI-cleared, escalated, human-closed).
  *  `closed` overlaps `escalated`; it is not a third partition. */
-const OUTCOME_KEYS = ['auto_cleared', 'escalated', 'closed'];
+const OUTCOME_KEYS = ['auto_cleared', 'escalated', 'closed', 'policy_closed'];
 
 /** Popover help copy (>80 chars → focusable Popover, not a bare Tooltip). */
-export const NOISE_FUNNEL_HELP_TEXT =
+const LEGACY_NOISE_FUNNEL_HELP_TEXT =
   'How the agent reduces raw alert volume: received alerts move through clustering, a ' +
   'fraction become cases, and opened cases split into false-positive auto-clear or the ' +
   'escalated analyst path. Closed by human is a subset of that escalated path, not a ' +
   'third partition. Counts and percentages in the aligned rail are authoritative; ' +
   'hover or focus any stage for its evidence.';
+
+export const NOISE_FUNNEL_HELP_TEXT =
+  'Simple view draws the complete alert-to-cluster-to-case flow with filled, tapered ' +
+  'ribbons and exact stage labels, falling back to the aligned stage rail when the ' +
+  'graph does not fit. Ribbon thickness uses a compressed display scale so ' +
+  'small stages stay visible; alerts, clusters, and cases remain different units. Every ' +
+  'label on either surface carries its exact count plus that stage’s share of the stage ' +
+  'it came from, so no two printed percentages share a hidden denominator. From ' +
+  'Cases opened onward, Auto-cleared, optional analyst-policy closes, and Escalated form ' +
+  'the conserved case split.';
 
 /* ------------------------------------------------------------------------- */
 /* Pure derivation (exported for tests).                                       */
@@ -215,6 +247,10 @@ export function deriveFunnel(data: NoiseReduction): DerivedFunnel {
       : null;
 
   // Full flow from ingested, or case-only when the counters are still warming up.
+  // Rendered ONLY when an operator has actually declared something, so a deployment
+  // with no analyst rule policies keeps the exact previous stage list.
+  const policyKeys = (byKey.get('policy_closed')?.total ?? 0) > 0 ? ['policy_closed'] : [];
+
   const visibleKeys = countersOk
     ? [
         'ingested',
@@ -224,8 +260,9 @@ export function deriveFunnel(data: NoiseReduction): DerivedFunnel {
         'auto_cleared',
         'escalated',
         'closed',
+        ...policyKeys,
       ]
-    : ['cases', 'auto_cleared', 'escalated', 'closed'];
+    : ['cases', 'auto_cleared', 'escalated', 'closed', ...policyKeys];
 
   const topKey = countersOk ? 'ingested' : 'cases';
   const topTotal = byKey.get(topKey)?.total ?? casesTotal;
@@ -259,37 +296,158 @@ export function deriveFunnel(data: NoiseReduction): DerivedFunnel {
 }
 
 /* ------------------------------------------------------------------------- */
-/* Sankey geometry.                                                            */
+/* Flow geometry.                                                             */
 /* ------------------------------------------------------------------------- */
-
-/** Fixed-aspect viewBox (~2.9:1). Stretch-scaled to the dashboard band. */
-const VB_W = 640;
-const VB_H = 220;
-/**
- * The flat dashboard has useful whitespace before the first centered stage column.
- * Reclaim a small part of it for the decorative plot only. The offset tapers to zero
- * at the final node, so the right edge stays fixed and the labelled rail never moves.
- */
-const FLAT_PLOT_LEFT_EXTENSION = 14;
-/** Vertical center + the plot band the strands live in. */
-const CY = VB_H / 2;
-const PLOT_PAD = 24;
-const PLOT_H = VB_H - PLOT_PAD * 2;
-/** Thin square-ended anchors + the vertical splay of the three outcomes. */
-const NODE_W = 5;
-const OUTCOME_SPREAD = 58;
-
-/** Exact proportional spine height: visual area never overstates survivor volume. */
-function spineNodeHeight(total: number, topTotal: number): number {
-  if (total <= 0) return 0;
-  const prop = topTotal > 0 ? Math.min(1, total / topTotal) : 0;
-  return PLOT_H * prop;
-}
 
 /** Honest compact share copy: a non-zero sub-half-percent cohort never reads as 0%. */
 function formatShare(value: number): string {
   const rounded = Math.round(value);
   return value > 0 && rounded === 0 ? '<1%' : `${rounded}%`;
+}
+
+/**
+ * Alert reduction's arithmetic with the real counts: "1 - 40 / 1,000 = 96%" (Round 16
+ * WP12, research explainability R11), to two decimals so the figure can be checked.
+ * Exported for tests.
+ */
+export function alertReductionMath(ingested: number | undefined, cases: number | undefined): string {
+  if (typeof ingested !== 'number' || typeof cases !== 'number' || !(ingested > 0)) return '';
+  return `1 - ${fmtNumber(cases)} / ${fmtNumber(ingested)} = ${percentOf(1 - cases / ingested, 2)}`;
+}
+
+/** The payload's window in words, for an explanation ("the last 24 hours", "all time"). */
+export function noiseWindowWords(hours: number | null | undefined): string {
+  const h = typeof hours === 'number' && Number.isFinite(hours) ? Math.round(hours) : 0;
+  if (h <= 0) return 'all time';
+  if (h % 24 === 0 && h > 48) return `the last ${fmtNumber(h / 24)} days`;
+  return `the last ${fmtNumber(h)} ${h === 1 ? 'hour' : 'hours'}`;
+}
+
+/** The em dash used everywhere a share has no denominator to be measured against. */
+export const SHARE_DASH = '—';
+
+/**
+ * The flow parent whose total is the ONLY honest denominator for a Simple-view stage.
+ *
+ * Simple prints one share per stage and every one of them is "share of the stage it
+ * came from" — the same relationship the hover card's second line already states, and
+ * the same relationship the ribbons draw. `ingested` is the flow baseline and therefore
+ * has no parent; in the counters-warming case-only mode `cases` becomes the baseline
+ * because `clustered` is not in the payload at all. Exported for tests.
+ */
+export function parentStageKey(key: string): string | null {
+  switch (key) {
+    case 'clustered':
+      return 'ingested';
+    case 'candidate':
+    case 'awaiting':
+    case 'cases':
+      return 'clustered';
+    case 'auto_cleared':
+    case 'policy_closed':
+    case 'escalated':
+      return 'cases';
+    case 'closed':
+    case 'escalated_remaining':
+      return 'escalated';
+    default:
+      // `ingested` (and anything unknown) is the baseline — nothing to divide by.
+      return null;
+  }
+}
+
+/** How each denominator is NAMED to the reader, so a printed share can never be read
+ *  against the wrong base. Units are deliberately explicit (alerts vs clusters vs cases). */
+const SHARE_DENOMINATOR_NOUN: Record<string, string> = {
+  ingested: 'alerts ingested',
+  clustered: 'clusters',
+  cases: 'cases opened',
+  escalated: 'escalated cases',
+};
+
+/** One stage's parent-relative share: `null` whenever there is no usable denominator. */
+export interface StageShare {
+  /** 0..100, or `null` when the denominator is absent, zero, or non-finite. */
+  pct: number | null;
+  /** Compact glyph for the graph label: `63%`, `<1%`, or the em dash. */
+  text: string;
+  /** Full spoken phrase that NAMES the denominator (screen readers + hover parity). */
+  sentence: string;
+}
+
+/**
+ * The Simple-view stages counted from the case tally whose flow parent is a COUNTER
+ * stage (`clustered`). While the counters cover only part of the window, their share
+ * divides a whole-window case count by a partial counter count (Round 16 B64).
+ */
+const CASE_TALLY_UNDER_COUNTERS: ReadonlySet<string> = new Set(['candidate', 'awaiting', 'cases']);
+
+/** What a share of a payload needs to know beyond the two totals. */
+export interface StageShareOptions {
+  /** `counters.incomplete`: the alert counters cover only part of the window. */
+  countersIncomplete?: boolean;
+}
+
+/** The share options a noise payload implies (`counters.incomplete`). */
+export function shareOptionsOf(data: { counters?: { incomplete?: boolean } | null } | null | undefined): StageShareOptions {
+  return { countersIncomplete: data?.counters?.incomplete === true };
+}
+
+/**
+ * Derive one stage's share of its flow parent.
+ *
+ * A 0 / absent / non-finite denominator never fabricates `0%`: it renders the em dash
+ * and says why, because "0% of nothing" and "0% of 40 cases" are different facts.
+ *
+ * Round 16 B64: a case-tally stage under a counter parent reads "not measured: partial
+ * coverage" while the counters cover only part of the window (the Detection and data
+ * health board's words), and no reduction stage ever prints a share above 100%: a stage
+ * larger than its parent reads the dash with the reason. Exported for tests.
+ */
+export function stageShare(
+  key: string,
+  total: number,
+  denominator: number | null | undefined,
+  options?: StageShareOptions,
+): StageShare {
+  const parentKey = parentStageKey(key);
+  const noun = parentKey ? SHARE_DENOMINATOR_NOUN[parentKey] ?? 'the previous stage' : null;
+  if (parentKey == null) {
+    return {
+      pct: null,
+      text: SHARE_DASH,
+      sentence: 'the flow baseline every later share is measured against',
+    };
+  }
+  if (
+    denominator == null ||
+    !Number.isFinite(denominator) ||
+    denominator <= 0 ||
+    !Number.isFinite(total)
+  ) {
+    return {
+      pct: null,
+      text: SHARE_DASH,
+      sentence: `share unavailable, no ${noun} counted in this window`,
+    };
+  }
+  if (options?.countersIncomplete && parentKey === 'clustered' && CASE_TALLY_UNDER_COUNTERS.has(key)) {
+    return { pct: null, text: SHARE_DASH, sentence: PARTIAL_COVERAGE_NOTE };
+  }
+  if (total > denominator) {
+    return {
+      pct: null,
+      text: SHARE_DASH,
+      sentence: `share unavailable, more than the ${noun} counted in this window`,
+    };
+  }
+  const pct = (total / denominator) * 100;
+  const text = formatShare(pct);
+  return {
+    pct,
+    text,
+    sentence: `${text === '<1%' ? 'less than 1%' : text} of ${noun}`,
+  };
 }
 
 /**
@@ -317,7 +475,27 @@ interface Rect {
   h: number;
   fill: string;
 }
-interface Ribbon {
+
+/* Exact Testing renderer geometry used by Detailed view. Keep this isolated from
+ * the Simple renderer: Detailed is a compatibility presentation, including its
+ * 640×220 stretched canvas, processing spine, overlapping outcome fan, drop badges,
+ * and excluded-count spur. */
+const LEGACY_VB_W = 640;
+const LEGACY_VB_H = 220;
+const LEGACY_FLAT_PLOT_LEFT_EXTENSION = 14;
+const LEGACY_CY = LEGACY_VB_H / 2;
+const LEGACY_PLOT_PAD = 24;
+const LEGACY_PLOT_H = LEGACY_VB_H - LEGACY_PLOT_PAD * 2;
+const LEGACY_NODE_W = 5;
+const LEGACY_OUTCOME_SPREAD = 58;
+
+function legacySpineNodeHeight(total: number, topTotal: number): number {
+  if (total <= 0) return 0;
+  const prop = topTotal > 0 ? Math.min(1, total / topTotal) : 0;
+  return LEGACY_PLOT_H * prop;
+}
+
+interface LegacyRibbon {
   id: string;
   path: string;
   colorName: string;
@@ -325,23 +503,24 @@ interface Ribbon {
   sourceKey: string;
   targetKey: string;
 }
-interface Badge {
+
+interface LegacyBadge {
   leftPct: number;
   topPct: number;
   drop: number;
   pct: number;
 }
-interface Layout {
-  ribbons: Ribbon[];
+
+interface LegacyLayout {
+  ribbons: LegacyRibbon[];
   rects: Rect[];
-  badges: Badge[];
+  badges: LegacyBadge[];
   spurPath: string | null;
   spurNub: { x: number; y: number } | null;
   spurChip: { leftPct: number; topPct: number } | null;
 }
 
-/** One processing-spine node's exact proportional vertical extent. */
-interface SpineGeom {
+interface LegacySpineGeom {
   row: FunnelRow;
   index: number;
   x: number;
@@ -350,18 +529,12 @@ interface SpineGeom {
   h: number;
 }
 
-/**
- * Build one aggregate processing stream (ingested → clustered → cases), the
- * three-outcome fan, exact proportional anchors, direct loss annotations, and the
- * suppressed/ignored side-spur. Severity remains in the stage evidence instead of
- * becoming five competing flow colours.
- */
-function buildLayout(
+function buildLegacyLayout(
   derived: DerivedFunnel,
   drops: { suppressed: number; ignored: number },
   uid: string,
   leftExtension = 0,
-): Layout {
+): LegacyLayout {
   const rows = derived.rows;
   const n = rows.length;
   const candidateKeys = new Set(['candidate', 'awaiting']);
@@ -371,28 +544,27 @@ function buildLayout(
   const topTotal = derived.topTotal;
   const colCenter = (i: number) => {
     const count = Math.max(1, n);
-    const canonical = (VB_W * (i + 0.5)) / count;
+    const canonical = (LEGACY_VB_W * (i + 0.5)) / count;
     if (leftExtension <= 0) return canonical;
     const progress = count <= 1 ? 0 : i / (count - 1);
     return canonical - leftExtension * (1 - progress);
   };
 
   const rects: Rect[] = [];
-  const ribbons: Ribbon[] = [];
-  const badges: Badge[] = [];
+  const ribbons: LegacyRibbon[] = [];
+  const badges: LegacyBadge[] = [];
+  const spine: LegacySpineGeom[] = [];
 
-  // --- one quiet processing spine, centered and exactly proportional ---
-  const spine: SpineGeom[] = [];
   for (const { row, index } of spineEntries) {
     const x = colCenter(index);
-    const h = spineNodeHeight(row.total, topTotal);
-    const top = CY - h / 2;
+    const h = legacySpineNodeHeight(row.total, topTotal);
+    const top = LEGACY_CY - h / 2;
     if (h > 0) {
       rects.push({
         key: row.key,
-        x: x - NODE_W / 2,
+        x: x - LEGACY_NODE_W / 2,
         y: top,
-        w: NODE_W,
+        w: LEGACY_NODE_W,
         h,
         fill: token('primary'),
       });
@@ -400,67 +572,62 @@ function buildLayout(
     spine.push({ row, index, x, top, bottom: top + h, h });
   }
 
-  // --- aggregate stream between consecutive processing stages ---
-  for (let i = 0; i < spine.length - 1; i++) {
-    const a = spine[i];
-    const b = spine[i + 1];
-    if (a.h > 0 && b.h > 0) {
+  for (let i = 0; i < spine.length - 1; i += 1) {
+    const source = spine[i];
+    const target = spine[i + 1];
+    if (source.h > 0 && target.h > 0) {
       ribbons.push({
-        id: `${uid}-flow-${i}`,
+        id: `${uid}-legacy-flow-${i}`,
         path: ribbonPath(
-          a.x + NODE_W / 2,
-          a.top,
-          a.bottom,
-          b.x - NODE_W / 2,
-          b.top,
-          b.bottom,
+          source.x + LEGACY_NODE_W / 2,
+          source.top,
+          source.bottom,
+          target.x - LEGACY_NODE_W / 2,
+          target.top,
+          target.bottom,
         ),
         colorName: 'primary',
         kind: 'flow',
-        sourceKey: a.row.key,
-        targetKey: b.row.key,
+        sourceKey: source.row.key,
+        targetKey: target.row.key,
       });
     }
 
-    // drop-off badge on this connector.
-    const drop = Math.max(0, a.row.total - b.row.total);
+    const drop = Math.max(0, source.row.total - target.row.total);
     if (drop > 0) {
       badges.push({
-        leftPct: ((a.x + b.x) / 2 / VB_W) * 100,
-        topPct: (10 / VB_H) * 100,
+        leftPct: (((source.x + target.x) / 2) / LEGACY_VB_W) * 100,
+        topPct: (10 / LEGACY_VB_H) * 100,
         drop,
-        pct: a.row.total > 0 ? Math.round((drop / a.row.total) * 100) : 0,
+        pct: source.row.total > 0 ? Math.round((drop / source.row.total) * 100) : 0,
       });
     }
   }
 
-  // Candidate/awaiting review is an optional side cohort from clustering, not a
-  // required parent of opened cases. Keep it discoverable without changing the
-  // restored primary processing spine.
   const candidateEntry = rows
     .map((row, index) => ({ row, index }))
     .find(({ row }) => candidateKeys.has(row.key));
   const clusteredNode = spine.find((node) => node.row.key === 'clustered');
   if (candidateEntry && clusteredNode && candidateEntry.row.total > 0) {
     const x = colCenter(candidateEntry.index);
-    const h = spineNodeHeight(candidateEntry.row.total, topTotal);
-    const top = VB_H - PLOT_PAD - h;
+    const h = legacySpineNodeHeight(candidateEntry.row.total, topTotal);
+    const top = LEGACY_VB_H - LEGACY_PLOT_PAD - h;
     rects.push({
       key: candidateEntry.row.key,
-      x: x - NODE_W / 2,
+      x: x - LEGACY_NODE_W / 2,
       y: top,
-      w: NODE_W,
+      w: LEGACY_NODE_W,
       h,
       fill: token('muted-foreground'),
     });
     const sourceH = Math.min(clusteredNode.h, h);
     ribbons.push({
-      id: `${uid}-candidate`,
+      id: `${uid}-legacy-candidate`,
       path: ribbonPath(
-        clusteredNode.x + NODE_W / 2,
+        clusteredNode.x + LEGACY_NODE_W / 2,
         clusteredNode.bottom - sourceH,
         clusteredNode.bottom,
-        x - NODE_W / 2,
+        x - LEGACY_NODE_W / 2,
         top,
         top + h,
       ),
@@ -471,52 +638,55 @@ function buildLayout(
     });
   }
 
-  // --- outcome nodes (splayed) + the verdict fan out of the last spine node ---
   const outcomes = rows.filter((row) => row.isOutcome);
   const casesNode = spine.find((node) => node.row.key === 'cases');
   const casesTotal = derived.casesTotal;
   const casesH = casesNode ? casesNode.h : 0;
-  // The visible outcomes are OVERLAPPING terminal views of `cases`, not a strict
-  // partition, so their source-side shares can sum past 1.0. Normalize the common
-  // source slices to avoid overflow. Each outcome anchor keeps its true share-based
-  // height; only the shared source fan is normalized.
   const shareSum = outcomes.reduce(
-    (a, r) => a + (casesTotal > 0 && r.total > 0 ? r.total / casesTotal : 0),
+    (sum, row) => sum + (casesTotal > 0 && row.total > 0 ? row.total / casesTotal : 0),
     0,
   );
-  const srcScale = shareSum > 1 ? 1 / shareSum : 1;
-  let sliceCursor = casesNode ? casesNode.top : CY;
-  outcomes.forEach((row, m) => {
-    const oi = rows.findIndex((candidate) => candidate.key === row.key);
-    const x = colCenter(oi);
+  const sourceScale = shareSum > 1 ? 1 / shareSum : 1;
+  let sliceCursor = casesNode ? casesNode.top : LEGACY_CY;
+  outcomes.forEach((row, outcomeIndex) => {
+    const rowIndex = rows.findIndex((candidate) => candidate.key === row.key);
+    const x = colCenter(rowIndex);
     const share = casesTotal > 0 ? row.total / casesTotal : 0;
     const h = row.total > 0 ? share * casesH : 0;
-    const yc =
+    const centerY =
       outcomes.length > 1
-        ? CY - OUTCOME_SPREAD + (2 * OUTCOME_SPREAD * m) / (outcomes.length - 1)
-        : CY;
-    const top = yc - h / 2;
+        ? LEGACY_CY -
+          LEGACY_OUTCOME_SPREAD +
+          (2 * LEGACY_OUTCOME_SPREAD * outcomeIndex) / (outcomes.length - 1)
+        : LEGACY_CY;
+    const top = centerY - h / 2;
     const colorName = OUTCOME_TOKEN[row.key] ?? 'primary';
     if (h > 0) {
       rects.push({
         key: row.key,
-        x: x - NODE_W / 2,
+        x: x - LEGACY_NODE_W / 2,
         y: top,
-        w: NODE_W,
+        w: LEGACY_NODE_W,
         h,
         fill: token(colorName),
       });
     }
 
-    // Fan ribbon: a proportional (source-normalized) slice of the cases node → this outcome.
     if (casesNode && casesH > 0 && row.total > 0) {
-      const sliceH = share * casesH * srcScale;
-      const s0 = sliceCursor;
-      const s1 = sliceCursor + sliceH;
-      sliceCursor = s1;
+      const sliceH = share * casesH * sourceScale;
+      const sourceTop = sliceCursor;
+      const sourceBottom = sliceCursor + sliceH;
+      sliceCursor = sourceBottom;
       ribbons.push({
-        id: `${uid}-o${m}`,
-        path: ribbonPath(casesNode.x + NODE_W / 2, s0, s1, x - NODE_W / 2, top, top + h),
+        id: `${uid}-legacy-outcome-${outcomeIndex}`,
+        path: ribbonPath(
+          casesNode.x + LEGACY_NODE_W / 2,
+          sourceTop,
+          sourceBottom,
+          x - LEGACY_NODE_W / 2,
+          top,
+          top + h,
+        ),
         colorName,
         kind: 'outcome',
         sourceKey: casesNode.row.key,
@@ -525,22 +695,725 @@ function buildLayout(
     }
   });
 
-  // --- suppressed/ignored side-spur (peels down before clustering) ---
   const dropTotal = (drops.suppressed ?? 0) + (drops.ignored ?? 0);
   let spurPath: string | null = null;
   let spurNub: { x: number; y: number } | null = null;
   let spurChip: { leftPct: number; topPct: number } | null = null;
   if (dropTotal > 0 && spine.length >= 2 && spine[0].h > 0) {
-    const sx = spine[0].x;
-    const sy = spine[0].bottom - spine[0].h * 0.25;
+    const sourceX = spine[0].x;
+    const sourceY = spine[0].bottom - spine[0].h * 0.25;
     const nubX = (spine[0].x + spine[1].x) / 2;
-    const nubY = VB_H - 12;
-    spurPath = `M${sx},${sy} C${(sx + nubX) / 2},${sy} ${nubX},${nubY - 24} ${nubX},${nubY}`;
+    const nubY = LEGACY_VB_H - 12;
+    spurPath = `M${sourceX},${sourceY} C${(sourceX + nubX) / 2},${sourceY} ${nubX},${nubY - 24} ${nubX},${nubY}`;
     spurNub = { x: nubX, y: nubY };
-    spurChip = { leftPct: (nubX / VB_W) * 100, topPct: ((nubY - 4) / VB_H) * 100 };
+    spurChip = {
+      leftPct: (nubX / LEGACY_VB_W) * 100,
+      topPct: ((nubY - 4) / LEGACY_VB_H) * 100,
+    };
   }
 
   return { ribbons, rects, badges, spurPath, spurNub, spurChip };
+}
+
+/* Carbon-inspired conversion + conserved case-flow geometry. */
+
+const SIMPLE_INLINE_WIDTH = 800;
+const SIMPLE_EXPANDED_WIDTH = 1120;
+/*
+ * The inline band's height (Round 12: it now SCALES with the viewport).
+ *
+ * The wrapper is `h-[clamp(240px,18dvw,340px)]` — 240px at a 1280px viewport, ~260px at
+ * 1440 and the 340px cap from ~1900px up — and the drawing follows the MEASURED wrapper
+ * height rather than a constant. That is the whole contract: the height flows into a
+ * `viewBox` drawn with `preserveAspectRatio="xMidYMid meet"`, so a viewBox that disagreed
+ * with its box would letterbox the drawing and drift the percentage-positioned HTML label
+ * overlay off the nodes it labels. Measuring the box keeps the two equal at every width.
+ *
+ * This constant is only the FALLBACK used before the first measurement (and in jsdom,
+ * which lays nothing out): the clamp's floor, so a first paint is never taller than the
+ * box it lands in.
+ *
+ * The inline band always uses the INLINE padding rhythm (`buildSimpleLayout`'s
+ * `inspection: false`), however tall it is measured. The old rule derived the roomy
+ * full-screen padding from `height >= 300`, which would have made a 340px inline band
+ * draw a SMALLER pipeline than a 296px one.
+ */
+const SIMPLE_INLINE_HEIGHT = 240;
+const SIMPLE_EXPANDED_HEIGHT = 400;
+const SIMPLE_NODE_W = 4;
+const SIMPLE_FLOW_KEYS = new Set([
+  'ingested',
+  'clustered',
+  'cases',
+  'auto_cleared',
+  'policy_closed',
+  'escalated',
+  'closed',
+  'escalated_remaining',
+]);
+
+interface SimpleRibbon {
+  id: string;
+  kind: 'conversion' | 'conserved';
+  path: string;
+  /** The `ribbonPath` arguments, so label placement can keep every ribbon in view. */
+  geometry: { x0: number; sy0: number; sy1: number; x1: number; ty0: number; ty1: number };
+  targetColor: string;
+  sourceKey: string;
+  targetKey: string;
+  value: number;
+  sourceHeight: number;
+  targetHeight: number;
+  relatedStages: string[];
+}
+
+interface SimpleNode extends Rect {
+  rowKey: string | null;
+  label: string;
+  total: number;
+  labelY: number;
+  labelSide: 'after' | 'before';
+}
+
+interface ConversionNode {
+  key: 'ingested' | 'clustered';
+  row: FunnelRow;
+  x: number;
+  y: number;
+  h: number;
+  labelY: number;
+  labelSide: 'above' | 'below';
+}
+
+interface SimpleLayout {
+  width: number;
+  height: number;
+  valid: boolean;
+  integrityMessage: string | null;
+  remainingEscalated: number;
+  ribbons: SimpleRibbon[];
+  nodes: SimpleNode[];
+  conversionNodes: ConversionNode[];
+  casesX: number;
+  contextY: number;
+}
+
+/**
+ * Build the polished full-pipeline Simple view. Alerts → clusters → cases are filled,
+ * tapered conversion ribbons using a disclosed square-root display scale so the much
+ * smaller case stages remain legible. Exact labels retain their different units. From
+ * Cases opened onward, child heights remain strictly conserved:
+ *
+ *   auto-cleared + policy-closed + escalated = cases
+ *   closed-by-human + not-analyst-closed = escalated
+ */
+function buildSimpleLayout(
+  derived: DerivedFunnel,
+  uid: string,
+  requestedWidth: number,
+  height: number,
+  /**
+   * The full-screen inspection's roomier padding rhythm. Passed explicitly rather than
+   * derived from `height`: the inline band now scales up to 340px and must keep the inline
+   * rhythm at every height (see SIMPLE_INLINE_HEIGHT).
+   */
+  inspection: boolean = height >= 300,
+): SimpleLayout {
+  // The drawing is exactly as wide as the box it is measured in (Round 12 polish 3). The
+  // old 720 floor letterboxed a narrower band and drifted the HTML labels off their
+  // nodes; whether the labels fit is now decided from their measured sizes instead
+  // (`placeFlowLabels`), and a band too narrow for them shows the stage rail.
+  const width = requestedWidth > 0 ? requestedWidth : SIMPLE_INLINE_WIDTH;
+  const rowByKey = new Map(derived.rows.map((row) => [row.key, row]));
+  const rawTotal = (key: string) => rowByKey.get(key)?.total ?? 0;
+  const safeTotal = (key: string) => {
+    const value = rawTotal(key);
+    return Number.isFinite(value) ? Math.max(0, value) : 0;
+  };
+  const ingested = safeTotal('ingested');
+  const clustered = safeTotal('clustered');
+  const cases = safeTotal('cases');
+  const autoCleared = safeTotal('auto_cleared');
+  const policyClosed = safeTotal('policy_closed');
+  const escalated = safeTotal('escalated');
+  const closed = safeTotal('closed');
+  const remainingEscalated = Math.max(0, escalated - closed);
+  const rawCaseTotals = [
+    rawTotal('cases'),
+    rawTotal('auto_cleared'),
+    rawTotal('policy_closed'),
+    rawTotal('escalated'),
+    rawTotal('closed'),
+  ];
+  const valid =
+    rawCaseTotals.every((value) => Number.isFinite(value) && value >= 0) &&
+    autoCleared + policyClosed + escalated === cases &&
+    closed <= escalated;
+
+  const casesX = width * 0.405;
+  const base = {
+    width,
+    height,
+    valid,
+    integrityMessage: valid
+      ? null
+      : 'Case outcomes do not reconcile, so proportional ribbons are withheld. Exact counts remain available in Detailed view.',
+    remainingEscalated,
+    ribbons: [] as SimpleRibbon[],
+    nodes: [] as SimpleNode[],
+    conversionNodes: [] as ConversionNode[],
+    casesX,
+    contextY: height / 2,
+  };
+
+  if (!valid || cases <= 0) return base;
+
+  const expanded = inspection;
+  const plotTop = expanded ? 54 : 34;
+  const plotBottom = height - (expanded ? 24 : 10);
+  const nodePadding = expanded ? 42 : 24;
+  const pipelineHeight = Math.max(1, plotBottom - plotTop - nodePadding);
+  const fullPipeline = derived.mode === 'full' && ingested > 0;
+  const compressedHeight = (total: number) =>
+    total > 0 && ingested > 0
+      ? pipelineHeight * Math.sqrt(Math.min(1, total / ingested))
+      : 0;
+  const caseHeight = Math.max(1, fullPipeline ? compressedHeight(cases) : pipelineHeight);
+  const contextY = (plotTop + plotBottom) / 2;
+  const casesTop = contextY - caseHeight / 2;
+  const casesBottom = casesTop + caseHeight;
+  const decisionX = width * 0.69;
+  const resolutionX = width - 10;
+
+  const autoHeight = (autoCleared / cases) * caseHeight;
+  const policyHeight = (policyClosed / cases) * caseHeight;
+  const escalatedHeight = (escalated / cases) * caseHeight;
+  const decisionGap = policyClosed > 0 ? (expanded ? 24 : 14) : nodePadding;
+  const decisionGapCount = policyClosed > 0 ? 2 : 1;
+  const autoTop = contextY - (caseHeight + decisionGap * decisionGapCount) / 2;
+  const policyTop = autoTop + autoHeight + decisionGap;
+  const escalatedTop =
+    policyClosed > 0
+      ? policyTop + policyHeight + decisionGap
+      : autoTop + autoHeight + decisionGap;
+  const escalatedBottom = escalatedTop + escalatedHeight;
+
+  const resolutionPadding = expanded ? 30 : 18;
+  const closedHeight = escalated > 0 ? (closed / escalated) * escalatedHeight : 0;
+  const remainingHeight =
+    escalated > 0 ? (remainingEscalated / escalated) * escalatedHeight : 0;
+  const resolutionHeight = closedHeight + remainingHeight + resolutionPadding;
+  const escalatedCenter = escalatedTop + escalatedHeight / 2;
+  const resolutionTop = Math.max(
+    plotTop,
+    Math.min(plotBottom - resolutionHeight, escalatedCenter - resolutionHeight / 2),
+  );
+  const closedTop = resolutionTop;
+  const remainingTop = closedTop + closedHeight + resolutionPadding;
+
+  // Keep the two right-hand labels in separate lanes even when automation leaves
+  // only a very thin non-auto-cleared branch.
+  const labelGap = expanded ? 36 : 27;
+  const labelInset = expanded ? 18 : 12;
+  const labelFloor = plotTop + labelInset;
+  const labelCeiling = plotBottom - labelInset;
+  let closedLabelY = closedTop + Math.max(1, closedHeight) / 2;
+  let remainingLabelY = remainingTop + Math.max(1, remainingHeight) / 2;
+  if (remainingLabelY - closedLabelY < labelGap) {
+    const midpoint = (closedLabelY + remainingLabelY) / 2;
+    closedLabelY = midpoint - labelGap / 2;
+    remainingLabelY = midpoint + labelGap / 2;
+  }
+  if (closedLabelY < labelFloor) {
+    remainingLabelY += labelFloor - closedLabelY;
+    closedLabelY = labelFloor;
+  }
+  if (remainingLabelY > labelCeiling) {
+    closedLabelY -= remainingLabelY - labelCeiling;
+    remainingLabelY = labelCeiling;
+  }
+
+  const nodes: SimpleNode[] = [
+    {
+      key: 'cases',
+      rowKey: 'cases',
+      label: 'Cases opened',
+      total: cases,
+      labelY: Math.max(plotTop + 9, casesTop - 8),
+      labelSide: 'after',
+      x: casesX - SIMPLE_NODE_W / 2,
+      y: casesTop,
+      w: SIMPLE_NODE_W,
+      h: caseHeight,
+      fill: token('primary'),
+    },
+    {
+      key: 'auto_cleared',
+      rowKey: 'auto_cleared',
+      label: 'Auto-cleared by AI',
+      total: autoCleared,
+      labelY: autoTop + Math.max(1, autoHeight) / 2,
+      labelSide: 'after',
+      x: decisionX - SIMPLE_NODE_W / 2,
+      y: autoTop,
+      w: SIMPLE_NODE_W,
+      h: autoHeight,
+      fill: token(OUTCOME_TOKEN.auto_cleared),
+    },
+    ...(policyClosed > 0
+      ? [
+          {
+            key: 'policy_closed',
+            rowKey: 'policy_closed',
+            label: 'Closed by analyst policy',
+            total: policyClosed,
+            labelY: policyTop + Math.max(1, policyHeight) / 2,
+            labelSide: 'after' as const,
+            x: decisionX - SIMPLE_NODE_W / 2,
+            y: policyTop,
+            w: SIMPLE_NODE_W,
+            h: policyHeight,
+            fill: token(OUTCOME_TOKEN.policy_closed),
+          },
+        ]
+      : []),
+    {
+      key: 'escalated',
+      rowKey: 'escalated',
+      label: 'Escalated',
+      total: escalated,
+      labelY: escalatedTop + Math.max(1, escalatedHeight) / 2,
+      labelSide: 'before',
+      x: decisionX - SIMPLE_NODE_W / 2,
+      y: escalatedTop,
+      w: SIMPLE_NODE_W,
+      h: escalatedHeight,
+      fill: token(OUTCOME_TOKEN.escalated),
+    },
+    {
+      key: 'closed',
+      rowKey: 'closed',
+      label: 'Closed by human',
+      total: closed,
+      labelY: closedLabelY,
+      labelSide: 'before',
+      x: resolutionX - SIMPLE_NODE_W / 2,
+      y: closedTop,
+      w: SIMPLE_NODE_W,
+      h: closedHeight,
+      fill: token(OUTCOME_TOKEN.closed),
+    },
+    {
+      key: 'escalated_remaining',
+      rowKey: null,
+      label: 'Not analyst-closed',
+      total: remainingEscalated,
+      labelY: remainingLabelY,
+      labelSide: 'before',
+      x: resolutionX - SIMPLE_NODE_W / 2,
+      y: remainingTop,
+      w: SIMPLE_NODE_W,
+      h: remainingHeight,
+      fill: token(OUTCOME_TOKEN.escalated),
+    },
+  ];
+
+  const ribbons: SimpleRibbon[] = [];
+  const addRibbon = (
+    suffix: string,
+    kind: 'conversion' | 'conserved',
+    sourceKey: string,
+    targetKey: string,
+    value: number,
+    x0: number,
+    sy0: number,
+    sy1: number,
+    x1: number,
+    ty0: number,
+    ty1: number,
+    targetColor: string,
+    relatedStages: string[],
+  ) => {
+    if (value <= 0 || sy1 <= sy0 || ty1 <= ty0) return;
+    const id = `${uid}-${suffix}`;
+    ribbons.push({
+      id,
+      kind,
+      path: ribbonPath(x0, sy0, sy1, x1, ty0, ty1),
+      geometry: { x0, sy0, sy1, x1, ty0, ty1 },
+      targetColor,
+      sourceKey,
+      targetKey,
+      value,
+      sourceHeight: sy1 - sy0,
+      targetHeight: ty1 - ty0,
+      relatedStages,
+    });
+  };
+
+  const conversionNodes: ConversionNode[] = [];
+  if (fullPipeline) {
+    const ingestedRow = rowByKey.get('ingested');
+    const clusteredRow = rowByKey.get('clustered');
+    const ingestedHeight = pipelineHeight;
+    const clusteredHeight = compressedHeight(clustered);
+    const ingestedX = 12;
+    const clusteredX = width * 0.205;
+    if (ingestedRow && ingestedHeight > 0) {
+      conversionNodes.push({
+        key: 'ingested',
+        row: ingestedRow,
+        x: ingestedX,
+        y: contextY - ingestedHeight / 2,
+        h: ingestedHeight,
+        labelY: contextY - ingestedHeight / 2 - 6,
+        labelSide: 'above',
+      });
+    }
+    if (clusteredRow && clusteredHeight > 0) {
+      conversionNodes.push({
+        key: 'clustered',
+        row: clusteredRow,
+        x: clusteredX,
+        y: contextY - clusteredHeight / 2,
+        h: clusteredHeight,
+        labelY: contextY + clusteredHeight / 2 + 6,
+        labelSide: 'below',
+      });
+    }
+
+    if (ingestedRow && clusteredRow && ingestedHeight > 0 && clusteredHeight > 0) {
+      addRibbon(
+        'simple-ingested-clustered',
+        'conversion',
+        'ingested',
+        'clustered',
+        clustered,
+        ingestedX + SIMPLE_NODE_W / 2,
+        contextY - ingestedHeight / 2,
+        contextY + ingestedHeight / 2,
+        clusteredX - SIMPLE_NODE_W / 2,
+        contextY - clusteredHeight / 2,
+        contextY + clusteredHeight / 2,
+        token('primary'),
+        [...SIMPLE_FLOW_KEYS],
+      );
+    }
+    if (clusteredRow && clusteredHeight > 0 && caseHeight > 0) {
+      addRibbon(
+        'simple-clustered-cases',
+        'conversion',
+        'clustered',
+        'cases',
+        cases,
+        clusteredX + SIMPLE_NODE_W / 2,
+        contextY - clusteredHeight / 2,
+        contextY + clusteredHeight / 2,
+        casesX - SIMPLE_NODE_W / 2,
+        casesTop,
+        casesBottom,
+        token('primary'),
+        [...SIMPLE_FLOW_KEYS],
+      );
+    }
+  }
+
+  addRibbon(
+    'simple-cases-auto',
+    'conserved',
+    'cases',
+    'auto_cleared',
+    autoCleared,
+    casesX + SIMPLE_NODE_W / 2,
+    casesTop,
+    casesTop + autoHeight,
+    decisionX - SIMPLE_NODE_W / 2,
+    autoTop,
+    autoTop + autoHeight,
+    token(OUTCOME_TOKEN.auto_cleared),
+    ['cases', 'auto_cleared'],
+  );
+  addRibbon(
+    'simple-cases-policy',
+    'conserved',
+    'cases',
+    'policy_closed',
+    policyClosed,
+    casesX + SIMPLE_NODE_W / 2,
+    casesTop + autoHeight,
+    casesTop + autoHeight + policyHeight,
+    decisionX - SIMPLE_NODE_W / 2,
+    policyTop,
+    policyTop + policyHeight,
+    token(OUTCOME_TOKEN.policy_closed),
+    ['cases', 'policy_closed'],
+  );
+  addRibbon(
+    'simple-cases-escalated',
+    'conserved',
+    'cases',
+    'escalated',
+    escalated,
+    casesX + SIMPLE_NODE_W / 2,
+    casesTop + autoHeight + policyHeight,
+    casesBottom,
+    decisionX - SIMPLE_NODE_W / 2,
+    escalatedTop,
+    escalatedBottom,
+    token(OUTCOME_TOKEN.escalated),
+    ['cases', 'escalated', 'closed', 'escalated_remaining'],
+  );
+  addRibbon(
+    'simple-escalated-closed',
+    'conserved',
+    'escalated',
+    'closed',
+    closed,
+    decisionX + SIMPLE_NODE_W / 2,
+    escalatedTop,
+    escalatedTop + closedHeight,
+    resolutionX - SIMPLE_NODE_W / 2,
+    closedTop,
+    closedTop + closedHeight,
+    token(OUTCOME_TOKEN.closed),
+    ['cases', 'escalated', 'closed'],
+  );
+  addRibbon(
+    'simple-escalated-remaining',
+    'conserved',
+    'escalated',
+    'escalated_remaining',
+    remainingEscalated,
+    decisionX + SIMPLE_NODE_W / 2,
+    escalatedTop + closedHeight,
+    escalatedBottom,
+    resolutionX - SIMPLE_NODE_W / 2,
+    remainingTop,
+    remainingTop + remainingHeight,
+    token(OUTCOME_TOKEN.escalated),
+    ['cases', 'escalated', 'escalated_remaining'],
+  );
+
+  return {
+    ...base,
+    ribbons,
+    nodes,
+    conversionNodes,
+    casesX,
+    contextY,
+  };
+}
+
+/**
+ * How much the transforms on `element` and its ancestors scale what it paints: its
+ * painted box (`getBoundingClientRect`) over its layout box (`offsetWidth` /
+ * `offsetHeight`, which ignore transforms). 1 when there is no layout box to compare
+ * (jsdom) or the two differ by no more than `offsetWidth`'s rounding.
+ *
+ * Polish 3 re-verify: Full screen opens a dialog that its animation still scales to 95%
+ * when the flow measures, and a transform is not a resize, so nothing measured again
+ * when it ended. The drawing was sized 5% narrow and letterboxed inside the panel while
+ * the labels, placed by percentage, drifted onto the node markers. Every flow
+ * measurement divides this out, so it reads the same at any point of an animation.
+ */
+function paintScale(element: HTMLElement): { x: number; y: number } {
+  const rect = element.getBoundingClientRect();
+  const along = (painted: number, layout: number) =>
+    layout > 0 && painted > 0 && Math.abs(painted - layout) > 0.5 ? painted / layout : 1;
+  return { x: along(rect.width, element.offsetWidth), y: along(rect.height, element.offsetHeight) };
+}
+
+/** An element's layout size in CSS pixels, whatever transform it is painted under. */
+function layoutSize(element: HTMLElement, scale: { x: number; y: number } = paintScale(element)) {
+  const rect = element.getBoundingClientRect();
+  return { width: rect.width / scale.x, height: rect.height / scale.y };
+}
+
+/**
+ * Redraw the flow for a resize (the navigation rail toggling, a window drag). A box that
+ * only GREW is redrawn as a transition, which React renders in slices between frames
+ * rather than as one long task (a further resize supersedes it); meanwhile the old drawing
+ * keeps its drawn scale. A box that SHRANK, or a first real size, is redrawn at once: a
+ * stale drawing in a smaller box would be scaled down under labels that keep their size.
+ * `fixedHeight`: the inspection band is pinned to 400px, so only its width counts.
+ */
+function redrawOnResize(
+  drawn: { width: number; height: number },
+  box: { width: number; height: number },
+  fixedHeight: boolean,
+  measure: () => void,
+): void {
+  const shrank = box.width < drawn.width || (!fixedHeight && box.height < drawn.height);
+  if (drawn.width === 0 || shrank) measure();
+  else React.startTransition(measure);
+}
+
+/** What the measuring probe read: the panel width, the band height, every label's box. */
+interface FlowMeasure {
+  width: number;
+  height: number;
+  sizes: Record<string, FlowLabelSizes>;
+  /** The three above, serialised: a re-measure that changes nothing keeps the state. */
+  signature: string;
+}
+
+/**
+ * One run of flow-label text. In the measuring probe the same text is generated content
+ * (`content: attr(data-t)`) of an `aria-hidden`, invisible box: it lays out exactly like
+ * the label, yet adds no text to the page, the accessibility tree or a text query.
+ */
+function FlowText({
+  text,
+  probe,
+  className,
+  children,
+  ...rest
+}: {
+  text: string;
+  probe?: boolean;
+  className?: string;
+  children?: React.ReactNode;
+} & React.HTMLAttributes<HTMLSpanElement> & { 'data-stage-share'?: string }) {
+  if (probe) {
+    return (
+      <span data-t={text} className={cn('before:content-[attr(data-t)]', className)}>
+        {children}
+      </span>
+    );
+  }
+  return (
+    <span className={className} {...rest}>
+      {text}
+      {children}
+    </span>
+  );
+}
+
+/** An alert / cluster label: the stage name over "177 alerts · —" (shared with its probe). */
+function conversionLabelContent(
+  key: 'ingested' | 'clustered',
+  figure: string,
+  shareText: string,
+  inspection: boolean,
+  probe = false,
+): React.ReactNode {
+  return (
+    <>
+      <FlowText
+        probe={probe}
+        text={DASHBOARD_STAGE_LABEL[key]}
+        className="block text-xs font-medium text-muted-foreground"
+      />
+      <FlowText
+        probe={probe}
+        text={figure}
+        className="mt-0.5 block font-mono text-xs font-semibold tabular-nums text-foreground"
+      >
+        <FlowText
+          probe={probe}
+          text={`· ${shareText}`}
+          className={cn(
+            'ml-1 font-sans font-normal tabular-nums text-muted-foreground',
+            inspection ? 'text-sm' : 'text-xs',
+          )}
+          {...(probe ? {} : { 'data-stage-share': key })}
+        />
+      </FlowText>
+    </>
+  );
+}
+
+/** The box classes a case-flow label uses in each form (shared with its probe). */
+function flowLabelBoxClass(side: 'after' | 'before', form: FlowLabelForm, inspection: boolean, probe = false): string {
+  return cn(
+    'rounded-sm px-1.5 py-1 font-medium',
+    form === 'line'
+      ? cn('flex items-baseline gap-x-1', probe ? 'flex-nowrap' : 'flex-wrap', side === 'after' ? 'text-left' : 'justify-end text-right')
+      : cn('flex flex-col', side === 'after' ? 'items-start text-left' : 'items-end text-right'),
+    inspection ? 'text-sm' : 'text-xs',
+  );
+}
+
+/** A case-flow label's text: "Escalated · 12 · 27%" on one line, or name over figures. */
+function flowLabelContent(
+  node: { key: string; label: string; total: number },
+  shareText: string,
+  form: FlowLabelForm,
+  inspection: boolean,
+  probe = false,
+): React.ReactNode {
+  const shareClass = cn('whitespace-nowrap font-normal tabular-nums text-muted-foreground', inspection ? 'text-sm' : 'text-xs');
+  const shareProps = probe ? {} : { 'data-stage-share': node.key };
+  if (form === 'stack') {
+    return (
+      <>
+        <FlowText probe={probe} text={node.label} className="block whitespace-nowrap" />
+        <span className="block whitespace-nowrap">
+          <FlowText probe={probe} text={fmtNumber(node.total)} className="font-mono font-semibold tabular-nums" />
+          <FlowText probe={probe} text={`· ${shareText}`} className={cn('ml-1', shareClass)} {...shareProps} />
+        </span>
+      </>
+    );
+  }
+  return (
+    <>
+      <FlowText probe={probe} text={node.label} className="whitespace-nowrap">
+        <FlowText probe={probe} text={`· ${fmtNumber(node.total)}`} className="ml-1 font-mono font-semibold tabular-nums" />
+      </FlowText>
+      <FlowText probe={probe} text={`· ${shareText}`} className={shareClass} {...shareProps} />
+    </>
+  );
+}
+
+/**
+ * The Simple flow's label geometry for {@link placeFlowLabels}: every drawn case-flow
+ * label (a zero-height node draws none), the two conversion labels, the two label
+ * columns (Auto-cleared over Closed by analyst policy right of the decision nodes;
+ * Closed by human over Not analyst-closed left of the resolution nodes), the ribbons
+ * each left-hand label sits on, and every case-flow ribbon no label may hide.
+ */
+function simpleFlowLabelInput(layout: SimpleLayout): FlowLabelInput {
+  return {
+    width: layout.width,
+    height: layout.height,
+    nodes: layout.nodes
+      .filter((node) => node.h > 0)
+      .map((node) => ({
+        key: node.key,
+        x: node.x,
+        y: node.y,
+        w: node.w,
+        h: node.h,
+        labelY: node.labelY,
+        labelSide: node.labelSide,
+        growUp: node.key === 'cases',
+      })),
+    conversion: layout.conversionNodes.map((node) => ({
+      key: node.key,
+      x: node.x - SIMPLE_NODE_W / 2,
+      y: node.y,
+      w: SIMPLE_NODE_W,
+      h: node.h,
+      labelY: node.labelY,
+      labelSide: node.labelSide,
+    })),
+    columns: [
+      ['auto_cleared', 'policy_closed'],
+      ['closed', 'escalated_remaining'],
+    ],
+    ribbonSource: { escalated: 'cases', closed: 'escalated', escalated_remaining: 'escalated' },
+    stackFirst: ['closed', 'escalated_remaining'],
+    // The case-flow ribbons: "Closed by analyst policy" right of its node lies across the
+    // escalated ribbons unless placement keeps them in view.
+    ribbons: layout.ribbons
+      .filter((ribbon) => ribbon.kind === 'conserved')
+      .map((ribbon) => ({
+        key: `${ribbon.sourceKey}>${ribbon.targetKey}`,
+        source: ribbon.sourceKey,
+        target: ribbon.targetKey,
+        ...ribbon.geometry,
+      })),
+  };
 }
 
 /* ------------------------------------------------------------------------- */
@@ -556,9 +1429,7 @@ function StageBreakdown({ row }: { row: FunnelRow }) {
   const max = entries.reduce((m, [, v]) => Math.max(m, v), 0) || 1;
   return (
     <div className="space-y-1.5">
-      <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-        By severity
-      </p>
+      <p className="text-xs font-medium text-muted-foreground">By severity</p>
       <ul className="space-y-1.5">
         {entries.map(([band, value]) => (
           <li key={band} className="flex items-center gap-2">
@@ -567,14 +1438,14 @@ function StageBreakdown({ row }: { row: FunnelRow }) {
               style={{ backgroundColor: token(BAND_TOKEN[band]) }}
               aria-hidden
             />
-            <span className="w-14 shrink-0 text-2xs text-muted-foreground">{SEV_LABEL[band]}</span>
+            <span className="w-16 shrink-0 text-xs text-muted-foreground">{SEV_LABEL[band]}</span>
             <span className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
               <span
                 className="block h-full rounded-full"
                 style={{ width: `${(value / max) * 100}%`, backgroundColor: token(BAND_TOKEN[band]) }}
               />
             </span>
-            <span className="w-8 shrink-0 text-right font-mono text-2xs tabular-nums text-foreground">
+            <span className="w-8 shrink-0 text-right font-mono text-xs tabular-nums text-foreground">
               {fmtNumber(value)}
             </span>
           </li>
@@ -582,6 +1453,27 @@ function StageBreakdown({ row }: { row: FunnelRow }) {
       </ul>
     </div>
   );
+}
+
+/**
+ * The flow's headline number: ALERT REDUCTION, `1 − cases opened ÷ alerts ingested`
+ * (the Google SecOps "Alert Reduction" formula). Round 12, additive.
+ *
+ * It is a ratio of two different payload halves — durable ingest counters and the case
+ * tally — so it is published ONLY when both describe the same, fully measured window:
+ * counters available and complete, the case tally not truncated, and at least one alert.
+ * Anything else is an em dash with the reason named, never a fabricated percentage. A
+ * window with more cases than alerts (push-ingested cases, counter warm-up) has no
+ * meaningful reduction either, so it is withheld with its reason rather than shown as a
+ * negative number.
+ *
+ * Deliberately NOT `reduction.overall_pct`: that server figure is "never reached a human
+ * of everything ingested", which is what Detailed's "Reduced by" headline states.
+ */
+export function alertReductionOf(data: NoiseReduction): AlertReduction {
+  // One rule for the flow and the Detection and data health board (Round 14, SPEC
+  // §4.4.3): the shared helper decides both the figure and when it is withheld.
+  return alertReduction(data);
 }
 
 function stageAuthority(row: FunnelRow): string {
@@ -617,7 +1509,7 @@ function StageHoverContent({
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <span className="text-sm font-semibold text-foreground">{row.label}</span>
-        <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-2xs font-medium text-muted-foreground">
           {authority}
         </span>
       </div>
@@ -626,7 +1518,7 @@ function StageHoverContent({
         <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
           {fmtNumber(row.total)}
         </span>
-        <span className="text-2xs tabular-nums text-muted-foreground">
+        <span className="text-xs tabular-nums text-muted-foreground">
           {pctRetained} {topReference}
           {ofPrevious != null && baseReference
             ? ` · ${formatShare(ofPrevious)} of ${baseReference.label.toLowerCase()}`
@@ -649,6 +1541,14 @@ export interface NoiseFunnelProps {
   loading?: boolean;
   /** Stagger the stage reveal + count-up (default true; reduced-motion still wins). */
   animate?: boolean;
+  /**
+   * Whether the stage numerals may COUNT UP to a changed value (default true). Separate
+   * from `animate` because `animate` also gates the one-shot ribbon sweep, which a LIVE
+   * refresh replays on purpose (Round 12 motion: "LIVE refresh replays only the noise
+   * sweep; numerals do not re-roll"). The host passes `false` for a quiet refresh, so a
+   * steady-ingest dashboard does not roll its stage totals every five seconds.
+   */
+  rollNumerals?: boolean;
   /** Accessible label for the funnel region. */
   ariaLabel?: string;
   className?: string;
@@ -666,45 +1566,179 @@ export interface NoiseFunnelProps {
   lineageLoader?: (windowHours: number, limit: number) => Promise<NoiseLineage>;
   /** Expanded inspection keeps the graph and aligned rail visible at every viewport. */
   wideInspection?: boolean;
+  /** Selected-window current-state context. This is not a conserved flow node. */
+  openCases?: { count: number; partial?: boolean };
+  /** Opens the complete active-case cohort for the selected window. */
+  onOpenCasesClick?: () => void;
+  /** Optional controlled presentation mode (used by the expanded inspection). */
+  view?: NoiseFunnelView;
+  /** Initial mode for an uncontrolled funnel. */
+  defaultView?: NoiseFunnelView;
+  /** Optional controlled-mode change callback. */
+  onViewChange?: (view: NoiseFunnelView) => void;
+  /**
+   * An id for the title `h2`, so the host's panel can be the region that heading names
+   * (`aria-labelledby`; the Overview, Round 14). Pass it to one funnel per page only: the
+   * full-screen inspection renders its own funnel without it.
+   */
+  headingId?: string;
+  /**
+   * The window the flow covers ("last 24 hours"), shown as 13px muted text after the
+   * title and its help (Round 14, SPEC §4.3.2: the Overview's band caption is gone, so
+   * the flow names its own window).
+   */
+  caption?: string;
+  /**
+   * A quiet line that ties the flow to a figure elsewhere on the page ("Same count as
+   * Total cases above."), on the scale row under the simple flow and as the last line of
+   * the detailed view (Round 14, SPEC §4.3.2; used by the flat variant). The host passes
+   * it only while the two numbers on screen are equal.
+   */
+  crossReference?: string;
+}
+
+export type NoiseFunnelView = 'simple' | 'detailed';
+
+/**
+ * The flow footer's cross-reference ("Same count as Total cases above."), after a `·`
+ * on the scale row (Round 14, SPEC §4.3.2). The row wraps on a narrow panel, and a
+ * separator must never be left at the end of one line or open the next: the dot shows
+ * only while the sentence sits on the same line as the item before the dot. That is
+ * measured (CSS cannot tell where a flex row wrapped), on mount and whenever the row
+ * resizes. The dot is hidden with `visibility`, so it keeps its box and hiding it can
+ * never let the sentence back onto the first line (no measure, hide, re-wrap loop).
+ * Before anything is laid out (jsdom, a hidden panel), the joined form stays.
+ */
+function FooterCrossReference({ text }: { text: string }) {
+  const separatorRef = React.useRef<HTMLSpanElement>(null);
+  const sentenceRef = React.useRef<HTMLSpanElement>(null);
+  const [wrapped, setWrapped] = React.useState(false);
+  React.useLayoutEffect(() => {
+    const separator = separatorRef.current;
+    const sentence = sentenceRef.current;
+    const row = separator?.parentElement;
+    if (!separator || !sentence || !row) return undefined;
+    const measure = () => {
+      const before = separator.previousElementSibling?.getBoundingClientRect();
+      const own = sentence.getBoundingClientRect();
+      if (!before || before.height === 0 || own.height === 0) {
+        setWrapped(false);
+        return;
+      }
+      // Lines stack without a row gap, so a sentence on a later line starts at or below
+      // the bottom of the item before the dot (1px of tolerance for subpixel layout).
+      setWrapped(own.top >= before.bottom - 1);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, [text]);
+  return (
+    <>
+      <span
+        ref={separatorRef}
+        aria-hidden
+        className={cn(wrapped && 'invisible')}
+        data-testid="noise-cross-reference-separator"
+        data-wrapped={wrapped ? 'true' : 'false'}
+      >
+        ·
+      </span>
+      <span ref={sentenceRef} data-testid="noise-cross-reference">
+        {text}
+      </span>
+    </>
+  );
 }
 
 function Header({
   hidden,
   onToggleHidden,
   onExpand,
+  expandRef,
   flat,
+  view,
+  onViewChange,
+  headingId,
+  caption,
 }: {
+  headingId?: string;
+  caption?: string;
   hidden?: boolean;
   onToggleHidden?: () => void;
   onExpand?: () => void;
+  /** The Full screen button, so closing the inspection returns focus to it. */
+  expandRef?: React.Ref<HTMLButtonElement>;
   flat?: boolean;
+  view: NoiseFunnelView;
+  onViewChange: (view: NoiseFunnelView) => void;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3">
-      <div className="flex items-center gap-1.5">
-        <h3
-          className={cn(
-            'font-semibold text-foreground',
-            flat ? 'text-2xs uppercase tracking-widest' : 'text-sm',
-          )}
-        >
-          {flat ? 'Noise reduction flow' : 'Noise reduction'}
-        </h3>
-        <HelpTip label="What the noise-reduction funnel means" text={NOISE_FUNNEL_HELP_TEXT} />
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      {/* The title, its help and the window caption, with the design system `Panel`'s
+          caption rule: the caption moves under the title as one unit when the row is too
+          narrow for both, and wraps its own words only in a panel narrower than itself.
+          It sits beside the `h2`, never inside it, so the heading's name stays the
+          module's name. */}
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <div className="flex items-center gap-1.5">
+          {/* h2, matching every other module heading on the one page that renders this
+              component. It sits directly under the page h1, and since the flow became the
+              lattice's leading cell an h3 here would skip a level in the landing state. */}
+          <h2
+            id={headingId}
+            className={cn(
+              'font-semibold text-foreground',
+              // 14px on the dashboard, the size of every module title there (Round 12 type
+              // ladder; Round 14 removed the 15px band titles that sat above them).
+              flat ? 'text-base' : 'text-sm',
+            )}
+          >
+            {flat ? 'Noise reduction flow' : 'Noise reduction'}
+          </h2>
+          <HelpTip
+            label="What the noise-reduction funnel means"
+            text={view === 'detailed' ? LEGACY_NOISE_FUNNEL_HELP_TEXT : NOISE_FUNNEL_HELP_TEXT}
+            footer={<AskAboutThis topic={KPI_TOPICS['noise-reduction']} subject="Noise reduction" className="pt-1" />}
+          />
+        </div>
+        {caption ? (
+          <span className="min-w-0 text-sm text-muted-foreground" data-testid="window-caption">
+            {caption}
+          </span>
+        ) : null}
       </div>
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center justify-end gap-1">
+        {!hidden ? (
+          <SegmentedControl<NoiseFunnelView>
+            aria-label="Noise reduction view"
+            size="sm"
+            value={view}
+            onValueChange={onViewChange}
+            options={[
+              { value: 'simple', label: 'Simple' },
+              { value: 'detailed', label: 'Detailed' },
+            ]}
+          />
+        ) : null}
         {onExpand && !hidden ? (
+          // ONE label in both modes (Round 12): the action is the same full-screen
+          // inspection whichever presentation is selected, and the selected mode carries
+          // into it, so "Expand" in Detailed named a different-sounding action for it.
           <button
+            ref={expandRef}
             type="button"
             onClick={onExpand}
-            aria-label="Expand noise reduction flow"
+            aria-label="Open full-screen noise reduction flow"
             className={cn(
-              'inline-flex min-h-7 items-center justify-center gap-1.5 rounded-[3px] border border-border px-2 text-2xs font-medium text-muted-foreground transition-colors',
+              'inline-flex min-h-7 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors',
               'hover:bg-hover hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             )}
           >
             <Maximize2 className="h-3.5 w-3.5" aria-hidden />
-            <span className="hidden sm:inline">Expand</span>
+            <span className="hidden sm:inline">Full screen</span>
           </button>
         ) : null}
         {onToggleHidden ? (
@@ -714,7 +1748,7 @@ function Header({
             aria-label={hidden ? 'Show noise funnel' : 'Hide noise funnel'}
             aria-pressed={hidden ? true : false}
             className={cn(
-              'inline-flex min-h-7 min-w-7 shrink-0 items-center justify-center rounded-[3px] text-muted-foreground transition-colors',
+              'inline-flex min-h-7 min-w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors',
               'hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             )}
           >
@@ -730,6 +1764,7 @@ export function NoiseFunnel({
   data,
   loading = false,
   animate = true,
+  rollNumerals = true,
   ariaLabel,
   className,
   onStageClick,
@@ -739,11 +1774,43 @@ export function NoiseFunnel({
   expandable = false,
   lineageLoader,
   wideInspection = false,
+  openCases,
+  onOpenCasesClick,
+  view: controlledView,
+  defaultView = 'simple',
+  onViewChange,
+  headingId,
+  caption,
+  crossReference,
 }: NoiseFunnelProps) {
+  const [uncontrolledView, setUncontrolledView] = React.useState<NoiseFunnelView>(defaultView);
+  const view = controlledView ?? uncontrolledView;
+  const setView = React.useCallback(
+    (next: NoiseFunnelView) => {
+      if (controlledView === undefined) setUncontrolledView(next);
+      onViewChange?.(next);
+    },
+    [controlledView, onViewChange],
+  );
   const [expanded, setExpanded] = React.useState(false);
+  // The inspection opens from STATE (its trigger lives in Header, outside the Dialog
+  // root), so Radix has no trigger to refocus on close and focus fell to <body> on
+  // Escape or the X (Round 12 final review). Closing returns focus to the Full screen
+  // button, the same fix as KpiDrilldownPanel's `restoreFocusTo`.
+  const expandTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const restoreExpandFocus = React.useCallback((event: Event) => {
+    const trigger = expandTriggerRef.current;
+    // Only claim the default when there is somewhere real to send focus.
+    if (trigger && trigger.isConnected) {
+      event.preventDefault();
+      trigger.focus();
+    }
+  }, []);
   const [hoveredStage, setHoveredStage] = React.useState<string | null>(null);
   const [focusedStage, setFocusedStage] = React.useState<string | null>(null);
   const activeStage = focusedStage ?? hoveredStage;
+  const activeSimpleStage =
+    activeStage && SIMPLE_FLOW_KEYS.has(activeStage) ? activeStage : null;
   const [lineage, setLineage] = React.useState<NoiseLineage | null>(null);
   const [lineageLoading, setLineageLoading] = React.useState(false);
   const [lineageError, setLineageError] = React.useState<string | null>(null);
@@ -753,20 +1820,167 @@ export function NoiseFunnel({
   const topologyDescriptionId = `${uid}-topology`;
   const derived = React.useMemo(() => (data ? deriveFunnel(data) : null), [data]);
   const flat = variant === 'flat';
+  const reducedMotion = usePrefersReducedMotion();
+  const simplePlotRef = React.useRef<HTMLDivElement>(null);
+  const [simplePlotWidth, setSimplePlotWidth] = React.useState(0);
+  // The inline band's MEASURED height (0 until measured): the drawing follows the box the
+  // `clamp()` resolved to, so the viewBox can never letterbox inside it.
+  const [simplePlotMeasuredHeight, setSimplePlotMeasuredHeight] = React.useState(0);
+  // Round 12 polish 3: the instrument panel's width, the band's height (read from a probe
+  // that carries the band's own clamp, so it measures while the band is hidden too) and
+  // every flow label's box in both of its forms. `null` until all of it has measured
+  // (jsdom never lays out): the band then falls back to its container query.
+  const instrumentRef = React.useRef<HTMLDivElement>(null);
+  const flowProbeRef = React.useRef<HTMLDivElement>(null);
+  const [flowMeasure, setFlowMeasure] = React.useState<FlowMeasure | null>(null);
+  const simplePlotHeight = wideInspection
+    ? SIMPLE_EXPANDED_HEIGHT
+    : flowMeasure?.height || simplePlotMeasuredHeight || SIMPLE_INLINE_HEIGHT;
+  const simpleFallbackWidth = wideInspection ? SIMPLE_EXPANDED_WIDTH : SIMPLE_INLINE_WIDTH;
+  const simpleLayoutWidth = flowMeasure?.width || simplePlotWidth || simpleFallbackWidth;
   const dropSuppressed = data?.drops?.suppressed ?? 0;
   const dropIgnored = data?.drops?.ignored ?? 0;
-  const layout = React.useMemo(
+  const simpleLayout = React.useMemo(
     () =>
       derived
-        ? buildLayout(
+        ? buildSimpleLayout(derived, uid, simpleLayoutWidth, simplePlotHeight, wideInspection)
+        : null,
+    [derived, simpleLayoutWidth, simplePlotHeight, uid, wideInspection],
+  );
+  // Where every label goes, and whether the graph can be drawn at all: the first of the
+  // one-line, stacked-right and all-stacked layouts with no collision (`placeFlowLabels`).
+  const flowPlacement = React.useMemo(
+    () =>
+      flowMeasure && simpleLayout && simpleLayout.valid && simpleLayout.nodes.length > 0
+        ? placeFlowLabels(simpleFlowLabelInput(simpleLayout), flowMeasure.sizes)
+        : null,
+    [flowMeasure, simpleLayout],
+  );
+  /** `unmeasured`: no layout yet (the CSS container query decides); else measured. */
+  const flowFit: 'unmeasured' | 'fits' | 'collides' = flowPlacement ? flowPlacement.fit : 'unmeasured';
+  /** Changes whenever a probed label's text could change, so the probe is measured again. */
+  const flowProbeKey = React.useMemo(
+    () =>
+      simpleLayout
+        ? [
+            wideInspection ? 'inspection' : 'inline',
+            ...simpleLayout.nodes.filter((node) => node.h > 0).map((node) => `${node.key}:${node.total}`),
+            ...simpleLayout.conversionNodes.map((node) => `${node.key}:${node.row.total}`),
+          ].join('|')
+        : '',
+    [simpleLayout, wideInspection],
+  );
+  const legacyLayout = React.useMemo(
+    () =>
+      derived
+        ? buildLegacyLayout(
             derived,
             { suppressed: dropSuppressed, ignored: dropIgnored },
             uid,
-            flat ? FLAT_PLOT_LEFT_EXTENSION : 0,
+            flat ? LEGACY_FLAT_PLOT_LEFT_EXTENSION : 0,
           )
         : null,
-    [derived, dropSuppressed, dropIgnored, uid, flat],
+    [derived, dropIgnored, dropSuppressed, flat, uid],
   );
+
+  React.useLayoutEffect(() => {
+    if (hidden) return undefined;
+    const element = simplePlotRef.current;
+    if (!element) return undefined;
+    // Layout size, not the painted one: an opening dialog is still scaled (`paintScale`).
+    const read = () => {
+      const box = layoutSize(element);
+      return {
+        width: Math.round(box.width || element.clientWidth),
+        height: Math.round(box.height || element.clientHeight),
+      };
+    };
+    let drawn = { width: 0, height: 0 };
+    const measure = () => {
+      const { width: next, height: nextHeight } = read();
+      if (next > 0) setSimplePlotWidth((current) => (current === next ? current : next));
+      // Height only matters inline (the inspection band is a fixed 400px). A hidden band
+      // (narrow container) measures 0 and keeps the last value.
+      if (!wideInspection && nextHeight > 0) {
+        setSimplePlotMeasuredHeight((current) => (current === nextHeight ? current : nextHeight));
+      }
+      drawn = { width: next > 0 ? next : drawn.width, height: nextHeight > 0 ? nextHeight : drawn.height };
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    // The first size is measured before paint (above); a later resize redraws the plot by
+    // the rule in `redrawOnResize`.
+    const observer = new ResizeObserver(() => redrawOnResize(drawn, read(), wideInspection, measure));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [hidden, view, wideInspection]);
+
+  React.useLayoutEffect(() => {
+    if (hidden || view !== 'simple') return undefined;
+    const panel = instrumentRef.current;
+    const probe = flowProbeRef.current;
+    if (!panel || !probe) return undefined;
+    // Every size in layout pixels: the panel and the probe share one transform (an
+    // opening dialog's scale), so the panel's scale converts each painted probe box.
+    const read = (scale = paintScale(panel)) => {
+      const heightProbe = probe.querySelector<HTMLElement>('[data-flow-probe-height]');
+      return {
+        width: Math.round(layoutSize(panel, scale).width),
+        height: wideInspection
+          ? SIMPLE_EXPANDED_HEIGHT
+          : Math.round(heightProbe ? layoutSize(heightProbe, scale).height : 0),
+      };
+    };
+    let drawn = { width: 0, height: 0 };
+    const measure = () => {
+      const scale = paintScale(panel);
+      const { width, height } = read(scale);
+      if (width > 0 && height > 0) drawn = { width, height };
+      let complete = width > 0 && height > 0;
+      const sizes: Record<string, FlowLabelSizes> = {};
+      probe.querySelectorAll<HTMLElement>('[data-flow-probe]').forEach((element) => {
+        const key = element.dataset.flowProbe ?? '';
+        const form: FlowLabelForm = element.dataset.flowForm === 'stack' ? 'stack' : 'line';
+        const box = layoutSize(element, scale);
+        // Hundredths first, so float noise from the division never adds a whole pixel.
+        const size = { w: Math.ceil(Number(box.width.toFixed(2))), h: Math.ceil(Number(box.height.toFixed(2))) };
+        if (!(size.w > 0 && size.h > 0)) complete = false;
+        // A conversion label has one form; it stands for both.
+        const entry = (sizes[key] ??= { line: size, stack: size });
+        entry[form] = size;
+      });
+      const signature = complete ? JSON.stringify([width, height, sizes]) : '';
+      setFlowMeasure((current) =>
+        (current?.signature ?? '') === signature
+          ? current
+          : complete
+            ? { width, height, sizes, signature }
+            : null,
+      );
+    };
+    measure();
+    // Web fonts change every label's width once they arrive.
+    let live = true;
+    const fonts = typeof document !== 'undefined' ? document.fonts : undefined;
+    fonts?.ready?.then(() => live && measure()).catch(() => undefined);
+    fonts?.addEventListener?.('loadingdone', measure);
+    // A resize re-lays the flow out by the same rule as the plot above.
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => redrawOnResize(drawn, read(), false, measure));
+    observer?.observe(panel);
+    return () => {
+      live = false;
+      observer?.disconnect();
+      fonts?.removeEventListener?.('loadingdone', measure);
+    };
+  }, [hidden, view, wideInspection, flowProbeKey]);
+
+  React.useEffect(() => {
+    setHoveredStage(null);
+    setFocusedStage(null);
+  }, [view]);
   const lineageWindowHours = data?.window_hours ?? 24;
   const loadLineage = React.useCallback(async () => {
     const loader = lineageLoader ?? api.noiseReductionLineage;
@@ -814,19 +2028,66 @@ export function NoiseFunnel({
     );
   }
   // Absent data + not loading → render nothing (a missing/off backend simply omits the widget).
-  if (!data || !derived || !layout) return null;
+  if (!data || !derived || !simpleLayout || !legacyLayout) return null;
 
   const overall = data.reduction?.overall_pct;
   const headlinePct = typeof overall === 'number' ? overall : null;
   const degradedNote =
-    derived.mode === 'cases' ? 'Counters warming up — showing case-based funnel' : 'Reduction pending';
+    derived.mode === 'cases'
+      ? 'Counters warming up, showing the case-based funnel'
+      : 'Reduction pending';
   const relativeTo = derived.mode === 'full' ? 'of ingested' : 'of cases';
   const n = derived.rows.length;
-  const closedByHuman = derived.rows.find((r) => r.key === 'closed')?.total ?? 0;
+  // The Detailed headline's own inputs: `reduction.overall_pct` is 1 - needs human /
+  // ingested, so its numerator is the Needs a human stage, read from the payload (the
+  // derived rows leave that stage out). It is withheld under partial coverage, the rule
+  // the Simple view and chat's noise tool follow (D8).
+  const stageTotal = (key: string): number | null => {
+    const total = data.stages?.find((s) => s.key === key)?.total;
+    return typeof total === 'number' && Number.isFinite(total) ? total : null;
+  };
+  const ingestedTotal = stageTotal('ingested');
+  const needsHumanTotal = stageTotal('needs_human');
+  const detailedWithheld = data.counters?.incomplete === true || data.cases_meta?.truncated === true;
+  const detailedExplanation =
+    headlinePct != null && !detailedWithheld
+      ? explainNeverReachedPerson({
+          ingested: ingestedTotal,
+          needsHuman: needsHumanTotal,
+          escalated: stageTotal('escalated'),
+          shownPct: headlinePct,
+          window: noiseWindowWords(data.window_hours),
+        })
+      : null;
   const rowByKey = new Map(derived.rows.map((row) => [row.key, row]));
+  // One share rule for every Simple-view surface, with the payload's coverage (B64).
+  const shareOptions = shareOptionsOf(data);
+  const hasPolicyClosed = (rowByKey.get('policy_closed')?.total ?? 0) > 0;
+  const candidateRow = rowByKey.get('candidate') ?? rowByKey.get('awaiting') ?? null;
+  const escalatedRow = rowByKey.get('escalated') ?? null;
+  const validOpenCases =
+    openCases && Number.isFinite(openCases.count) && openCases.count >= 0
+      ? { count: Math.floor(openCases.count), partial: openCases.partial === true }
+      : null;
+  const alertReductionFigure = alertReductionOf(data);
 
   const chips = derived.rows.map((row, index) => {
-    const pctLabel = formatShare(row.pctRetained);
+    // Simple publishes exactly ONE share rule across every surface it can render. The
+    // flow band and this rail are mutually exclusive presentations of the SAME flow (the
+    // rail is what a narrow container gets), so the rail must print the parent-relative
+    // share the graph prints and the disclosure beneath both describes — otherwise the
+    // page states one rule and shows another at narrow widths. Detailed keeps its own
+    // published funnel-top ("of ingested") rail arithmetic, unchanged.
+    const railShare =
+      view === 'simple'
+        ? stageShare(
+            row.key,
+            row.total,
+            rowByKey.get(parentStageKey(row.key) ?? '')?.total ?? null,
+            shareOptions,
+          )
+        : null;
+    const pctLabel = railShare ? railShare.text : formatShare(row.pctRetained);
     const accessiblePct = pctLabel === '<1%' ? 'less than 1%' : pctLabel;
     const unit =
       row.key === 'ingested'
@@ -844,15 +2105,24 @@ export function NoiseFunnel({
             : row.total === 1
               ? 'case'
               : 'cases';
-    const accessibleLabel = `${row.label}: ${row.total} ${unit}, ${accessiblePct} ${relativeTo}`;
+    const accessibleLabel = railShare
+      ? `${row.label}: ${row.total} ${unit}, ${railShare.sentence}`
+      : `${row.label}: ${row.total} ${unit}, ${accessiblePct} ${relativeTo}`;
     const detailId = `${uid}-${row.key}-detail`;
+    const useSimplePolicyCopy = view === 'simple' && hasPolicyClosed;
     const relationship =
       row.key === 'closed'
         ? 'This is a subset of Escalated, not an additional case partition.'
         : row.key === 'auto_cleared'
-          ? 'Together with Escalated, this partitions opened cases.'
+          ? useSimplePolicyCopy
+            ? 'Together with Closed by analyst policy and Escalated, this partitions opened cases.'
+            : 'Together with Escalated, this partitions opened cases.'
+          : row.key === 'policy_closed' && view === 'simple'
+            ? 'Together with Auto-cleared and Escalated, this partitions opened cases.'
           : row.key === 'escalated'
-            ? 'Together with Auto-cleared, this partitions opened cases; human closure is a subset of this stage.'
+            ? useSimplePolicyCopy
+              ? 'Together with Auto-cleared and Closed by analyst policy, this partitions opened cases; human closure is a subset of this stage.'
+              : 'Together with Auto-cleared, this partitions opened cases; human closure is a subset of this stage.'
             : row.key === 'candidate' || row.key === 'awaiting'
               ? 'This is a side cohort from clustered alerts, not a parent of opened cases.'
               : '';
@@ -866,7 +2136,9 @@ export function NoiseFunnel({
       .join(' ');
     const displayLabel = flat ? DASHBOARD_STAGE_LABEL[row.key] || row.label : row.label;
     const baseReference =
-      row.key === 'auto_cleared' || row.key === 'escalated'
+      row.key === 'auto_cleared' ||
+      row.key === 'escalated' ||
+      (view === 'simple' && row.key === 'policy_closed')
         ? rowByKey.get('cases') ?? null
         : row.key === 'closed'
           ? rowByKey.get('escalated') ?? null
@@ -886,10 +2158,10 @@ export function NoiseFunnel({
       <>
         <span
           className={cn(
-            'max-w-full text-2xs font-medium leading-tight',
-            flat
-              ? `min-h-7 w-full text-left uppercase tracking-wider ${flatLabelTone}`
-              : 'text-foreground',
+            'max-w-full font-medium leading-tight',
+            // Sentence case at 12px on the dashboard (Round 12): tracked capitals at 11px
+            // read as chrome and wrapped "ALERTS / INGESTED" onto two lines at 1440.
+            flat ? `min-h-7 w-full text-left text-xs ${flatLabelTone}` : 'text-2xs text-foreground',
           )}
           title={displayLabel}
         >
@@ -898,7 +2170,7 @@ export function NoiseFunnel({
         <span className={cn('flex items-baseline gap-1', flat && 'w-full justify-start')}>
           <CountUp
             value={row.total}
-            duration={animate ? undefined : 0}
+            duration={animate && rollNumerals ? undefined : 0}
             className={cn(
               'font-semibold tabular-nums text-foreground',
               flat ? 'font-mono text-xl' : 'text-sm',
@@ -971,11 +2243,11 @@ export function NoiseFunnel({
     );
   });
 
-  const gridStyle: React.CSSProperties | undefined =
+  const legacyGridStyle: React.CSSProperties | undefined =
     flat && !wideInspection
       ? undefined
       : { gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` };
-  const flatGridColumns =
+  const legacyFlatGridColumns =
     n === 4 ? 'lg:grid-cols-4' : n === 7 ? 'lg:grid-cols-7' : 'lg:grid-cols-6';
   const dropTotal = dropSuppressed + dropIgnored;
 
@@ -986,6 +2258,966 @@ export function NoiseFunnel({
       : data.cases_meta?.truncated
         ? `Case stages are partial: ${fmtNumber(data.cases_meta.fetched)} of ${fmtNumber(data.cases_meta.store_total)} matching cases were tallied.`
         : 'Every value is an aggregate for the selected time range.';
+
+  const legacyDetailedView = (
+    <div
+      className={cn('space-y-3', flat ? 'mt-2' : 'mt-3')}
+      data-testid="noise-detailed-view"
+      role="region"
+      aria-label="Detailed noise reduction view"
+    >
+      {headlinePct != null ? (
+        <div data-testid="noise-detailed-headline">
+          <p
+            className={cn(
+              'font-semibold tracking-tight text-foreground',
+              flat ? 'text-2xl' : 'text-2xl sm:text-3xl',
+            )}
+          >
+            {flat ? 'Reduced by ' : 'Noise reduced by '}
+            {detailedWithheld ? (
+              <span className="text-muted-foreground tabular-nums">{SHARE_DASH}</span>
+            ) : (
+              <ExplainTrigger explanation={detailedExplanation}>
+                <span className="text-primary tabular-nums">{headlinePct}%</span>
+              </ExplainTrigger>
+            )}
+          </p>
+          {/* The headline's own inputs (Round 16 numbers review): its numerator is the
+              Needs a human stage, never the Closed by human stage. */}
+          <p className="mt-1 text-xs tabular-nums text-muted-foreground" data-testid="noise-detailed-inputs">
+            {detailedWithheld ? (
+              <span>Not measured: partial coverage.</span>
+            ) : (
+              <>
+                {fmtNumber(ingestedTotal ?? derived.topTotal)} alerts ingested
+                <span className="mx-1.5 text-muted-foreground/70" aria-hidden>
+                  →
+                </span>
+                {fmtNumber(needsHumanTotal ?? 0)} case{needsHumanTotal === 1 ? '' : 's'} needed a human
+              </>
+            )}
+          </p>
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground" data-testid="noise-funnel-warming">
+          {degradedNote}
+        </p>
+      )}
+
+      {headlinePct != null && (data.counters?.incomplete || data.cases_meta?.truncated) ? (
+        <p
+          className="border-l-2 border-warning pl-2 text-xs leading-relaxed text-muted-foreground"
+          data-testid="noise-coverage-warning"
+        >
+          <span className="font-medium text-warning-text">Partial coverage</span>
+          {' · '}
+          {coverageNote}
+        </p>
+      ) : null}
+
+      <div data-testid="noise-instrument-panel" className="space-y-3">
+        <div
+          data-testid="noise-flow-band"
+          className={cn(
+            'relative mt-1 w-full',
+            wideInspection
+              ? 'h-44'
+              : flat
+                ? 'hidden h-36 lg:block lg:h-44'
+                : 'h-44 sm:h-52',
+          )}
+        >
+          <svg
+            viewBox={`0 0 ${LEGACY_VB_W} ${LEGACY_VB_H}`}
+            preserveAspectRatio="none"
+            className="absolute inset-0 h-full w-full"
+            aria-hidden
+            focusable="false"
+          >
+            {legacyLayout.ribbons.map((ribbon) => {
+              const related =
+                !activeStage ||
+                ribbon.sourceKey === activeStage ||
+                ribbon.targetKey === activeStage;
+              return (
+                <path
+                  key={ribbon.id}
+                  d={ribbon.path}
+                  fill={token(ribbon.colorName)}
+                  stroke={token(ribbon.colorName)}
+                  strokeWidth={0.5}
+                  vectorEffect="non-scaling-stroke"
+                  data-noise-ribbon
+                  data-source-stage={ribbon.sourceKey}
+                  data-target-stage={ribbon.targetKey}
+                  className="transition-opacity duration-fast ease-standard"
+                  style={{
+                    fillOpacity: activeStage
+                      ? related
+                        ? 1
+                        : 0.14
+                      : ribbon.kind === 'flow'
+                        ? 'var(--noise-ribbon-opacity)'
+                        : 'var(--noise-outcome-opacity)',
+                    strokeOpacity: activeStage
+                      ? related
+                        ? 1
+                        : 0.14
+                      : 'var(--noise-ribbon-stroke-opacity)',
+                  }}
+                />
+              );
+            })}
+
+            {legacyLayout.spurPath ? (
+              <>
+                <path
+                  d={legacyLayout.spurPath}
+                  fill="none"
+                  stroke={token('muted-foreground', 0.4)}
+                  strokeWidth={1}
+                  strokeDasharray="2 3"
+                  vectorEffect="non-scaling-stroke"
+                />
+                {legacyLayout.spurNub ? (
+                  <circle
+                    cx={legacyLayout.spurNub.x}
+                    cy={legacyLayout.spurNub.y}
+                    r={2.5}
+                    fill={token('muted-foreground', 0.7)}
+                  />
+                ) : null}
+              </>
+            ) : null}
+
+            {legacyLayout.rects.map((rect) => (
+              <rect
+                key={rect.key}
+                data-node-key={rect.key}
+                x={rect.x}
+                y={rect.y}
+                width={rect.w}
+                height={rect.h}
+                rx={0}
+                fill={rect.fill}
+                stroke={rect.fill}
+                strokeWidth={0.5}
+                vectorEffect="non-scaling-stroke"
+                opacity={activeStage && activeStage !== rect.key ? 0.48 : 1}
+                className="transition-opacity duration-fast ease-standard"
+              />
+            ))}
+          </svg>
+
+          <div className="pointer-events-none absolute inset-0" aria-hidden>
+            {legacyLayout.badges.map((badge, index) => (
+              <span
+                key={index}
+                data-loss-annotation
+                className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap px-1 text-2xs font-medium tabular-nums text-muted-foreground"
+                style={{ left: `${badge.leftPct}%`, top: `${badge.topPct}%` }}
+              >
+                −{badge.drop} · {badge.pct}% filtered
+              </span>
+            ))}
+            {legacyLayout.spurChip ? (
+              <span
+                className="absolute -translate-x-1/2 whitespace-nowrap px-1 text-2xs tabular-nums text-muted-foreground"
+                style={{
+                  left: `${legacyLayout.spurChip.leftPct}%`,
+                  top: `${legacyLayout.spurChip.topPct}%`,
+                }}
+              >
+                −{dropTotal} excluded
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        <div
+          data-testid="noise-stage-rail"
+          className={cn(
+            'grid items-start gap-1',
+            flat && 'grid-cols-2 gap-y-3 border-t border-border/60 pt-3 sm:grid-cols-3',
+            flat && legacyFlatGridColumns,
+          )}
+          style={legacyGridStyle}
+        >
+          {chips}
+        </div>
+
+        {dropTotal > 0 ? (
+          <p className="mt-1 border-t border-border pt-2 text-xs text-muted-foreground">
+            {dropSuppressed} suppressed · {dropIgnored} ignored removed before clustering
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  // Which Simple surface a reader is actually looking at. The flow band and the stage
+  // rail are mutually exclusive: the band is drawn only where its labels fit (measured,
+  // `flowFit`; before anything has measured, a >=38rem container query stands in), and
+  // otherwise the rail replaces it. When the conservation invariant fails (or nothing was
+  // opened) the band shows a status box instead of a graph and the rail is the only stage
+  // surface at EVERY width. The disclosure below is composed from these so it can never
+  // describe a surface that is not on screen.
+  const simpleFlowDrawn = simpleLayout.valid && simpleLayout.nodes.length > 0;
+  /** The rail is the fallback for a container the labels do not fit (hidden once they do). */
+  const simpleRailIsFallback = simpleFlowDrawn && !wideInspection;
+  /** The rail is on screen at some width (always, unless the wide band replaced it). */
+  const simpleRailRendered = !simpleFlowDrawn || !wideInspection;
+  /**
+   * Classes for the two fallback surfaces (band side, rail side). Measured, React decides;
+   * unmeasured, the container query does.
+   */
+  const fallbackClass = (surface: 'flow' | 'rail', display: 'block' | 'inline') =>
+    flowFit === 'unmeasured'
+      ? surface === 'flow'
+        ? cn('hidden', display === 'block' ? '@[38rem]/noise:block' : '@[38rem]/noise:inline')
+        : '@[38rem]/noise:hidden'
+      : (flowFit === 'fits') === (surface === 'flow')
+        ? undefined
+        : 'hidden';
+  const placedLabelY = (node: SimpleNode) => flowPlacement?.labelY[node.key] ?? node.labelY;
+  const labelFormOf = (key: string): FlowLabelForm => flowPlacement?.forms[key] ?? 'line';
+
+  const simpleFlowView = (
+    <div
+      className={cn('space-y-3', flat ? 'mt-2' : 'mt-3')}
+      data-testid="noise-simple-view"
+      role="region"
+      aria-label="Simple noise reduction view"
+    >
+      {/* The flow's one headline number (Round 12, additive). Withheld with its reason
+          whenever alerts and cases do not come from the same fully measured window. */}
+      <p
+        className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm text-muted-foreground"
+        data-testid="noise-alert-reduction"
+        data-measured={alertReductionFigure.value == null ? 'false' : 'true'}
+      >
+        <span>Alert reduction</span>
+        <span className="text-xl font-semibold leading-none tabular-nums text-foreground">
+          {alertReductionFigure.text}
+        </span>
+        {alertReductionFigure.reason ? (
+          <span className="text-xs">Not measured: {alertReductionFigure.reason}.</span>
+        ) : (
+          <span className="text-xs tabular-nums">
+            {fmtNumber(rowByKey.get('ingested')?.total ?? 0)} alerts became{' '}
+            {fmtNumber(rowByKey.get('cases')?.total ?? 0)} cases
+            {/* The arithmetic with the real counts (Round 16 WP12, research R11). */}
+            <span data-testid="noise-alert-reduction-math">
+              {' · '}
+              {alertReductionMath(rowByKey.get('ingested')?.total, rowByKey.get('cases')?.total)}
+            </span>
+          </span>
+        )}
+        <HelpTip
+          alwaysPopover
+          label="How alert reduction is calculated"
+          text={
+            'Alert reduction is 1 − cases opened ÷ alerts ingested, over the same selected ' +
+            'window. It is shown only when the alert counters cover the whole window and ' +
+            'every case in it was counted; otherwise it reads as a dash with the reason. ' +
+            'The Detailed view’s Reduced by figure is a different measure: the share of ' +
+            'ingested alerts that did not end in a Needs a human case.'
+          }
+          className="self-center"
+        />
+      </p>
+
+      {data.counters?.incomplete || data.cases_meta?.truncated ? (
+        <p
+          className="border-l-2 border-warning pl-2 text-xs leading-relaxed text-muted-foreground"
+          data-testid="noise-coverage-warning"
+        >
+          <span className="font-medium text-warning-text">Partial coverage</span>
+          {' · '}
+          {coverageNote}
+        </p>
+      ) : null}
+
+      {/* No inner `border-y` (Round 12): the band supplies the separation, and the
+          flat panel's own pair of rules was two of the ten that crossed this column. */}
+      <div
+        ref={instrumentRef}
+        data-testid="noise-instrument-panel"
+        className="@container/noise relative space-y-3"
+      >
+        <div
+          ref={simplePlotRef}
+          data-testid="noise-flow-band"
+          data-flow-fit={simpleFlowDrawn ? flowFit : undefined}
+          className={cn(
+            'relative w-full',
+            // Inline: scales with the viewport between 240 and 340px, and the drawing
+            // follows the MEASURED height (see SIMPLE_INLINE_HEIGHT). Inspection: pinned
+            // to SIMPLE_EXPANDED_HEIGHT.
+            wideInspection
+              ? 'h-[400px]'
+              : cn(
+                  'h-[clamp(240px,18dvw,340px)]',
+                  // A status box (no graph) shows at every width, as before.
+                  simpleFlowDrawn ? fallbackClass('flow', 'block') : 'hidden @[38rem]/noise:block',
+                ),
+          )}
+        >
+          {!simpleLayout.valid ? (
+            <div
+              className="flex h-full items-center justify-center border border-dashed border-warning/60 bg-warning/5 px-6 text-center text-xs leading-relaxed text-muted-foreground"
+              data-testid="noise-flow-integrity"
+              role="status"
+            >
+              {simpleLayout.integrityMessage}
+            </div>
+          ) : simpleLayout.nodes.length === 0 ? (
+            <div
+              className="flex h-full items-center justify-center border border-dashed border-border text-xs text-muted-foreground"
+              data-testid="noise-flow-empty"
+              role="status"
+            >
+              No cases were opened in this time range.
+            </div>
+          ) : (
+            <>
+              <svg
+                viewBox={`0 0 ${simpleLayout.width} ${simpleLayout.height}`}
+                preserveAspectRatio="xMidYMid meet"
+                className="absolute inset-0 h-full w-full"
+                aria-hidden
+                focusable="false"
+              >
+                <defs>
+                  <clipPath id={`${uid}-simple-flow-clip`}>
+                    {simpleLayout.ribbons.map((ribbon) => (
+                      <path key={`${ribbon.id}-clip`} d={ribbon.path} />
+                    ))}
+                  </clipPath>
+                </defs>
+
+                {/* The "FULL ALERT-TO-CASE FLOW" caption that used to sit here is gone, and
+                    not only for the ~20px it took off the top of every band. It was inside
+                    an `aria-hidden` <svg>, so it was never announced; it restated the <h2>
+                    directly above it; and it rendered UNCONDITIONALLY while the conversion
+                    nodes it captioned are gated on `fullPipeline`. On a deployment whose
+                    counters are still warming it therefore asserted "FULL" over a flow that
+                    starts at cases opened — with the coverage banner saying the opposite a
+                    few pixels above it. */}
+                {simpleLayout.conversionNodes.map((node) => (
+                  <rect
+                    key={`${node.key}-context-node`}
+                    data-context-node-key={node.key}
+                    x={node.x - SIMPLE_NODE_W / 2}
+                    y={node.y}
+                    width={SIMPLE_NODE_W}
+                    height={node.h}
+                    rx={0}
+                    fill={token('primary')}
+                    stroke={token('primary')}
+                    strokeWidth={0.5}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+
+                {simpleLayout.ribbons.map((ribbon) => {
+                  const related =
+                    !activeSimpleStage || ribbon.relatedStages.includes(activeSimpleStage);
+                  return (
+                    <path
+                      key={ribbon.id}
+                      d={ribbon.path}
+                      fill={ribbon.targetColor}
+                      stroke={ribbon.targetColor}
+                      strokeWidth={0.5}
+                      vectorEffect="non-scaling-stroke"
+                      data-noise-ribbon
+                      data-edge-kind={ribbon.kind}
+                      data-source-stage={ribbon.sourceKey}
+                      data-target-stage={ribbon.targetKey}
+                      data-value={ribbon.value}
+                      data-source-height={ribbon.sourceHeight}
+                      data-target-height={ribbon.targetHeight}
+                      className="transition-opacity duration-fast ease-standard"
+                      style={{
+                        fillOpacity: activeSimpleStage
+                          ? related
+                            ? 0.92
+                            : 0.14
+                          : 'var(--noise-ribbon-opacity)',
+                        strokeOpacity: activeSimpleStage
+                          ? related
+                            ? 0.92
+                            : 0.12
+                          : 'var(--noise-ribbon-stroke-opacity)',
+                      }}
+                    />
+                  );
+                })}
+
+                {animate && !reducedMotion && !activeSimpleStage && simpleLayout.ribbons.length > 0 ? (
+                  <g
+                    key={`${data.generated_at}-flow-sweep`}
+                    clipPath={`url(#${uid}-simple-flow-clip)`}
+                    className="noise-flow-refresh-sweep"
+                    data-testid="noise-flow-refresh-sweep"
+                    style={
+                      {
+                        '--noise-sweep-distance': `${simpleLayout.width + 120}px`,
+                      } as React.CSSProperties
+                    }
+                  >
+                    <rect
+                      x={-92}
+                      y={0}
+                      width={54}
+                      height={simpleLayout.height}
+                      fill={token('foreground', 0.05)}
+                    />
+                    <rect
+                      x={-38}
+                      y={0}
+                      width={12}
+                      height={simpleLayout.height}
+                      fill={token('foreground', 0.16)}
+                    />
+                  </g>
+                ) : null}
+
+                {simpleLayout.nodes
+                  .filter(
+                    (node) =>
+                      node.h > 0 &&
+                      // A label spread off its node's middle gets a leader back to it:
+                      // every label left of its node, and the decision-column labels
+                      // right of theirs (Cases opened sits above its node by design).
+                      (node.labelSide === 'before' ||
+                        node.key === 'auto_cleared' ||
+                        node.key === 'policy_closed') &&
+                      Math.abs(placedLabelY(node) - (node.y + node.h / 2)) > 0.5,
+                  )
+                  .map((node) => {
+                    const before = node.labelSide === 'before';
+                    const edge = before ? node.x : node.x + node.w;
+                    const reach = before ? edge - 7 : edge + 7;
+                    return (
+                      <path
+                        key={`${node.key}-label-leader`}
+                        d={`M${edge},${node.y + node.h / 2} L${reach},${placedLabelY(node)}`}
+                        fill="none"
+                        stroke={token('muted-foreground', 0.55)}
+                        strokeWidth={1}
+                        vectorEffect="non-scaling-stroke"
+                        data-label-leader={node.key}
+                      />
+                    );
+                  })}
+
+                {simpleLayout.nodes
+                  .filter((node) => node.h > 0)
+                  .map((node) => {
+                    const related =
+                      !activeSimpleStage ||
+                      node.key === activeSimpleStage ||
+                      simpleLayout.ribbons.some(
+                        (ribbon) =>
+                          ribbon.relatedStages.includes(activeSimpleStage) &&
+                          (ribbon.sourceKey === node.key || ribbon.targetKey === node.key),
+                      );
+                    return (
+                      <rect
+                        key={node.key}
+                        data-node-key={node.key}
+                        x={node.x}
+                        y={node.y}
+                        width={node.w}
+                        height={node.h}
+                        rx={0}
+                        fill={node.fill}
+                        stroke={node.fill}
+                        strokeWidth={0.5}
+                        vectorEffect="non-scaling-stroke"
+                        opacity={related ? 1 : 0.3}
+                        className="transition-opacity duration-fast ease-standard"
+                      />
+                    );
+                  })}
+              </svg>
+
+              <div className="pointer-events-none absolute inset-0">
+                {simpleLayout.conversionNodes.map((node) => {
+                  const unit =
+                    node.key === 'ingested'
+                      ? node.row.total === 1
+                        ? 'alert'
+                        : 'alerts'
+                      : node.row.total === 1
+                        ? 'cluster'
+                        : 'clusters';
+                  // Share of the stage this one came from; `ingested` is the baseline.
+                  const share = stageShare(
+                    node.key,
+                    node.row.total,
+                    rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+                    shareOptions,
+                  );
+                  const labelClassName = cn(
+                    'absolute rounded-sm bg-card/95 px-1.5 py-1 text-left',
+                    node.labelSide === 'above' && '-translate-y-full',
+                  );
+                  const labelStyle: React.CSSProperties = {
+                    left: `${((node.x + 8) / simpleLayout.width) * 100}%`,
+                    top: `${(node.labelY / simpleLayout.height) * 100}%`,
+                    maxWidth: `${Math.max(
+                      12,
+                      100 - ((node.x + 8) / simpleLayout.width) * 100,
+                    )}%`,
+                  };
+                  const labelContent = conversionLabelContent(
+                    node.key,
+                    `${fmtNumber(node.row.total)} ${unit}`,
+                    share.text,
+                    wideInspection,
+                  );
+                  if (view === 'detailed') {
+                    return (
+                      <div
+                        key={node.key}
+                        className={labelClassName}
+                        style={labelStyle}
+                        aria-hidden
+                      >
+                        {labelContent}
+                      </div>
+                    );
+                  }
+                  const control = (
+                    <button
+                      type="button"
+                      onClick={() => onStageClick?.(node.key)}
+                      onPointerEnter={() => setHoveredStage(node.key)}
+                      onPointerLeave={() => setHoveredStage(null)}
+                      onFocus={() => setFocusedStage(node.key)}
+                      onBlur={() => setFocusedStage(null)}
+                      aria-label={`${DASHBOARD_STAGE_LABEL[node.key]}: ${fmtNumber(node.row.total)} ${unit}, ${share.sentence}. Filled conversion ribbon; the unit changes at this step.`}
+                      className={cn(
+                        'pointer-events-auto transition-colors duration-fast ease-standard',
+                        // The interactive hover step, like every row (Round 13): `--popover`
+                        // matched the card in light and the grouped panel in dark, so a
+                        // hovered chip did not change at all there.
+                        'hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        labelClassName,
+                      )}
+                      style={labelStyle}
+                    >
+                      {labelContent}
+                    </button>
+                  );
+                  return (
+                    <HoverCard key={node.key} openDelay={80} closeDelay={60}>
+                      <HoverCardTrigger asChild>{control}</HoverCardTrigger>
+                      <HoverCardContent side="top" align="center" className="w-72">
+                        <StageHoverContent
+                          row={node.row}
+                          topReference={relativeTo}
+                          baseReference={node.key === 'clustered' ? rowByKey.get('ingested') ?? null : null}
+                        />
+                      </HoverCardContent>
+                    </HoverCard>
+                  );
+                })}
+
+                {simpleLayout.nodes.filter((node) => node.h > 0).map((node) => {
+                  const row = node.rowKey ? rowByKey.get(node.rowKey) : undefined;
+                  const stageKey = node.rowKey ?? node.key;
+                  const labelX =
+                    node.labelSide === 'after' ? node.x + node.w + 8 : node.x - 8;
+                  const relationship =
+                    node.key === 'escalated_remaining'
+                      ? ', equal to Escalated minus Closed by human; this is not the Open cases count'
+                      : '';
+                  // Every flow label states its share of the stage it came from — the
+                  // conserved case split against Cases opened, human closure against
+                  // Escalated — so two printed shares can never be read against each other.
+                  const share = stageShare(
+                    node.key,
+                    node.total,
+                    rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+                    shareOptions,
+                  );
+                  const leftPct = (labelX / simpleLayout.width) * 100;
+                  // One line where it fits, else name over figures (`placeFlowLabels`).
+                  const form = labelFormOf(node.key);
+                  const labelClassName = cn(
+                    'absolute -translate-y-1/2 bg-card/95 text-foreground',
+                    flowLabelBoxClass(node.labelSide, form, wideInspection),
+                    node.total === 0 && 'text-muted-foreground',
+                  );
+                  const labelStyle: React.CSSProperties = {
+                    /*
+                     * A label that sits BEFORE its node is anchored by its RIGHT edge, never
+                     * by `left` plus `-translate-x-full`. An absolute box shrinks to fit the
+                     * space between its `left` and the container's right edge, and a node on
+                     * the plot's far right left that at ~3%: "Closed by human · 2 · 17%" fell
+                     * to min-content and wrapped under itself, with the share clipped behind
+                     * the label below it. Anchored on the right, it has the whole plot.
+                     */
+                    ...(node.labelSide === 'after'
+                      ? { left: `${leftPct}%` }
+                      : { right: `${100 - leftPct}%` }),
+                    top: `${(placedLabelY(node) / simpleLayout.height) * 100}%`,
+                    // Never let a label (now count + share) run past the plot edge: the
+                    // share wraps under the count instead of forcing horizontal scroll.
+                    maxWidth: `${Math.max(12, node.labelSide === 'after' ? 100 - leftPct : leftPct)}%`,
+                  };
+                  const labelContent = flowLabelContent(node, share.text, form, wideInspection);
+                  if (view === 'detailed') {
+                    return (
+                      <div
+                        key={node.key}
+                        data-flow-label={node.key}
+                        data-label-form={form}
+                        className={labelClassName}
+                        style={labelStyle}
+                        aria-hidden
+                      >
+                        {labelContent}
+                      </div>
+                    );
+                  }
+                  const control = (
+                    <button
+                      type="button"
+                      data-flow-label={node.key}
+                      data-label-form={form}
+                      aria-label={`${node.label}: ${fmtNumber(node.total)} case${node.total === 1 ? '' : 's'}, ${share.sentence}${relationship}.`}
+                      onClick={() => {
+                        setFocusedStage(stageKey);
+                        if (node.rowKey) onStageClick?.(node.rowKey);
+                      }}
+                      onPointerEnter={() => setHoveredStage(stageKey)}
+                      onPointerLeave={() => setHoveredStage(null)}
+                      onFocus={() => setFocusedStage(stageKey)}
+                      onBlur={() => setFocusedStage(null)}
+                      className={cn(
+                        'pointer-events-auto',
+                        // `hover:bg-hover`, the interactive hover step (see the stage chips).
+                        'transition-colors duration-fast ease-standard hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        row ? 'active:bg-accent/70' : 'cursor-help',
+                        labelClassName,
+                      )}
+                      style={labelStyle}
+                    >
+                      {labelContent}
+                    </button>
+                  );
+
+                  if (!row) return <React.Fragment key={node.key}>{control}</React.Fragment>;
+                  const baseReference =
+                    row.key === 'auto_cleared' ||
+                    row.key === 'policy_closed' ||
+                    row.key === 'escalated'
+                      ? rowByKey.get('cases') ?? null
+                      : row.key === 'closed'
+                        ? rowByKey.get('escalated') ?? null
+                        : row.key === 'cases'
+                          ? rowByKey.get('clustered') ?? null
+                          : null;
+                  return (
+                    <HoverCard key={node.key} openDelay={80} closeDelay={60}>
+                      <HoverCardTrigger asChild>{control}</HoverCardTrigger>
+                      <HoverCardContent side="top" align="center" className="w-72">
+                        <StageHoverContent
+                          row={row}
+                          topReference={relativeTo}
+                          baseReference={baseReference}
+                        />
+                      </HoverCardContent>
+                    </HoverCard>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div
+          data-testid="noise-stage-rail"
+          className={cn(
+            'grid grid-cols-2 items-start gap-1 gap-y-3 border-t border-border/60 pt-3 sm:grid-cols-3',
+            simpleFlowDrawn
+              ? wideInspection
+                ? 'hidden'
+                : fallbackClass('rail', 'block')
+              : 'lg:grid-cols-4',
+          )}
+        >
+          {chips}
+          <button
+            type="button"
+            onPointerEnter={() => setHoveredStage('escalated_remaining')}
+            onPointerLeave={() => setHoveredStage(null)}
+            onFocus={() => setFocusedStage('escalated_remaining')}
+            onBlur={() => setFocusedStage(null)}
+            aria-label={`Not analyst-closed: ${fmtNumber(simpleLayout.remainingEscalated)} cases, equal to Escalated minus Closed by human; this is not the Open cases count.`}
+            aria-describedby={topologyDescriptionId}
+            className={cn(
+              'flex w-full cursor-help flex-col gap-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              flat ? 'items-start px-3 py-1 text-left' : 'items-center px-1 py-1.5 text-center',
+            )}
+          >
+            <span
+              className={cn(
+                'max-w-full font-medium leading-tight',
+                flat ? 'min-h-7 w-full text-left text-xs text-muted-foreground' : 'text-2xs text-foreground',
+              )}
+            >
+              Not analyst-closed
+            </span>
+            <span className={cn('flex items-baseline gap-1', flat && 'w-full justify-start')}>
+              <CountUp
+                value={simpleLayout.remainingEscalated}
+                duration={animate && rollNumerals ? undefined : 0}
+                className={cn(
+                  'font-semibold tabular-nums text-foreground',
+                  flat ? 'font-mono text-xl' : 'text-sm',
+                )}
+              />
+              <span className={cn('tabular-nums text-muted-foreground', flat ? 'text-xs' : 'text-2xs')}>
+                {formatShare(
+                  escalatedRow && escalatedRow.total > 0
+                    ? (simpleLayout.remainingEscalated / escalatedRow.total) * 100
+                    : 0,
+                )}
+              </span>
+            </span>
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          {/* The SENTENCE moved to the popover; the MARK did not.
+              "Filled ribbons show the alert → cluster → case reduction. Ribbon thickness
+              uses a compressed (√) display scale." is a paragraph of prose about a picture
+              that has not changed, so it reads once and then becomes furniture — but it is
+              also an ENCODING disclosure, and an unlabelled non-linear axis is a misleading
+              chart, not a tidy one. So a persistent `√ scale` chip stays on the face,
+              carrying the full sentence as its accessible name, and the prose goes to the
+              popover that already restates it in more detail.
+
+              The two `data-disclosure-surface` spans must keep SHIPPING, both of them —
+              the specs assert their classes, never `toBeNull()` — because which surface is
+              visible is decided at the container width: by the measured label fit
+              (Round 12 polish 3), and by a container query until that has measured. The
+              chip therefore lives INSIDE them. */}
+          <p
+            className="flex min-w-0 flex-wrap items-center gap-x-1 text-xs leading-relaxed text-muted-foreground"
+            data-testid="noise-share-disclosure"
+          >
+            {simpleFlowDrawn ? (
+              <span
+                data-disclosure-surface="flow"
+                className={cn(simpleRailIsFallback && fallbackClass('flow', 'inline'))}
+              >
+                {/* Plain muted text with its (?) beside it (Round 12), not a bordered mono
+                    chip: it is a disclosure, not a control, and the box was one of the
+                    competing borders around the flow. */}
+                <span
+                  data-testid="noise-scale-chip"
+                  className="inline-flex items-center text-xs text-muted-foreground"
+                >
+                  {/* The glyph is decorative on its own; the sentence beside it is the
+                      accessible name, as real text rather than an `aria-label` on a bare
+                      span (prohibited on the generic role) or a mouse-only `title`. */}
+                  <span aria-hidden>Square-root scale</span>
+                  <span className="sr-only">
+                    Filled ribbons show the alert → cluster → case reduction. Ribbon
+                    thickness uses a compressed (√) display scale.
+                  </span>
+                </span>{' '}
+              </span>
+            ) : null}
+            {simpleRailRendered ? (
+              <span
+                data-disclosure-surface="rail"
+                className={cn(simpleRailIsFallback && fallbackClass('rail', 'inline'))}
+              >
+                Stage rail · flow order{' '}
+              </span>
+            ) : null}
+            <HelpTip
+              alwaysPopover
+              label="How to read these counts and percentages"
+              text={
+                "Labels are the exact counts and units. Each percentage is that stage's " +
+                'share of the stage it came from: clusters of alerts ingested, cases of ' +
+                'clusters, the case split of cases opened, and human closure of escalated ' +
+                'cases. The first stage is the baseline, so it shows an em dash. Ribbon ' +
+                'thickness is a square-root scale, so a thin ribbon is thicker than its ' +
+                'share: 4% of alerts ingested draws at about 20% of the full height.'
+              }
+              className="align-middle"
+            />
+            {/* The cross-reference rides on this row (Round 14), so it costs no line of
+                its own under the flow. On a narrow panel the row wraps, and the separator
+                hides itself whenever the sentence starts a new line. */}
+            {crossReference ? <FooterCrossReference text={crossReference} /> : null}
+          </p>
+          {validOpenCases ? (
+            <button
+              type="button"
+              onClick={onOpenCasesClick}
+              disabled={!onOpenCasesClick}
+              data-testid="noise-open-cases"
+              data-partial={validOpenCases.partial ? 'true' : 'false'}
+              // "from this window" is what tells this figure apart from the Open Cases
+              // tile (open now, any arrival date) — the two are different populations and
+              // used to carry near-identical labels 400px apart (Round 12).
+              aria-label={`${validOpenCases.partial ? 'At least ' : ''}${fmtNumber(validOpenCases.count)} open cases from the selected window${validOpenCases.count > 0 ? ', review active cases' : ', queue clear'}.`}
+              className={cn(
+                // A text button with a count (Round 12): no box, still a tab stop.
+                'ml-auto inline-flex min-h-8 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors duration-fast ease-standard',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default',
+                validOpenCases.count > 0 ? 'text-foreground hover:bg-hover' : 'text-muted-foreground',
+              )}
+            >
+              <span className="relative flex h-2.5 w-2.5 shrink-0 items-center justify-center" aria-hidden>
+                {validOpenCases.count > 0 && animate && !reducedMotion ? (
+                  <span
+                    key={`${data.generated_at}-open-pulse`}
+                    className="noise-open-cases-pulse absolute inset-0 rounded-full border border-warning"
+                  />
+                ) : null}
+                <span
+                  className={cn(
+                    'relative h-2 w-2 rounded-full',
+                    validOpenCases.count > 0 ? 'bg-warning' : 'bg-success',
+                  )}
+                />
+              </span>
+              <span>
+                <span className="font-semibold tabular-nums">
+                  {validOpenCases.partial ? '≥' : ''}{fmtNumber(validOpenCases.count)}
+                </span>{' '}
+                open case{validOpenCases.count === 1 ? '' : 's'}
+                <span className="text-muted-foreground"> from this window</span>
+              </span>
+              <span
+                className={cn(
+                  'font-medium',
+                  validOpenCases.count > 0 ? 'text-primary' : 'text-success-text',
+                )}
+              >
+                {validOpenCases.count > 0 ? 'Review' : 'Clear'}
+                {validOpenCases.count > 0 ? <span aria-hidden> →</span> : null}
+              </span>
+            </button>
+          ) : null}
+        </div>
+
+        {candidateRow || dropTotal > 0 ? (
+          <p
+            className="flex flex-wrap gap-x-4 gap-y-1 text-xs leading-relaxed text-muted-foreground"
+            data-testid="noise-flow-annotations"
+          >
+            {candidateRow ? (
+              <span>
+                <span className="font-mono tabular-nums text-foreground">
+                  {fmtNumber(candidateRow.total)}
+                </span>{' '}
+                awaiting review · side cohort from clustering
+              </span>
+            ) : null}
+            {dropTotal > 0 ? (
+              <span>
+                Excluded before clustering ·{' '}
+                <span className="font-mono tabular-nums text-foreground">
+                  {fmtNumber(dropSuppressed)}
+                </span>{' '}
+                suppressed ·{' '}
+                <span className="font-mono tabular-nums text-foreground">
+                  {fmtNumber(dropIgnored)}
+                </span>{' '}
+                ignored
+              </span>
+            ) : null}
+          </p>
+        ) : null}
+
+        {/* The measuring probe (Round 12 polish 3): every flow label in both of its forms,
+            laid out exactly as drawn but invisible, out of flow and out of the
+            accessibility tree, plus a box carrying the band's own height clamp. Its text
+            is generated content (`FlowText`), so it adds no text to the page. */}
+        {simpleFlowDrawn ? (
+          <div
+            ref={flowProbeRef}
+            aria-hidden
+            data-testid="noise-flow-probe"
+            className="pointer-events-none invisible absolute left-0 top-0 h-0 w-0 overflow-hidden"
+          >
+            {wideInspection ? null : (
+              <div data-flow-probe-height className="absolute left-0 top-0 h-[clamp(240px,18dvw,340px)] w-px" />
+            )}
+            {simpleLayout.conversionNodes.map((node) => {
+              const unit =
+                node.key === 'ingested'
+                  ? node.row.total === 1
+                    ? 'alert'
+                    : 'alerts'
+                  : node.row.total === 1
+                    ? 'cluster'
+                    : 'clusters';
+              const share = stageShare(
+                node.key,
+                node.row.total,
+                rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+                shareOptions,
+              );
+              return (
+                <span
+                  key={node.key}
+                  data-flow-probe={node.key}
+                  data-flow-form="line"
+                  className="absolute left-0 top-0 block w-max rounded-sm px-1.5 py-1 text-left"
+                >
+                  {conversionLabelContent(
+                    node.key,
+                    `${fmtNumber(node.row.total)} ${unit}`,
+                    share.text,
+                    wideInspection,
+                    true,
+                  )}
+                </span>
+              );
+            })}
+            {simpleLayout.nodes
+              .filter((node) => node.h > 0)
+              .flatMap((node) => {
+                const share = stageShare(
+                  node.key,
+                  node.total,
+                  rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+                  shareOptions,
+                );
+                return (['line', 'stack'] as const).map((form) => (
+                  <span
+                    key={`${node.key}-${form}`}
+                    data-flow-probe={node.key}
+                    data-flow-form={form}
+                    className={cn(
+                      'absolute left-0 top-0 w-max',
+                      flowLabelBoxClass(node.labelSide, form, wideInspection, true),
+                    )}
+                  >
+                    {flowLabelContent(node, share.text, form, wideInspection, true)}
+                  </span>
+                ));
+              })}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 
   return (
     <>
@@ -1000,197 +3232,29 @@ export function NoiseFunnel({
         data-testid="noise-funnel"
       >
         <p id={topologyDescriptionId} className="sr-only">
-          Alerts move through clustering into opened cases. Auto-cleared and Escalated
-          partition opened cases. Closed by human is a subset of Escalated. The graph is
-          directional context; the labelled counts and percentages are authoritative.
+          {view === 'detailed'
+            ? 'Alerts move through clustering into opened cases. Auto-cleared and Escalated partition opened cases. Closed by human is a subset of Escalated. The graph is directional context; the labelled counts and percentages are authoritative.'
+            : 'Alerts move through clustering into opened cases. Where the flow graph fits it is drawn as filled, tapered ribbons whose thickness uses a compressed display scale; at narrower widths the same stages are listed in the aligned stage rail instead. Alerts, clusters, and cases are different units, and labels are the exact values. On whichever surface is rendered, every stage label also states its share of the stage it came from, and each spoken share names that denominator; the first stage is the baseline and shows an em dash. Auto-cleared, optional analyst-policy closes, and Escalated partition opened cases. Closed by human is a subset of Escalated. Not analyst-closed is the remaining conserved complement, while Open cases is a separate current lifecycle count.'}
         </p>
         <Header
           hidden={hidden}
           onToggleHidden={onToggleHidden}
           onExpand={expandable ? () => setExpanded(true) : undefined}
+          expandRef={expandTriggerRef}
           flat={flat}
+          view={view}
+          onViewChange={setView}
+          headingId={headingId}
+          caption={caption}
         />
 
-        {hidden ? null : (
-          <div className={cn('space-y-3', flat ? 'mt-2' : 'mt-3')}>
-          {/* Hero — the value-prop headline + the ingested→human cascade. */}
-          {headlinePct != null ? (
-            <div>
-              <p
-                className={cn(
-                  'font-semibold tracking-tight text-foreground',
-                  flat ? 'text-2xl' : 'text-2xl sm:text-3xl',
-                )}
-              >
-                {flat ? 'Reduced by ' : 'Noise reduced by '}
-                <span className="text-primary tabular-nums">{headlinePct}%</span>
-              </p>
-              <p className="mt-1 text-xs tabular-nums text-muted-foreground">
-                {fmtNumber(derived.topTotal)}{' '}
-                {derived.mode === 'full' ? 'events ingested' : 'cases opened'}
-                <span className="mx-1.5 text-muted-foreground/70" aria-hidden>
-                  →
-                </span>
-                {fmtNumber(closedByHuman)} case{closedByHuman === 1 ? '' : 's'} closed by a human
-              </p>
-            </div>
-          ) : (
-            <p className="text-xs text-muted-foreground" data-testid="noise-funnel-warming">
-              {degradedNote}
-            </p>
-          )}
-
-          {headlinePct != null && (data.counters?.incomplete || data.cases_meta?.truncated) ? (
-            <p
-              className="border-l-2 border-warning pl-2 text-xs leading-relaxed text-muted-foreground"
-              data-testid="noise-coverage-warning"
-            >
-              <span className="font-medium text-warning-text">Partial coverage</span>
-              {' · '}
-              {coverageNote}
-            </p>
-          ) : null}
-
-          <div
-            data-testid="noise-instrument-panel"
-            className={cn('space-y-3', flat && 'border-y border-border/60 py-3')}
-          >
-            {/* The proportional flow band is shown at desktop width, where the six
-                fixed columns remain legible. The complete evidence rail stays present
-                at every width. All meaning is carried by that interactive rail. */}
-            <div
-              data-testid="noise-flow-band"
-              className={cn(
-                'relative mt-1 w-full',
-                wideInspection
-                  ? 'h-44'
-                  : flat
-                    ? 'hidden h-36 lg:block lg:h-44'
-                    : 'h-44 sm:h-52',
-              )}
-            >
-              <svg
-                viewBox={`0 0 ${VB_W} ${VB_H}`}
-                preserveAspectRatio="none"
-                className="absolute inset-0 h-full w-full"
-                aria-hidden
-                focusable="false"
-              >
-              {/* Matte, exact-width ribbons. No gradients, glow, or decorative growth. */}
-              {layout.ribbons.map((r) => {
-                const related =
-                  !activeStage || r.sourceKey === activeStage || r.targetKey === activeStage;
-                return (
-                  <path
-                    key={r.id}
-                    d={r.path}
-                    fill={token(r.colorName)}
-                    stroke={token(r.colorName)}
-                    strokeWidth={0.5}
-                    vectorEffect="non-scaling-stroke"
-                    data-noise-ribbon
-                    data-source-stage={r.sourceKey}
-                    data-target-stage={r.targetKey}
-                    className="transition-opacity duration-fast ease-standard"
-                    style={{
-                      fillOpacity: activeStage
-                        ? related
-                          ? 1
-                          : 0.14
-                        : r.kind === 'flow'
-                          ? 'var(--noise-ribbon-opacity)'
-                          : 'var(--noise-outcome-opacity)',
-                      strokeOpacity: activeStage
-                        ? related
-                          ? 1
-                          : 0.14
-                        : 'var(--noise-ribbon-stroke-opacity)',
-                    }}
-                  />
-                );
-              })}
-
-              {/* Suppressed/ignored side-spur. */}
-              {layout.spurPath ? (
-                <>
-                  <path
-                    d={layout.spurPath}
-                    fill="none"
-                    stroke={token('muted-foreground', 0.4)}
-                    strokeWidth={1}
-                    strokeDasharray="2 3"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  {layout.spurNub ? (
-                    <circle cx={layout.spurNub.x} cy={layout.spurNub.y} r={2.5} fill={token('muted-foreground', 0.7)} />
-                  ) : null}
-                </>
-              ) : null}
-
-              {/* Node anchors on top of the ribbons. */}
-              {layout.rects.map((rc) => (
-                <rect
-                  key={rc.key}
-                  data-node-key={rc.key}
-                  x={rc.x}
-                  y={rc.y}
-                  width={rc.w}
-                  height={rc.h}
-                  rx={0}
-                  fill={rc.fill}
-                  stroke={rc.fill}
-                  strokeWidth={0.5}
-                  vectorEffect="non-scaling-stroke"
-                  opacity={activeStage && activeStage !== rc.key ? 0.48 : 1}
-                  className="transition-opacity duration-fast ease-standard"
-                />
-              ))}
-              </svg>
-
-            {/* HTML overlay (decorative): per-connector drop-off badges + spur chip. */}
-              <div className="pointer-events-none absolute inset-0" aria-hidden>
-              {layout.badges.map((b, i) => (
-                <span
-                  key={i}
-                  data-loss-annotation
-                  className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap px-1 text-2xs font-medium tabular-nums text-muted-foreground"
-                  style={{ left: `${b.leftPct}%`, top: `${b.topPct}%` }}
-                >
-                  −{b.drop} · {b.pct}% filtered
-                </span>
-              ))}
-              {layout.spurChip ? (
-                <span
-                  className="absolute -translate-x-1/2 whitespace-nowrap px-1 text-2xs tabular-nums text-muted-foreground"
-                  style={{ left: `${layout.spurChip.leftPct}%`, top: `${layout.spurChip.topPct}%` }}
-                >
-                  −{dropTotal} excluded
-                </span>
-              ) : null}
-              </div>
-            </div>
-
-          {/* The interactive + labelled rail: one focusable, hover-detailed stage per column. */}
-            <div
-              data-testid="noise-stage-rail"
-              className={cn(
-                'grid items-start gap-1',
-                flat && 'grid-cols-2 gap-y-3 border-t border-border/60 pt-3 sm:grid-cols-3',
-                flat && flatGridColumns,
-              )}
-              style={gridStyle}
-            >
-              {chips}
-            </div>
-
-            {dropTotal > 0 ? (
-              <p className="mt-1 border-t border-border pt-2 text-xs text-muted-foreground">
-                {dropSuppressed} suppressed · {dropIgnored} ignored removed before clustering
-              </p>
-            ) : null}
-          </div>
-          </div>
-        )}
+        {hidden ? null : view === 'detailed' ? legacyDetailedView : simpleFlowView}
+        {/* The detailed view has no scale row, so its cross-reference closes the view. */}
+        {crossReference && !hidden && view === 'detailed' ? (
+          <p className="mt-2 text-xs text-muted-foreground" data-testid="noise-cross-reference">
+            {crossReference}
+          </p>
+        ) : null}
       </section>
 
       {expandable ? (
@@ -1198,6 +3262,7 @@ export function NoiseFunnel({
           <DialogContent
             className="h-[min(92dvh,960px)] w-[min(96dvw,1800px)] max-w-none gap-0 overflow-hidden rounded-[6px] p-0"
             data-testid="noise-funnel-expanded"
+            onCloseAutoFocus={restoreExpandFocus}
           >
             <DialogHeader className="border-b border-border px-6 py-5">
               <DialogTitle>Noise reduction flow · Last {data.window_hours} hours</DialogTitle>
@@ -1214,6 +3279,10 @@ export function NoiseFunnel({
                   onStageClick={onStageClick}
                   variant="flat"
                   wideInspection
+                  openCases={validOpenCases ?? undefined}
+                  onOpenCasesClick={onOpenCasesClick}
+                  view={view}
+                  onViewChange={setView}
                 />
               </div>
               <div className="mt-5 border-t border-border pt-4 text-xs leading-relaxed text-muted-foreground">

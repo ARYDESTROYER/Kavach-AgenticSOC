@@ -4,7 +4,10 @@ Two pieces, both completely SEPARATE from the real state:
 
 * :class:`DemoStack` — a throwaway store stack built on a FRESH ``InMemoryESClient``:
   its own CaseStore / AuditLogger / UsageStore + a $0 deterministic mock gateway +
-  an InvestigationPipeline + IngestService bound to it, PLUS demo-scoped
+  an InvestigationPipeline + IngestService bound to it (runbooks included: the
+  pipeline reads the SAME bundled library and Published operator runbooks as the real
+  one, D45, with a Demo-only overlay that maps the synthetic rule names to the
+  built-in that covers them, :func:`overlay_demo_runbooks`), PLUS demo-scoped
   Proposal/Campaign/Baseline/Tuning stores and ONE shared vector store so the
   overhaul's "all capabilities ON" showcase runs in a fully ISOLATED sandbox. NOTHING
   here can reach the real ES/SQL stores or the real HITL/tuning/campaign/baseline
@@ -29,11 +32,12 @@ import asyncio
 import logging
 import random
 import time
+from collections.abc import Awaitable, Iterable
 from typing import Any, Callable
 
 from ..audit.audit_log import AuditLogger
 from ..cache import Cache
-from ..config import AutoClosePolicy, Preferences, Secrets
+from ..config import AutoClosePolicy, EnrichmentConfig, Preferences, Secrets
 from ..constants import SourceSurface
 from ..es.fake import InMemoryESClient
 from ..llm.gateway import LLMGateway
@@ -55,6 +59,117 @@ DEMO_TAG = "demo"
 _FIRST_INCIDENT_MIN_SECONDS = 20.0
 _MANUAL_INCIDENT_COOLDOWN_SECONDS = 5.0
 _MAX_EVENTS_PER_TICK = 2_000
+
+
+# --------------------------------------------------------------------------- #
+# Runbooks in Demo Mode (Round 14 SPEC §3.5, §4.10.18, D45)
+#
+# The Demo pipeline matches against the real library: every built-in and every
+# Published operator runbook (read only while Demo Mode is on). The synthetic Demo
+# sources raise rule names no production runbook lists (``demo_rdp_bruteforce``,
+# ``LP-ES-RISK-1002``, Wazuh ``100122``...), and the production built-ins deliberately
+# carry none of them, so without help every Demo case would fall to the Generic
+# incident runbook. This overlay adds, in the Demo stack only, each synthetic rule
+# value to the ``applies_when.rule_ids`` of the built-in that covers it. The runbook
+# text (and so the investigator rendering, its budget and its content hash) is
+# unchanged, and nothing here is stored or reaches a real case.
+# --------------------------------------------------------------------------- #
+#: Each Demo storyline (``demo_generator.STORYLINES``) to the built-in that covers it.
+DEMO_STORY_RUNBOOKS: dict[str, str] = {
+    "phishing_chain": "phishing-suspicious-email",
+    "rdp_bruteforce": "brute-force-password-spray",
+    "sqli_webshell": "web-application-attack",
+    "impossible_travel": "compromised-account",
+    "ransomware_beacon": "ransomware-destructive",
+    "insider_staging": "privileged-misuse-insider",
+}
+#: Demo rule values outside the storylines: the capability-seed rules, the noisy
+#: scanner the tuner observes, and the low-confidence native alerts each Demo source
+#: raises (``demo_sources``), to the built-in that covers each.
+DEMO_EXTRA_RULE_RUNBOOKS: dict[str, str] = {
+    "waf_allow": "web-application-attack",
+    "web_apache_access": "scanning-reconnaissance",
+    "demo_noisy_scanner": "scanning-reconnaissance",
+    "edr_heartbeat": "malware-endpoint",
+    "web_portal_auth": "compromised-account",
+    "LP-ES-RISK-0099": "scanning-reconnaissance",
+    "LP QRadar: low-confidence scanner offense": "scanning-reconnaissance",
+    "100190": "scanning-reconnaissance",
+    "Entra ID Protection: low-confidence unfamiliar sign-in properties": "compromised-account",
+    # Routine telemetry the seeded false-positive cases carry (Round 14: seeded cases
+    # name rules their Demo source really raises), mapped to the runbook a person
+    # would reach for, so they do not fall to the generic incident runbook.
+    "osquery_process_event": "malware-endpoint",
+    "web_access": "compromised-account",
+    "Entra sign-in": "compromised-account",
+}
+
+
+def demo_rule_runbooks() -> dict[str, str]:
+    """Every Demo rule value to the built-in runbook that covers it: each storyline's
+    own rule (``demo_<story>``) and the rule each Demo source raises for it
+    (``demo_generator.NATIVE_STORY_RULE_IDS``), plus :data:`DEMO_EXTRA_RULE_RUNBOOKS`."""
+    out: dict[str, str] = {}
+    for story_id, runbook_id in DEMO_STORY_RUNBOOKS.items():
+        out[f"demo_{story_id}"] = runbook_id
+        for source_rules in gen.NATIVE_STORY_RULE_IDS.values():
+            native = source_rules.get(story_id)
+            if native:
+                out[native] = runbook_id
+    out.update(DEMO_EXTRA_RULE_RUNBOOKS)
+    return out
+
+
+def overlay_demo_runbooks(entries: Iterable[Any]) -> tuple[Any, ...]:
+    """``entries`` (``runbook_match.MatchableRunbook``) with the Demo rule values added
+    to the built-ins that cover them. Pure and idempotent (a value already listed is
+    not added twice). Only built-ins change: an operator runbook is matched exactly as
+    the operator wrote it, and a built-in an operator copy replaces is not in the
+    catalog at all, so Demo Mode never brings it back."""
+    by_runbook: dict[str, list[str]] = {}
+    for rule, runbook_id in demo_rule_runbooks().items():
+        by_runbook.setdefault(runbook_id, []).append(rule)
+    out: list[Any] = []
+    for entry in entries:
+        extra = by_runbook.get(getattr(entry, "id", ""))
+        if not extra or getattr(entry, "origin", "builtin") != "builtin":
+            out.append(entry)
+            continue
+        definition = entry.definition
+        applies = definition.applies_when
+        rule_ids = list(dict.fromkeys([*applies.rule_ids, *extra]))
+        overlaid = definition.model_copy(update={
+            "applies_when": applies.model_copy(update={"rule_ids": rule_ids}),
+        })
+        out.append(type(entry)(
+            id=entry.id, version=entry.version, definition=overlaid,
+            origin=entry.origin, published_at=entry.published_at,
+        ))
+    return tuple(out)
+
+
+def demo_builtin_catalog() -> tuple[Any, ...]:
+    """The bundled library with the Demo overlay: the Demo pipeline's catalog when it
+    is built without a provider (direct constructions and tests)."""
+    from ..agents.pipeline import builtin_runbook_catalog
+
+    return overlay_demo_runbooks(builtin_runbook_catalog())
+
+
+class ReadOnlyRunbookLibrary:
+    """The REAL runbook library as Demo chat reads it (D45): its Published catalog and
+    nothing else. Demo chat's ``list_runbooks`` then lists the runbooks the Demo
+    pipeline matches and attaches (the same Published library, SPEC §3.5), never the
+    built-ins alone. The store refuses every write while Demo Mode is on
+    (``409 runbook_demo_readonly``); this view has no write to call in the first place."""
+
+    __slots__ = ("_library",)
+
+    def __init__(self, library: Any) -> None:
+        self._library = library
+
+    async def published_catalog(self) -> Any:
+        return await self._library.published_catalog()
 
 
 class _DemoCaseStore(CaseStore):
@@ -93,7 +208,13 @@ class DemoStack:
     """The isolated demo store stack (built once per enable; GC'd on disable)."""
 
     def __init__(self, secrets: Secrets, get_prefs: Callable[[], Preferences],
-                 *, run_id: str = "") -> None:
+                 *, run_id: str = "",
+                 runbook_catalog: Callable[[], Awaitable[Any]] | None = None,
+                 runbook_attacher: Callable[[Any], Awaitable[Any]] | None = None,
+                 runbook_library: Callable[[], Any] | None = None,
+                 runbook_automation: tuple[Any, Any] | None = None,
+                 case_locks: Any = None,
+                 on_investigation_finished: Callable[[Any], Any] | None = None) -> None:
         # A FRESH in-memory ES client — physically separate from the real store.
         self.es = InMemoryESClient()
         self.run_id = run_id
@@ -106,6 +227,9 @@ class DemoStack:
         # this bus below so ``_emit_step``'s ``get_event_bus()`` fallback never fires.
         self.event_bus = EventBus(history_per_topic=0)
         self.cases = _DemoCaseStore(self.es, run_id)
+        # Round 12 (WP-CM): demo case saves nudge the demo's OWN bus (the one the SSE
+        # endpoint serves while the demo is active), never the global singleton.
+        self.cases.case_event_bus = self.event_bus
         self.audit = AuditLogger(self.es)
         self.usage_store = UsageStore(self.es)
         # A KV adapter over the demo ES (same one the real _wire() uses for the ES
@@ -137,12 +261,35 @@ class DemoStack:
         self.chat_conversations = ChatConversationStore(self.kv)
         self.case_activity = CaseActivityStore(self.kv)
         self.case_tasks = CaseTaskStore(self.kv)
+        # Round 14 (SPEC §3.5): Demo cases have Demo runbook runs, on the Demo KV, gone
+        # when Demo Mode ends. ``AppState.runbook_runs`` serves this store while the
+        # stack is active.
+        from ..stores.runbook_runs import RunbookRunStore
+        self.runbook_runs = RunbookRunStore(self.kv)
+        # Round 15 (SPEC D6.4, §3.2): Demo automatic closes are sampled for review into
+        # a Demo ledger on the Demo KV, gone when Demo Mode ends. ``AppState.
+        # auto_close_review`` serves it while the stack is active.
+        from ..stores.auto_close_review import AutoCloseReviewStore
+        self.auto_close_review = AutoCloseReviewStore(self.kv)
         self.inbox = InboxStore(self.kv)
         self.shift_handoff = ShiftHandoffStore(self.kv)
         # Durable raw-alert-by-severity ingest counters backing the demo's
         # noise-reduction surface (over the demo ES — purged on disable).
         from ..stores.noise_counters import NoiseCounterStore
         self.noise_counters = NoiseCounterStore(self.kv)
+        # The case-number sequence (F7) on the demo KV: the seeded cases take the first
+        # numbers (``number_seeded_cases``) and the demo pipeline continues the SAME
+        # sequence, so a live case never repeats a seeded number. A fresh stack per
+        # enable restarts it, so a re-seed gives every seeded case the same number.
+        from .case_id import SequenceStore
+        self.case_seq = SequenceStore(self.kv)
+        # Chat reports made during the demo (chat revamp SPEC §9.1) live on the demo
+        # KV too, so disabling Demo Mode purges them with everything else and no demo
+        # report can ever reach the tenant's library.
+        self.reports = self._build_reports()
+        # Round 15 WP4 (SPEC D5.3, §3.2): screenshots on Demo cases, on the Demo KV
+        # within the Demo caps (5 a case, 64 MiB in all), gone when Demo Mode ends.
+        self.case_files = self._build_case_files()
         # How many pre-seed "already processed" events were counted (for status/tests).
         self.preseed_events = 0
         # ONE shared vector store for BOTH the pipeline RAG and the chat RAG (the old
@@ -156,6 +303,14 @@ class DemoStack:
         from ..config import CorrelationRule
         self._tuned_correlation_rules: dict[str, CorrelationRule] = {}
         self._prefs_override: Preferences | None = None
+        # The sandbox's own copy of the ENRICHMENT SETTINGS, as the Settings page shows
+        # and edits them while Demo Mode is on (Round 14 SPEC §3.5, wro-01). None until
+        # the first Demo edit: the real block is then followed live. Kept apart from
+        # ``_prefs_override`` because that snapshot is written from the EXECUTION copy,
+        # whose ``enrichment.enabled`` is forced off (an isolation control, not a
+        # setting); keeping the settings here means a Demo edit never shows that forced
+        # value and the execution copy is always derived from what the page shows.
+        self._enrichment_settings: EnrichmentConfig | None = None
         # The long-lived streaming baseline behind the demo EVENT funnel (warmed/flushed
         # against the demo baseline_store). None → built lazily.
         self._funnel_baseline = None
@@ -174,6 +329,19 @@ class DemoStack:
         # demo=True → every usage row is pricing_source='zero' with a synthetic $.
         self.gateway = LLMGateway(secrets, self.usage_store, overrides, demo=True)
         self._get_prefs = get_prefs
+        # Runbooks (Round 14, D45): the real library's matchable catalog provider
+        # (AppState passes it; the overlay is applied here) and the attachment trigger
+        # bound to this stack. Without a provider the bundled library is used.
+        self._runbook_catalog_source = runbook_catalog
+        self._runbook_attacher = runbook_attacher
+        # The REAL runbook library (a provider, read only, D45): both Demo knowledge
+        # indexes project its Published runbooks, as the real index does (SPEC
+        # §4.10.18). Without it they index the built-ins only.
+        self._runbook_library = runbook_library
+        # The ``(attach_runbook, migrated_procedures)`` pair of this stack's automation
+        # (``threshold_automation.bind_demo_runbook_automation``): a ``run_playbook``
+        # rule on a Demo case attaches into the Demo run store and audit.
+        self._runbook_automation = runbook_automation
         # An offline cache (no Redis) for the demo enrich tool.
         self._cache = Cache(None)
         # FIVE standards-faithful source adapters built once + reused by the
@@ -185,6 +353,17 @@ class DemoStack:
         self.sources = build_native_demo_sources(
             seed, get_prefs(), now_millis=to_millis(now_utc()), prime_count=12,
         )
+        # Round 16 (SPEC §3.2, §4.5 WP08): the Demo stack's OWN investigation registry,
+        # bound to the Demo bus (so ``GET /api/investigations/active`` and the
+        # ``case.investigation`` frames show Demo runs only while Demo Mode is on), and
+        # the per-case write locks AppState shares with the real pipeline (a person's
+        # case action takes the same lock whichever stack is active).
+        from .investigation_registry import InvestigationRegistry
+
+        self.investigation_registry = InvestigationRegistry(
+            lambda: self.event_bus, on_finished=on_investigation_finished,
+        )
+        self._case_locks = case_locks
         # Lazily built so we avoid importing the (heavy) pipeline at module import.
         self.pipeline = self._build_pipeline(secrets)
         # A handle on the pipeline's RagService so demo /api/rag/* + the shared-store
@@ -219,21 +398,58 @@ class DemoStack:
         source = self.sources["splunk"]  # the SIEM an analyst queries most
         from ..tools.rag import RagService
 
-        rag = RagService(self.gateway, prefs, store=self.vectorstore, cases=self.cases)
+        rag = RagService(
+            self.gateway, prefs, store=self.vectorstore, cases=self.cases,
+            library=self._runbook_library,
+        )
         # Wire the demo-scoped HITL automation so a matching case opens a demo Proposal
         # (never the real HITL queue). Leave notifier=None — demo never sends real
         # emails/Slack/webhooks (mirrors the intentional memory=None below).
-        automation = ThresholdAutomation(self.proposals, self.audit)
+        attach_runbook, migrated_procedures = self._runbook_automation or (None, None)
+        automation = ThresholdAutomation(
+            self.proposals, self.audit,
+            attach_runbook=attach_runbook, migrated_procedures=migrated_procedures,
+        )
         pipeline = InvestigationPipeline(
             self.es, secrets, self._cache, self.gateway, rag, self.cases, self.audit,
             source=source, automation=automation, memory=self.memory,
-            tuning_store=self.tuning_store,
+            tuning_store=self.tuning_store, seq_store=self.case_seq,
+            runbook_catalog=self.runbook_catalog,
+            runbook_attacher=self._runbook_attacher,
+            investigation_registry=self.investigation_registry,
+            case_locks=self._case_locks,
         )
         # Bind the demo's ISOLATED bus so live ``agent.step`` frames never touch the
         # global singleton (isolation boundary). Without this the pipeline's
         # ``_emit_step`` would fall back to ``get_event_bus()`` and leak demo frames.
         pipeline.event_bus = self.event_bus
+        # Round 15 (SPEC D6.3): the Demo sampler (Demo ledger, Demo audit, Demo bus).
+        pipeline.review_sampler = self._build_review_sampler()
         return pipeline
+
+    def _build_review_sampler(self):
+        """The Demo pipeline's auto-close review sampler: it writes only to this
+        stack's ledger, audit and bus, so nothing it does survives Demo Mode."""
+        from .auto_close_review import ReviewSampler
+
+        return ReviewSampler(
+            store=lambda: self.auto_close_review,
+            audit=lambda: self.audit,
+            bus=lambda: self.event_bus,
+        )
+
+    async def runbook_catalog(self) -> tuple[Any, ...]:
+        """The Demo pipeline's matchable runbook catalog: the real library's (built-ins
+        and Published operator runbooks, D45), or the bundled library alone without a
+        provider, with the Demo overlay (:func:`overlay_demo_runbooks`). A library read
+        failure raises, so the investigation runs with no runbook rather than with an
+        incomplete catalog."""
+        source = self._runbook_catalog_source
+        if source is None:
+            return demo_builtin_catalog()
+        catalog = await source()
+        entries = getattr(catalog, "matchable", catalog)
+        return overlay_demo_runbooks(entries)
 
     def _build_chat_engine(self):
         """A ChatEngine wired to the DEMO gateway/audit/cases + a demo log source +
@@ -245,11 +461,75 @@ class DemoStack:
 
         prefs = self._get_prefs()
         source = self.sources["splunk"]
-        rag = RagService(self.gateway, prefs, store=self.vectorstore, cases=self.cases)
+        rag = RagService(
+            self.gateway, prefs, store=self.vectorstore, cases=self.cases,
+            library=self._runbook_library,
+        )
         return ChatEngine(
             self.es, self.gateway, self.audit, self.cases, rag,
             source=source, memory=self.memory, threads=self.case_threads,
         )
+
+    def _build_reports(self):
+        """``stores.reports.ReportStore`` over the demo KV, or None while the reports
+        package is not installed."""
+        try:
+            from ..stores.reports import ReportStore
+        except ImportError:
+            return None
+        return ReportStore(self.kv)
+
+    def _build_case_files(self):
+        """Round 15 WP4: ``stores.case_files.CaseFileStore`` over the demo KV with the
+        in-memory caps (``MEMORY_LIMITS``), since the Demo KV lives in process memory."""
+        from ..stores.case_files import MEMORY_LIMITS, CaseFileStore
+
+        return CaseFileStore(self.kv, limits=MEMORY_LIMITS)
+
+    def chat_context_extras(
+        self,
+        *,
+        prefs: Preferences,
+        query_source_for: Callable[[str | None], Any],
+    ) -> dict[str, Any]:
+        """What Demo Mode changes in a chat turn's tool context (chat revamp SPEC §2,
+        §5.1). ``AppState.build_chat_tool_context`` reads everything else through the
+        demo-switchable properties already, so this lists only what has no property:
+
+        * no third-party enrichment (``lookup_indicator`` returns its labelled
+          synthetic result) and no budget gate (demo spend is simulated);
+        * no tenant secrets status and no tenant playbook or rule-version catalogues;
+        * the runbook library is the REAL one, read only (:class:`ReadOnlyRunbookLibrary`,
+          D45): the Demo pipeline matches its Published runbooks, so ``list_runbooks``
+          lists the same ones (the built-ins alone only when no library is wired);
+        * case clusters rebuilt from the DEMO log surface, never the tenant one."""
+        from .case_cluster import bind_cluster_for_case
+
+        return {
+            "enrich": None,
+            "budget_gate": None,
+            "secrets_status": None,
+            "runbooks": self._chat_runbook_library(),
+            "playbooks": None,
+            "rule_versions": None,
+            "cluster_for_case": bind_cluster_for_case(
+                es=self.es, log_source=self.sources.get("splunk"), prefs=prefs,
+                query_source_for=query_source_for,
+            ),
+        }
+
+    def _chat_runbook_library(self) -> ReadOnlyRunbookLibrary | None:
+        """The real library behind a read-only view, or None when no library is wired
+        (or the provider fails): ``list_runbooks`` then says it lists the built-ins."""
+        provider = self._runbook_library
+        try:
+            library = provider() if callable(provider) else None
+        except Exception as exc:  # noqa: BLE001 - chat still lists the built-ins
+            logger.info("demo chat: the runbook library is not available: %s", exc)
+            return None
+        if not callable(getattr(library, "published_catalog", None)):
+            return None
+        return ReadOnlyRunbookLibrary(library)
 
     def _demo_prefs(self) -> Preferences:
         """Prefs the demo pipeline runs under: the live prefs but with a SANDBOXED
@@ -260,7 +540,9 @@ class DemoStack:
         blocks are forced ON in the SANDBOX COPY ONLY — the REAL prefs (which these are
         read from) are never mutated (this is a model_copy). External enrichment is
         always disabled: even keyless providers perform real HTTP/DNS traffic, which
-        an offline synthetic demo must never emit. Read live so safe presentation
+        an offline synthetic demo must never emit. The enrichment block is the
+        sandbox's enrichment settings (:meth:`enrichment_settings`) with lookups forced
+        off, never the copy inside ``_prefs_override``. Read live so safe presentation
         settings still apply during the demo."""
         from ..config import (
             CaseAutomationRule, CorrelationRule, ThresholdAutomationConfig,
@@ -273,8 +555,12 @@ class DemoStack:
             "auto_close": sandbox_policy(prefs.auto_close),
             "default_correlation": every,
             "background_scan_enabled": True,
-            "enrichment": prefs.enrichment.model_copy(update={"enabled": False}),
+            "enrichment": self.enrichment_settings().model_copy(update={"enabled": False}),
             "realtime": prefs.realtime.model_copy(update={"enabled": True}),
+            # Every Demo case carries a display number (seeded and live alike), from the
+            # operator's own template and reset policy, so no Demo surface shows an
+            # internal id where a case number belongs.
+            "case_id_format": prefs.case_id_format.model_copy(update={"enabled": True}),
         }
         demo = getattr(prefs, "demo", None)
         force = bool(getattr(demo, "force_capabilities", True)) if demo is not None else True
@@ -364,6 +650,53 @@ class DemoStack:
             ),
         })
 
+    async def number_seeded_cases(self, cases: list) -> int:
+        """Give every seeded case a ``case_number`` through the product's own
+        nomenclature and sequence (``engine.case_id.allocate_case_number``, the one the
+        pipeline uses for a new case), oldest first, so the numbers read in creation
+        order and the demo pipeline's next case continues after the last of them.
+
+        Every seeded case draws from the CURRENT reset bucket (its own creation date
+        still fills the date placeholders), so seeded cases either side of a reset
+        boundary never share a number, whatever the operator's reset period and
+        template: one sequence, one number per case, and the live pipeline continues
+        it in the same bucket.
+
+        Deterministic: the generators are seeded and every enable builds a fresh demo
+        KV, so a restart or a reset gives each seeded case the same number again. A case
+        that already carries a number keeps it. Call it once, before the cases are saved.
+        Never raises (a numbering glitch leaves the case on its id). Returns the count
+        numbered."""
+        from ..utils import parse_es_timestamp
+        from .case_id import allocate_case_number
+
+        fmt = getattr(self._demo_prefs(), "case_id_format", None)
+        fallback = now_utc()
+
+        def created(case) -> Any:  # noqa: ANN001
+            try:
+                return parse_es_timestamp(getattr(case, "created_at", None)) or fallback
+            except Exception:  # noqa: BLE001 -- an unreadable time sorts as now
+                return fallback
+
+        numbered = 0
+        for case in sorted(cases, key=lambda c: (created(c), str(getattr(c, "case_id", "")))):
+            if getattr(case, "case_number", ""):
+                continue
+            try:
+                number = await allocate_case_number(
+                    self.case_seq, fmt, source=getattr(case, "source_name", "") or "", at=created(case),
+                    bucket_at=fallback,
+                )
+            except Exception as exc:  # noqa: BLE001 -- numbering never breaks a demo enable
+                logger.warning("demo case-number allocation failed for %s: %s",
+                               getattr(case, "case_id", "?"), exc)
+                return numbered
+            if number:
+                case.case_number = number
+                numbered += 1
+        return numbered
+
     async def seed_hitl_proposals(self, cases: list) -> int:
         """Fire threshold-automation on each seeded NEEDS_HUMAN demo case so the seeded
         ``request_approval`` rule opens a demo HITL Proposal — DETERMINISTIC + $0 (no LLM,
@@ -378,7 +711,14 @@ class DemoStack:
         for case in cases:
             try:
                 before = await self.open_proposal_count()
-                await automation.run(case, dprefs, save=self.cases.save)
+                # Round 16 (B08): read the case again just before the save, as the
+                # pipeline's post-decision automation does, so a stale copy never
+                # overwrites work saved meanwhile; the re-read and the save hold the
+                # shared case write lock (the cross-cutting review).
+                await automation.run(
+                    case, dprefs, save=self.cases.save, fetch=self.cases.get,
+                    case_lock=self.pipeline.case_lock,
+                )
                 after = await self.open_proposal_count()
                 opened += max(0, after - before)
             except Exception as exc:  # noqa: BLE001 — a HITL seed glitch never breaks enable
@@ -419,8 +759,10 @@ class DemoStack:
         clusters investigated (for logs/tests)."""
         if not events:
             return 0
+        from ..constants import OPEN_CASE_STATUSES
         from ..engine import event_detection as evdet
         from ..engine.cost_gate import passes_suppression
+        from ..engine.ingest import is_attach_only
 
         prefs = self._demo_event_prefs()
         try:
@@ -439,12 +781,25 @@ class DemoStack:
                 if not passes_suppression(cluster, prefs):
                     continue
                 source = self.sources.get(segment)
-                await self.pipeline.register_candidate(cluster, SourceSurface.AUTOMATED_SCAN, prefs)
+                case = await self.pipeline.register_candidate(
+                    cluster, SourceSurface.AUTOMATED_SCAN, prefs
+                )
+                # Attach-only, as the realtime path (Round 16 B04): a funnel survivor
+                # for an entity whose open case already has a verdict, or that a person
+                # moved, never re-runs and re-decides it; a declared-benign close needs
+                # no run either.
+                status = getattr(case.status, "value", case.status)
+                if is_attach_only(case) or str(status) not in OPEN_CASE_STATUSES:
+                    continue
+                # Named like the real event-detection re-entry, so a close made while
+                # the run waits never mints a second case with these events (#4).
                 await self.pipeline.investigate_cluster(
                     cluster,
                     SourceSurface.AUTOMATED_SCAN,
                     prefs,
                     query_source=source,
+                    trigger="detection",
+                    known_case_id=case.case_id,
                 )
                 count += 1
             return count
@@ -454,12 +809,16 @@ class DemoStack:
 
     async def _flush_funnel_baseline(self, baseline, summaries) -> None:
         """Persist EVERY observed signature's sketch back to the demo baseline_store so
-        the base visibly warms across ticks. Best-effort; never raises."""
+        the base visibly warms across ticks, in ONE store write (a write per signature
+        re-encoded the whole document each time and stalled the event loop for seconds,
+        PW4-10). Best-effort; never raises."""
         try:
+            updates = {}
             for s in summaries:
                 snap = baseline.snapshot(s.signature)
                 if snap:
-                    await self.baseline_store.put(s.signature, snap)
+                    updates[s.signature] = snap
+            await self.baseline_store.put_many(updates)
         except Exception as exc:  # noqa: BLE001 — persistence is best-effort
             logger.debug("demo funnel baseline flush failed (%s)", exc)
 
@@ -484,6 +843,30 @@ class DemoStack:
             pass
         self._prefs_override = new_prefs.model_copy(deep=True)
         return new_prefs
+
+    def enrichment_settings(self) -> EnrichmentConfig:
+        """The enrichment settings of this Demo run, as the Settings page shows and
+        edits them: the run's own copy once an operator changed it here, else the real
+        settings, read live (a fresh run starts from them). It is never the execution
+        copy: :meth:`_demo_prefs` derives that from this block with lookups forced off,
+        so the page shows the stored switch while no provider is ever queried. Callers
+        must not change the returned model in place (edits go through
+        :meth:`mutate_enrichment_settings`)."""
+        if self._enrichment_settings is not None:
+            return self._enrichment_settings
+        return self._get_prefs().enrichment
+
+    async def mutate_enrichment_settings(
+        self, mutate: Callable[[EnrichmentConfig], EnrichmentConfig]
+    ) -> EnrichmentConfig:
+        """Apply a pure edit to this run's enrichment settings, in the sandbox only.
+
+        The read, the edit and the store run in one synchronous step (no await), so a
+        concurrent edit cannot be lost. The real settings are never written: the copy
+        vanishes with the stack when Demo Mode ends."""
+        saved = mutate(self.enrichment_settings()).model_copy(deep=True)
+        self._enrichment_settings = saved
+        return saved
 
     async def update_execution_prefs(self, new_prefs: Preferences) -> Preferences:
         """Apply an operator change to this throwaway run without durable writes."""

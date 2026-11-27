@@ -114,12 +114,20 @@ def test_public_excludes_secrets_includes_profile() -> None:
     assert pub["prefs"] == {"density": "compact"}
     # And the mfa_enabled boolean is still surfaced.
     assert "mfa_enabled" in pub
+    # The admin-managed contact fields + the MFA mandate are surfaced too (with
+    # clean defaults here — none were set on this user).
+    assert pub["email"] == ""
+    assert pub["phone"] == ""
+    assert pub["mfa_required"] is False
 
 
 def test_old_user_doc_loads_unchanged() -> None:
-    # A pre-W2 stored doc (no profile keys) loads with defaulted empties.
+    # A pre-W2 stored doc (no profile keys) loads with defaulted empties — and the
+    # newer admin-managed contact/mandate fields default the same way (additive,
+    # zero-migration).
     u = User.model_validate({"username": "legacy", "password_hash": "h", "role": "auditor"})
     assert u.display_name == "" and u.avatar == "" and u.prefs == {}
+    assert u.email == "" and u.phone == "" and u.mfa_required is False
 
 
 # --------------------------------------------------------------------------- #

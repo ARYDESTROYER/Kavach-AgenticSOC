@@ -57,6 +57,22 @@ those strings only when the exact literal is operationally required; never prese
 the compatibility namespace as a product or brand. Do not rename a wire identifier
 as part of a branding edit, and do not mint new compatibility-prefixed identifiers.
 
+**The retired word `playbook` (Round 14):** playbooks and runbooks are one feature, **Runbooks**,
+and Console-authored copy never says "playbook". The word survives only in these accepted wire
+identifiers, kept verbatim for compatibility and never renamed: `Case.playbook_id`; the automation
+action literal `run_playbook` with `payload.playbook_id` (the rule editor's "Attach a runbook" still
+writes them, beside `payload.runbook_id`); the permission aliases `playbooks:read`, `playbooks:run`
+and `playbooks:manage` (mapped onto `runbooks:*` in every grant and deny layer on load); the read
+aliases `GET /api/playbooks*` for one release (writes and `POST /api/cases/{id}/run-playbook`
+answer `410 runbooks_moved`); the audit actors `playbook_selector` and `run_playbook` and
+`ActionType.PLAYBOOK`; the chat kind `list_playbooks` and the stored page ref `playbooks`; the
+replay field `playbooks_enabled`; the marker tag `<pb>` and the token `end_playbook`; the read-only
+legacy KV namespaces `playbooks` and `runbooks`; the config keys `playbooks.enabled` (mapped onto
+`runbooks.investigator_guidance`), `playbooks.dir` (read once by the migration) and
+`playbooks.llm_select` (accepted on load and dropped); and the deprecated metric field
+`playbook_usage`. Stored data (audit rows, transcripts, notes, runbook text) is shown
+verbatim. Do not mint new `playbook` identifiers.
+
 The original upstream pipeline (when attached, we do NOT modify it):
 ```
 rsyslog (omkafka) → Kafka → foss-soc-engine → Logstash → Elasticsearch (all-logs-*) → Kibana
@@ -81,6 +97,7 @@ Components, loosely coupled:
 Authoritative companion docs (keep them in sync when you change behavior):
 `docs/HANDOFF.md` (onboarding — START HERE), `README.md` (overview), `DEPLOY.md`
 (deploy), `docs/USAGE.md` (use + examples),
+`docs/operations/background-jobs.md` (durable work, cancellation, recovery, artifacts),
 `docs/TROUBLESHOOTING.md` (failures), `COMPATIBILITY.md` (upstream compatibility),
 `docs/ENVIRONMENT.md` (environments), `docs/VIGIL_STUDY.md` (Vigil study + overhaul
 plan), `docs/development/ui-standard.md` (current Console visual/interaction
@@ -153,15 +170,68 @@ backend/app/
                      Stable plans on the supported PostgreSQL Compose profile +
                      storage_lifecycle desired policy (Hot 180d + Warm 90d + desired
                      Glacier from day 270; deletion always off; capability-aware) +
-                     caps.max_concurrent + BrandingConfig.login_*
+                     caps.max_concurrent + chat_agent (chat loop bounds +
+                     indicator-lookup policy + Round 13 `dynamic_starters` [live-data
+                     suggested questions, default on]; repaired/clamped on load, never
+                     rejected; curated editor Settings → General → Chat assistant;
+                     Round 14 tripled the Timeouts and capacity defaults through
+                     `chat_limits_version` 2) + runbooks (Round 14 `RunbookConfig`:
+                     enabled, auto_attach, fallback, investigator_guidance, rag_corpus,
+                     AI suggest and step drafts, distinct approver, step approvals,
+                     review cadence; the retired `playbooks.*` and `rag.use_runbooks`
+                     keys are accepted on load: mapped by meaning, read once by
+                     the migration, or dropped when they had no effect) +
+                     `Secrets.trusted_proxies` (Round 14 `TRUSTED_PROXIES`: the only
+                     peers whose forwarded header names the audit client address)
+                     + Round 15 `team_activity` (TeamActivityConfig: one switch, on by
+                     default; off, the team routes answer `409 team_activity_off`) +
+                     `auto_close_review` (AutoCloseReviewConfig: enabled, sample_rate,
+                     daily_cap, per_rule_daily_cap, expiry_days; repaired on load, 422
+                     on an out-of-range write)
+                     + BrandingConfig.login_*
                      bounded plain-text white-label [validator rejects any `<`, #9];
                      AutomationRule → CaseAutomationRule (alias kept, wire key
                      `threshold_automation` unchanged))
+  build_identity.py Non-secret current-build normalization plus immutable Case
+                     creation-build and first-append audit/usage stamping; legacy
+                     provenance is never backfilled
   constants.py       enums (incl. SourceType/IngestMode/CursorKind + OCSF_VERSION),
                      index names, verdict/role/action types, untrusted fences
   models.py          Pydantic data contracts (Case/AuditDoc/UsageDoc/Cursor/
-                     RawEvent/...)
-  utils.py           dotted_get, time helpers, extract_json, coerce_float, ...
+                     RawEvent/...); Case build provenance is nullable+immutable,
+                     `retrieval_history_status` is the authoritative lifetime marker,
+                     `retrieval_observation_status` proves a completed measurement,
+                     and `knowledge_used` retains its backward-compatible array shape;
+                     Round 13 chat starters section (ChatStarter + ChatStarterRef,
+                     ChatCatchUp, ChatStartersInfo, ChatStarterEvent) and the
+                     `UserPrefs.misc` `chat_suggest_start`/`chat_suggest_follow_ups`
+                     switches (absent = on); Round 15 `FeedbackEntry.origin`/`review_id`
+                     (the auto-close review grade marker, read through
+                     `engine/review_origin.is_review_grade`); Round 16
+                     `RiskBreakdown.inputs` (`RiskInputs`: what a score was computed from
+                     plus the weights in force; unreadable reads as `None`, so a case
+                     reads "not recorded"), `InvestigationView`/`InvestigationsActive`,
+                     `TraceSpanDetail` with `TraceSpan.detail`/`cost_basis`, the six
+                     `UsageDoc` rate fields with `price_basis`, `CaseEventsPage`/
+                     `CaseUsagePage`, `Citation.case_number`, `User.mfa_failed_count`/
+                     `mfa_locked_until`, and the `UserPrefs.misc` `whats_new_seen`/
+                     `whats_new_auto` keys (absent auto = on)
+  whats_new.py       Round 16 (D7): the newest release-notes update id this build ships
+                     (`whats_new_latest.json`, generated by `scripts/build_release_notes.py`),
+                     stamped on every new account (`POST /api/users`, the SSO create
+                     branch, `POST /api/setup/account`) best effort; fail-open, no model
+                     call, one key in the existing `user_prefs` document
+  utils.py           dotted_get, time helpers, extract_json, coerce_float, round_half_up,
+                     ...
+  evidence_fields.py The ONE definition of which raw-record paths count as case
+                     evidence: the ECS default projection, the wildcard/whole-record
+                     mode, the bulky rule-METADATA drop order, the per-event size
+                     budget, and the free-text search-field derivation. Imported by
+                     the prompt seam (agents/prompts.render_cluster), the es_query
+                     tool and the connector's `contains` filter so the three cannot
+                     drift; overridable globally (Preferences) and per source. It
+                     never fences — callers pass the projection to `fence_block` (#9)
+                     — and is per-cluster evidence only, never an #7 aggregate surface
   ocsf/              OCSF canonical schema: model (OCSFEvent + unmapped/raw_data) ·
                      ecs (ECS→OCSF mapping) · generic_to_ocsf
   connectors/        base (Connector/PullConnector/PushReceiver SPI) · registry
@@ -170,16 +240,25 @@ backend/app/
                      TEST-ONLY, directly instantiated by tests, NOT auto-registered —
                      runtime Demo Mode uses demo_sources/demo_runtime) · receivers/ (webhook ·
                      syslog · queues · objectstore · formats · common) — 16 push receivers
-  es/                base (ABC) · client (real, two-key) · fake (in-memory) ·
-                     querybuilder · indices (templates + bootstrap)
-  llm/               gateway (THE cost-ledger choke point) · providers (Round-4:
+  es/                base (ABC) · client (real, two-key; since Round 16 it reads index
+                     templates, so an upgraded deployment gains the additive mappings) ·
+                     fake (in-memory) · querybuilder · indices (templates + bootstrap; three
+                     additive bootstrap exceptions, one per contract: audit, config and,
+                     since Round 16, cases with `risk_breakdown.inputs` stored and never
+                     indexed and an explicit `awaiting_reason`)
+  llm/               gateway (THE cost-ledger choke point; since Round 16 every ledger
+                     row records the rates behind its cost and its `price_basis`) ·
+                     providers (Round-4:
                      cache-token extraction + guarded OpenAI `service_tier='flex'` +
                      wired `with_retry`) · pricing (Round-4: `Codex-opus-4-8`
                      corrected $15/$75 → $5/$25 ctx→1M; cache rates applied — read
                      0.1× / write 1.25×[5m]/2×[1h], batch 0.5×; non-cache math
                      byte-identical) · batch (Round-4: `BatchProvider` SPI — Anthropic
                      Message Batches + OpenAI Batch; results UNORDERED → keyed
-                     by `custom_id`, one UsageDoc/result at 0.5× #6)
+                     by `custom_id`, one UsageDoc/result at 0.5× #6) · readiness
+                     (Round 15: `ai_runtime_status`, whether the router and investigator
+                     models can be called with the credentials held; the setup wizard's
+                     `ai_runtime_ready`; never a model call)
   tools/             base (MCP-shaped, + ToolTier safety tier) · es_query · enrich ·
                      rag (hybrid BM25+vector retrieval; import/list/get/delete +
                      stats; Round-3 TRUSTED-allowlist fencing — only built-in/verified
@@ -189,16 +268,25 @@ backend/app/
                      (built-ins + tlsoc.enrichers entry-point, filtered by toggle+key) ·
                      dispatch (enrich_indicator: type-routed IP/domain/hash/url/email,
                      fail-open, Redis-cached) · aggregate (fuse — default max() byte-
-                     identical, weighted fusion opt-in) · providers/ (19 registered
-                     classes, +17 new in Round 3: abuseipdb · virustotal · greynoise ·
+                     identical, weighted fusion opt-in) · providers/ (38 registered
+                     classes; +17 in Round 3: abuseipdb · virustotal · greynoise ·
                      shodan · shodan_internetdb · censys · binaryedge · ipinfo · otx ·
                      pulsedive · spur · xforce · urlscan · hibp · projecthoneypot ·
                      abusech [urlhaus/threatfox/malwarebazaar = 3 classes] · rdap;
-                     keyless ones default-on)
+                     +19 in Round 11: keyless-on circl_hashlookup · dshield · onionoo,
+                     keyless-off spamhaus · cymru_mhr · robtex · crt_sh, keyed-off
+                     crowdsec · google_safebrowsing · ipqualityscore · ipdata · apivoid ·
+                     maltiverse · securitytrails · criminalip · netlas · hybrid_analysis ·
+                     metadefender · emailrep; quota-safe keyless ones default-on; every
+                     manifest carries setup_steps + example rendered as provider-card
+                     setup guides)
   realtime.py        multiplexed SSE EventBus (Round 3): in-process asyncio pub/sub +
                      bounded per-subscriber ring + Last-Event-ID replay + heartbeat;
                      GET /api/events (default ON; polling is the graceful fallback);
-                     frames published AFTER save, never before decide()
+                     frames published AFTER save, never before decide(); Round 16
+                     `publish_many` (one event, one id, on several topics) and the
+                     `case.investigation` frame on `cases`, `cases:{id}` and the new
+                     `investigations` topic (ids and enums only)
   engine/            correlation (multi-strategy + opt-in cross-source linking) ·
                      risk · cost_gate · case_manager (AutoClosePolicy; decide() pure) ·
                      signatures · poller · poller_manager (Round-4: PollerManager IS
@@ -206,25 +294,66 @@ backend/app/
                      {source.id}:{feed.id} cursor + legacy-"primary"-collision guard +
                      per-signature in-flight lock so concurrent sources never dup a
                      case #4; single/zero-source path byte-identical) ·
-                     ingest (push/queue → OCSF) · runbooks
-                     (strict Markdown parser/chunker) · runbook_service
-                     (protected bundled + CAS-backed operator catalog; RAG projection
-                     only, never executable/decision authority) · chunking · case_id (customizable
+                     ingest (push/queue → OCSF) · Round 14 runbooks (one feature;
+                     the retired playbook engine and reference runbooks are gone):
+                     runbook_model (pure: phases/steps, validation, native
+                     Markdown, investigator rendering) · runbook_match (pure,
+                     deterministic Applies when selection) · runbook_lookup (pure
+                     lookup validation + structured binding) · runbook_catalog
+                     (library views + governance transitions) · runbook_runs
+                     (per-case runs, steps, read-only lookups, AI help; never
+                     changes the case, #3) · runbook_migration (one-shot startup
+                     conversion of stored legacy procedures) · chunking · case_id (customizable
                      case-XXXX nomenclature; KV sequence + template) ·
+                     time_windows (Round 12: the ONE window grammar — all time,
+                     now-N[d|w|M|y], calendar tokens, ISO ranges — resolved in
+                     `SlaPolicy.timezone`; zero-filled calendar buckets, ISO weeks) ·
+                     case_aggregate (Round 12: EXACT case/usage aggregation for chat and
+                     dashboards — ES composite + calendar date_histogram and SQL GROUP BY
+                     push-downs via the optional `CaseRepository.aggregate`, else a
+                     bounded streaming fold that keeps only counters; partial results are
+                     marked, never presented as exact) ·
                      metrics (verdict/status mix + Round-3 posture: MTTA/MTTR/dwell
-                     p50/p90 from status_history, SLA/aging, period-over-period) ·
+                     p50/p90 from status_history, SLA/aging, period-over-period +
+                     evidence-qualified case-level knowledge-reference coverage;
+                     never quality/per-run; unavailable lifetime history/truncation
+                     stay null, not-measured cases stay out of the denominator; Round 16:
+                     the pure `sla_case_reading`, the ONE home of the per-case clock
+                     rules, `lifecycle_samples`, `mttr_lifecycle` and `mttr_by_decider`
+                     behind `GET /api/metrics/explain`) ·
                      mitre_coverage (Case.mitre vs the 697-corpus → per-tactic % +
                      ATT&CK Navigator v4.5 layer export) ·
                      shift_report (deterministic attention queue + SLA/aging + workload
                      + deltas for the forward Standup; aggregate-only #7) ·
                      priority (read-time severity/impact/urgency/priority derivation —
                      advisory, never feeds decide()) ·
+                     precedent (pure rule-identity precedent authority: canonical
+                     rule_identity · per-rule PrecedentDistribution · evaluate_precedent_signal
+                     [EVIDENCE promotion only — rule identity is the gate, similarity alone
+                     never qualifies, unconfirmed tier never promotable] ·
+                     match_analyst_rule_policy [operator "declared benign" → deterministic
+                     $0 close under DecisionBy.ANALYST_POLICY, evaluated BEFORE any verdict
+                     so decide() is untouched #3, excluded from every agent-performance
+                     statistic and invisible to analyst_confirmed_outcome] ·
+                     stratified_selection [round-robin precedent window so one rule's bulk
+                     analyst action cannot starve the rest] · evaluate_futility) ·
                      budget (pure pre-flight BudgetGate; over-budget → NEEDS_HUMAN) ·
                      threshold_automation (#3-safe rule actions → HITL proposal) ·
                      threat_context (IOC reputation + MITRE + related cases, fail-open) ·
                      mitre (bundled ATT&CK technique lookup) ·
                      demo_generator (seeded OCSF org+baseline+MITRE storylines) ·
                      demo_runtime (deterministic mock LLM + sandboxed policy — Demo Mode) ·
+                     demo_chat (pure Demo chat planner: plays the model for chat turns
+                     and report summaries from the real prompts, $0, deterministic;
+                     Round 13: answers every starter and case chip from the fenced
+                     value, titles, anchored follow-ups) ·
+                     chat_starters (Round 13: dynamic $0 starter families over the
+                     caller's ChatToolContext and grants: ranking, visit/shift state,
+                     catch-up line, case chips, evergreen set; a background refresher
+                     for the hunt/auto-close-health readings; never a model call, never
+                     a log read #1/#6/#7; case families skipped under object scope) ·
+                     report_digest (bounded, deterministic, fenced digest a report
+                     summary reads; aggregates only, never raw logs #7) ·
                      threshold_tuner (Round-4: nightly deterministic tuning observer —
                      per-rule FP uses independent analyst-confirmed outcomes only, with
                      Wilson-LB + min-samples + EWMA + shadow-eval; bounded +1
@@ -247,21 +376,79 @@ backend/app/
                      branding, dependency-free, fail-open) · sample_analysis (deterministic
                      field-mapping suggestion from a pasted sample record — no LLM, no
                      persistence of the sample itself, #9-safe) · storage_lifecycle
-                     (explicit capability preview/apply; Elasticsearch ILM only for
-                     append-only audit+usage; no case rollover/delete/Glacier mutation) ·
+                     (explicit capability preview + Job-only apply; Elasticsearch ILM
+                     only for append-only audit+usage; no case rollover/delete/Glacier
+                     mutation) ·
+                     jobs (durable in-process runner over strict-CAS registry + 5m
+                     renewable leases; actor-scoped Inbox/SSE progress, cooperative
+                     cancellation, restart recovery, terminal compaction, verified
+                     persistent ZIP artifacts; process-local concurrency does not make
+                     the application multi-replica safe) · investigation_gate
+                     (process-local foreground-priority cap reserving ingest headroom) ·
                      agent_improvement (read-only aggregate comparison of the last 7
                      complete UTC days against the preceding 28; insufficient evidence
-                     stays explicit and never becomes a composite score)
+                     stays explicit and never becomes a composite score) · Round 15:
+                     team_activity (pure fold of audit rows into per-person, per-day work
+                     counts for Team activity: structured and legacy rows, people kinds,
+                     bulk counts, the acknowledge median, 92-day windows, partial flags;
+                     never imported by agents or tools, #7) · case_images (stdlib PNG,
+                     JPEG and WebP structure check and metadata strip; never decodes
+                     pixels) · auto_close_review (the seeded, capped sampler of automatic
+                     closes, the post-decision `ReviewSampler` hook, `None` in replay, and
+                     the summary and metrics folds; runs after `apply()`, never touches
+                     `decide()` #3) · review_origin (`is_review_grade`, the rollback-safe
+                     review-grade marker every statistics consumer reads) · Round 16:
+                     risk_explain (pure `explain_risk` and `factors_from_inputs`: the
+                     inputs behind a score, recorded as `RiskBreakdown.inputs` beside
+                     `compute_risk` at its three call sites; `engine/risk.py` stays
+                     byte-identical and a property test holds the two together, #3) ·
+                     investigation_registry (process-local, memory-only registry of the
+                     queued and running AI runs: trigger, requester, phase, outcome;
+                     `case.investigation` frames carry ids and enums only #7; never
+                     raises into a run and never feeds a decision #3) · sla_reading (the
+                     per-case SLA reading served by the triage route, built on
+                     `metrics.sla_case_reading`, the ONE home of the clock rules) · stats
+                     (one unrounded Wilson interval for the tuner, the auto-close review
+                     and agent improvement). None of the four imports
+                     `engine/case_manager.py` (the Round 16 spine guard)
+  engine/replay/     the replay harness (Item I): text (the ONE unmeasurability +
+                     limitations statement, byte-identical in every output) · params
+                     (the submit contract; `extra=forbid` makes a comparison against
+                     logged history INEXPRESSIBLE, not merely discouraged) · fixtures
+                     (forward capture; bounded slot ring over the SAME shared KV, no new
+                     index/table/migration; log-bearing half stored as ONE opaque JSON
+                     string so attacker-named fields never become KV field NAMES;
+                     the source field-mapping overlay travels with the fixture and a
+                     conflicting multi-source cluster is not captured; evicted slots are
+                     scrubbed and the purge sweeps the ring's high-water slot space;
+                     oversize/overlong fixtures skipped WHOLE; strict content-hash load,
+                     mismatch or foreign schema = unavailable, never substituted)
+                     · stack (per-CELL isolated stack on the DemoStack pattern with a
+                     REAL gateway, a frozen capture-anchored log source, a frozen corpus
+                     + memory + enrichment cache, a dual usage store tagging the real
+                     ledger with the single low-cardinality `replay` surface, and a spend
+                     limiter checked pre-flight on an estimate) · scoring (offline
+                     production `decide()` (#3-safe, read-only), two-sided exact-binomial
+                     McNemar over discordant cells, MEASURED self-consistency floor
+                     compared NET-against-NET; insufficient evidence ships its counts and
+                     no rate/p-value, and never becomes a score) · job (the durable
+                     handler; the bound is per JOB, CANCELS rather than overruns, is
+                     observed at every CELL boundary, and refuses to resume across a
+                     worker restart rather than spend a second ceiling)
   threat/            mitre_techniques.json (bundled ATT&CK, 697 techniques) +
                      refresh_mitre.py + SOURCE.md (data corpus, not live fetch)
-  runbooks/          protected bundled Markdown runbooks (RAG knowledge corpus;
-                     operator-authored documents are durable StateStore records)
-  playbooks/         Markdown PLAYBOOK engine: manifest · loader · registry
-                     (deterministic per-cluster selection + atomic hot-reload)
+  knowledge/         generated Help Center corpus for chat's product answers
+                     (app_docs/aliases/console_map/manifest .json — regenerate with
+                     `npm run gen:console-map` then scripts/build_app_knowledge.py) +
+                     manifest-verified fail-closed loader, BM25F index, $0 answer
+  runbooks/library/  the 12 built-in runbooks (package data, read-only, versioned by
+                     the release; operator runbooks live in the runbook_library store)
   auth/              passwords (PBKDF2) · tokens (stdlib HS256 JWT) · service
                      (multi-user + 6-role RBAC + permission matrix + require_permission) ·
                      mfa (stdlib RFC-6238 TOTP + recovery codes) · oidc (Google/
-                     Microsoft/generic SSO via code-exchange + userinfo)
+                     Microsoft/generic SSO via code-exchange + userinfo) · session_limits
+                     (Round 12: the ONE builder of standard vs Remember-me session limits;
+                     a remembered session is never looser than ordinary sign-ins)
   notifications/     channel (NotificationChannel SPI) · email (stdlib SMTP, now incl.
                      an SES preset + IAM-key→SMTP-password HMAC ladder) · webhook
                      (Slack/Teams/generic/PagerDuty/Telegram) · resend (Resend HTTPS
@@ -270,10 +457,35 @@ backend/app/
                      templates (stdlib mustache-subset renderer + 5 preloaded,
                      overridable templates; header_safe/text_safe)
   middleware/        security_headers · csrf · rate_limit (Starlette middleware)
-  agents/            prompts · router · investigator · formatter · chat · standup ·
+  agents/            prompts · router · investigator · formatter · chat (ONE engine #5:
+                     bounded read-only agent loop + byte-identical compatibility mode) ·
+                     chat_protocol (final-header parser, live-text state machine, notices,
+                     replay digest, observation shrink) · chat_events (NDJSON stream
+                     events + protocol constants) · blocks (answer-block schema,
+                     validation, artifact → block materialisation, honest views) ·
+                     chat_tools/ (read-only tool registry: logs · cases · metrics ·
+                     intel · ops · app_help/app_status · Round 12: stats [`case_stats`,
+                     exact counts/breakdowns/comparisons over every case] · periods
+                     [`compare` periods + the comparison artifact] · recall
+                     [`recall_observation`, reads a shortened observation back, never raw
+                     rows]; per-tool RBAC, whitelisted aggregate observations #7,
+                     indicator taint ledger #9) · chat_entity (Round 12: "Ask AI" entity
+                     questions — strict per-kind value grammar, server-worded question,
+                     value fenced as untrusted, origin `starter`; `prompt_question` also
+                     renders Round 13 starter turns) · chat_starter_text (Round 13: the
+                     curated starter templates, slot grammars, render/parse, the
+                     `entity_ref`-fenced prompt form, reason and catch-up wording) ·
+                     chat_role_lookalikes (Round 13: vendored UTS #39 confusables of the
+                     role-word letters and the colon, data for the starter role-marker
+                     refusal; no new dependency) ·
+                     chat_followups (Round 13: pure anchored follow-up selector, at most
+                     3 per answer, no model call; `chat_protocol.parse_title` reads the
+                     first answer's conversation title) · standup ·
                      graph (LangGraph) · pipeline · common · personas (multi-agent roster)
   stores/            base (abstract repositories — backend-agnostic StateStore) ·
-                     cases · usage · config_store · cursor_store · users (UserStore
+                     cases · usage · ledger_claims (ES keyed Audit/Usage first-writer
+                     authority in the non-rolling config index; rolling projection
+                     recovery across rollover, no new index) · config_store · cursor_store · users (UserStore
                      over KV — multi-user, no new index/table) · sessions
                      (SessionStore over KV — sid registry, idle/absolute/revocation,
                      refresh rotation) · user_prefs (UserPrefsStore over KV — personal
@@ -281,12 +493,36 @@ backend/app/
                      (MemoryStore over the KVStore — durable operator facts with
                      approved/pending review state; only approved entries are trusted;
                      EsKVStore/SqlKVStore adapters, no new index) · chat_conversations
-                     (bounded per-user Workspace transcripts; server history is
-                     authoritative on resume; no new index/table) · proposals ·
-                     runbooks (strict-CAS operator Markdown catalog layered over
-                     protected bundled runbooks; no new index/table) · playbooks
-                     (strict-CAS durable operator procedure catalog layered over
-                     immutable bundled playbooks; no new index/table) ·
+                     (per-user Workspace transcripts; server history is authoritative on
+                     resume; no new index/table; on Elasticsearch it and case_thread write
+                     one-way opaque rows, keyed on SQL — see the DEPLOY.md rollback note;
+                     Round 12: full-text per-exchange `x-` documents so nothing is
+                     truncated or removed, `a-` archive pages, the running conversation
+                     summary `s-`, step observations `o-` for the step inspector, and a
+                     per-owner live-state `v-` doc for leases/status/unread — every one a
+                     fixed set of `chat_`-prefixed fields holding one opaque string) ·
+                     chat_feedback (Round 12: per-user answer ratings, one opaque KV doc
+                     per user in the `chat_feedback` namespace; never used for training) ·
+                     chat_starters (Round 13: per-user suggestion state, one strict-CAS
+                     KV doc per user in the `chat_starters` namespace, one opaque
+                     `chat_starters_json` field ≤ 8 KB: visit clock, opaque keys,
+                     counters, hidden-for-a-day families; never question text; cleared
+                     with the user and by factory reset) ·
+                     reports (owner-
+                     scoped chat reports: one strict-CAS KV doc per report + a per-user
+                     index, opaque report_-prefixed fields; no new index/table) ·
+                     proposals ·
+                     runbook_library (Round 14: every operator runbook version +
+                     the migration marker; KV only, no new index/table) ·
+                     runbook_runs (per-case runs + the monthly run ledger; KV only)
+                     · case_files (Round 15: case screenshots in the `case_files` KV
+                     namespace: a strict-CAS per-case index, write-once image and
+                     thumbnail documents, an organisation usage total; never on the Case
+                     document, never read by a model) · auto_close_review (Round 15: the
+                     strict-CAS review ledger, one `ledger` document holding a ring of
+                     2,000 picks and 90 days of daily counts)
+                     · legacy_procedures (read-only decoder of the two retired
+                     procedure namespaces for the migration and legacy export) ·
                      8 Round-3 KV stores (same zero-migration pattern, no new index/
                      table): case_thread · case_activity · case_tasks (per-case
                      collaboration #4) · inbox (per-user fan-out, ~200/user ring) ·
@@ -297,6 +533,11 @@ backend/app/
                      (full-set active-view reconciliation + durable success anchor) ·
                      baseline (per-signature online stats) · batch_jobs (resume-safe,
                      per-`custom_id` retrieved-dedup → exactly-one UsageDoc/result #6) ·
+                     jobs (one strict-CAS bounded registry document; self-scoped jobs,
+                     leases, intent idempotency, item state, bounded failures,
+                     audit-before-visible transitions/reconciliation, and sanitized
+                     factory receipt; a privacy failure stays fenced and permits only
+                     a fresh authorized factory retry; no new index/table) ·
                      2 Round-5 KV stores (same zero-migration pattern): dashboards
                      (per-user custom dashboards) · rule_versions (rule version ledger +
                      rollback) · noise_counters (Round-7: durable per-hour raw-alert-by-
@@ -310,45 +551,148 @@ backend/app/
                      POST /chat + per-user /chat/conversations list/detail/rename/delete;
                      Round-4: acknowledge → INVESTIGATING + GET /api/logs [unified
                      scatter-gather over browse-capable sources] + /cases/{id}/forwarding
-                     + /sources/health) + **27 `routes_*.py` feature routers**, ALL
+                     + /sources/health) + **46 `routes_*.py` feature routers** (Round 12 added routes_chat_library and routes_chat_entity; Round 13 added routes_chat_starters; Round 14 added routes_audit, routes_rule_summary and routes_case_runbooks; Round 15 added routes_rbac, routes_team, routes_case_files and routes_auto_close_review; Round 16 added routes_investigations, routes_case_events and routes_case_usage), ALL
                      auto-discovered at boot (`main.py::discover_feature_routers()` walks
                      `app.api.routes_*`, requires a top-level `router: APIRouter` — no
                      manual registration needed): Round-3's routes_metrics ·
                      routes_standup · routes_enrichment · routes_models · routes_inapp ·
                      routes_cases_collab · routes_triage · routes_roles; Round-4's
                      routes_tuning · routes_campaigns · routes_baseline · routes_batch ·
-                     routes_reset [admin + fresh-auth, tiered, never wipes env secrets] ·
+                     routes_reset [deprecated direct mutation returns 410; canonical
+                     admin + fresh-auth tiered reset is a Job and never wipes env secrets] ·
                      routes_setup [OOBE first-admin, strong-pw, self-locking]; Round-5's
                      routes_rules [Detection & Rules editor/versioning] ·
                      routes_dashboards [per-user custom dashboards] + **4 more extracted
                      from the base router** — routes_notifications [`/notifications/*`],
                      routes_prefs [`/branding`, `/prefs/*`, `/terminology`, `/views*`],
-                     routes_rag [`/rag/*`, `/memory*`], routes_search [`/search`,
-                     `/audit`] (none of these paths remain in `routes.py`; there is no
+                     routes_rag [`/rag/*`, `/memory*`; direct RAG import and precedent
+                     bootstrap remain executable OpenAPI-deprecated compatibility
+                     primitives], routes_search [`/search`; Round 14 moved `/audit` to
+                     routes_audit] (none of these paths remain in `routes.py`; there is no
                      `/branding/presets` endpoint). All paths byte-identical across the
                      decomposition; +`POST /api/triage/preview-decision` [rule Test/Preview
                      that NEVER calls decide()/bills the LLM #3/#6] + typed baseline/
                      campaign/batch config endpoints + routes_export [legacy bounded
-                     `POST /api/admin/export` plus fresh-auth resumable
-                     `/api/admin/export/segment` + `/cancel`; secret-free supported
-                     application-state scopes behind `data_export:export`, with ES PIT
-                     consistency, actor/scope/snapshot-bound signed cursors, explicit
-                     weaker-backend semantics, and Intelligence catalog export with
-                     sanitized operator runbook/playbook source plus safe bundled refs]
+                     `POST /api/admin/export`; default fresh-auth server-assembled
+                     `/api/admin/export/archive` (one fully assembled-before-response ZIP
+                     with per-scope NDJSON +
+                     terminal manifest); and advanced resumable `/api/admin/export/segment`
+                     + `/cancel`; secret-free supported application-state scopes behind
+                     `data_export:export`, with bounded cases/audit/usage pages (and the
+                     documented KV-catalog materialization limit), ES PIT consistency,
+                     actor/scope/snapshot-bound signed cursors, explicit weaker-backend
+                     semantics, and Intelligence catalog export (manifest schema 2 since
+                     Round 14: the runbook library with every operator version, the
+                     read-only legacy procedure groups, safe bundled refs, and
+                     `case_runbook_runs` listed with `rows_dropped`); direct archive and
+                     segment are executable OpenAPI-deprecated compatibility primitives,
+                     while Console/user workflows submit Jobs]
                      + routes_storage
-                     [`GET/PUT /api/storage/lifecycle`, pure preview, freshly authenticated
-                     explicit apply limited to supported owned-state targets];
-                     routes_runbooks [dedicated `runbooks:read/manage` bundled/operator
-                     catalog CRUD + targeted/full RAG reconciliation] · routes_releases
+                     [`GET/PUT /api/storage/lifecycle`, pure preview; deprecated direct
+                     apply returns 410 and canonical fresh-auth apply is a Job limited
+                     to supported owned-state targets];
+                     routes_replay [`GET /api/replay/fixtures` catalog METADATA only
+                     (never a fixture body — it is unfenced raw log data, #9) +
+                     `DELETE /api/replay/fixtures`; running a replay is the
+                     `replay_experiment` Job, never an endpoint];
+                     routes_runbooks [Round 14: the governed runbook library under
+                     `runbooks:read`, `runbooks:manage` and `runbooks:publish`: list (new
+                     shape; `?shape=v1` is a one-release read alias), detail, versions,
+                     Markdown export, draft save and discard, duplicate, submit,
+                     revision-checked publish (optional distinct approver), reject,
+                     retire, restore, reviewed, version restore as a draft, import,
+                     validate, match preview (changes nothing), metrics; old-shape writes
+                     answer `410 runbooks_moved`; audit-first, `409 runbook_demo_readonly`
+                     in Demo Mode; targeted reindex stays direct and the full-catalog
+                     reindex is executable but OpenAPI-deprecated] · routes_releases
                      [public Stable/Testing source discovery only] · routes_schedulers
-                     [read-only worker cadence/attempt/success/error health] ·
+                     [read-only threshold-tuner/campaign/Batch cadence-loop health plus
+                     event-driven `baseline_producer` `on_ingest` health] ·
                      routes_telemetry [query-backed, versioned telemetry-gap evidence;
                      connector absence alone never creates a recommendation] ·
+                     routes_diagnostics [read-only precedent/migration/auto-close health +
+                     per-rule precedent distribution and futility findings] ·
+                     routes_analyst_policy [`/api/rules/analyst-policies*` operator
+                     "declared benign" CRUD under rules:read/manage] ·
+                     routes_jobs [`POST/GET /api/jobs`, self-scoped list/detail/cancel,
+                     verified artifact download, related permission-scoped LLM Batch
+                     and scheduler projections; successful submit/retry/cancel plus
+                     terminal Inbox/SSE are audit-confirmed before response/projection;
+                     new local Batch rows freeze a strict,
+                     generation-bound effective-`models:read` Inbox audience (max 200),
+                     while legacy/unselected rows remain list-only] ·
+                     routes_chat [`POST /api/chat/stream` NDJSON, `GET /api/chat/context`,
+                     `POST /api/chat/turns/{id}/cancel`, `GET /api/chat/topics/{id}`; the
+                     PROCESS-LOCAL turn registry + per-user/global concurrency (12/48
+                     since Round 14, was 4/16; 429 `chat_busy`); Round 12: `GET /api/chat/turns/active`, the bounded
+                     per-turn event ring + `GET /api/chat/turns/{id}/events?after=`
+                     rejoin, owner-only `chat.turn` SSE frames, lease heartbeat,
+                     `POST /api/chat/turns/{id}/seen` (an outcome shown on one console:
+                     owner-only `chat.read` naming the turn, stores nothing),
+                     server-side report save from the answer header; `/api/chat`
+                     delegates here] · routes_chat_library [Round 12: answer feedback,
+                     step inspector, message paging, mark-read (+ owner-only
+                     `chat.read` SSE frame)] · routes_chat_entity
+                     [Round 12: `POST /api/chat/entity-question` for Ask AI chips] ·
+                     routes_chat_starters [Round 13: `GET /api/chat/starters`
+                     (home/thread/case suggestions, 60 s per-caller cache, pure read, no
+                     audit) + `POST /api/chat/starters/events` (viewed/used/dismissed,
+                     opaque keys, 30/min)] ·
+                     routes_audit [Round 14: `GET /api/audit` (scopes, search,
+                     signed cursor, honest totals; every old parameter keeps its
+                     meaning), `/api/audit/count`, `/api/audit/records/{record_id}`;
+                     audit:view; Demo split; coalesced `audit_view` rows] ·
+                     routes_rule_summary [Round 14: `GET /api/rules/summary`, one rule's
+                     picture in seven sections, each with its own grant and status; exact
+                     where a source counts all of its data, "at least" where it cannot (a
+                     live-tail ring, a sample, a failed shard), a top list the store
+                     approximates across shards said so; cases all time; no model call] ·
+                     routes_case_runbooks [Round 14: runbook runs on a case (attach,
+                     steps, approvals, read-only lookups under the caller's grants, the
+                     AI draft and suggestion), `POST /api/runbooks/progress` and
+                     `/lookup-test`; audit-first; `case.runbook` frames on `runbooks`] ·
+                     routes_rbac [Round 15: `GET/PUT /api/rbac`, the role-based access
+                     switch: stored Super admin role, strict fresh sign-in, audited as a
+                     settings change to RBAC; `PUT /api/settings` answers `409
+                     rbac_switch_moved`] · routes_team [Round 15: `GET /api/team/activity`,
+                     `/people`, `/people/{username}/events` under `team:view`, a role floor
+                     while RBAC is off, the `team_activity` switch, 60 s per-viewer cache,
+                     coalesced `team.viewed` rows] · routes_case_files [Round 15: list,
+                     add, delete and serve case screenshots; a 3 MiB bounded route class,
+                     dedup, per-person rate bound, strict content headers, audit-first] ·
+                     routes_auto_close_review [Round 15: `POST /api/cases/{id}/review`
+                     (audit first, one grade, never the case's status or disposition),
+                     `GET /api/cases/{id}/review` (one case's review state, repaired
+                     on read), `GET /api/auto-close-review/summary`, `GET
+                     /api/metrics/auto-close-review`; `case.review` frames] ·
+                     routes_investigations [Round 16: `GET /api/investigations/active`
+                     under `cases:read`, the queued, running and recently finished AI
+                     runs from the process-local registry (`process_local: true`), the
+                     requester's name only for `users:manage`, the Demo registry while
+                     Demo is on] · routes_case_events [Round 16: `GET
+                     /api/cases/{id}/events` under `cases:read` and `sources:read`, the
+                     case's own raw events re-read through `fetch_by_keys` (index
+                     and id together) or `fetch_by_ids` on the read-only client
+                     (#1), paged, with `aged_out`,
+                     `push_source_not_retrievable` or `source_unavailable`; coalesced
+                     `case.events_viewed` rows] · routes_case_usage [Round 16: `GET
+                     /api/cases/{id}/usage` under `cases:read` and `cost:view`, the case's
+                     ledger rows with investigation, case chat and other totals,
+                     reconciled against `token_cost`; reads the ledger only, #6] ·
+                     routes_reports [`/api/reports*` owner-scoped reports,
+                     server-resolved add, one-call AI summary with dry-run estimate;
+                     Round 12: `from-answer`, `from-conversation`, 60 items,
+                     "(continued)" sections] ·
                      mounted in main.py · deps (require_auth + require_permission +
-                     require_fresh_auth + custom-role union enforcement + session check) ·
-                     state.py (DI hub; exposes enrichment_registry + event_bus) · main.py
-backend/playbooks/   immutable bundled *.md PLAYBOOKS (+ README) — data, not code;
-                     durable operator-authored procedures live in the StateStore catalog
+                     require_fresh_auth + custom-role union enforcement + session check;
+                     since Round 16 the server-side forced password change, `403
+                     password_change_required` outside a short self-service list) ·
+                     cost_text (Round 16: read-time withholding of the spend figure in the
+                     timeout, decision, runbook AI and budget refusal audit rows for a
+                     viewer without `cost:view`; evidence and other rows never rewritten) ·
+                     state.py (DI hub; exposes enrichment_registry + event_bus; since Round
+                     16 the investigation registry and the per-case write locks, real and
+                     Demo) · main.py
 backend/tests/       offline tests (fake ES + mock LLM; SQL store on SQLite) — green
 webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/Radix SPA
   package.json       Node 22; Tailwind + Radix primitives; `npm run build` bundles the
@@ -363,23 +707,81 @@ webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/R
                      Rules home + polymorphic editor + condition builder] · dashboard/*
                      [custom-dashboard builder/grid/widget registry, LAZY react-grid-layout] ·
                      hooks/*; pages/* incl. Users/Security/Approvals/Knowledge/Memory + Round-3
-                     Models/Roles/Inbox + Analytics tabs (Operational/Performance/Posture/
-                     Effectiveness/Cost; Effectiveness is aggregate-only and Cost exposes
-                     actual Standard/Flex/Batch/Unconfirmed ledger tiers) + CaseDetail chips/trace/collab +
-                     CaseManager (canonical detail workspace; Active/All split-pane
-                     queue, persisted accessible desktop resize, selection +
-                     permission-gated bulk work, full six-tab detail; Cases list
+                     Models/Roles/Inbox + Analytics (Metrics tabs Operational/Performance/
+                     Posture, deep-linkable; Agent effectiveness and Cost are their own
+                     pages since Round 14) + Jobs (personal durable application work,
+                     related permission-scoped LLM Batch rows with bounded new-job Inbox
+                     audience/outbox projection, list-only scheduler health;
+                     global SSE observer + polling fallback + deduplicated terminal toasts;
+                     Effectiveness owns the full Agent-health diagnostics while Overview
+                     is degradation-only; Cost exposes actual Standard/Flex/Batch/
+                     Unconfirmed ledger tiers) + CaseDetail chips/trace/collab +
+                     CaseManager (canonical detail workspace; Active/Mine/Review/All
+                     split-pane queue, persisted accessible desktop resize, selection +
+                     permission-gated bulk work submitted as immutable background-job
+                     snapshots; since Round 16 no page header, the `[` queue fold and
+                     the counted empty pane, and a six-tab detail (Brief, Evidence, AI
+                     investigation, Response, Activity, Chat on Alt+1 to Alt+6) under a
+                     118 px header with the case facts inspector (`]`); Cases list
                      hands an opened row to the exact Case Manager record) + Chat
                      (searchable 264px desktop history rail/mobile Sheet, newest-first
                      durable per-user transcripts, one docked composer; Case Manager
-                     chat stays separate and case-scoped) +
+                     chat stays separate and case-scoped) + Reports.tsx (the Reports
+                     library route) + chat-activity/** (Round 12: the tiny ENTRY-SAFE
+                     activity store [useSyncExternalStore] behind the chat-nav glyph,
+                     the optional brand ring, the tab-title prefix and the "Answer ready"
+                     notice; ActivityEffects is lazy) + chat/** (the lazy chat package:
+                     turn-runner [Round 12: module-level runs that DETACH instead of
+                     aborting on navigation and re-attach via the event ring],
+                     chat-api/ndjson/
+                     stream-events, useChatEngine/useChatConversations/useChatContext,
+                     composer/, message/, workspace/, empty/, shortcuts/, blocks/ [answer
+                     renderers + chart kit], report/ [panel, library, exports], starters/
+                     [Round 13: useChatStarters, StartScreen, StarterCard, CatchUpLine,
+                     ThreadCatchUp, CategoryPills, CaseStarterChips, greeting]) +
                      Docs (same-origin, version-matched Help Center discovery hub) +
-                     Round-5 Dashboards.tsx + settings/* data-driven section files [was a
+                     Round 14: Dashboards.tsx (the Dashboards library and boards:
+                     dashboard/Library, BoardView, builtins.ts with the four built-ins) ·
+                     Audit.tsx + components/audit/** (scopes, inspector side sheet, export
+                     dialog on the audit_export job) · RuleLink + RuleSheet (one rule sheet
+                     from every rule name) · Runbooks.tsx + runbooks/** (editor/, run/,
+                     shared/) + Personas.tsx + casedetail/RunbookPanel (the Response tab and
+                     the Next step card); the Scans page is gone (`#/scans` redirects to
+                     Case Manager's Closed by the AI agent filter) + Round 15:
+                     TeamActivity.tsx + team/** (range control, per-day chart, person
+                     sheet; lib/api-team.ts, lib/types-team.ts) · RbacSwitchPanel.tsx (the
+                     Role-based access group on Roles & permissions; lib/api-rbac.ts) ·
+                     casedetail/files/** (screenshot gallery and lightbox, drop zone and
+                     paste, upload queue, canvas re-encode; lib/api-case-files.ts) ·
+                     casedetail/review/ReviewCard.tsx (the auto-close review card;
+                     lib/api-reviews.ts) · effectiveness/AutoCloseReviewModule.tsx (the
+                     Agent effectiveness module) + Round 16: investigations/** (the AI run
+                     store behind an entry-safe `count.ts`, AiRunChip, AiRunPopover,
+                     AiRunMark, AiQueueNotice, AiRunCloseNotice, ReinvestigateDialog,
+                     aiRunText, announce; lib/api-investigations.ts) · whats-new/** (the
+                     entry-safe WhatsNewGate, the lazy WhatsNewHost and WhatsNewDialog,
+                     decide.ts, the ReleaseRail, HighlightRow and ReleaseFigure, the
+                     generated release-notes.gen.json) + WhatsNew.tsx (the Communication
+                     page) · design-system/explain/** (ExplainTrigger, ExplainPanel; its
+                     own subpath, never the entry) + lib/explain/** (the builders that
+                     print explain.contract.json: risk, decision, triage, sla, stats, cost,
+                     rounding, times, text) · components/metrics-explain/** (MetricExplain,
+                     TimingExplain, SamplesSheet; lib/api-metrics-explain.ts) ·
+                     casedetail/explain/** (RiskExplain, RiskDerivation, DecisionExplain,
+                     FactExplain) · casedetail/records/** (CaseEvents, CaseUsageButton,
+                     AllFieldsSheet, FindingsList, AwaitingReason, NotificationsSent,
+                     usageFormula; lib/api-case-records.ts) · casedetail/EvidencePanel,
+                     DecisionLane, triageReads · components/JsonTree (moved from the case
+                     page) · components/auth/ssoErrors.ts (fixed sentences for each
+                     `sso_error` code; the animated LoginAuthBackdrop, ShineButton and
+                     ThemeModePill are gone) · skip-link.ts · hooks/useElementWidth ·
+                     sources-primary.ts (`canBePrimary`) +
+                     settings/* data-driven section files grouped into five panels [was a
                      2673-line god-file, now a section registry; includes Organization
                      Storage & retention capability/status/preview/apply]; components/* incl. Can RBAC
                      guard, MfaSetupCard, QRCode, NotificationsEditor, RiskGauge, palette +
                      Round-3 NavSidebar, NotificationBell, GlassSurface, SettingsGrid/Card,
-                     theme-tokens resolver, MitreHeatmap/BurnDownChart, TraceTimeline,
+                     theme-tokens resolver, MitreHeatmap, TraceTimeline,
                      CaseThread, EnrichmentProvidersEditor, BrandingEditor + ~15 Round-5
                      shared primitives Field/SegmentedControl/ConfirmDialog/NumberField/
                      LabeledSlider/SecretField/TagInput/IconButton/PageContainer/
@@ -395,8 +797,19 @@ docs/                USAGE.md · TROUBLESHOOTING.md · ENVIRONMENT.md · VIGIL_S
                      (PROPOSAL.md + RESEARCH-SYNTHESIS.md + understand/ maps +
                      IMPLEMENTATION.md) · research/2026-07-round5/ (PROPOSAL.md +
                      DESIGN_STANDARD.md + IMPLEMENTATION.md + AUDIT_FINDINGS.md +
-                     RESEARCH_* + understand/ maps)
+                     RESEARCH_* + understand/ maps) · releases/notes/<version>.json
+                     (Round 16: the curated What's new notes, schema 1, one file per
+                     release, kept out of the Help Center bundle) ·
+                     research/2026-11-round16/ (SPEC.md, research/, review/bug-hunt.md,
+                     acceptance/)
+scripts/             Round 16 build_release_notes.py (stdlib generator with `--check`:
+                     writes webui/src/soc/whats-new/release-notes.gen.json,
+                     backend/app/whats_new_latest.json and docs/releases/whats-new.md;
+                     rejects HTML, raw URLs and hidden characters) beside check_version,
+                     check_docs, build_docs_bundle (the `/docs/<old line>/` redirect stubs),
+                     build_app_knowledge and the rollback lane
 .env.example  README.md  DEPLOY.md  COMPATIBILITY.md  AGENTS.md  Journal.md  ROADMAP.md
+LICENSE       Apache-2.0 (Round 16), with byte-identical copies in backend/ and updater/
 ```
 
 ## 5. The 12 non-negotiables (never regress these)
@@ -407,12 +820,13 @@ docs/                USAGE.md · TROUBLESHOOTING.md · ENVIRONMENT.md · VIGIL_S
 2. Every agent action audited, append-only (`tlsoc-agent-audit-*`).
 3. Verdict from the LLM; **the close/escalate decision is made by deterministic
    code against the operator-configured `AutoClosePolicy`** — never by raw LLM
-   output and never by playbook text (`engine/case_manager.py`, `decide()` is a pure
+   output and never by runbook text (`engine/case_manager.py`, `decide()` is a pure
    fn over `(verdict, confidence, risk_score, policy)`). Auto-close is a tunable,
    per-verdict-class policy (enable/min-confidence/max-risk/objection-window):
    FALSE_POSITIVE on above a bar by default; **TRUE_POSITIVE auto-close is an
    explicit opt-in, OFF by default**; **NEEDS_HUMAN never auto-closes (code-enforced,
-   not policy-tunable)**. A playbook can recommend but can never change this policy.
+   not policy-tunable)**. A runbook can recommend but can never change this policy; runbook
+   runs and the open-steps close reason are human workflow that automatic closes never read.
 4. Durable polling cursor (no skip / no dup); cases idempotent by cluster
    signature (`engine/poller.py`, `engine/signatures.py`).
 5. ONE chat engine, two entry points (`agents/chat.py`). Workspace history is a
@@ -437,9 +851,51 @@ docs/                USAGE.md · TROUBLESHOOTING.md · ENVIRONMENT.md · VIGIL_S
     auto-write claim. This posture never touches #3: `decide()` stays the sole
     close/escalate authority, and the
     Round-10 risk gate is **routing-only** (reads `compute_risk()`, never changes
-    scoring or `decide()`).
+    scoring or `decide()`). Round 12 adds two chat defaults under the same rule: chat
+    questions run without per-question caps (`chat_agent.limits_mode="unlimited"`,
+    correctness guards only), and chat sits outside the daily and monthly AI budget
+    (metered, with an optional chat-only daily cap and no monthly chat bound); neither
+    touches `decide()`.
 11. Spine first & tested (Gate 1); breadth degrades gracefully (Gate 2).
 12. Read-only consumer; upstream untouched; cold-deployable.
+
+### Record provenance and retrieval-evidence contract
+
+- A Case's nullable `app_version` and `build_sha` identify its creation build and are
+  immutable across later updates or re-investigation. Every new append-only AuditDoc
+  and UsageDoc identifies its first append build; idempotent retries preserve that
+  first writer. Elasticsearch CaseStore and the SQL Case repository stamp only an
+  absent document/row as a defensive fallback; updates restore the existing stored
+  provenance, including legacy `null`. Legacy rows are never backfilled.
+- `retrieval_history_status` is authoritative for the Case lifetime. A legacy Case
+  remains `unavailable` after a modern run because missing earlier history cannot be
+  reconstructed. `knowledge_used` always remains an array for wire compatibility;
+  `retrieval_observation_status` (`measured`, `not_measured`, or `unavailable`) is
+  authoritative for whether that array represents a completed observation. Explicit
+  `[]` is a measured zero only when the observation status is `measured`. Latest-run
+  procedure provenance separately reports `measured`, `not_attempted`, or `unavailable`
+  plus a reason. Fail-soft last-known-good or partial-query context may still inform the
+  investigator, but any unverified/failed group keeps that run unavailable and does not
+  advance the Case observation to measured.
+- Retrieval analytics report case-level reference coverage only. They never claim
+  retrieval quality or per-run hit rate. A mixed legacy/instrumented cohort or truncated
+  read keeps the headline `null` and unavailable. A history-complete cohort with no
+  measured observation is insufficient evidence; individual `not_measured` cases are
+  excluded from an otherwise measurable denominator rather than counted as zero.
+- Recorded explanations (Round 16) follow the same rule. A new risk score records its inputs
+  and the weights in force in `risk_breakdown.inputs`, written beside `compute_risk` by the
+  pure `engine/risk_explain.py`; the case manager's DECISION audit row records the gate it
+  compared in `tool_input.gate`, and the decision history entry carries the run's `run_id`.
+  Nothing reads either to decide (#3), `engine/risk.py` and `decide()` stay byte-identical,
+  and a case scored or decided before 0.2.0 reads "not recorded" or "re-derived with today's
+  policy", never a fabricated record.
+- This contract arrived with the never-tagged 0.1.13 candidate and ships in 0.2.0; it is
+  additive: no SQL migration and no historical backfill. PostgreSQL/SQLite use existing
+  JSON documents. Elasticsearch bootstrap creates missing templates/indices and never
+  auto-remaps or reindexes them; its only changes to an existing template or index are
+  three additive mapping extensions, one per contract (audit, config and, since 0.2.0,
+  cases: `risk_breakdown.inputs` stored and never indexed, and an explicit
+  `awaiting_reason`), and a property that exists is never changed.
 
 ## 6. Environment (build/dev sandbox AND deploy target)
 
@@ -496,17 +952,17 @@ See `docs/ENVIRONMENT.md` for the full detail. Summary:
 ## 7. Build / run / test cheatsheet
 
 ```bash
-# Backend tests (offline; MUST stay green) — latest recorded full run: 2,306 tests (see Journal for the exact current count)
+# Backend tests (offline; MUST stay green). Latest recorded full run: 14,072 tests (see Journal for the exact current count)
 cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt
-python -m pytest -q                         # -> latest recorded full run: 2,306 passed (see Journal)
+python -m pytest -q                         # -> latest recorded full run: 14,043 passed, 29 skipped, 0 failed with proxy/AWS vars unset (see Journal)
 
 # Backend run locally (in-memory store, mock LLM if no keys)
 uvicorn app.main:app --port 8088
 
 # Web UI + installed Help Center build, tests, and lint (Node 22)
 cd webui && npm install && npm run build   # MkDocs bundle + tsc --noEmit + Vite -> webui/dist/
-npm run docs:check                         # validate app 0.1.12 ↔ bundled docs 0.1
-npm run test:strict                        # -> latest recorded full run: 1,935 passed / 286 files; zero stderr/console output
+npm run docs:check                         # validate app 0.2.0 against bundled docs 0.2
+npm run test:strict                        # -> latest recorded full run: 9,955 passed, 19 skipped / 786 files; zero stderr/console output
 npm run lint                               # 0 errors, 0 warnings; jsx-a11y at error
 
 # Shipping backend acceptance also runs `python -m pip check` inside the final
@@ -546,11 +1002,15 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
     (`button`, `card`, `dialog`, `select`, `tabs`, `table`, `tooltip`, `sheet`,
     `skeleton`, `popover`, `hover-card`, `badge`, … — wrap Radix, do not fork them).
   - **Cross-cutting design-system exports** live under
-    `webui/src/design-system/*`: the one centered `LoadingState`/`LoadingGlyph`
+    `webui/src/design-system/*`: the one Console material (`MaterialBar`,
+    `materialBar`/`materialThick`, `useScrollEdge`, the per-user Reduce transparency
+    override in `transparency.ts`; Round 12), the one centered `LoadingState`/`LoadingGlyph`
     feedback grammar, original theme-adaptive `SourceMark` asset catalog, and the
     JSON-serializable `DESIGN_SYSTEM_CATALOG`. Import from `@/design-system`; do not
     invent a page-local blocking loader or source mark. The catalog is an input for
-    future agent/MCP tooling—version 0.1.12 does **not** ship an MCP server.
+    future agent/MCP tooling; version 0.2.0 does **not** ship an MCP server. Since Round
+    16 the Explain kit (`ExplainTrigger`, `ExplainPanel`) is its own subpath,
+    `@/design-system/explain`, which never reaches the entry chunk.
   - **SOC-domain components** live in `webui/src/soc/components/*`
     (`PageHeader`, `KpiTile`/`StatCard`, `DataTable`, `EmptyState`, `RiskGauge`,
     `CaseHoverCard`, `ChatPanel`, `ChatHistoryRail`, `badges.tsx`, `charts.tsx`,
@@ -566,16 +1026,16 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
   `/api` proxy forwards arbitrary JSON). Keep `webui/src/lib/types.ts` in sync with
   `models.py`.
 - **Secrets:** env only; UI shows booleans (`configured ✓`) never values.
-- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 2,306) +
-  `npm run build` clean + `npm run test:strict` (latest recorded full run: 1,935/1,935 passed / 286 files) +
+- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 14,043 passed, 29 skipped; 0 failed with the sandbox's proxy and AWS variables unset) +
+  `npm run build` clean + `npm run test:strict` (latest recorded full run: 9,955 passed, 19 skipped / 786 files) +
   `npm run lint` (0 errors, jsx-a11y at error) before
   every commit. (Counts rise each round — see `Journal.md` for the exact current totals.)
 - **Git:** active branch `Testing`. Commit focused changes; push when asked. The
-  canonical remote branches are `Testing` for integration and default `main` for
-  Stable promotion. Keep the documented pull-request gates and the required
+  canonical remote branches are `Testing` for integration and `main` for Stable
+  promotion (the default branch once maintainer action M1 resets it). Keep the documented pull-request gates and the required
   `CI passed` aggregate enforced through repository settings; branch names alone
   do not prove acceptance.
-- **CI/CD acceptance (non-negotiable):** `.github/workflows/ci.yml` exposes eighteen
+- **CI/CD acceptance (non-negotiable):** `.github/workflows/ci.yml` exposes twenty
   independently diagnosable quality lanes plus the fail-closed `CI passed`
   aggregate. The aggregate must be required on both `Testing` and `main`, and the
   exact candidate must pass it on `Testing`, on the resulting `main` commit, and on
@@ -667,15 +1127,48 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
 
 ## 10. Current status & roadmap
 
-**Round 10 is the newest feature round — a behavior change, not just a UI/UX
-pass.** It is committed on `Testing` (including `9010443`). On top of it, a **backend
+**Round 16 is the newest work**, in progress on branch `claude/round16` (from `3cfd5c0` on
+`Testing`) and heading to `Testing` through a pull request, then to the 0.2.0 release: the AI
+agent's work shown live on a case, a cleaner and segregated Case Manager, a quiet sign-in page,
+every number explainable on hover or click, every stored record reachable, a What's new screen
+and a Communication page that tracks every release, the 81 confirmed bug-hunt fixes, version
+0.2.0 under the `ARYDESTROYER/Kavach-AgenticSOC` identity, and the Apache-2.0 license; see
+the Round 16 bullet in the round summary below and `docs/research/2026-11-round16/SPEC.md`,
+whose §8 "As built" records the contract resolutions, what each package shipped and the known
+limitations. It was built as the SPEC's 25 work packages, some in parts (WP05, WP15E, WP16
+and WP18) and one added integration package (WP11I), each in its own worktree and
+independently reviewed: a security package first, the version move, the contracts, seven bug
+packages by file ownership, the feature packages, the integration packages, then records,
+screenshots and the frozen release preparation. Round 15 (a Console switch for role-based access,
+honest setup-wizard copy, a Team activity page, screenshots on cases, a random review of
+automatically closed cases and a cleaner Case Manager) was built on branch `claude/round15`
+(from `c4227bd` on `Testing`) as a foundation package, five feature packages, an entry package,
+an integration package and a records package, each independently reviewed, then a cross-cutting
+review of the integrated tree (50 candidate findings, 46 confirmed and fixed), and merged into
+`Testing` as `3cfd5c0` (PR #143); see
+`docs/research/2026-11-round15/SPEC.md`, whose §8 "As built" records what shipped, the contract
+resolutions, the known limitations and the closing gates. Round 14 (one console grammar, a Dashboards library, an audit log you
+can use, rule drill-down and one Runbooks feature that replaces playbooks) was built on
+branch `claude/round14` (from `1cf20a7`, after Round 13 merged into `Testing`) and merged into
+`Testing`; see the Round 14 bullet in the round summary below and
+`docs/research/2026-10-round14/SPEC.md`, whose §11 "As built" records what shipped, the
+contract resolutions and the known limitations. Round 13 (chat: dynamic $0 starters, anchored
+follow-ups, conversation titles from the first answer, a neater chat) merged into `Testing`
+through PR #132; see its bullet below and `docs/research/2026-10-round13/SPEC-chat.md`. Round 12
+(chat without limits, the working indicator, Remember me, report downloads, the Overview
+and Case Manager redesigns) merged into `Testing` as `db8d935` (PR #131); see its bullet
+below and `docs/research/2026-10-round12/SPEC.md`.
+
+**History: Round 10 was a behavior change, not just a UI/UX pass.** It is committed on
+`Testing` (including `9010443`). On top of it, a **backend
 deep-audit hardening pass (2026-07-14/15)** fixed **47 verified findings** (0 crit / 10
 high / 24 med / 13 low) from a 24-auditor + adversarial-verify Workflow — one atomic
 commit per finding on `Testing` (`c5516e5`→`abd0385`), local only, not tagged or pushed.
 See the "Deep-audit hardening" bullet in the round summary and the 2026-07-15 `Journal.md`
-entry. The product candidate is now Version **`0.1.12`**: changes must integrate and pass acceptance on
+entry. The product candidate is now Version **`0.2.0`** (documentation line 0.2; the
+never-tagged 0.1.13 candidate folds into it): changes must integrate and pass acceptance on
 `Testing`, then the exact accepted commit promotes to the Stable `main` branch and receives
-the immutable `v0.1.12` tag. Use `git log -1`, `VERSION`, and the latest `Journal.md` entry for the
+the immutable `v0.2.0` tag. Use `git log -1`, `VERSION`, and the latest `Journal.md` entry for the
 exact current snapshot rather than an embedded HEAD hash. Round 9c (`559ce88`, PR
 #27) is historical;
 `feature/round7-ui-overhaul` (Rounds 7–8) merged via PR #23/#24, Round 9 via PR #25,
@@ -683,8 +1176,9 @@ Round 9b via PR #26. Round 10 ("Autopilot & Comprehensive Ingestion + motion.dev
 flips the suite from "opt-in automation" to **comprehensive ingestion + smart-
 autopilot defaults ON out of the box** — see the Round-10 bullet below.
 
-**Release topology:** the remote now exposes canonical `Testing` and `main`, uses
-`main` as its default, and has `v0.1.1` as the last verified installable Stable tag.
+**Release topology:** the remote now exposes canonical `Testing` and `main` (`main`
+becomes the default branch once maintainer action M1 resets it; on 2026-11-27 it was
+still `Testing`), and has `v0.1.1` as the last verified installable Stable tag.
 The immutable `v0.1.4` and `v0.1.5` tags are failed, non-installable publication
 records. The immutable `v0.1.6` and `v0.1.7` tags are fully published and signed
 artifact records, but their canonical bootstrap acceptance failed before a usable
@@ -707,20 +1201,76 @@ must never be moved or reused. The immutable `v0.1.11` tag passed all image and
 signed-plan verification, including inside the constrained updater, but post-verification
 fixture cleanup failed before attestations, canonical Release assets, Stable aliases,
 or Stable documentation; it is historical, non-installable, and must never be moved
-or reused. `v0.1.12` is created only from the fully verified promoted 0.1.12 commit
-and becomes installable only after its signed plan, public GitHub Release, anonymous
-digest reads, and canonical runtime acceptance pass. Version 0.1.12 changes no state schema, updater protocol, publisher
-identity, process privilege, or frozen-base bytes. Repository-level branch
+or reused. The immutable `v0.1.12` tag then passed protected source and exact-tag
+CI, published the complete public signed release (all three dual-platform digest
+images, attestations, canonical plan and bundle, GitHub Release, Stable aliases,
+and Stable documentation), and verified anonymous reads and keyless signatures.
+Canonical v0.1.1 bootstrap nevertheless failed closed before application mutation
+because both legacy application images omit the state-schema label and the updater
+compared one normalized absence with one raw absence. It is cryptographically valid
+but bootstrap-blocked, superseded, and not a supported installation source.
+Version 0.1.13 was never tagged; its legacy bootstrap correction folds into 0.2.0. Version
+0.2.0 is the current candidate: `v0.2.0` is created only from the fully verified promoted
+0.2.0 commit and becomes installable only after its signed plan, public GitHub Release,
+anonymous digest reads, and canonical runtime acceptance (a v0.1.1 bootstrap on PostgreSQL
+Compose with `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` set first)
+pass. Version 0.2.0 changes no state schema, updater protocol, signed-plan schema, process
+privilege, or frozen-base bytes; it moves the update trust root, the GHCR namespace and the
+OCI source label to the `ARYDESTROYER/Kavach-AgenticSOC` identity (artifacts of v0.1.12 and
+earlier stay valid under the former one). Repository-level branch
 protection, required-check, and `github-pages` environment policy remain administrator
-controls and must be verified independently of source changes.
+controls and must be verified independently of source changes; SPEC §4.11 lists the
+maintainer actions M1 to M7 the 0.2.0 release depends on (among them the default branch back
+to `main` and a required dress rehearsal in a disposable repository).
 
-**Current baseline (2026-08-05):** backend **2,306 pytest** passed (0 failures);
-webui **1,935/1,935 Vitest** specs / 286 files with zero stderr or captured console output,
-full docs+app build clean (3,189 modules;
-motion remains lazy and off the entry path); eslint **0 errors, 0 warnings**; **zero new webui runtime
-deps except the deliberate lazy `motion`** (12.42.2). Version 0.1 adds only the
-explicitly pinned connector/SQL packaging dependencies required by its advertised
-`full` image; the `core` image remains available. `engine/case_manager.py` `decide()` stays **byte-identical** to
+**Process rule (Round 16): every update that reaches users adds a What's new entry with
+screenshots.** The entry goes into `docs/releases/notes/<VERSION>.json` (schema 1, one curated
+file per release, screenshots under `docs/assets/releases/<VERSION>/`), and
+`scripts/build_release_notes.py` regenerates the Console notes, the backend's newest update id
+and the Help Center's What's new page (`--check` keeps them current). `scripts/check_version.py`
+enforces it: every ref needs the notes file for the current version, and `main`, a `v*` tag or
+a pull request into `main` also need the notes marked released, dated like the dated CHANGELOG
+heading, with every update dated. Update ids never change once published.
+
+**Elasticsearch bootstrap exceptions:** bootstrap creates what is missing and never remaps or
+reindexes, with three additive exceptions, one per contract: the audit mapping (Round 14), the
+config index's `case_file_data` (Round 15) and, since Round 16, the cases index
+(`risk_breakdown.inputs` stored and never indexed, and an explicit `awaiting_reason`). The
+shipped client reads index templates since Round 16, so an upgraded deployment gains them; a
+client that cannot read a template leaves the recorded inputs out and the case reads "not
+recorded" (`backend/app/es/indices.py`).
+
+**Round 14 baseline (2026-11-06, closing gates on the integrated tree; Round 14 SPEC §11.4
+"Final gates"):** backend **12,461 pytest** tests: 12,450 passed, 6 skipped, 0 errors and 5
+failed, the five sandbox-only environment tests, whose four files pass 55 of 55 with the
+sandbox's proxy and AWS variables unset (CI runs without them); ruff fatal clean. webui
+`npm run test:strict` **8,576 Vitest** specs passed, 1 skipped (the dist-required case outside
+the build lane), 0 failed / 652 files, with zero stderr and no captured console output, and its
+5 contract checks pass. Full docs+app build clean (3,523 modules, no warnings); entry chunk
+**337,163 B** against `PRE_REVAMP_ENTRY_BYTES` 336,216 B (lowered by WP-GEN from 377,070 B):
+947 B over the baseline, 77 B inside the 337,240 B budget and 62,837 B under the 400,000 B
+ceiling, so no rebase (Round 14 SPEC §11.1 "Entry bundle"); the first-paint assertions, motion
+off the entry path among them, pass on the built `dist/`. eslint **0 errors, 0 warnings**; the
+design gates pass (37 tokens, contrast on 166 axes in both themes, no new arbitrary text sizes or
+raw hex, chart ramps colour-vision separable, 364 login accent composites); `check:types` without
+drift (293 paths); `docs:check`, `check_version`, `check_ci_contract` (3 workflows, 3 shipping
+Dockerfiles), `check_docs` (84 pages) and `build_app_knowledge --check` (877 chunks) pass.
+
+**Current baseline (2026-11-26, Round 16 closing gates, Round 16 SPEC §8.4):** backend **14,043 pytest**
+passed, 29 skipped and 0 failed (27 PostgreSQL-only tests skip offline and run in the PostgreSQL
+lane, and 2 audit tests need Elasticsearch point-in-time snapshots), with the sandbox's proxy and
+AWS variables unset as CI runs (with them set, the 5 sandbox-only environment tests fail);
+webui **9,955 Vitest** specs passed, 19 skipped (the cases that need `dist/`, run without a build as
+CI does) / 786 files with zero stderr or captured console output, full docs+app build clean (3,622
+modules; entry chunk 318,008 B with the build SHA and date stamped, inside the +1,024 B budget over
+the `PRE_REVAMP_ENTRY_BYTES` baseline 317,962 B that Round 16 ratcheted down, and under the
+400,000 B ceiling; motion remains lazy and off the entry path); eslint **0 errors, 0 warnings**; **zero new webui runtime
+deps except the deliberate lazy `motion`** (12.42.2). The 0.x line (0.1 and 0.2) adds only
+the explicitly pinned connector/SQL packaging dependencies required by its advertised
+`full` image; the `core` image remains available. Round 16 lowered the
+`PRE_REVAMP_ENTRY_BYTES` baseline to 317,962 B, the final tree measured with `npm run
+build:app` (318,008 B stamped as CI builds it), 11,118 B below the Round 15 baseline
+(Round 16 SPEC §8.1 "Entry bundle"). `engine/case_manager.py` `decide()` stays **byte-identical** to
 the pre-Round-5 baseline `27f0983`; `engine/risk.py` / `engine/signatures.py`
 **untouched** by Round 10 (the new risk gate is routing-only, #3); every round's
 router/Settings decomposition kept all API paths byte-identical. The 12
@@ -827,7 +1377,14 @@ a retelling — do not re-derive round detail from here.
   (`caps.max_auto_investigations_per_tick=25`) is shared across concurrent pull sources
   in the manager fan-out; each direct push batch enforces the same configured cap
   locally. Cap-deferred candidates drain on later ticks and investigations remain
-  sequential within each handler; the daily budget is the GLOBAL spend bound. **Autopilot smart
+  sequential within each handler; the daily budget is the GLOBAL spend bound for the
+  pipeline (investigations, standup, scans, report summaries). **Since Round 12, Workspace
+  and Case Manager chat are deliberately outside it** (`llm/gateway.py`
+  `BUDGET_EXEMPT_SURFACES`: a `role=chat` call on `surface="chat"` is never blocked and its
+  spend is excluded from what the gate measures, for both `budget.daily_usd` and
+  `budget.monthly_usd`); chat's only spending bound is the optional daily
+  `chat_agent.chat_daily_cap_usd` (off by default; there is no monthly chat bound), and
+  every chat call is still ledgered through the one gateway (#6). **Autopilot smart
   defaults** (default-ON, $0/#3-safe) — threshold tuning (shadow-eval forced on),
   campaigns, cross-source correlation, SLA policy, priority matrix, realtime SSE, the
   threshold-automation engine (empty rule set), baseline (producer + a new
@@ -845,7 +1402,9 @@ a retelling — do not re-derive round detail from here.
   coverage banner/Overview tile/Noise-Reduction "awaiting" stage. **motion.dev** —
   ONE new lazy runtime dep (`motion` 12.42.2, replacing the Round-5-removed
   `framer-motion`) behind `LazyMotion`/`domAnimation`, landing in an ~83.85 kB lazy
-  chunk (entry stays 281.44 kB), animating route transitions, CaseDetail tabs, Cases
+  chunk (entry was 281.44 kB at the time of Round 10; it is 371,859 B at the Round 13
+  chat gates, against the 400 kB ceiling in `bundle-first-paint.test.ts` — check the artifact, not this
+  line), animating route transitions, CaseDetail tabs, Cases
   bulk-bar/row reflow, the nav rail, and KPI count-ups — reduced-motion honored.
   Built research(vendor+standards) → code (5 batches) → adversarial verify (5 major +
   6 minor found) → fix (all) → re-verify. No research folder (efficiency-first) — see
@@ -861,6 +1420,151 @@ a retelling — do not re-derive round detail from here.
   correctness; SSE + cache + rate-limit + lock-registry bounds. **#3 verified clean —
   `decide()` untouched.** Green: 1942 pytest / webui 1349 Vitest unchanged. See the
   2026-07-15 `Journal.md` entry + the matching `CHANGELOG.md` Development snapshot.
+- **Round 11** (2026-08-22, on `claude/dashboard-user-management-improvements-av091r`,
+  PR to `Testing`) — 10 operator requests in five groups, each built/tested by its own
+  sub-agent and adversarially reviewed: the landing dashboard renamed **Cyber Defence
+  Center** + hover/focus trendlines on every metric with an honest series (new
+  `GET /api/metrics/trends` cohort buckets) + FP-rate compare-chip removal + a
+  token-only design pass; the FP%/auto-closed slowness fixed at the root (a shared
+  single-flight 5s case-page cache in `api/metrics_shared.py` collapsing a 5-endpoint
+  ×5,000-doc fan-out to one scan, `count_created_since` push-down, ~31% faster
+  posture math byte-identical, stale-while-revalidate on window change); **admin-
+  mandated MFA enforced inside the login phase** (per-user `mfa_required` +
+  pending-token-gated `enroll-setup`/`enroll-confirm`, env-admin lockout fixed);
+  richer user creation (display_name/email/phone/custom_roles at creation, live
+  role-permission summary + inline custom-role fine-graining); **19 new enrichment
+  providers (38 total) with manifest setup_steps/example setup guides**; and the
+  TOTP QR encoder made ISO/IEC 18004-conformant (version-info blocks for v≥7,
+  format-copy order, Reed-Solomon off-by-one — QR scanning works now). See the
+  2026-08-22 `Journal.md` entries.
+- **Chat revamp** (2026-10-07→09, PR #129 into `Testing`) — Workspace Chat rebuilt as a
+  read-only multi-lookup analyst assistant with blocks, citations, reports and a live
+  token meter; see `docs/research/2026-10-chat-revamp/SPEC.md` (A1–A38) and `BLOCKS.md`.
+- **Round 12** (2026-10-10→, branch `claude/round12`, PR to `Testing`) — 11 operator asks,
+  17 decisions, the round SPEC's 16 work packages (WP-FEAT ran as A and B, and WP-GEN
+  regenerated the generated artefacts), each implement → two adversarial reviews → fix:
+  **chat without limits** (`chat_agent.limits_mode="unlimited"` by default with a one-time
+  `chat_limits_version` migration; loop guards instead of caps; automatic continuation;
+  a running conversation summary in a `CONVERSATION_SUMMARY` untrusted fence and
+  `recall_observation`; Stop abandons the in-flight call; chat OUTSIDE the daily and
+  monthly AI budget with an optional chat-only daily cap); **exact aggregates** for chat
+  and dashboards (`engine/case_aggregate.py`, `engine/time_windows.py`, `case_stats`, any
+  window incl. all time and calendar periods, comparisons; store-wide dashboard totals
+  exact at any size, window figures exact up to 20,000 cases per window and lower
+  bounds beyond it); `AUTH_TOKEN_HOURS` capped at 144 h; chat features (clarify, zero-result suggestions, reports saved
+  from the answer header, step inspector, answer ratings, Add to case, prompt library +
+  promptbooks, `/compact`, Ask AI entity chips, conversation width, chart Group by/zoom/
+  image download); the **agent-working indicator** + live rejoin (process-local turn
+  registry, per-turn event ring, owner-only `chat.turn` and `chat.read` SSE); **Remember me**
+  (server-bounded 6/12/24 h sessions, browser-managed passwords, browser-session cookie
+  otherwise, registry-aware `/auth/me`); reliable report downloads + Word/Excel; Overview
+  and Case Manager redesigns with the **analyst-classification headline** (`caseOutcome`,
+  the "closed as FP still Undetermined" fix, disposition on every terminal path); Apple
+  design foundations. `decide()` untouched (#3); every new call still one gateway call
+  and one UsageDoc (#6). Records: `docs/research/2026-10-round12/SPEC.md` (decisions +
+  "As built"), chat-revamp SPEC amendments A39+, and the Round 12 `Journal.md` entries.
+- **Round 13, chat** (2026-10-17→23, same branch, merged into `Testing` through PR #132): the operator asked for a
+  neater chat and dynamic suggestions. **Dynamic $0 starters** computed by code from the
+  suite's own state under each viewer's grants (`engine/chat_starters.py`,
+  `agents/chat_starter_text.py`, `GET /api/chat/starters`, `POST /api/chat/starters/events`,
+  the `chat_starters` KV namespace; no model call, no log read; a referenced value fenced as
+  `entity_ref` live and on replay, origin `starter`): a bottom-anchored start stack with a
+  greeting, a "Since …" catch-up line, 3 or 4 ranked cards with Hide for a day, and
+  category pills; a catch-up line in an open thread; up to three Case Manager case chips;
+  `chat_agent.dynamic_starters` and two personal switches default on. **Anchored
+  follow-ups** (`agents/chat_followups.py`, at most 3, no extra call); **conversation
+  titles** from the first answer's header; a 42rem **reading column** with compact and wide
+  blocks and a 38rem prose measure; quiet block headers and one shared scope line; the cost
+  on the meta row with tokens in the usage card; a calmer composer, run log and history
+  rail; Demo answers every starter and chip. `decide()` untouched (#3). Records:
+  `docs/research/2026-10-round13/SPEC-chat.md` (§10 "As built"), chat-revamp SPEC
+  amendments A64 to A68, BLOCKS amendments 32 and 33, and the Round 13 `Journal.md` entries.
+- **Round 14** (2026-10-25→29, branch `claude/round14`, PR to `Testing`): nine operator asks.
+  The automatic sign-out notice no longer states the session length; the Audit log is a
+  server-paged page with three scopes, search, an inspector side sheet and an audited CSV or
+  JSON Lines export (`audit:export`, fresh sign-in; `routes_audit`, new record fields, request
+  ids and before/after `changes` on every writer, audit before visible); the Overview entry
+  opens a **Dashboards library** (the Cyber Defence Center, marked Default and still the
+  landing page, plus SOC operations, Detection and data health and Executive summary, and the
+  viewer's own boards; `GET /api/metrics/breakdown`); the Overview's two band headers are
+  gone; the chat Timeouts and capacity defaults are tripled (`chat_limits_version` 2); every
+  rule name opens one **rule sheet** (`RuleLink`, `GET /api/rules/summary`, "Open all in
+  Logs"), and Logs and Cases take an exact rule filter; severity breakdowns use named levels
+  with top rules and Split by; a docked navigation rail and the Overview's panels and header on
+  every page, grouped Settings; and playbooks and runbooks are merged into **one Runbooks
+  feature** (phased procedures with five step kinds, deterministic matching with a reason, a
+  per-case run with a Next step card, Draft, In review, Published and Retired versions, 12
+  built-ins, a one-shot audited migration, `runbooks:run` and `runbooks:publish`, the
+  investigator reads only Published text; `/api/playbooks*` reads stay as aliases for one
+  release and writes answer 410). `decide()` untouched (#3); every new model call goes through
+  the gateway (#6); storage is KV only (#12). Records: `docs/research/2026-10-round14/SPEC.md`
+  (§11 "As built"), chat-revamp SPEC amendments A69 to A73, BLOCKS amendments 36 to 39, and the
+  Round 14 `Journal.md` entries.
+- **Round 15** (2026-11-23→24, branch `claude/round15`, PR to `Testing`): six operator asks. A
+  **role-based access switch** on Roles & permissions (`PUT /api/rbac`; only a stored Super admin,
+  with a strict fresh sign-in; `PUT /api/settings` answers `409 rbac_switch_moved`); truthful
+  **setup-wizard** wording (`llm/readiness.py` `ai_runtime_status`; Ready for live triage needs a
+  source and a provider the default investigation models can call); **Team activity**
+  (`#/team`, `team:view`, a pure fold of audit rows into per-person, per-day counts with a chart,
+  a person sheet and a CSV; counts with context, never a ranking or score); a **stronger close**
+  (the disposition asked once, Actions taken, Rate the AI collapsed, no `actual_outcome` with the
+  grade) and **screenshots** on cases (PNG, JPEG or WebP, structure checked and metadata stripped,
+  20 per case, 20 MiB per case, 2 MiB each, never sent to a model); an **auto-close review** (about
+  5% of automatic closes, at most 10 a day and 3 per rule, classified before comparing with the AI,
+  kept out of agent statistics, an Effectiveness module with a Wilson interval from 30 reviews);
+  and a calmer **Case Manager** (one control band, two-line rows, one primary action plus Take
+  action, five tabs, an eight-section facts rail; Round 16 replaced them with six tabs and the
+  case facts inspector). Human case work writes structured audit rows
+  (`case.acknowledged` to `case.graded`), re-investigation keeps people's work, and Super admin
+  accounts are for Super admins only. `decide()` untouched (#3); no new model call (#6); storage
+  is KV only (#12); no new dependency; the entry baseline ratcheted down to 329,080 B. Records:
+  `docs/research/2026-11-round15/SPEC.md` (§8 "As built") and the Round 15 `Journal.md` entries.
+- **Round 16** (2026-11-24 to 26, branch `claude/round16` from `3cfd5c0`, PR to `Testing`, then
+  release 0.2.0): ten operator asks. **Visible AI work**: a server registry of queued and
+  running AI runs (`engine/investigation_registry.py`, process local, `GET
+  /api/investigations/active`, `case.investigation` frames on a new `investigations` topic), the
+  case header chip "AI working · m:ss" with a popover of the five steps and who started the run,
+  the queue row mark, the Case Manager navigation count, close and bulk dialogs that warn the
+  run's result will replace a close made now (the run's result stays authoritative, D10), Inbox
+  notices when a manual run ends or replaces a close (`case.close_replaced`), a non-blocking
+  Reinvestigate (`wait=false` answers `202`; `409 investigation_running`; a closed case is
+  reinvestigated in place or answers `409 open_case_exists`), a per-case write lock shared by the
+  pipeline, the case actions and the collaboration writers, and one multiplexed EventSource per
+  page. **A
+  segregated Case Manager**: no page header, the `[` queue fold, a counted empty pane, six tabs
+  one lane each (Brief, Evidence, AI investigation, Response, Activity, Chat on Alt+1 to Alt+6;
+  Alt+2, Alt+4 and Alt+5 changed meaning), a 118 px header with one meta strip and the case facts
+  inspector (`]`, six sections). **A quiet sign-in page** on Console tokens with "Remember me" and
+  no duration (the D9 subject removal retired the login accents gate). **Explainable numbers**:
+  the Explain kit (`@/design-system/explain`: a hover line and a click panel with inputs, steps,
+  rounding, provenance and Copy calculation), recorded risk inputs (`engine/risk_explain.py`,
+  `RiskBreakdown.inputs`) and the recorded decision gate, a server SLA reading
+  (`engine/sla_reading.py` on `metrics.sla_case_reading`), one Wilson interval
+  (`engine/stats.py`), and `GET /api/metrics/explain` behind the dashboard figures. **Every record
+  reachable**: `GET /api/cases/{id}/events` (the case's own raw events re-read on the read-only
+  client, #1) and `/usage` (every model call with its rates; ledger rows now record their rates
+  and `price_basis`), View all fields, trace Details, history reasons. **What's new and
+  Communication**: the Notifications navigation group is now Communication (Inbox and What's
+  new; the group id stays `notifications`), a once-per-update welcome that new accounts start
+  with marked seen (`backend/app/whats_new.py`), a release tracker page and a generated Help
+  Center page from
+  `docs/releases/notes/`. **The bug hunt**: 81 confirmed ids, 75 fixes and 6 merged duplicates,
+  among them the read gates on 18 GET routes with a CI coverage rule, the server-enforced forced
+  password change, the MFA lock, Super-admin-only single sign-on, the SLA clock on agent-closed
+  cases, the deferred drain at scale, Demo Mode that never reads a tenant source, and eleven
+  accessibility fixes. **Release 0.2.0**: version 0.2.0 and documentation line 0.2 with
+  `/docs/0.1/` redirect stubs, the `ARYDESTROYER/Kavach-AgenticSOC` identity (the bootstrap
+  refuses an `.env` without it), the Apache-2.0 license, Dependabot on `Testing`. Three new
+  feature routers (46 in all), the cases index joins audit and config as an additive
+  Elasticsearch bootstrap exception, and the What's new process rule above. An acceptance
+  pass then checked each operator ask from the operator view in the seeded Demo and reported
+  66 gaps; seven fix packages, each reviewed, confirmed and fixed them, with WP17D for the
+  release tracker screenshots and FXF for the reviews' leftovers (SPEC §8.6). `decide()` and
+  `engine/risk.py` byte-identical (#3); no new model call (#6); KV only, no new namespace (#12);
+  no new dependency. Records: `docs/research/2026-11-round16/SPEC.md` (§8 "As built"), the
+  bug hunt in `docs/research/2026-11-round16/review/bug-hunt.md`, the acceptance pass in
+  `docs/research/2026-11-round16/acceptance/acceptance-pass.md`, and the Round 16
+  `Journal.md` entries.
 
 **Auth is DEFAULT OFF** (`Secrets.auth_enabled`) so the no-auth profile and the
 offline test suite keep working unchanged; `TLSOC_AUTH_ENABLED=true` turns on the
@@ -873,7 +1577,9 @@ classification/observables surfacing + a 1.4→1.8 version bump, ARQ workers + K
 scale-out + a Helm chart + OTEL/Grafana (Epoch E — see
 `docs/AGNOSTIC_ARCHITECTURE.md`), and native Splunk / Sentinel / QRadar / Chronicle /
 CrowdStrike / SentinelOne / Defender pull connectors (reserved in the `SourceType`
-enum, not yet built).
+enum, not yet built). The ranked Round 16 backlog (a free local-model path, one-command
+install, source presets for the free stacks, restart-safe source secrets, no-loss push and
+the rest) is `ROADMAP.md` section K, from the Round 16 SPEC §7.
 
 Every item ends with: `pytest -q` green (keep the count current), `webui` build
 clean, docs updated, and **Journal updated**. Commit or publish only when the user

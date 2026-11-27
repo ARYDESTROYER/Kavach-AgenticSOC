@@ -7,7 +7,7 @@
  *
  *   text → UTF-8 bytes → data codewords (mode + length + payload + padding)
  *        → Reed–Solomon error-correction codewords → interleaved bitstream
- *        → module matrix (finder/timing/alignment/format) → masked → inline <svg>.
+ *        → module matrix (finder/timing/alignment/format/version) → masked → inline <svg>.
  *
  * Only versions 1–10 are supported (ample for an otpauth URI, typically ~120 bytes);
  * if the content does not fit, the component renders nothing and signals via
@@ -53,15 +53,23 @@ function rsGenerator(degree: number): number[] {
   return poly;
 }
 
-/** Reed–Solomon EC codewords for `data` given `ecLen` EC codewords. */
+/**
+ * Reed–Solomon EC codewords for `data` given `ecLen` EC codewords — synthetic
+ * division of data·x^ecLen by the monic generator. `gen[0]` is the leading 1, so
+ * the division applies `gen[1..ecLen]` at positions 0..ecLen-1.
+ * (Previously OFF BY ONE: it applied `gen[j]` at position j — including a phantom
+ *  write past the array end — producing EC bytes that were NOT a valid RS codeword,
+ *  so every block failed a conformant reader's syndrome check. Matches Nayuki
+ *  qrcodegen reedSolomonComputeRemainder(); pinned by the zero-syndrome test.)
+ */
 function rsEncode(data: number[], ecLen: number): number[] {
   const gen = rsGenerator(ecLen);
-  const res = new Array(ecLen).fill(0);
+  const res = new Array<number>(ecLen).fill(0);
   for (const d of data) {
     const factor = d ^ res[0];
     res.shift();
     res.push(0);
-    for (let j = 0; j < gen.length; j++) res[j] ^= gfMul(gen[j], factor);
+    for (let j = 0; j < ecLen; j++) res[j] ^= gfMul(gen[j + 1], factor);
   }
   return res;
 }
@@ -227,13 +235,18 @@ function placeFormatInfo(m: Cell[][], size: number, mask: number): void {
   const fmt = FORMAT_INFO_M[mask];
   for (let i = 0; i < 15; i++) {
     const bit = ((fmt >> i) & 1) as 0 | 1;
-    // First copy around the top-left finder (UNCHANGED — ISO/IEC 18004 §8.9):
-    // bits 0..7 along row 8 (horizontal, left), bits 8..14 up column 8 (vertical, top).
-    if (i < 6) m[8][i] = bit;
-    else if (i === 6) m[8][7] = bit;
+    // First copy around the top-left finder (ISO/IEC 18004 §8.9, bit i LSB-first):
+    //   bits 0..5 DOWN column 8 (rows 0..5, skipping timing row 6), bit 6 → (7,8),
+    //   bit 7 → (8,8), bit 8 → (8,7), bits 9..14 along row 8 leftwards (cols 5..0,
+    //   skipping timing column 6; bit 14 lands at (8,0)).
+    // (Previously TRANSPOSED — bits 0..5 ran along ROW 8 and bits 9..14 up COLUMN 8 —
+    //  so a reader walking the standard order saw the 15-bit string bit-reversed and
+    //  only decoders that fell back to the intact second copy could recover.)
+    if (i < 6) m[i][8] = bit;
+    else if (i === 6) m[7][8] = bit;
     else if (i === 7) m[8][8] = bit;
-    else if (i === 8) m[7][8] = bit;
-    else m[14 - i][8] = bit;
+    else if (i === 8) m[8][7] = bit;
+    else m[8][14 - i] = bit;
     // Second copy split near the other two finders (ISO/IEC 18004 §8.9):
     //   bits 0..7  → HORIZONTAL top-right strip, columns size-1 .. size-8 on row 8;
     //   bits 8..14 → VERTICAL bottom-left strip, rows size-7 .. size-1 on column 8.
@@ -244,6 +257,41 @@ function placeFormatInfo(m: Cell[][], size: number, mask: number): void {
     else m[size - 15 + i][8] = bit;
   }
   m[size - 8][8] = 1; // dark module
+}
+
+/**
+ * 18-bit version information for versions >= 7 (ISO/IEC 18004 §8.10): the 6-bit
+ * version number followed by its 12-bit BCH(18,6) remainder, generator polynomial
+ * 0x1f25. Spec Table D.1 values for the versions this encoder reaches:
+ * v7 0x07c94 · v8 0x085bc · v9 0x09a99 · v10 0x0a4d3 (asserted in tests).
+ */
+export function versionInfoBits(version: number): number {
+  let rem = version;
+  for (let i = 0; i < 12; i++) rem = (rem << 1) ^ (((rem >>> 11) & 1) * 0x1f25);
+  return (version << 12) | rem;
+}
+
+/**
+ * Reserve AND write both 18-module version-information blocks (versions >= 7 only,
+ * ISO/IEC 18004 §8.10). Bit i (LSB-first) goes to the 6×3 top-right block at
+ * m[⌊i/3⌋][size-11 + i%3] (rows 0..5 × cols size-11..size-9) and to its 3×6
+ * bottom-left mirror at m[size-11 + i%3][⌊i/3⌋] — Nayuki qrcodegen drawVersion()
+ * with its (x, y) arguments transposed into this file's m[row][col] convention.
+ * MUST run BEFORE data placement: without the reservation the zig-zag walk writes
+ * data codeword bits into these modules, misaligning every subsequent bit — the
+ * historical bug that made every v7+ (i.e. every real otpauth://) symbol unscannable.
+ */
+function placeVersionInfo(m: Cell[][], reserved: boolean[][], size: number, version: number): void {
+  const bits = versionInfoBits(version);
+  for (let i = 0; i < 18; i++) {
+    const bit = ((bits >> i) & 1) as 0 | 1;
+    const a = size - 11 + (i % 3);
+    const b = Math.floor(i / 3);
+    m[b][a] = bit; // top-right block
+    reserved[b][a] = true;
+    m[a][b] = bit; // bottom-left mirror
+    reserved[a][b] = true;
+  }
 }
 
 function maskFn(mask: number, r: number, c: number): boolean {
@@ -275,6 +323,7 @@ function buildMatrix(codewords: number[], version: number, mask: number): Cell[]
   }
   if (version >= 2) placeAlignment(m, reserved, version);
   reserveFormatAreas(reserved, size);
+  if (version >= 7) placeVersionInfo(m, reserved, size, version);
 
   // Place data bits in the zig-zag pattern, applying the mask as we go.
   const bits: number[] = [];
@@ -300,7 +349,11 @@ function buildMatrix(codewords: number[], version: number, mask: number): Cell[]
   return m;
 }
 
-/** Penalty score for a masked matrix (rule 1 + rule 3 subset — enough to choose). */
+/**
+ * Penalty score for a masked matrix — ISO/IEC 18004 rule 1 ONLY (runs of 5+ same-colour
+ * modules in rows and columns). Rules 2–4 are intentionally not implemented: any mask
+ * 0–7 yields a legal symbol, and rule 1 alone is enough to pick a reasonable one.
+ */
 function penalty(m: Cell[][]): number {
   const size = m.length;
   let score = 0;

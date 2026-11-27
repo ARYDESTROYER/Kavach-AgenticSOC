@@ -1,18 +1,19 @@
 /**
- * Overview — Security Command Center integration test (Stitch-inspired command center).
+ * Overview — Cyber Defence Center integration test (Stitch-inspired command center).
  *
  * Pins the four command-center signatures:
- *   1. the page is titled "Security Command Center";
- *   2. the Active Risk Index (#1 — the ONE risk instrument) is its own flat cell in the
- *      integrated instrument band, a sibling of the plain header, never nested inside it;
- *   3. the Noise-Reduction funnel renders the six-stage flow ending in "Closed by human"
- *      (fetched via the typeof-guarded `api.noiseReduction`), and its stages drill through;
- *   4. the KPI micro-strip is 5 alert/case tiles (LLM spend is not a hero tile).
+ *   1. the page is titled "Cyber Defence Center";
+ *   2. the Human-vs-AI close-attribution instrument (which replaced the Active Risk
+ *      Index gauge) is its own flat cell in the integrated instrument band, a sibling
+ *      of the plain header, never nested inside it;
+ *   3. the Noise-Reduction instrument renders mixed-unit conversion context followed by
+ *      a conserved case flow, plus real selected-window Open-case context;
+ *   4. the KPI micro-strip is 6 alert/case tiles (LLM spend is not a hero tile).
  *
  * Offline — the api + posture fetch are mocked; no auth, no #3 behaviour touched.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { fetchPostureMock } = vi.hoisted(() => ({ fetchPostureMock: vi.fn() }));
@@ -39,7 +40,7 @@ vi.mock('@/lib/api', () => ({
   },
 }));
 
-import Overview, { PAGE_TITLE } from '../pages/Overview';
+import Overview, { METRICS_LIVE_MIN_MS, PAGE_TITLE } from '../pages/Overview';
 import type { PostureResponse } from '../pages/Metrics.posture.api';
 import type { Case, Metrics, NoiseReduction } from '@/lib/types';
 
@@ -105,8 +106,10 @@ const NOISE: NoiseReduction = {
   cases_meta: { truncated: false, store_total: 40, fetched: 40 },
 };
 
-describe('Overview — Security Command Center', () => {
+describe('Overview — Cyber Defence Center', () => {
   beforeEach(() => {
+    // Deeper analytics remembers its open state per browser (Round 12): start folded.
+    localStorage.removeItem('soc.overview.deeperOpen');
     fetchPostureMock.mockReset();
     listCasesMock.mockReset();
     getMetricsMock.mockReset();
@@ -119,27 +122,35 @@ describe('Overview — Security Command Center', () => {
     noiseMock.mockResolvedValue(NOISE);
   });
 
-  it('is titled "Security Command Center"', async () => {
+  it('is titled "Cyber Defence Center" (the rename smoke)', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     const hero = await screen.findByTestId('page-hero');
-    expect(PAGE_TITLE).toBe('Security Command Center');
-    expect(hero).toHaveTextContent('Security Command Center');
+    expect(PAGE_TITLE).toBe('Cyber Defence Center');
+    expect(hero).toHaveTextContent('Cyber Defence Center');
+    // The retired title never leaks back into the masthead.
+    expect(hero).not.toHaveTextContent('Security Command Center');
   });
 
-  it('opens on Last 24 hours with LIVE refresh visibly active', async () => {
+  it('opens on Last 24 hours with Live refresh visibly active', async () => {
     const user = userEvent.setup();
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
     await waitFor(() => expect(listCasesMock).toHaveBeenCalled());
 
-    expect(screen.getByRole('button', { name: 'Time range: Last 24 hours' })).toBeInTheDocument();
-    const live = screen.getByRole('combobox', { name: 'Auto-refresh interval: LIVE' });
+    expect(screen.getByRole('button', { name: 'Last 24h, time range' })).toBeInTheDocument();
+    // Sentence case since Round 14 (SPEC §3.1): the cadence reads "Live", never "LIVE".
+    const live = screen.getByRole('combobox', { name: 'Auto-refresh interval: Live' });
     expect(live).toBeInTheDocument();
     expect(live.querySelectorAll('.animate-pulse.bg-success')).toHaveLength(1);
     expect(live.querySelector('.lucide-refresh-cw')).toBeNull();
+    // Round 14 (operator choice C8): ONE neutral refresh, the shared RefreshButton. LIVE
+    // is the pill's pulsing dot above; the refresh no longer turns green or spins for it,
+    // and spins only while a reload the operator pressed is in flight.
     const manualRefresh = screen.getByRole('button', { name: 'Refresh dashboard' });
-    expect(manualRefresh).toHaveClass('text-success-text');
-    expect(manualRefresh.querySelector('.lucide-refresh-cw')).toHaveClass('animate-spin');
+    expect(manualRefresh).not.toHaveClass('text-success-text');
+    await waitFor(() => expect(manualRefresh).toBeEnabled());
+    expect(manualRefresh).toHaveAttribute('aria-busy', 'false');
+    expect(manualRefresh.querySelector('.lucide-refresh-cw')).not.toHaveClass('animate-spin');
 
     const callsBeforeManualRefresh = listCasesMock.mock.calls.length;
     await user.click(manualRefresh);
@@ -148,38 +159,230 @@ describe('Overview — Security Command Center', () => {
     );
   });
 
-  it('mounts the Active Risk Index (#1) as its own flat cell in the instrument band', async () => {
+  /*
+   * Round 14 review: the busy refresh belongs to a reload the operator PRESSED. A LIVE tick
+   * reloads the same data without turning it busy: a busy button is disabled, and a browser
+   * moves the keyboard focus off a control that disables itself, so a five-second LIVE page
+   * used to throw a keyboard user resting on the button to the page body on every tick.
+   */
+  it('never turns the refresh busy for a LIVE tick, so focus resting on it stays', async () => {
+    // Fake only the interval clock (the auto-refresh is a setInterval); Testing Library's
+    // waits keep their real timeouts.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      render(<Overview onNavigate={vi.fn()} />);
+      await screen.findByTestId('noise-funnel');
+      const refresh = screen.getByRole('button', { name: 'Refresh dashboard' });
+      await waitFor(() => expect(refresh).toBeEnabled());
+      act(() => refresh.focus());
+      expect(refresh).toHaveFocus();
+
+      // The tick's batch never settles: even a read slower than the LIVE interval must not
+      // hold the control busy.
+      const calls = listCasesMock.mock.calls.length;
+      listCasesMock.mockImplementation(() => new Promise(() => undefined));
+      // Async act: the tick's other reads (posture, metrics) settle inside it.
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => expect(listCasesMock.mock.calls.length).toBeGreaterThan(calls));
+      expect(refresh).toBeEnabled();
+      expect(refresh).toHaveAttribute('aria-busy', 'false');
+      expect(refresh.querySelector('.lucide-refresh-cw')).not.toHaveClass('animate-spin');
+      expect(refresh).toHaveFocus();
+
+      // A second tick over the first, still in flight, changes nothing either.
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+      });
+      expect(refresh).toBeEnabled();
+      expect(refresh).toHaveAttribute('aria-busy', 'false');
+      expect(refresh).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows a pressed refresh as busy until its own reload settles, then gives focus back', async () => {
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    const refresh = screen.getByRole('button', { name: 'Refresh dashboard' });
+    await waitFor(() => expect(refresh).toBeEnabled());
+
+    let release: () => void = () => undefined;
+    listCasesMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ cases: CASES, total: CASES.length });
+        }),
+    );
+    // A KEYBOARD press: the focus rests on the button, and Enter activates it.
+    act(() => refresh.focus());
+    await user.keyboard('{Enter}');
+    // Busy: one spinner, `aria-busy`, and no second press while the reload runs.
+    expect(refresh).toHaveAttribute('aria-busy', 'true');
+    expect(refresh).toBeDisabled();
+    expect(refresh.querySelector('.lucide-refresh-cw')).toHaveClass('animate-spin');
+    expect(refresh).toHaveFocus();
+    // A browser moves the focus off the control it just disabled, to the page body. jsdom
+    // neither does that nor blurs a disabled control, so the test drops the focus to the
+    // body the way the browser does: through an element that takes it and goes away.
+    const sink = document.createElement('button');
+    document.body.appendChild(sink);
+    act(() => sink.focus());
+    act(() => sink.remove());
+    expect(document.body).toHaveFocus();
+
+    await act(async () => release());
+    await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'false'));
+    expect(refresh).toBeEnabled();
+    expect(refresh.querySelector('.lucide-refresh-cw')).not.toHaveClass('animate-spin');
+    // The press held the focus and nothing took it since: it comes back to the button.
+    expect(refresh).toHaveFocus();
+  });
+
+  it('leaves the focus where a pointer press put it, so no stray tooltip reopens', async () => {
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    const refresh = screen.getByRole('button', { name: 'Refresh dashboard' });
+    await waitFor(() => expect(refresh).toBeEnabled());
+
+    let release: () => void = () => undefined;
+    listCasesMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ cases: CASES, total: CASES.length });
+        }),
+    );
+    // A browser never shows the keyboard's focus ring (`:focus-visible`) for the focus a
+    // mouse click lends a button. jsdom treats every focus as focus-visible, so the test
+    // gives the selector the browser's answer for this press and leaves every other
+    // selector to jsdom.
+    const matches = Element.prototype.matches;
+    const spy = vi
+      .spyOn(Element.prototype, 'matches')
+      .mockImplementation(function (this: Element, selector: string) {
+        return selector === ':focus-visible' ? false : matches.call(this, selector);
+      });
+    try {
+      // A POINTER press: `detail` 1, and the click lends the button the focus.
+      await user.click(refresh);
+      expect(refresh).toHaveAttribute('aria-busy', 'true');
+      expect(refresh).toHaveFocus();
+      // The browser moves the focus off the control it just disabled, to the page body.
+      const sink = document.createElement('button');
+      document.body.appendChild(sink);
+      act(() => sink.focus());
+      act(() => sink.remove());
+      // The pointer leaves the button, as it does after a click.
+      await user.unhover(refresh);
+      expect(document.body).toHaveFocus();
+
+      await act(async () => release());
+      await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'false'));
+      expect(refresh).toBeEnabled();
+      // The focus stays on the body: handing it back would reopen the button's tooltip
+      // after the pointer has gone.
+      expect(document.body).toHaveFocus();
+      expect(screen.queryByRole('tooltip')).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('never pulls focus back to the refresh from wherever the reader moved it', async () => {
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    const refresh = screen.getByRole('button', { name: 'Refresh dashboard' });
+    await waitFor(() => expect(refresh).toBeEnabled());
+
+    let release: () => void = () => undefined;
+    listCasesMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ cases: CASES, total: CASES.length });
+        }),
+    );
+    await user.click(refresh);
+    expect(refresh).toHaveAttribute('aria-busy', 'true');
+    const range = screen.getByRole('button', { name: 'Last 24h, time range' });
+    act(() => range.focus());
+
+    await act(async () => release());
+    await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'false'));
+    expect(range).toHaveFocus();
+  });
+
+  it('mounts the Human-vs-AI instrument as its own flat cell in the instrument band', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     const hero = await screen.findByTestId('page-hero');
     const heroRow = await screen.findByTestId('hero-row');
-    const ari = screen.getByTestId('active-risk-index');
-    expect(ari).toBeInTheDocument();
+    const card = screen.getByTestId('human-vs-ai');
+    expect(card).toBeInTheDocument();
     // Its own instrument cell, inside the band but NOT nested inside the plain header.
-    expect(within(heroRow).getByTestId('active-risk-index')).toBeInTheDocument();
-    expect(within(hero).queryByTestId('active-risk-index')).toBeNull();
-    expect(ari).toHaveClass('bg-transparent');
-    // It is the ONLY risk instrument on the page.
-    expect(screen.getAllByTestId('active-risk-index')).toHaveLength(1);
+    expect(within(heroRow).getByTestId('human-vs-ai')).toBeInTheDocument();
+    expect(within(hero).queryByTestId('human-vs-ai')).toBeNull();
+    // It is the ONE close-attribution surface on the page, and the Active Risk Index
+    // gauge it replaced is gone from the landing surface entirely.
+    expect(screen.getAllByTestId('human-vs-ai')).toHaveLength(1);
+    expect(screen.queryByTestId('active-risk-index')).toBeNull();
+    // The three-way partition is always present — the residual band is never hidden.
+    for (const band of ['human-vs-ai-ai', 'human-vs-ai-human', 'human-vs-ai-system']) {
+      expect(within(card).getByTestId(band)).toBeInTheDocument();
+    }
   });
 
-  it('mounts the six-stage Noise-Reduction funnel ending in "Closed by human"', async () => {
+  it('mounts the compact Noise-Reduction flow with conversion context and Open cases', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
     await waitFor(() => expect(screen.getByTestId('noise-funnel')).toBeInTheDocument());
     expect(noiseMock).toHaveBeenCalled();
     const funnel = screen.getByTestId('noise-funnel');
-    // The new terminal stage renders.
-    expect(within(funnel).getByText('Closed by human')).toBeInTheDocument();
-    expect(within(funnel).getByText('Auto-cleared by AI')).toBeInTheDocument();
-    expect(within(funnel).getByText(/reduced by/i)).toBeInTheDocument();
-    // The six dashboard rail stages are text-only: no shield/bot phase glyphs.
-    expect(within(funnel).getByRole('button', { name: /^Cases opened:/i }).querySelector('svg')).toBeNull();
-    // At narrow widths the six labels wrap into a readable 2/3-column grid; desktop
-    // restores the single six-column rail shown in the supplied reference.
+    expect(within(funnel).getByTestId('noise-simple-view')).toBeInTheDocument();
+    expect(within(funnel).getByRole('radio', { name: 'Simple' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    // Conversion context and the conserved terminal path render in the compact graph.
+    expect(within(funnel).getAllByText('Alerts ingested').length).toBeGreaterThan(0);
+    expect(within(funnel).getAllByText('After clustering').length).toBeGreaterThan(0);
+    expect(within(funnel).getAllByText('Closed by human').length).toBeGreaterThan(0);
+    expect(within(funnel).getAllByText('Auto-cleared by AI').length).toBeGreaterThan(0);
+    expect(within(funnel).queryByTestId('noise-reduction-summary')).toBeNull();
+    const conversionRibbons = Array.from(
+      within(funnel)
+        .getByTestId('noise-flow-band')
+        .querySelectorAll<SVGPathElement>('[data-edge-kind="conversion"]'),
+    );
+    expect(conversionRibbons).toHaveLength(2);
+    expect(
+      conversionRibbons.map((ribbon) => [
+        ribbon.dataset.sourceStage,
+        ribbon.dataset.targetStage,
+      ]),
+    ).toEqual([
+      ['ingested', 'clustered'],
+      ['clustered', 'cases'],
+    ]);
+    conversionRibbons.forEach((ribbon) => {
+      expect(ribbon.getAttribute('d')).toMatch(/Z$/);
+      expect(ribbon).not.toHaveAttribute('fill', 'none');
+    });
+    expect(within(funnel).getByTestId('noise-flow-band').querySelectorAll(
+      '[data-edge-kind="conserved"]',
+    )).toHaveLength(4);
+    expect(within(funnel).getByTestId('noise-open-cases')).toHaveTextContent('2 open cases');
+    // A covered window is a measurement, not a floor — no "≥" prefix.
+    expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'false');
+    // The evidence rail is the responsive fallback in Simple, then becomes persistent
+    // when the operator explicitly chooses Detailed.
     expect(within(funnel).getByTestId('noise-stage-rail')).toHaveClass(
       'grid-cols-2',
       'sm:grid-cols-3',
-      'lg:grid-cols-6',
+      '@[38rem]/noise:hidden',
     );
   });
 
@@ -200,7 +403,10 @@ describe('Overview — Security Command Center', () => {
     // The previous usable aggregate remains visible and healthy siblings stay mounted.
     expect(screen.getByTestId('noise-funnel')).toBe(funnel);
     expect(screen.getByRole('region', { name: /Latest cases/i })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: /Cases burndown/i })).toBeInTheDocument();
+    // Same witness, different sibling: this asserts a noise-only failure does not unmount
+    // the healthy bands around it. It used to name the Cases-burndown chart, which has
+    // moved to Metrics → Posture, so it now names the timing pair that took its cell.
+    expect(screen.getByRole('region', { name: 'Response time' })).toBeInTheDocument();
 
     await user.click(within(unavailable).getByRole('button', { name: 'Retry noise reduction' }));
     await waitFor(() => expect(screen.queryByTestId('noise-reduction-unavailable')).toBeNull());
@@ -212,31 +418,142 @@ describe('Overview — Security Command Center', () => {
     render(<Overview onNavigate={onNavigate} />);
     await screen.findByTestId('page-hero');
     const funnel = await screen.findByTestId('noise-funnel');
-    await userEvent.click(within(funnel).getByRole('button', { name: /^Escalated:/i }));
+    await userEvent.click(funnel.querySelector<HTMLButtonElement>('[data-flow-label="escalated"]')!);
     expect(onNavigate).toHaveBeenLastCalledWith(
       'cases',
       expect.objectContaining({ noiseOutcome: 'escalated', window: expect.any(Number) }),
     );
     // The terminal `closed` stage drills to the closed-case list.
-    await userEvent.click(within(funnel).getByRole('button', { name: /^Closed by human:/i }));
+    await userEvent.click(funnel.querySelector<HTMLButtonElement>('[data-flow-label="closed"]')!);
     expect(onNavigate).toHaveBeenLastCalledWith(
       'cases',
       expect.objectContaining({ noiseOutcome: 'closed', window: expect.any(Number) }),
     );
   });
 
-  it('renders a KPI micro-strip of 5 alert/case tiles (LLM spend not a hero tile)', async () => {
+  it('marks the funnel Open-case count partial from window_covered, not from truncated', async () => {
+    // `aging.queue_depth` is cohort-scoped, so its completeness is the WINDOW's. This
+    // posture read more than it could return (`truncated`) but did NOT reach back far
+    // enough to answer the selected window, so the count is a floor and says so.
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      truncated: true,
+      store_total: 40_000,
+      window_covered: false,
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() =>
+      expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'true'),
+    );
+    expect(within(funnel).getByTestId('noise-open-cases')).toHaveTextContent('≥2 open cases');
+  });
+
+  it('publishes an exact funnel Open-case count when window_covered rescues a truncated fetch', async () => {
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      truncated: true,
+      store_total: 40_000,
+      window_covered: true,
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() =>
+      expect(within(funnel).getByTestId('noise-open-cases')).toHaveTextContent('2 open cases'),
+    );
+    expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'false');
+  });
+
+  it('falls back to the store-proven window total, NOT to a `cases.length >= 200` guess', async () => {
+    // Without a posture rollup the count comes off the fetched page. The old client
+    // heuristic called any 200-row page truncated — so a window holding exactly 200
+    // cases was permanently reported as "≥200" even though every row had been read.
+    // `#103`'s `window_total_exact` answers the question the store actually knows.
+    const exactly200: Case[] = Array.from({ length: 200 }, (_, i) => ({
+      case_id: `w-${i}`,
+      status: 'open',
+      risk_score: 30,
+    })) as unknown as Case[];
+    fetchPostureMock.mockRejectedValue(new Error('posture unavailable'));
+    listCasesMock.mockResolvedValue({
+      cases: exactly200,
+      total: 200,
+      window_total_exact: true,
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() =>
+      expect(within(funnel).getByTestId('noise-open-cases')).toHaveTextContent('200 open cases'),
+    );
+    expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'false');
+  });
+
+  it('marks the fallback partial when the store proves the window holds more rows', async () => {
+    fetchPostureMock.mockRejectedValue(new Error('posture unavailable'));
+    listCasesMock.mockResolvedValue({
+      cases: CASES,
+      total: 900,
+      window_total_exact: true,
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() =>
+      expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'true'),
+    );
+  });
+
+  it('marks the fallback partial when the store cannot prove the window total', async () => {
+    // `window_total_exact` absent/false means the server answered a DIFFERENT question
+    // than the one asked (a compatibility scan, or an unparseable bound that was
+    // dropped). Absence of proof is not proof, so the count stays a floor.
+    fetchPostureMock.mockRejectedValue(new Error('posture unavailable'));
+    listCasesMock.mockResolvedValue({ cases: CASES, total: 3 });
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() =>
+      expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'true'),
+    );
+  });
+
+  it('opens the complete active-case cohort from the separate Open cases control', async () => {
+    const onNavigate = vi.fn();
+    render(<Overview onNavigate={onNavigate} />);
+    await screen.findByTestId('page-hero');
+    const funnel = await screen.findByTestId('noise-funnel');
+
+    await userEvent.click(within(funnel).getByTestId('noise-open-cases'));
+
+    expect(onNavigate).toHaveBeenLastCalledWith(
+      'cases',
+      expect.objectContaining({ status: '__active__', window: expect.any(Number) }),
+    );
+  });
+
+  it('renders a KPI micro-strip of 6 alert/case tiles (LLM spend not a hero tile)', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    await waitFor(() => expect(screen.getByTestId('kpi-open-cases')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
     const strip = screen.getByTestId('kpi-strip');
-    expect(strip.querySelectorAll('[data-testid^="kpi-"]')).toHaveLength(5);
+    // Count the TILES, not every `kpi-*` anchor inside the strip. Each tile also carries a
+    // decorative affordance mark (`kpi-<id>-affordance`), so a bare prefix count answers a
+    // different question than the one this test asks — and answering it by loosening the
+    // number would have stopped proving there are exactly six tiles at all. (A tile could
+    // once also carry a `kpi-<id>-breakdown` partition; that anchor retired to the
+    // drill-down, so the selector no longer excludes it. A bounded tile also carries a
+    // `kpi-<id>-bound` mark, which this fixture's fully covered window does not raise.)
+    expect(
+      strip.querySelectorAll('[data-testid^="kpi-"]:not([data-testid*="-affordance"])'),
+    ).toHaveLength(6);
     for (const id of [
+      'kpi-total-cases',
+      'kpi-total-critical',
       'kpi-open-cases',
-      'kpi-critical-high',
-      'kpi-escalated-to-human',
       'kpi-false-positive-rate',
-      'kpi-auto-resolved',
+      'kpi-resolved-closed',
+      // The sixth tile is a SUBSET of the fifth, not a new independent total, which is
+      // carried by adjacency, a shared accent and its containment copy — never by a
+      // different chrome. So it takes the same borderless strip treatment as the rest.
+      'kpi-auto-closed',
     ]) {
       expect(within(strip).getByTestId(id)).toHaveClass('bg-transparent');
     }
@@ -265,12 +582,153 @@ describe('Overview — Security Command Center', () => {
     expect(within(spend).queryByText('No spend recorded')).toBeNull();
     // Other dashboard slices remain available; the page never collapses to an error.
     expect(screen.getByTestId('noise-funnel')).toBeInTheDocument();
-    expect(screen.getByTestId('kpi-open-cases')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument();
 
     await user.click(spend);
     await waitFor(() =>
       expect(within(screen.getByTestId('kpi-llm-spend-detail')).queryByText('Unavailable')).toBeNull(),
     );
     expect(within(screen.getByTestId('kpi-llm-spend-detail')).getByText('$1.25')).toBeInTheDocument();
+  });
+
+  /*
+   * Round 16 (WP12, backend roadmap R2 layer 3): `GET /api/metrics` reads the all-time
+   * population, which the server keeps for 60 s, so a LIVE tick re-reads it at most once
+   * per 30 s. The cases and the rest of the page still refresh on every tick.
+   */
+  it('re-reads the all-time metrics at most once per 30 s on LIVE ticks', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let now = Date.parse('2026-07-01T08:00:00Z');
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      render(<Overview onNavigate={vi.fn()} />);
+      await screen.findByTestId('noise-funnel');
+      await waitFor(() => expect(getMetricsMock).toHaveBeenCalledTimes(1));
+      expect(METRICS_LIVE_MIN_MS).toBe(30_000);
+
+      const cases = listCasesMock.mock.calls.length;
+      now += 5_000;
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => expect(listCasesMock.mock.calls.length).toBeGreaterThan(cases));
+      expect(getMetricsMock).toHaveBeenCalledTimes(1);
+
+      now += 30_000;
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => expect(getMetricsMock).toHaveBeenCalledTimes(2));
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads the metrics on a pressed refresh even inside the LIVE cadence', async () => {
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    await waitFor(() => expect(getMetricsMock).toHaveBeenCalledTimes(1));
+    const refresh = screen.getByRole('button', { name: 'Refresh dashboard' });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    await user.click(refresh);
+    await waitFor(() => expect(getMetricsMock).toHaveBeenCalledTimes(2));
+  });
+
+  /*
+   * Round 16 (WP12): each strip tile explains its numeral. The hover card prints the
+   * arithmetic with the real counts; the drill-down opens the formula, the numerator,
+   * the denominator and the window.
+   */
+  it('explains a share tile: the hover arithmetic and the drill-down calculation', async () => {
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    const tile = await screen.findByTestId('kpi-false-positive-rate');
+    await user.hover(tile);
+    const card = await screen.findByTestId('metric-trend-card');
+    expect(within(card).getByTestId('metric-trend-formula')).toHaveTextContent(
+      '1 false positive verdict of 2 verdicted cases = 50%, the last 24 hours.',
+    );
+    await user.unhover(tile);
+
+    await user.click(tile);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByTestId('kpi-drilldown-formula')).toHaveTextContent(
+      '1 false positive verdict of 2 verdicted cases = 50%, the last 24 hours.',
+    );
+    await user.click(within(dialog).getByRole('button', { name: 'Show the calculation' }));
+    const panel = within(dialog).getByTestId('explain-panel');
+    expect(within(panel).getByTestId('explain-inputs')).toHaveTextContent('False positive verdicts1');
+    expect(within(panel).getByTestId('explain-inputs')).toHaveTextContent('Verdicted cases2');
+    expect(within(panel).getByTestId('explain-inputs')).toHaveTextContent('Windowthe last 24 hours');
+    expect(within(panel).getByTestId('explain-steps')).toHaveTextContent('1 / 2');
+  });
+
+  it('gives a tile with no trend series a hover card with its arithmetic', async () => {
+    const user = userEvent.setup();
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      open_now: { count: 2, window_exempt: true, as_of: '2026-07-01T08:00:00Z', complete: true, reason: '' },
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    const tile = await screen.findByTestId('kpi-open-cases');
+    // A preview, not a trend affordance: its own trigger and card.
+    expect(tile.closest('[data-testid="metric-preview-trigger"]')).not.toBeNull();
+    expect(tile.closest('[data-testid="metric-trend-trigger"]')).toBeNull();
+    await user.hover(tile);
+    const card = await screen.findByTestId('metric-preview-card');
+    expect(within(card).getByTestId('metric-trend-formula')).toHaveTextContent('2 cases are open now, whenever they arrived.');
+    // No borrowed series: the card holds no trend body for a stock.
+    expect(within(card).queryByText('No trend data yet.')).toBeNull();
+    expect(screen.queryByTestId('metric-trend-card')).toBeNull();
+  });
+
+  it('never says the open cases stock is limited to the time range (numbers review)', async () => {
+    const user = userEvent.setup();
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      open_now: { count: 2, window_exempt: true, as_of: '2026-07-01T08:00:00Z', complete: true, reason: '' },
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    await user.click(await screen.findByTestId('kpi-open-cases'));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Show the calculation' }));
+    const panel = within(dialog).getByTestId('explain-panel');
+    expect(within(panel).getByTestId('explain-inputs')).toHaveTextContent('Not limited by the time range above');
+    expect(within(panel).getByTestId('explain-inputs')).not.toHaveTextContent('The time range above');
+    expect(panel).toHaveTextContent('Counted by the server over every open case, whenever it arrived.');
+    expect(panel).not.toHaveTextContent('over the cases in the window');
+  });
+
+  it('a window change leaves no old figure under the new window below the strip (FXD1 review)', async () => {
+    // The 7-day read stays in flight, so the 24-hour snapshot is the one on screen.
+    fetchPostureMock.mockImplementation((hours: number) =>
+      hours === 168 ? new Promise<PostureResponse>(() => {}) : Promise.resolve(POSTURE),
+    );
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() => expect(within(funnel).getByTestId('noise-open-cases')).toHaveTextContent('2 open cases'));
+    const timing = screen.getByRole('region', { name: 'Response time' });
+    await waitFor(() => expect(within(timing).getByText('45m')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('deeper-summary')).toHaveTextContent('MTTA 45m'));
+
+    await user.click(screen.getByRole('button', { name: 'Last 24h, time range' }));
+    await user.click(
+      within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole('button', { name: /Last 7 days/i }),
+    );
+    await waitFor(() => expect(within(timing).getAllByText('Loading 7 days').length).toBeGreaterThan(0));
+
+    // Response time: the held figures read muted and explain nothing until 7 days arrive.
+    expect(timing.querySelectorAll('[data-pending]').length).toBe(2);
+    expect(timing.querySelector('[data-explain-trigger]')).toBeNull();
+    // The flow's open-case count belongs to the posture read: withheld, not the 24h "2".
+    expect(within(screen.getByTestId('noise-funnel')).queryByTestId('noise-open-cases')).toBeNull();
+    // The collapsed Deeper analytics line drops the held timing figures.
+    expect(screen.getByTestId('deeper-summary')).not.toHaveTextContent('MTTA');
   });
 });

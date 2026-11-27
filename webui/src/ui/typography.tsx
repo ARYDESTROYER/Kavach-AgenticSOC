@@ -49,7 +49,7 @@ export interface HeadingProps extends React.HTMLAttributes<HTMLHeadingElement> {
 export const Heading = React.forwardRef<HTMLHeadingElement, HeadingProps>(
   ({ level = 2, as, className, ...rest }, ref) => {
     const Tag = (as ?? HEADING_TAG[level]) as 'h1';
-    return <Tag ref={ref} className={cn('font-display tracking-tight', HEADING_STYLES[level], className)} {...rest} />;
+    return <Tag ref={ref} className={cn('font-display', HEADING_STYLES[level], className)} {...rest} />;
   },
 );
 Heading.displayName = 'Heading';

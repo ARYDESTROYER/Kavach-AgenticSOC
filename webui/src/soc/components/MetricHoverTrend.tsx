@@ -1,0 +1,617 @@
+/**
+ * MetricHoverTrend — the ONE hover/focus trendline affordance for a dashboard metric.
+ *
+ * Wraps any metric presentation (a KPI tile, a timing stat, a snapshot total) in a
+ * Radix HoverCard whose content is the metric's honest recent trend: the metric name,
+ * the measured window disclosure ("last 24 hours · 1h buckets"), one small COLUMN per
+ * bucket with a readout of whichever bucket the pointer is over (the latest by
+ * default), and the first / peak / latest measured values as plain text. The columns
+ * are a hand-built SVG, so this card pulls no chart library at all.
+ *
+ * Why columns and not the sparkline it used to draw: the sparkline plotted MEASURED
+ * points only, evenly spaced and smoothed, so four measured buckets out of twenty-five
+ * became one swooping curve that dipped to the floor and back — time compressed away
+ * and a shape the data never had. A column per bucket keeps every bucket in its real
+ * slot, draws an unmeasured one as a faint floor tick, and lets the reader point at
+ * any one of them for its exact value.
+ *
+ * Honesty rules:
+ *   - `points` preserve nulls as NOT-MEASURED buckets. They are never drawn as zeros
+ *     (a measured zero is a hairline at the floor in the series colour; an unmeasured
+ *     bucket is a muted tick and reads "not measured"), and when some buckets are
+ *     missing the card discloses "N of M buckets measured".
+ *   - Fewer than two measured points → the trend content is OMITTED and a quiet
+ *     "No trend data yet." line renders instead (never a decorative invented trend).
+ *   - Every value is a formatted number / fixed label rendered as plain text (#9).
+ *
+ * Accessibility (WCAG 1.4.13): the trigger participates in the tab order (either the
+ * child is itself focusable — pass `focusable={false}` — or the wrapper takes
+ * `tabIndex=0`, mirroring `CaseHoverCard`), Radix opens the card on focus as well as
+ * hover (focus events bubble, so a focusable CHILD reaching focus opens it too), the
+ * content itself is hoverable, and the columns carry a text summary via their
+ * `role="img"` label. Colors come from the token palette only.
+ *
+ * Touch access: hover cannot open the card on touch-only devices (Radix ignores
+ * touch pointers and suppresses trigger focus), so `toggleOnClick` (default: the
+ * `focusable` value) makes a press on the wrapper toggle the card. Wrappers whose
+ * CHILD is itself clickable keep the default OFF so navigation presses never fight
+ * the card; Escape and press-outside dismissal keep working via Radix. A press landing
+ * on an interactive descendant is ALWAYS ignored, so a wrapper around a clickable child
+ * has no touch path to the card at all — which is why the card's content is exported as
+ * `MetricTrendBody` for the surface that press opens to restate.
+ *
+ * Coexisting with a modal panel: `forceClosed` holds the card shut and refuses every
+ * open transition. A disclosure opened FROM the wrapped child needs it — the card opens
+ * on focus (so the panel's focus return would otherwise pop it straight back), it renders
+ * over the panel, and its dismissable layer would swallow the panel's Escape.
+ *
+ * That suppression deliberately OUTLASTS the transition. Radix opens on a timer: focus
+ * arms a `setTimeout(openDelay)` and the resulting `onOpenChange(true)` lands whenever it
+ * lands — by which time a prop read at callback time says `forceClosed` is already false.
+ * A purely synchronous guard therefore let the focus return that ACCOMPANIES a dismissal
+ * re-open the card ~`openDelay` later, so an explicit Escape was answered by a new overlay
+ * and needed a second Escape. When `forceClosed` falls, opens stay refused for a further
+ * `openDelay` grace period, which is exactly long enough to swallow the transition's own
+ * in-flight timer without blocking a fresh, deliberate hover or press.
+ */
+import * as React from 'react';
+
+import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/ui/hover-card';
+import { cn } from '@/lib/cn';
+import { token } from './palette';
+
+/** One honest trend point: a bucket label plus its measured value (null = not measured). */
+export interface MetricTrendPoint {
+  /** Bucket identity (plain text, e.g. the ISO bucket start). */
+  label: string;
+  /** Measured value, or null when the bucket has no measurable evidence. */
+  value: number | null;
+}
+
+/** The series contract a metric hands to its hover-trend affordance. */
+export interface MetricTrendSeries {
+  /** Plain-text name of what the LINE measures (may differ from the tile label
+   *  when only a related honest series exists, e.g. arrivals under "Open Cases"). */
+  metric: string;
+  /** The honest series; `undefined` renders the quiet no-data state. */
+  points: MetricTrendPoint[] | undefined;
+  /** Window/bucket disclosure (e.g. "last 24 hours · 1h buckets"). */
+  windowLabel: string;
+  /** Optional cohort/semantics disclosure (e.g. "by case-arrival bucket"). */
+  caption?: string;
+  /** Value formatter for the first/latest readouts. */
+  format?: (n: number) => string;
+  /** Palette token name for the sparkline stroke (default 'primary'). */
+  colorToken?: string;
+}
+
+/**
+ * The card BODY, exported so a second surface can state the very same trend without
+ * re-deriving its honesty rules.
+ *
+ * The KPI drill-down panel renders this directly. That is not a nicety: every strip
+ * tile is now a disclosure TRIGGER, and `MetricHoverTrend` receives
+ * `focusable={false}` for a clickable child — which also defaults `toggleOnClick` off,
+ * so a touch-only device can reach the hover card on no tile at all. Rather than
+ * fighting the tile's own press (an interactive descendant is deliberately never a
+ * card toggle), the panel the press opens carries the identical trend content, so the
+ * series stays reachable by pointer, keyboard AND touch. One implementation, so the
+ * two surfaces can never disagree about what is measured.
+ */
+/**
+ * A bucket identity, stated for a reader. Bucket labels are plain text off the wire: an
+ * ISO instant ("2026-10-06T05:00:00Z") becomes "Oct 6, 05:00 UTC", a calendar date
+ * ("2026-10-05") becomes "Oct 5", and anything else is shown exactly as it came.
+ */
+export function bucketWhen(label: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(label)) {
+    const ms = Date.parse(`${label}T00:00:00Z`);
+    return Number.isFinite(ms)
+      ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+      : label;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(label)) return label;
+  const ms = Date.parse(label);
+  if (!Number.isFinite(ms)) return label;
+  const when = new Date(ms).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+    timeZone: 'UTC',
+  });
+  return `${when} UTC`;
+}
+
+/** Plot geometry, in viewBox units: one 10-unit slot per bucket, a 7-unit column. */
+const SLOT = 10;
+const BAR = 7;
+const PLOT_H = 48;
+
+export function MetricTrendBody({
+  metric,
+  points,
+  windowLabel,
+  caption,
+  format,
+  colorToken = 'primary',
+}: MetricTrendSeries) {
+  const fmt = format ?? defaultFormat;
+  const all = points ?? [];
+  const measured = all.filter(
+    (p): p is { label: string; value: number } =>
+      typeof p.value === 'number' && Number.isFinite(p.value),
+  );
+  const hasTrend = measured.length >= 2;
+  const first = measured[0]?.value;
+  const latest = measured[measured.length - 1]?.value;
+  const peak = measured.reduce((m, p) => Math.max(m, p.value), Number.NEGATIVE_INFINITY);
+  // The latest MEASURED bucket is the default readout: the trailing bucket is often still
+  // filling, or unmeasured, and an empty readout would say nothing on first sight.
+  let latestIndex = -1;
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    const v = all[i]?.value;
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      latestIndex = i;
+      break;
+    }
+  }
+  const [pointed, setPointed] = React.useState<number | null>(null);
+  const shown = pointed ?? latestIndex;
+  const shownPoint = shown >= 0 ? all[shown] : undefined;
+  const shownValue =
+    shownPoint && typeof shownPoint.value === 'number' && Number.isFinite(shownPoint.value)
+      ? shownPoint.value
+      : null;
+
+  const width = Math.max(all.length, 1) * SLOT;
+  // A peak of zero (every measured bucket is 0) still gets a scale, so zeros draw as the
+  // floor hairline rather than dividing by nothing.
+  const scaleMax = peak > 0 ? peak : 1;
+  const color = token(colorToken);
+  const muted = token('muted-foreground', 0.35);
+
+  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    if (r.width <= 0) return;
+    const i = Math.floor(((e.clientX - r.left) / r.width) * all.length);
+    if (!Number.isFinite(i)) return;
+    setPointed(Math.max(0, Math.min(all.length - 1, i)));
+  };
+
+  return (
+    <>
+      <div className="flex items-baseline justify-between gap-3">
+        {/* Sentence case and allowed to wrap: a truncated metric name ("FALSE PO…") is
+            the one thing this card must never lose. */}
+        <span className="min-w-0 text-xs font-semibold text-foreground">{metric}</span>
+        <span className="shrink-0 text-2xs text-muted-foreground">{windowLabel}</span>
+      </div>
+      {caption ? <p className="mt-0.5 text-2xs text-muted-foreground">{caption}</p> : null}
+      {hasTrend ? (
+        <>
+          <div
+            className="mt-2 flex items-baseline justify-between gap-3 text-2xs tabular-nums"
+            data-testid="metric-trend-readout"
+          >
+            <span className="min-w-0 truncate text-muted-foreground">
+              {shownPoint ? bucketWhen(shownPoint.label) : null}
+            </span>
+            <span
+              className={cn(
+                'shrink-0 font-semibold',
+                shownValue == null ? 'text-muted-foreground' : 'text-foreground',
+              )}
+            >
+              {shownValue == null ? 'not measured' : fmt(shownValue)}
+            </span>
+          </div>
+          <svg
+            role="img"
+            aria-label={`${metric} trend: first ${fmt(first!)}, latest ${fmt(latest!)}`}
+            data-testid="metric-trend-columns"
+            viewBox={`0 0 ${width} ${PLOT_H}`}
+            preserveAspectRatio="none"
+            className="mt-1 block h-12 w-full touch-none"
+            onPointerMove={onMove}
+            onPointerLeave={() => setPointed(null)}
+          >
+            {/* The floor, so a run of short columns still reads as standing on zero. */}
+            <rect x={0} y={PLOT_H - 0.5} width={width} height={0.5} fill={muted} />
+            {all.map((p, i) => {
+              const x = i * SLOT + (SLOT - BAR) / 2;
+              const isShown = i === shown;
+              if (typeof p.value !== 'number' || !Number.isFinite(p.value)) {
+                return (
+                  <rect
+                    key={i}
+                    data-state="unmeasured"
+                    x={x}
+                    y={PLOT_H - 2}
+                    width={BAR}
+                    height={2}
+                    fill={muted}
+                  />
+                );
+              }
+              // A measured zero is still a mark — a 1-unit hairline in the series colour —
+              // so "measured, nothing happened" never looks like "not measured".
+              const h = Math.max(1, (p.value / scaleMax) * (PLOT_H - 2));
+              return (
+                <rect
+                  key={i}
+                  data-state={p.value === 0 ? 'zero' : 'measured'}
+                  x={x}
+                  y={PLOT_H - h}
+                  width={BAR}
+                  height={h}
+                  fill={color}
+                  opacity={pointed == null || isShown ? 1 : 0.45}
+                />
+              );
+            })}
+          </svg>
+          <div className="mt-2 flex items-center justify-between gap-3 text-2xs tabular-nums text-muted-foreground">
+            <span>first {fmt(first!)}</span>
+            <span>peak {fmt(peak)}</span>
+            <span className="font-medium text-foreground">latest {fmt(latest!)}</span>
+          </div>
+          {measured.length < all.length ? (
+            <p className="mt-1 text-2xs text-muted-foreground">
+              {measured.length} of {all.length} buckets measured.
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <p className="mt-2 text-xs text-muted-foreground">No trend data yet.</p>
+      )}
+    </>
+  );
+}
+
+/**
+ * The extra zones the hover PREVIEW shows around the trend — what the numeral counts, an
+ * optional small partition of it, and the affordance saying what a click will do.
+ *
+ * Preview-only: `MetricTrendBody` never renders these, because the drill-down panel that
+ * renders it is already the thing this affordance points at, and it states the population
+ * in its own heading.
+ *
+ * There is deliberately NO period-over-period delta chip here. The strip dropped those on
+ * purpose — a percentage whose baseline is not explainable at a glance — and the card
+ * already carries the honest form of the same fact: `first → latest` over a NAMED window.
+ * A chip would restate it with the baseline hidden again.
+ */
+export interface MetricPreview {
+  /** Short semantic label above the population sentence (e.g. "ACTIVE BACKLOG"). */
+  eyebrow?: string;
+  /** ONE plain sentence naming what the numeral counts. Rendered as plain text (#9). */
+  population?: string;
+  /**
+   * Round 16 (WP12): the numeral's arithmetic with its real numbers ("12 of 40 cases =
+   * 30%"), the hover line of its explanation. Plain text (#9).
+   */
+  formula?: string;
+  /** A small partition of the numeral: 2-3 cells, each already formatted. */
+  breakdown?: readonly { key: string; label: string; value: string }[];
+  /** What activating the tile does. Present on every tile, so the click is discoverable. */
+  affordance?: string;
+}
+
+export interface MetricHoverTrendProps extends MetricTrendSeries {
+  /** Extra preview zones. Omitted → the card is exactly the trend it has always been. */
+  preview?: MetricPreview;
+  /**
+   * Put the WRAPPER in the tab order (default true). Pass `false` when the child
+   * already contains a focusable element (e.g. a clickable KpiTile button) so the
+   * card stays focus-reachable without adding a second tab stop.
+   */
+  focusable?: boolean;
+  /**
+   * Toggle the card on a press (tap/click) of the wrapper — the only way to reach
+   * it on touch-only devices, where hover never fires and Radix suppresses trigger
+   * focus. Defaults to the `focusable` value: non-clickable wrapped stats become
+   * tappable, while a wrapper around a clickable child (`focusable={false}`) stays
+   * inert so navigation presses never fight the card. Pass `true` explicitly for a
+   * `focusable={false}` wrapper whose child is NOT clickable (e.g. a tile whose
+   * only focusable element is a HelpTip). Presses on interactive descendants
+   * (buttons, links, inputs) are always ignored.
+   */
+  toggleOnClick?: boolean;
+  /**
+   * Hold the card CLOSED and refuse every open transition while true.
+   *
+   * A docked disclosure panel opened from the wrapped tile needs this: the card opens
+   * on FOCUS as well as hover, so returning focus to the tile would pop it straight
+   * back over the panel, and its Radix dismissable layer would swallow the Escape the
+   * panel needs to close. Forcing it closed for the duration is the only way both
+   * surfaces can coexist; the panel restates the same series (see `MetricTrendBody`)
+   * so nothing is lost while it is suppressed.
+   */
+  forceClosed?: boolean;
+  /**
+   * Refuse FOCUS-driven opens while true; a genuine HOVER still opens the card (Round 12
+   * review). The host sets it on the tile its modal just returned focus to: Radix restores
+   * that focus after the dialog's exit animation — past `forceClosed`'s grace — and the
+   * card then popped open over a strip the operator had just dismissed. Folding the hold
+   * into `forceClosed` instead blocked hover too, so an operator who closed the details
+   * and pointed at the tile for its trend got nothing. An open is accepted only while the
+   * pointer is over the trigger (or from a press).
+   */
+  suppressFocusOpen?: boolean;
+  side?: React.ComponentPropsWithoutRef<typeof HoverCardContent>['side'];
+  align?: React.ComponentPropsWithoutRef<typeof HoverCardContent>['align'];
+  openDelay?: number;
+  closeDelay?: number;
+  /** Classes for the trigger wrapper (layout only). */
+  className?: string;
+  /**
+   * Round 16 (WP12): `false` for a metric with no honest series, whose card then holds
+   * only the preview (what it counts and its arithmetic). Default `true`.
+   */
+  showTrend?: boolean;
+  children: React.ReactNode;
+}
+
+const defaultFormat = (n: number): string => String(n);
+
+export function MetricHoverTrend({
+  metric,
+  points,
+  windowLabel,
+  caption,
+  format,
+  colorToken = 'primary',
+  preview,
+  focusable = true,
+  toggleOnClick,
+  forceClosed = false,
+  suppressFocusOpen = false,
+  side,
+  align = 'center',
+  openDelay = 160,
+  closeDelay = 120,
+  className,
+  showTrend = true,
+  children,
+}: MetricHoverTrendProps) {
+  // Controlled open so a press can toggle the card (touch has no hover); Radix
+  // still drives every hover/focus/dismiss transition through onOpenChange, so
+  // desktop pointer behavior and Escape/press-outside dismissal are unchanged.
+  const toggle = toggleOnClick ?? focusable;
+  const [open, setOpen] = React.useState(false);
+  /**
+   * Wall-clock instant until which an OPEN transition is refused, set when `forceClosed`
+   * falls. See the "Coexisting with a modal panel" note above: Radix's open is deferred
+   * by `openDelay`, so the timer armed by the dismissal's own focus return resolves after
+   * the prop has already flipped back. A ref (not state) because refusing must not
+   * re-render, and because the deferred callback reads it at call time.
+   */
+  const suppressOpenUntilRef = React.useRef(0);
+  /** Previous `forceClosed`, so only the FALLING edge arms the grace period. */
+  const wasForceClosedRef = React.useRef(forceClosed);
+  // `forceClosed` wins over every source of truth, including a hover/focus that is
+  // ALREADY in flight: the effect drops any latched open state the moment the panel
+  // takes over, and the render below refuses to pass an open card to Radix even before
+  // that effect runs.
+  React.useEffect(() => {
+    const wasForceClosed = wasForceClosedRef.current;
+    wasForceClosedRef.current = forceClosed;
+    if (forceClosed) {
+      setOpen(false);
+      return;
+    }
+    // Falling edge ONLY (never mount, where an immediate hover is legitimate): hold the
+    // refusal past any open-timer armed by the focus return that accompanies the dismissal.
+    //
+    // The margin is TWO `openDelay`s, and the second one is not padding. When the panel was
+    // a docked section the parent restored focus SYNCHRONOUSLY, before the commit that
+    // dropped `forceClosed`, so the reopen timer was armed before this window even opened
+    // and always resolved inside it. The panel is now a modal, and a focus trap bounces a
+    // synchronous restore — so the restore moved to Radix's close-autofocus, which runs
+    // AFTER this commit. The reopen timer is therefore armed at ~the same instant the grace
+    // begins and resolves exactly ON its boundary; measured, the card reopened every time.
+    // One extra `openDelay` covers the teardown hop and timer coarseness with room to spare,
+    // and 320ms of "the card will not spring back the moment you closed the panel" is
+    // imperceptible next to a card appearing over the strip unbidden.
+    if (wasForceClosed) suppressOpenUntilRef.current = Date.now() + openDelay * 2;
+  }, [forceClosed, openDelay]);
+  const effectiveOpen = forceClosed ? false : open;
+  /**
+   * Whether a (non-touch) pointer has MOVED over the trigger since it last left — a genuine
+   * hover. Movement, not `pointerenter`: when a modal closes over a resting pointer the
+   * browser sends the trigger a synthetic enter with no movement, and that is exactly the
+   * "card pops back after Escape" case a hold exists to refuse. A real entry from outside
+   * always moves.
+   */
+  const pointerInsideRef = React.useRef(false);
+  // A hold starts with NO hover on record: the modal that just closed sat between the
+  // pointer and this trigger, so an "inside" from before it is stale. A pointer that
+  // enters or moves over the trigger after this is a hover again.
+  React.useEffect(() => {
+    if (suppressFocusOpen) pointerInsideRef.current = false;
+  }, [suppressFocusOpen]);
+  /**
+   * During a hold, a pointer RESTING on the trigger when the modal closed got only that
+   * synthetic enter (refused above), so Radix's own hover open has been spent. Its first
+   * real movement is the hover start instead: this timer opens the card one `openDelay`
+   * later, exactly as an enter would, unless the pointer leaves first.
+   */
+  const hoverOpenTimerRef = React.useRef<number | null>(null);
+  const clearHoverOpen = React.useCallback(() => {
+    if (hoverOpenTimerRef.current !== null) {
+      window.clearTimeout(hoverOpenTimerRef.current);
+      hoverOpenTimerRef.current = null;
+    }
+  }, []);
+  React.useEffect(() => clearHoverOpen, [clearHoverOpen]);
+  const commitOpen = React.useCallback(
+    (next: boolean, viaPress: boolean) => {
+      if (forceClosed) return;
+      // Only OPENS are held off; a close is always honoured.
+      if (next && Date.now() < suppressOpenUntilRef.current) return;
+      // A focus-only open is refused while the host holds it; a hover or press is not.
+      if (next && suppressFocusOpen && !viaPress && !pointerInsideRef.current) return;
+      setOpen(next);
+    },
+    [forceClosed, suppressFocusOpen],
+  );
+  const handleOpenChange = React.useCallback(
+    (next: boolean) => commitOpen(next, false),
+    [commitOpen],
+  );
+  // Radix dismisses an open card on pointerdown OUTSIDE the portalled content —
+  // and the trigger IS outside it — so by pointerup `open` may already read false
+  // again. Record the pre-press state on pointerdown and commit the toggle on
+  // pointerup, so a press on the trigger of an open card closes it instead of
+  // instantly re-opening it.
+  const pressWasOpenRef = React.useRef<boolean | null>(null);
+
+  /** True when the press landed on an interactive descendant (never toggle those). */
+  const onInteractiveDescendant = (e: React.PointerEvent<HTMLDivElement>): boolean => {
+    const el =
+      e.target instanceof Element
+        ? e.target.closest('button, a, input, select, textarea, [role="button"]')
+        : null;
+    return !!el && e.currentTarget.contains(el);
+  };
+
+  const handlePressStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    pressWasOpenRef.current = onInteractiveDescendant(e) ? null : open;
+  };
+  const handlePressEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (onInteractiveDescendant(e)) {
+      pressWasOpenRef.current = null;
+      return;
+    }
+    const wasOpen = pressWasOpenRef.current ?? open;
+    pressWasOpenRef.current = null;
+    commitOpen(!wasOpen, true);
+  };
+
+  return (
+    <HoverCard
+      open={effectiveOpen}
+      onOpenChange={handleOpenChange}
+      openDelay={openDelay}
+      closeDelay={closeDelay}
+    >
+      <HoverCardTrigger asChild>
+        {/* eslint-disable jsx-a11y/no-noninteractive-tabindex -- the Radix HoverCard
+            trigger must be focus-reachable so the trend card opens for keyboard users
+            (WCAG 1.4.13); mirrors CaseHoverCard's tabIndex=0 clone contract.
+            `focusable={false}` removes the stop when the child is itself focusable. */}
+        <div
+          // A card with no series is a preview, not a trend affordance: its own test id.
+          data-testid={showTrend ? 'metric-trend-trigger' : 'metric-preview-trigger'}
+          tabIndex={focusable ? 0 : undefined}
+          onPointerDown={toggle ? handlePressStart : undefined}
+          onPointerUp={toggle ? handlePressEnd : undefined}
+          onPointerMove={(e) => {
+            if (e.pointerType === 'touch') return;
+            const firstMove = !pointerInsideRef.current;
+            pointerInsideRef.current = true;
+            if (firstMove && suppressFocusOpen && !open && hoverOpenTimerRef.current === null) {
+              hoverOpenTimerRef.current = window.setTimeout(() => {
+                hoverOpenTimerRef.current = null;
+                if (pointerInsideRef.current) commitOpen(true, false);
+              }, openDelay);
+            }
+          }}
+          onPointerLeave={() => {
+            pointerInsideRef.current = false;
+            clearHoverOpen();
+          }}
+          className={cn(
+            'h-full min-w-0',
+            // A quiet "there is more here" affordance on the non-clickable triggers;
+            // clickable children keep their own pointer + focus treatment.
+            focusable &&
+              'cursor-help rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            className,
+          )}
+        >
+          {children}
+        </div>
+        {/* eslint-enable jsx-a11y/no-noninteractive-tabindex */}
+      </HoverCardTrigger>
+      <HoverCardContent
+        side={side}
+        align={align}
+        data-testid={showTrend ? 'metric-trend-card' : 'metric-preview-card'}
+        className="w-72 p-3"
+      >
+        {/* WHAT the numeral counts, above the series that moves it. Plain text (#9). */}
+        {preview?.eyebrow || preview?.population ? (
+          <div className="mb-2 min-w-0 border-b border-border/70 pb-2">
+            {preview.eyebrow ? (
+              <p className="truncate text-2xs font-medium text-muted-foreground">
+                {preview.eyebrow}
+              </p>
+            ) : null}
+            {preview.population ? (
+              <p className="mt-0.5 text-2xs leading-relaxed text-foreground">
+                {preview.population}
+              </p>
+            ) : null}
+            {preview.formula ? (
+              <p
+                className="mt-1 text-2xs font-medium leading-relaxed tabular-nums text-foreground"
+                data-testid="metric-trend-formula"
+              >
+                {preview.formula}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
+        {showTrend ? (
+          <MetricTrendBody
+            metric={metric}
+            points={points}
+            windowLabel={windowLabel}
+            caption={caption}
+            format={format}
+            colorToken={colorToken}
+          />
+        ) : null}
+
+        {/* A small partition of the numeral. Each cell arrives already formatted, so this
+            never re-derives a share and never disagrees with the tile it explains. */}
+        {preview?.breakdown?.length ? (
+          <dl
+            data-testid="metric-trend-breakdown"
+            className="mt-2 grid min-w-0 grid-cols-3 gap-2 border-t border-border/70 pt-2"
+          >
+            {preview.breakdown.map((b) => (
+              <div key={b.key} className="min-w-0">
+                <dt className="truncate text-2xs text-muted-foreground" title={b.label}>
+                  {b.label}
+                </dt>
+                <dd className="mt-0.5 truncate font-mono text-2xs font-semibold tabular-nums text-foreground">
+                  {b.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+
+        {/* The click affordance. Decoration over an already-interactive tile: the card is
+            never the only route to the panel — activating the tile by keyboard opens it
+            directly, and on touch, where this card cannot be reached at all, the panel is
+            the surface that carries the same series. */}
+        {preview?.affordance ? (
+          <p
+            data-testid="metric-trend-affordance"
+            className="mt-2 border-t border-border/70 pt-2 text-2xs text-muted-foreground"
+          >
+            {preview.affordance}
+          </p>
+        ) : null}
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
+export default MetricHoverTrend;

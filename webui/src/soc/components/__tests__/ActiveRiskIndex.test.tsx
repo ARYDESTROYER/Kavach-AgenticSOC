@@ -6,10 +6,10 @@
  * an honest DASH "no open cases" placeholder when there is nothing open to gauge.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 import { ActiveRiskIndex, MIN_GAUGE_SIZE, MAX_GAUGE_SIZE } from '../ActiveRiskIndex';
-import { ACTIVE_RISK_HELP_TEXT } from '../riskCopy';
+import { ACTIVE_RISK_HELP_TEXT, activeRiskHelpText } from '../riskCopy';
 
 /** jsdom reports `clientWidth === 0`; mock it to exercise the responsive-sizing path. */
 function mockClientWidth(px: number) {
@@ -78,6 +78,17 @@ describe('ActiveRiskIndex (#1 Command-Center risk instrument)', () => {
     expect(
       screen.getByRole('button', { name: /what the active risk index means/i }),
     ).toBeInTheDocument();
+  });
+
+  it('words the help with the weights in force and explains the gauge from its metric (WP16)', async () => {
+    const weights = { volume: 0, velocity: 0, reputation: 1, diversity: 0, asset_criticality: 0 };
+    const { container } = render(<ActiveRiskIndex score={62} count={7} weights={weights} />);
+    fireEvent.click(screen.getByRole('button', { name: /what the active risk index means/i }));
+    expect(await screen.findByText(activeRiskHelpText(weights))).toBeInTheDocument();
+    expect(activeRiskHelpText(weights)).toContain('Reputation 100% (heaviest)');
+    const wrap = container.querySelector('[data-metric-explain="active_risk_index"]');
+    expect(wrap).not.toBeNull();
+    expect(wrap?.querySelector('[role="img"]')).not.toBeNull();
   });
 
   it('ACTIVE_RISK_HELP_TEXT is long enough to open the HelpTip Popover (>80 chars)', () => {

@@ -213,6 +213,23 @@ export function caseAutomationToWire(
   };
 }
 
+/**
+ * A `tag` rule's payload as the editor shows it. The editor edits a `tags` list; a rule
+ * written for the API may carry a single `tag` (or `value`) instead, which the engine
+ * applies when `tags` lists nothing (`backend/app/engine/case_tags.py`
+ * `automation_tags`). That single value is shown as the list's one tag, so the Tags
+ * field shows what the rule applies, and saving writes it back as `tags`.
+ */
+function automationPayloadForEditor(action: unknown, payload: Record<string, unknown>): Record<string, unknown> {
+  if (action !== 'tag') return payload;
+  const listed = Array.isArray(payload.tags) && payload.tags.some((t) => String(t ?? '').trim());
+  if (listed) return payload;
+  const single = [payload.tag, payload.value].find((v) => typeof v === 'string' && v.trim());
+  if (typeof single !== 'string') return payload;
+  const { tag: _tag, value: _value, ...rest } = payload;
+  return { ...rest, tags: [single.trim()] };
+}
+
 /** Map a wire `AutomationRule` → a `case_automation` form. */
 export function wireToCaseAutomation(
   rule: import('./types').AutomationRule,
@@ -228,7 +245,7 @@ export function wireToCaseAutomation(
     automation: {
       conditions: { ...(rule.conditions ?? {}) },
       action: rule.action,
-      payload: { ...(rule.payload ?? {}) },
+      payload: automationPayloadForEditor(rule.action, { ...(rule.payload ?? {}) }),
     },
   };
 }

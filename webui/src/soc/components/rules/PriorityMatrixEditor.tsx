@@ -1,5 +1,5 @@
 /**
- * PriorityMatrixEditor — the ITIL Impact × Urgency → Priority grid editor (G6 R6,
+ * PriorityMatrixEditor: the ITIL Impact × Urgency → Priority grid editor (G6 R6,
  * DESIGN_STANDARD §8). Writes `Preferences.priority_matrix` (a `PriorityMatrix`) via
  * deep-merge PUT.
  *
@@ -9,6 +9,10 @@
  * cell is a labelled Select (a11y); band labels are plain text (#9).
  *
  * CONTROLLED: `matrix` + `onChange`; the host owns dirty/save (StickySaveBar).
+ *
+ * `intro={false}` (Round 14, SPEC §4.9.6, D26): a host that already explains the matrix
+ * (the Settings group caption) drops the standing "Priority is advisory" note, so the
+ * explanation is said once and never as a permanent box.
  */
 import { Info } from 'lucide-react';
 import type { PriorityMatrix } from '@/lib/types';
@@ -34,10 +38,15 @@ export interface PriorityMatrixEditorProps {
   matrix: PriorityMatrix;
   onChange: (next: PriorityMatrix) => void;
   disabled?: boolean;
+  /**
+   * Show the standing note that priority is advisory (default true). A host whose own
+   * caption already says it passes `false`.
+   */
+  intro?: boolean;
 }
 
-export function PriorityMatrixEditor({ matrix, onChange, disabled }: PriorityMatrixEditorProps) {
-  const enabled = matrix.enabled ?? false;
+export function PriorityMatrixEditor({ matrix, onChange, disabled, intro = true }: PriorityMatrixEditorProps) {
+  const enabled = matrix.enabled ?? true;
   const levels = matrix.levels?.length ? matrix.levels : DEFAULT_LEVELS;
   const grid = matrix.matrix ?? {};
   const controlsDisabled = disabled || !enabled;
@@ -55,26 +64,31 @@ export function PriorityMatrixEditor({ matrix, onChange, disabled }: PriorityMat
 
   return (
     <div className="space-y-5">
-      <Alert>
-        <Info className="h-4 w-4" aria-hidden />
-        <AlertTitle>Priority is advisory</AlertTitle>
-        <AlertDescription>
-          The derived priority drives sorting, SLA tiers, and reporting. It never
-          changes a case&apos;s verdict or the deterministic decision.
-        </AlertDescription>
-      </Alert>
+      {intro ? (
+        <Alert>
+          <Info className="h-4 w-4" aria-hidden />
+          <AlertTitle>Priority is advisory</AlertTitle>
+          <AlertDescription>
+            The derived priority drives sorting, SLA tiers, and reporting. It never
+            changes a case&apos;s verdict or the deterministic decision.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       <div className="flex items-center justify-between gap-4">
         <div className="space-y-0.5">
           <Label htmlFor="priority-enabled" className="text-sm font-medium">
             Enable priority derivation
           </Label>
-          <p className="text-xs text-muted-foreground">
-            Map every impact × urgency pair to a P-level. Off by default.
+          {/* Only what the host's caption ("Map every impact and urgency pair to a
+              priority…") does not already say. */}
+          <p id="priority-enabled-help" className="text-xs text-muted-foreground">
+            On by default. When off, cases have no priority.
           </p>
         </div>
         <Switch
           id="priority-enabled"
+          aria-describedby="priority-enabled-help"
           checked={enabled}
           disabled={disabled}
           onCheckedChange={(v) => onChange({ ...matrix, enabled: v })}
@@ -90,7 +104,8 @@ export function PriorityMatrixEditor({ matrix, onChange, disabled }: PriorityMat
           <thead>
             <tr>
               <th scope="col" className="px-2 py-1 text-left text-xs font-medium text-muted-foreground">
-                Impact ↓ / Urgency →
+                <span aria-hidden="true">Impact ↓ / Urgency →</span>
+                <span className="sr-only">Impact by urgency</span>
               </th>
               {levels.map((u) => (
                 <th

@@ -83,15 +83,16 @@ def split_batch_eligible_events(
     events: list[RawEvent],
     prefs: Preferences,
     *,
-    severity_scale: str = "auto",
+    severity_scale: float | None = None,
 ) -> tuple[list[RawEvent], list[RawEvent]]:
     """Partition EVENT-feed records into ``(batch, synchronous)`` lanes.
 
     ``BatchConfig.severity_floor`` is an OCSF ``severity_id`` ceiling for the slow,
     discounted lane: informational/low/medium events at or below the configured value
     may enter async Batch, while higher-severity events stay on the realtime path.  No
-    event is dropped.  ``severity_scale`` is the source-declared native scale so the
-    comparison is not distorted by a 0..10/0..100 ambiguity.
+    event is dropped.  ``severity_scale`` is the source's DECLARED severity-ladder
+    ceiling, so the comparison is not distorted by a 0..10/0..100 ambiguity; ``None``
+    resolves it per event from that event's own source.
     """
     batch_events: list[RawEvent] = []
     synchronous: list[RawEvent] = []
@@ -106,19 +107,26 @@ def event_is_batch_eligible(
     event: RawEvent,
     prefs: Preferences,
     *,
-    severity_scale: str = "auto",
+    severity_scale: float | None = None,
 ) -> bool:
-    """Whether one EVENT record belongs on the async Batch side of the split."""
+    """Whether one EVENT record belongs on the async Batch side of the split.
+
+    ``severity_scale`` is the DECLARED ladder ceiling to compare on; ``None`` resolves it
+    from the event's own source. An UNRESOLVABLE source resolves to the identity ceiling —
+    the same answer every other severity surface gives it — rather than falling back to
+    the retired ``raw <= 10 ? raw*10`` magnitude guess. That guess is what made a
+    canonical OCSF Informational score of ``10.0`` read as ``severity_id`` 5 (Critical)
+    and kept it off the discounted Batch lane."""
     floor = int(getattr(getattr(prefs, "batch", None), "severity_floor", 3) or 3)
-    scale = severity_scale
-    if scale == "auto":
+    if severity_scale is None:
         try:
             source = prefs.source_by_id(event.source_id)
-        except Exception:  # noqa: BLE001 - a missing source keeps legacy auto scaling
+        except Exception:  # noqa: BLE001 - an unresolvable source reads as undeclared
             source = None
-        if source is not None:
-            scale = severity_scale_for_source(source)
-    return score_to_severity_id(event.severity, scale) <= floor
+        # The resolver already returns the default identity ceiling for ``None``, so
+        # the unresolved arm is the identity, never a guess.
+        severity_scale = severity_scale_for_source(source)
+    return score_to_severity_id(event.severity, severity_scale) <= floor
 
 
 # --------------------------------------------------------------------------- #

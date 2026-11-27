@@ -106,3 +106,26 @@ describe('PageContainer width authority (W0-C)', () => {
     expect(cls).toContain('max-w-[1760px]');
   });
 });
+
+describe('PageContainer page rhythm (Round 14, SPEC §4.9.2)', () => {
+  it('owns the rhythm by default through the `.page-rhythm` rule (type specificity, below any class)', () => {
+    for (const variant of ['fixed', 'wide', 'fluid', 'prose'] as const) {
+      const { container, unmount } = render(<PageContainer variant={variant}>body</PageContainer>);
+      expect(classesOf(container.firstElementChild as HTMLElement)).toContain('page-rhythm');
+      unmount();
+    }
+  });
+
+  it('`rhythm="none"` opts out for a page that lays itself out', () => {
+    const { container } = render(<PageContainer rhythm="none">body</PageContainer>);
+    expect(classesOf(container.firstElementChild as HTMLElement)).not.toContain('page-rhythm');
+  });
+
+  it('keeps a page-supplied space-y (it wins until the page migrates)', () => {
+    const { container } = render(<PageContainer className="space-y-6">body</PageContainer>);
+    const cls = classesOf(container.firstElementChild as HTMLElement);
+    expect(cls).toContain('page-rhythm');
+    expect(cls).toContain('space-y-6');
+  });
+});
+

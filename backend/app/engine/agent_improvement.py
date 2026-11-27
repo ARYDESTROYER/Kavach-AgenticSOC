@@ -17,9 +17,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-from ..constants import TERMINAL_CASE_STATUSES
+from ..constants import REVIEW_VIA_AUTO_CLOSE_REVIEW, DecisionBy, TERMINAL_CASE_STATUSES
 from ..models import Case, FeedbackEntry
+from . import stats
 from .metrics import percentile, truncation_marker
+from .priority import band_of_case
+from .review_origin import is_review_grade, review_events
 
 _VALID_ASSESSMENTS = frozenset({"agree", "partial", "disagree"})
 _EVALUABLE_OUTCOMES = frozenset(
@@ -39,6 +42,10 @@ _NON_HUMAN_ACTORS = frozenset(
         "poller",
         "scheduler",
         "tuner",
+        # An operator's analyst RULE POLICY close is automation output, not a human
+        # working a case: counting it as human would fabricate turnaround/closure
+        # samples for work nobody performed.
+        DecisionBy.ANALYST_POLICY.value,
     }
 )
 _ACK_STATUSES = frozenset({"investigating", "escalated", "on_hold"})
@@ -133,10 +140,23 @@ def _select_feedback(
 
     Earlier valid grades are superseded.  That makes each case one unit of evidence
     and intentionally restates older daily points when a later analyst grade arrives.
+
+    Round 15 (SPEC D6.8): an auto-close REVIEW grade (``engine.review_origin.
+    is_review_grade``) is not agent-quality evidence here. The review sample is drawn
+    only from automatic closes, so it would shift the population these comparisons
+    describe; it is left out and counted under ``auto_close_review_grade`` (it stays
+    ground truth for the tuner and the precedent corpus).
     """
     selected: list[_FeedbackSample] = []
     excluded: Counter[str] = Counter()
     for case in cases:
+        if _enum_value(case.decision_by) == DecisionBy.ANALYST_POLICY.value:
+            # No model produced a verdict on a policy-closed case, so a grade on it can
+            # neither agree nor disagree with the agent. Counting it would put an
+            # operator's own declaration into the agent's measured quality — in either
+            # direction, depending only on how the analyst happened to grade it.
+            excluded["analyst_policy_close"] += 1
+            continue
         valid: list[tuple[datetime, int, FeedbackEntry]] = []
         case_excluded: Counter[str] = Counter()
         for index, feedback in enumerate(case.feedback or []):
@@ -150,6 +170,9 @@ def _select_feedback(
                 continue
             if at >= end:
                 case_excluded["feedback_after_as_of"] += 1
+                continue
+            if is_review_grade(case, feedback):
+                case_excluded["auto_close_review_grade"] += 1
                 continue
             if (feedback.assessment or "").strip().lower() not in _VALID_ASSESSMENTS:
                 case_excluded["invalid_feedback_assessment"] += 1
@@ -172,18 +195,9 @@ def _select_feedback(
 
 
 def _wilson(successes: float, total: int) -> dict[str, float] | None:
-    if total <= 0:
-        return None
-    z = 1.96
-    proportion = successes / total
-    denom = 1.0 + z * z / total
-    centre = (proportion + z * z / (2.0 * total)) / denom
-    margin = (
-        z
-        * ((proportion * (1.0 - proportion) / total + z * z / (4.0 * total * total)) ** 0.5)
-        / denom
-    )
-    return {"low": round(max(0.0, centre - margin), 4), "high": round(min(1.0, centre + margin), 4)}
+    # The one Wilson implementation (``engine/stats.py``, Round 16), rounded here.
+    interval = stats.wilson_interval(successes, total)
+    return None if interval is None else {"low": round(interval[0], 4), "high": round(interval[1], 4)}
 
 
 def _quality_summary(samples: list[_FeedbackSample]) -> dict[str, Any]:
@@ -270,24 +284,34 @@ def _comparison_measurement(
     return measurement
 
 
-def _stratum(case: Case) -> tuple[str, str]:
+def _stratum(case: Case, prefs: Any = None) -> tuple[str, str]:
+    """The (source, severity-band) mix stratum one feedback sample belongs to.
+
+    The severity half is RESOLVED via :func:`app.engine.priority.band_of_case` rather
+    than read off ``Case.severity_band``: that field is a read-time presentation value no
+    production write path persists, so the direct read collapsed every real case into a
+    single ``"unknown"`` severity stratum and the mix adjustment lost its severity axis
+    entirely. ``prefs`` is optional — it only resolves the source's declared severity
+    ceiling."""
     source = (case.source_id or case.source_name or "unknown").strip().lower() or "unknown"
-    severity = (case.severity_band or "unknown").strip().lower() or "unknown"
+    severity = (band_of_case(case, prefs) or "unknown").strip().lower() or "unknown"
     return source, severity
 
 
 def _mix_adjusted(
-    current: list[_FeedbackSample], baseline: list[_FeedbackSample]
+    current: list[_FeedbackSample],
+    baseline: list[_FeedbackSample],
+    prefs: Any = None,
 ) -> dict[str, Any]:
-    baseline_counts = Counter(_stratum(sample.case) for sample in baseline)
-    current_counts = Counter(_stratum(sample.case) for sample in current)
+    baseline_counts = Counter(_stratum(sample.case, prefs) for sample in baseline)
+    current_counts = Counter(_stratum(sample.case, prefs) for sample in current)
 
     base_groups: dict[tuple[str, str], list[_FeedbackSample]] = defaultdict(list)
     current_groups: dict[tuple[str, str], list[_FeedbackSample]] = defaultdict(list)
     for sample in baseline:
-        base_groups[_stratum(sample.case)].append(sample)
+        base_groups[_stratum(sample.case, prefs)].append(sample)
     for sample in current:
-        current_groups[_stratum(sample.case)].append(sample)
+        current_groups[_stratum(sample.case, prefs)].append(sample)
 
     baseline_total = len(baseline)
     current_total = len(current)
@@ -466,15 +490,58 @@ def _turnaround_summary(samples: list[_TurnaroundSample]) -> dict[str, Any]:
     }
 
 
+def _review_reopen_times(case: Case) -> frozenset[str]:
+    """The times of the reopens a person made from an auto-close review (Round 15 SPEC
+    D6.8, D6.9): the ``ts`` of each ``analyst_action`` history entry that carries
+    ``review_via``. The reopen's status transition is stamped with the same instant
+    (``StatusHistoryEntry.at``), which has no field of its own for the marker.
+
+    ``review_via`` is a marker the caller sends, so it is honoured only when the case
+    carries a ledger-backed review recorded at or before the reopen: an
+    ``auto_close_review`` history event with a non-empty ``review_id``
+    (:func:`~app.engine.review_origin.review_events`), which the review writer appends
+    only for a sampled case. A reopen that names the marker on a case with no such review
+    (an unsampled case, or a marker sent on an ordinary reopen) still counts."""
+    reviewed = [
+        at for at in (_parse_iso(str(event.get("ts") or "")) for event in review_events(case))
+        if at is not None
+    ]
+    if not reviewed:
+        return frozenset()
+    first_review = min(reviewed)
+    out: set[str] = set()
+    for entry in case.history or []:
+        if (
+            isinstance(entry, dict)
+            and entry.get("event") == "analyst_action"
+            and entry.get("review_via") == REVIEW_VIA_AUTO_CLOSE_REVIEW
+            and isinstance(entry.get("ts"), str)
+            and entry["ts"]
+        ):
+            at = _parse_iso(entry["ts"])
+            if at is not None and at >= first_review:
+                out.add(entry["ts"])
+    return frozenset(out)
+
+
 def _agent_reopen_summary(
     cases: list[Case], *, start: datetime, end: datetime, observed_through: datetime
 ) -> dict[str, Any]:
+    """Human reopens within 24 hours of an agent terminal decision.
+
+    Round 15 (SPEC D6.8): a reopen made from an auto-close review (its same-timestamp
+    ``analyst_action`` history entry carries ``review_via``, on a case that carries a
+    ledger-backed review recorded at or before it, :func:`_review_reopen_times`) is not
+    counted as a human reopen. The review sample is drawn at random from automatic
+    closes, so its reopens would move this rate with the sampling cadence rather than
+    with the agent."""
     candidate_terminal = 0
     eligible_terminal = 0
     censored_terminal = 0
     reopened = 0
     horizon = timedelta(hours=_REOPEN_FOLLOW_UP_HOURS)
     for case in cases:
+        review_reopens = _review_reopen_times(case)
         parsed: list[tuple[datetime, int, Any]] = []
         for index, entry in enumerate(case.status_history or []):
             at = _parse_iso(entry.at)
@@ -501,6 +568,7 @@ def _agent_reopen_summary(
                 and (later.from_status or "").strip().lower() in _TERMINAL
                 and (later.to_status or "").strip().lower() not in _TERMINAL
                 and _is_human(later.by)
+                and (later.at or "") not in review_reopens
                 for later_at, _later_index, later in parsed[position + 1 :]
             ):
                 reopened += 1
@@ -666,6 +734,11 @@ def _closure_samples(
 
         actor = (terminal.by or "").strip().lower()
         decision_owner = _enum_value(case.decision_by)
+        if decision_owner == DecisionBy.ANALYST_POLICY.value:
+            # Neither agent nor human: the operator answered at the RULE level before
+            # any case existed, so this closure is evidence about neither party's
+            # effectiveness and belongs in no observed-time-saved sample.
+            continue
         if actor == "agent" or decision_owner == "agent":
             owner = "agent"
         elif _is_human(actor) and decision_owner != "system":
@@ -907,7 +980,7 @@ def _recorded_case_cost(
         "direction": direction,
         "cost_per_day_direction": cost_per_day_direction,
         "definition": {
-            "formula": "sum of recorded UsageDoc cost for calls carrying a case_id",
+            "formula": "sum of the recorded cost of model calls tied to a case",
             "numerator": "Gateway-recorded case-associated model cost in USD.",
             "denominator": "Complete UTC days or distinct costed cases, as labelled.",
             "eligibility": "Usage rows with a valid timestamp, case association, and reporting-window membership.",
@@ -974,7 +1047,7 @@ def _confirmed_positive_case_rate(
         ),
         "definition": {
             "formula": "confirmed-positive graded cases / outcome-evaluable graded cases",
-            "numerator": "Latest-valid grades marked true_positive or false_negative.",
+            "numerator": "Latest valid grades marked true positive or false negative.",
             "denominator": "Latest-valid grades with an allow-listed actual outcome.",
             "eligibility": "One latest valid analyst grade per case in the reporting window.",
             "caveats": (
@@ -997,10 +1070,27 @@ def _counter_total(value: Any) -> int | None:
     return total
 
 
+def _period_counter_total(block: dict[str, Any], key: str) -> int | None:
+    """The band-INDEPENDENT total for one counter key in a comparison window block.
+
+    Prefers the explicit ``<key>_total`` the caller computed from the pooled window
+    counters, and only falls back to summing a per-band map. That matters twice over: a
+    total does not depend on which severity ladder produced the split, so it survives a
+    ladder change that makes the band split itself incomparable; and the per-band
+    preceding-window remainder is clamped at zero per band, so summing it would inflate
+    the baseline whenever volume moved between bands."""
+    total = block.get(f"{key}_total")
+    if isinstance(total, bool):
+        total = None
+    if isinstance(total, (int, float)):
+        return max(0, int(total))
+    return _counter_total(block.get(key))
+
+
 def _noise_period(raw: dict[str, Any] | None, *, days: int) -> dict[str, Any]:
     block = raw or {}
-    ingested = _counter_total(block.get("ingested"))
-    clustered = _counter_total(block.get("clustered"))
+    ingested = _period_counter_total(block, "ingested")
+    clustered = _period_counter_total(block, "clustered")
     reduction = (
         max(0, ingested - clustered)
         if ingested is not None and clustered is not None
@@ -1052,12 +1142,23 @@ def _alert_volume(
         if status == "enough_data"
         else "insufficient_evidence"
     )
+    band_comparison = source.get("severity_band_comparison")
+    if not isinstance(band_comparison, dict):
+        band_comparison = {"available": False, "reason": "not reported"}
     return {
         "label": "Observed alert volume",
         "unit": "alerts",
         "status": status,
         "reason": reason,
         "window_basis": str(source.get("window_basis") or "rolling_hours"),
+        # Volume totals above are band-independent and stay comparable. A per-SEVERITY-BAND
+        # comparison is only meaningful when both windows banded on the same declared
+        # severity ceiling; when they did not, the split is withheld with the measured
+        # reason instead of being differenced into a fabricated per-band change.
+        "severity_band_comparison": {
+            "available": bool(band_comparison.get("available")),
+            "reason": str(band_comparison.get("reason") or ""),
+        },
         "current": current,
         "baseline": baseline,
         "delta": {
@@ -1082,7 +1183,9 @@ def _alert_volume(
                 "volume. Source changes and threat activity also move these counts, so up/down "
                 "is descriptive rather than automatically better/worse or causal. Counter "
                 "retention does not prove uninterrupted source or connector availability; "
-                "an outage can lower both totals."
+                "an outage can lower both totals. These totals are band-independent; a "
+                "per-severity-band comparison is reported only when both windows recorded "
+                "the same declared severity ceiling for every counted source."
             ),
         },
     }
@@ -1323,6 +1426,7 @@ def _period_comparison(
     tuning_records: list[dict[str, Any]] | None,
     tuning_available: bool,
     tuning_records_truncated: bool,
+    prefs: Any = None,
 ) -> dict[str, Any]:
     current_start = end - timedelta(days=days)
     baseline_start = current_start - timedelta(days=days)
@@ -1342,7 +1446,7 @@ def _period_comparison(
     baseline_turnaround = _turnaround_summary(
         [sample for sample in turnaround if _in_window(sample.at, baseline_start, current_start)]
     )
-    mix = _mix_adjusted(current_feedback, baseline_feedback)
+    mix = _mix_adjusted(current_feedback, baseline_feedback, prefs)
     quality_truncated = truncated or (
         mix["comparable_mix_coverage"] is None
         or mix["comparable_mix_coverage"] < _MIX_MIN_COVERAGE
@@ -1453,12 +1557,17 @@ def agent_improvement_metrics(
     tuning_records: list[dict[str, Any]] | None = None,
     tuning_available: bool = False,
     tuning_records_truncated: bool = False,
+    prefs: Any = None,
 ) -> dict[str, Any]:
     """Aggregate evidence for daily agent-effectiveness reporting.
 
     ``as_of`` is the exclusive UTC date boundary.  For example, ``2026-07-27``
     includes complete days through July 26 and never mixes a partial current day into
     a complete historical baseline.
+
+    ``prefs`` is OPTIONAL (default ``None``, so no existing caller breaks) and is used
+    only to RESOLVE each case's advisory severity band for the mix strata — the
+    persisted attribute is always ``None`` on a real case.
     """
     current_days = max(1, int(current_days))
     baseline_days = max(1, int(baseline_days))
@@ -1482,7 +1591,7 @@ def agent_improvement_metrics(
     baseline_quality = _quality_summary(baseline_feedback)
     current_handling = _turnaround_summary(current_turnaround)
     baseline_handling = _turnaround_summary(baseline_turnaround)
-    mix = _mix_adjusted(current_feedback, baseline_feedback)
+    mix = _mix_adjusted(current_feedback, baseline_feedback, prefs)
 
     adjusted_current_agreement = mix["adjusted_current_agreement"]
     adjusted_baseline_agreement = mix["adjusted_baseline_agreement"]
@@ -1776,7 +1885,7 @@ def agent_improvement_metrics(
                     "numerator": "Explicit disagreements or allow-listed AI-verdict/outcome conflicts.",
                     "denominator": "The same comparable, identically weighted cohort as agreement.",
                     "eligibility": "Partial feedback is reported separately and is not automatically a correction.",
-                    "caveats": "NEEDS_HUMAN has no inferred outcome conflict; only explicit disagreement counts.",
+                    "caveats": "A needs-human verdict has no inferred outcome conflict; only explicit disagreement counts.",
                 },
             },
             "human_review_turnaround": {
@@ -1822,6 +1931,7 @@ def agent_improvement_metrics(
                 tuning_records=tuning_records,
                 tuning_available=tuning_available,
                 tuning_records_truncated=tuning_records_truncated,
+                prefs=prefs,
             ),
             "month_over_month": _period_comparison(
                 cases,
@@ -1837,6 +1947,7 @@ def agent_improvement_metrics(
                 tuning_records=tuning_records,
                 tuning_available=tuning_available,
                 tuning_records_truncated=tuning_records_truncated,
+                prefs=prefs,
             ),
         },
         "guardrails": {
@@ -1870,8 +1981,8 @@ def agent_improvement_metrics(
                 "breached": false_negative_breach,
                 "definition": (
                     "Missed confirmed positives / confirmed positives. A miss is an "
-                    "explicit false_negative outcome or an AI FALSE_POSITIVE later "
-                    "confirmed true positive."
+                    "explicit false negative outcome or an AI false positive verdict "
+                    "later confirmed true positive."
                 ),
             },
             "reopen_after_agent_close_rate": {

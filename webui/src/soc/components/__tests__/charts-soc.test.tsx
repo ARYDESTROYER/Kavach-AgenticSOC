@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { render, within } from '@testing-library/react';
-import { MitreHeatmap, type MitreTacticColumn } from '../charts-soc';
+import { MitreHeatmap, MultiSeriesTrend, type MitreTacticColumn } from '../charts-soc';
 
 /** A deliberately jagged fixture: Execution has 2 techniques, Persistence has 1. */
 const COLUMNS: MitreTacticColumn[] = [
@@ -95,5 +95,101 @@ describe('MitreHeatmap — viridis magnitude ramp, never a severity hue (round-6
     );
     expect(bgs.some((b) => b.startsWith('rgb('))).toBe(true);
     expect(bgs.every((b) => !b.includes('--critical'))).toBe(true);
+  });
+});
+
+/**
+ * `MultiSeriesTrend fill` — the escape from a pinned pixel height.
+ *
+ * `height` renders as an inline style, and the `<ResponsiveContainer height="100%">`
+ * inside it can only ever be 100% of that constant — so a chart in a stretched flex cell
+ * leaves every spare pixel as dead space below itself. `fill` makes the chart
+ * `absolute inset-0` with NO inline height, so it takes the size of the box it is given.
+ *
+ * jsdom performs no layout, so the resulting height is unassertable here by construction.
+ * What IS assertable, and what actually regresses, is the contract: which classes are
+ * emitted, that no inline height survives, that BOTH render arms honour it (a caller that
+ * stops passing `height` must not get the 240px default back on the no-data box), and
+ * that the default stays byte-identical for the existing callers.
+ */
+describe('MultiSeriesTrend — fill vs a pinned height', () => {
+  const SERIES = [{ key: 'a', label: 'A' }];
+  const ROWS = [
+    { x: '1', a: 1 },
+    { x: '2', a: 2 },
+  ];
+
+  it('pins an inline height by default, for every existing caller', () => {
+    const { container } = render(
+      <MultiSeriesTrend data={ROWS} series={SERIES} height={132} ariaLabel="Trend" />,
+    );
+    const box = container.querySelector('[role="img"]') as HTMLElement;
+    expect(box.style.height).toBe('132px');
+    expect(box.className).not.toMatch(/absolute/);
+  });
+
+  it('fills its positioned ancestor instead, with no inline height, when fill is set', () => {
+    const { container } = render(
+      <MultiSeriesTrend data={ROWS} series={SERIES} fill ariaLabel="Trend" />,
+    );
+    const box = container.querySelector('[role="img"]') as HTMLElement;
+    expect(box).toHaveClass('absolute', 'inset-0');
+    expect(box.style.height).toBe('');
+  });
+
+  it('honours fill on the NO-DATA arm too, so an empty series cannot fall back to 240px', () => {
+    const { container } = render(
+      <MultiSeriesTrend data={[]} series={SERIES} fill ariaLabel="Trend" />,
+    );
+    const box = container.querySelector('[role="img"]') as HTMLElement;
+    expect(box).toHaveTextContent('No data');
+    expect(box).toHaveClass('absolute', 'inset-0');
+    expect(box.style.height).toBe('');
+  });
+
+  it('merges the caller className rather than replacing it', () => {
+    const { container } = render(
+      <MultiSeriesTrend data={ROWS} series={SERIES} fill className="rounded-md" ariaLabel="T" />,
+    );
+    const box = container.querySelector('[role="img"]') as HTMLElement;
+    expect(box).toHaveClass('absolute', 'inset-0', 'rounded-md');
+  });
+});
+
+describe('MitreHeatmap on the Round 14 grammar (audit AN3, X4; W8a)', () => {
+  it('positions its own screen-reader table, inside a clipped box, so it never widens the page', () => {
+    const { container } = render(<MitreHeatmap columns={COLUMNS} />);
+    const root = container.firstElementChild as HTMLElement;
+    // The `sr-only` box is absolutely positioned: the heatmap root is its containing block.
+    expect(root).toHaveClass('relative');
+    const table = container.querySelector('table') as HTMLTableElement;
+    const box = table.parentElement as HTMLElement;
+    // A table is never narrower than its content, so the clip is a box around it.
+    expect(box).toHaveClass('sr-only');
+    expect(root).toContainElement(box);
+    // The table keeps the marker the report print stylesheets key on (`table.sr-only`
+    // prints as `display: none` and skips the 100% width rule).
+    expect(table).toHaveClass('sr-only');
+    expect(container.querySelectorAll('table.sr-only')).toHaveLength(1);
+  });
+
+  it('names its tactics as given, never in capitals, and sets counts as tabular figures', () => {
+    const { container, getByText } = render(<MitreHeatmap columns={COLUMNS} />);
+    expect(container.querySelector('.uppercase')).toBeNull();
+    expect(container.querySelector('[class*="tracking-wide"]')).toBeNull();
+    expect(container.querySelector('[class*="font-mono"]')).toBeNull();
+    const header = getByText('Execution', { selector: '[title="Execution"]' });
+    expect(header).toHaveTextContent(/^Execution$/);
+    const count = getByText('7', { selector: 'span' });
+    expect(count).toHaveClass('tabular-nums');
+  });
+});
+
+describe('charts-soc exports (Round 14)', () => {
+  it('no longer ships the burn-down chart, which drew only half of its data', async () => {
+    const mod = (await import('../charts-soc')) as Record<string, unknown>;
+    expect(mod.BurnDownChart).toBeUndefined();
+    expect(mod.MitreHeatmap).toBeDefined();
+    expect(mod.MultiSeriesTrend).toBeDefined();
   });
 });

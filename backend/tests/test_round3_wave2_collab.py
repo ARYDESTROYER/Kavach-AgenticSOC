@@ -30,6 +30,7 @@ from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.models import Case, CaseComment, Entity, User
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 
 @pytest.fixture
@@ -275,6 +276,7 @@ async def test_thread_edit_delete_is_author_scoped(authz_collab_client):
     # pass; use tier1 (comment, NOT close) as the non-author to prove the deny.
     for u, role in (("alice", "analyst_tier2"), ("mallory", "analyst_tier1")):
         assert c.post("/api/users", json={"username": u, "password": f"{u}-pass-12", "role": role}).status_code == 200
+        ready_user(c, u, f"{u}-pass-12")
 
     _login_collab(c, "alice", "alice-pass-12")
     m = c.post("/api/cases/c-collab-1/thread", json={"body": "alice's note"}).json()

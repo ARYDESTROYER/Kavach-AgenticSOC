@@ -15,6 +15,7 @@ blocks by the UI (never trusted as instructions, #9).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import ipaddress
 import logging
 from typing import TYPE_CHECKING, Any
@@ -43,23 +44,75 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = logging.getLogger("tlsoc.engine.threat_context")
 
 
+def _accepts_keyword(fn: Any, name: str) -> bool:
+    """Whether ``fn`` takes the keyword ``name`` (or ``**kwargs``): a duck-typed
+    enrichment object keeps its historical ``enrich_ip(ip)`` signature."""
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == name or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+
+
+def _provider_fields(results: list[Any], prefs: Preferences, status: str) -> dict[str, Any]:
+    """The per-provider part of one indicator row (Round 16 SPEC §4.5 WP13, [dv] R7).
+
+    ``providers``: one entry per provider asked, every provider string fenced (#9) by
+    ``fence_provider_result``, plus ``cached`` (that provider's answer came from the
+    cache). ``method``: how the providers were fused into ``score`` (``max`` by
+    default, ``weighted`` when fusion is on); ``null`` when no provider result is known
+    for the answer. ``errors``: each failed provider's error, fenced. ``providers_status``:
+    ``checked`` (asked now), ``cached`` (kept beside a cached answer, or every provider
+    answered from its cache), ``not_recorded`` (a cached answer kept without its
+    provider results) or ``skipped`` (no provider was asked)."""
+    from ..enrichment.aggregate import fence_provider_result, fence_provider_value, fuse
+
+    if not results:
+        return {"providers": [], "method": None, "errors": {}, "providers_status": status}
+    fused = fuse(results, prefs.enrichment)
+    return {
+        "providers": [
+            {**fence_provider_result(r), "cached": bool((r.raw or {}).get("_cached"))}
+            for r in results
+        ],
+        "method": fused.method,
+        "errors": {
+            name: fence_provider_value(error, provider=name)
+            for name, error in fused.errors.items()
+        },
+        "providers_status": status,
+    }
+
+
 async def _ioc_section(case: Case, prefs: Preferences, enrich: "EnrichTool | None") -> list[dict[str, Any]]:
     """IOC reputation for the case entity. FAIL-OPEN → [].
 
-    The IP path is BYTE-IDENTICAL to Wave 1 (``enrich.enrich_ip`` → legacy
-    ``EnrichmentResult``). Round-3 Wave-2 ADDS a non-IP branch: a domain / file-hash
+    The IP path keeps the Wave 1 answer (``enrich.enrich_ip`` → legacy
+    ``EnrichmentResult``: the same ``score``, ``is_malicious``, ``country``, ``cached``
+    and ``sources``). Round-3 Wave-2 ADDS a non-IP branch: a domain / file-hash
     entity is enriched through the multi-provider dispatch
     (``enrich.enrich_indicator``) and fused with the same default ``max()`` so the
-    panel's ``score``/``is_malicious`` contract is unchanged. Advisory only — this never
-    feeds the deterministic decision (#3)."""
+    panel's ``score``/``is_malicious`` contract is unchanged. Round 16 (SPEC §4.5 WP13,
+    [dv] R7) adds, on both paths, ``providers``, ``method``, ``errors`` and
+    ``providers_status`` (:func:`_provider_fields`); the IP path reads them from the
+    same ``enrich_ip`` call, so no provider is asked twice. This panel is read when
+    the case is opened, so its reading can differ from the one the investigation
+    used. Advisory only: this never feeds the deterministic decision (#3)."""
     cfg = prefs.threat_context
     threshold = int(getattr(cfg, "ioc_malicious_threshold", 50))
     try:
         if enrich is None:
             return []
-        # --- IP: the legacy path, untouched. ---
+        # --- IP: the legacy answer, plus the providers behind it. ---
         if case.entity.type == EntityType.IP:
-            result = await enrich.enrich_ip(case.entity.value)
+            from ..tools.enrich import DETAIL_NOT_RECORDED, IpEnrichmentDetail
+
+            detail: IpEnrichmentDetail | None = None
+            if _accepts_keyword(enrich.enrich_ip, "detail"):
+                detail = IpEnrichmentDetail()
+                result = await enrich.enrich_ip(case.entity.value, detail=detail)
+            else:
+                result = await enrich.enrich_ip(case.entity.value)
             score = float(result.reputation_score)
             return [
                 {
@@ -73,6 +126,11 @@ async def _ioc_section(case: Case, prefs: Preferences, enrich: "EnrichTool | Non
                     "country": result.country,
                     "cached": result.cached,
                     "sources": result.sources,
+                    **_provider_fields(
+                        detail.providers if detail is not None else [], prefs,
+                        (detail.status or DETAIL_NOT_RECORDED) if detail is not None
+                        else DETAIL_NOT_RECORDED,
+                    ),
                 }
             ]
         # --- Non-IP (domain / file hash): the Wave-2 multi-provider path. ---
@@ -83,10 +141,11 @@ async def _ioc_section(case: Case, prefs: Preferences, enrich: "EnrichTool | Non
         if not results:
             return []
         # Default fusion is byte-identical max(score); fence every provider string (#9).
-        from ..enrichment.aggregate import fence_provider_result, fuse
+        from ..enrichment.aggregate import fuse
 
         fused = fuse(results, prefs.enrichment)
         score = float(fused.reputation_score)
+        every_cached = all((r.raw or {}).get("_cached") for r in results)
         return [
             {
                 "indicator": case.entity.value,
@@ -97,7 +156,7 @@ async def _ioc_section(case: Case, prefs: Preferences, enrich: "EnrichTool | Non
                 "cached": any((r.raw or {}).get("_cached") for r in results),
                 "sources": fused.per_provider,
                 # Per-provider detail with ALL untrusted strings fenced for the UI (#9).
-                "providers": [fence_provider_result(r) for r in results],
+                **_provider_fields(results, prefs, "cached" if every_cached else "checked"),
             }
         ]
     except Exception as exc:  # noqa: BLE001 — fail-open per section
@@ -146,6 +205,7 @@ async def _related_section(
                         seen.add(cid)
                     out.append({
                         "case_id": cid,
+                        "case_number": str((ch.metadata or {}).get("case_number") or ""),
                         "verdict": str((ch.metadata or {}).get("verdict") or ""),
                         "entity": str((ch.metadata or {}).get("entity") or ""),
                         "score": round(float(ch.score), 4),
@@ -165,6 +225,7 @@ async def _related_section(
                         seen.add(c.case_id)
                         out.append({
                             "case_id": c.case_id,
+                            "case_number": c.case_number or "",
                             "verdict": c.verdict.value if c.verdict else "",
                             "entity": entity_key,
                             "score": 1.0,  # exact entity match
@@ -285,6 +346,35 @@ async def assemble(
         base.clustering = build_clustering_explanation(
             case, related_cases=base.related_cases,
         )
+        # Each related case reads by its case number, never its internal id (Round 16
+        # cross-cutting review). The numbers this panel already holds come first; one
+        # bounded, read-only, fail-open store read finds the rest (a cross-source link,
+        # a recalled case whose chunk has no number). A miss leaves the number "".
+        rows = [r for r in base.clustering.get("related_cases") or [] if isinstance(r, dict)]
+        numbers = {
+            str(r.get("case_id") or ""): str(r.get("case_number") or "")
+            for r in base.related_cases
+            if isinstance(r, dict)
+        }
+        ids = [str(r.get("case_id") or "") for r in rows]
+        missing = [cid for cid in dict.fromkeys(ids) if cid and not numbers.get(cid)][:12]
+        if missing and cases is not None:
+            try:
+                get_many = getattr(cases, "get_many", None)
+                if callable(get_many):
+                    found = dict(await get_many(missing) or {})
+                else:
+                    got = await asyncio.gather(
+                        *(cases.get(cid) for cid in missing), return_exceptions=True
+                    )
+                    found = {cid: c for cid, c in zip(missing, got) if isinstance(c, Case)}
+                for cid, found_case in found.items():
+                    numbers[str(cid)] = str(getattr(found_case, "case_number", "") or "")
+            except Exception as exc:  # noqa: BLE001 (a label lookup never fails the panel)
+                logger.debug("threat_context related case number lookup failed: %s", exc)
+        for row in [*rows, *base.related_cases]:
+            if isinstance(row, dict) and not row.get("case_number"):
+                row["case_number"] = numbers.get(str(row.get("case_id") or ""), "")
         # The asset + evidence sections are pure/local — compute them directly.
         base.asset_context = _asset_section(case, prefs)
         base.evidence = _evidence_section(case)

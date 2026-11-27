@@ -66,6 +66,8 @@ export interface CodeBlockProps extends React.HTMLAttributes<HTMLDivElement> {
   caption?: React.ReactNode;
   /** Show the copy-to-clipboard control (default true). */
   copyable?: boolean;
+  /** What Copy takes when it differs from what is shown (a reading view of exact text). */
+  copyValue?: string;
   /** Allow long lines to wrap instead of scrolling horizontally. */
   wrap?: boolean;
   /** Cap the visible height; content scrolls past it. */
@@ -80,6 +82,7 @@ export const CodeBlock = React.forwardRef<HTMLDivElement, CodeBlockProps>(
       children,
       caption,
       copyable = true,
+      copyValue,
       wrap = false,
       maxHeightClassName = 'max-h-80',
       ...props
@@ -89,6 +92,23 @@ export const CodeBlock = React.forwardRef<HTMLDivElement, CodeBlockProps>(
     const text = value !== undefined ? toText(value) : toText(children);
     const [copied, setCopied] = React.useState(false);
     const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+    const captionId = React.useId();
+    // A block that scrolls must take focus so a keyboard can scroll it (axe
+    // scrollable-region-focusable; Safari never focuses a scroller itself). Only while it
+    // overflows: the many short blocks gain no extra tab stop.
+    const preRef = React.useRef<HTMLPreElement>(null);
+    const [scrolls, setScrolls] = React.useState(false);
+    React.useLayoutEffect(() => {
+      const pre = preRef.current;
+      if (!pre) return undefined;
+      const measure = () =>
+        setScrolls(pre.scrollHeight > pre.clientHeight || pre.scrollWidth > pre.clientWidth);
+      measure();
+      if (typeof ResizeObserver !== 'function') return undefined;
+      const observer = new ResizeObserver(measure);
+      observer.observe(pre);
+      return () => observer.disconnect();
+    }, [text, wrap, maxHeightClassName]);
 
     React.useEffect(
       () => () => {
@@ -101,13 +121,13 @@ export const CodeBlock = React.forwardRef<HTMLDivElement, CodeBlockProps>(
       // Route through copyText() so copy ALSO works over plain HTTP (non-secure
       // context, where navigator.clipboard is undefined). Show "Copied" only on a
       // truthy result — never claim success for a copy that never happened (bug #4).
-      void copyText(text).then((ok) => {
+      void copyText(copyValue ?? text).then((ok) => {
         if (!ok) return;
         setCopied(true);
         if (timer.current) clearTimeout(timer.current);
         timer.current = setTimeout(() => setCopied(false), 1500);
       });
-    }, [text]);
+    }, [copyValue, text]);
 
     const showHeader = Boolean(caption) || copyable;
 
@@ -121,8 +141,12 @@ export const CodeBlock = React.forwardRef<HTMLDivElement, CodeBlockProps>(
         {...props}
       >
         {showHeader && (
-          <div className="flex items-center justify-between border-b border-border bg-surface px-3 py-1.5">
-            <span className="truncate font-mono text-xs text-muted-foreground">{caption}</span>
+          // The caption wraps rather than truncating: a trust label such as "Untrusted source
+          // data" must never read as a broken word beside Copy.
+          <div className="flex items-start justify-between gap-2 border-b border-border bg-surface px-3 py-1.5">
+            <span id={captionId} className="min-w-0 break-words font-mono text-xs text-muted-foreground">
+              {caption}
+            </span>
             {copyable && (
               <button
                 type="button"
@@ -144,15 +168,25 @@ export const CodeBlock = React.forwardRef<HTMLDivElement, CodeBlockProps>(
             )}
           </div>
         )}
+        {/* eslint-disable jsx-a11y/no-noninteractive-tabindex -- a scrollable region must take
+            focus so a keyboard can scroll it (axe scrollable-region-focusable). */}
         <pre
+          ref={preRef}
+          tabIndex={scrolls ? 0 : undefined}
+          role={scrolls ? 'region' : undefined}
+          aria-labelledby={scrolls && caption ? captionId : undefined}
+          aria-label={scrolls && !caption ? 'Code' : undefined}
           className={cn(
             'overflow-auto p-3 font-mono text-sm leading-relaxed text-foreground',
             wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre',
+            // Inside the block's clipped frame, so the ring is drawn inward.
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
             maxHeightClassName,
           )}
         >
           <code>{text}</code>
         </pre>
+        {/* eslint-enable jsx-a11y/no-noninteractive-tabindex */}
       </div>
     );
   },

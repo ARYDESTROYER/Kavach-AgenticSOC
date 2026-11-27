@@ -123,7 +123,41 @@ async def test_search_contains_multi_match():
     # "carol" appears in d4's message only.
     res = await conn.search(_prefs(), StructuredQuery(contains="carol"))
     assert {e.id for e in res.events} == {"d4"}
-    assert res.rendering.query == 'message : "*carol*"'
+    # The rendering names EVERY field the multi_match covers. It used to claim
+    # ``message : "*carol*"`` while four fields were searched, so an operator's
+    # Discover deep-link ran a narrower query than the agent did. It is also the
+    # audited ``query_text``, so the audit trail now records what actually ran.
+    fields = _prefs().free_text_search_fields()
+    expected = " or ".join(f'{f} : "carol"' for f in fields)
+    assert res.rendering.query == f"({expected})"
+    # The four legacy fields stay first, in their original order, so an existing
+    # deployment's result set only ever grows.
+    assert fields[:4] == ["rule.name", "message", "event.original", "event.action"]
+    # ...and the connector reports which fields it searched, so a zero-hit result can
+    # never be read back as evidence that the data is absent from the record.
+    assert res.rendering.fields_searched == fields
+
+
+async def test_search_contains_matches_a_widened_evidence_field():
+    """The regression the whole shared definition exists for.
+
+    A field the model is SHOWN must be a field the model can then SEARCH for.
+    ``url.path`` used to be in neither list, so an agent that suspected a missing
+    URL got zero hits from fields that could not have matched it, and recorded that
+    zero as evidence no HTTP context existed.
+    """
+    es = InMemoryESClient()
+    base = _seed(es)["base"]
+    doc = make_log_event(ip="203.0.113.99", user="www-data", host="moodle01",
+                         rule="moodle", severity=7.0, ts_millis=base + 5_000)
+    # The decision-relevant fields the alert carries but no allowlist ever named.
+    doc["url"] = {"path": "/mod/assign/feedback/editpdf/ajax.php"}
+    doc["http"] = {"request": {"method": "GET"}}
+    es.add_log(INDEX, doc, doc_id="web1")
+    conn = ElasticConnector(es)
+    res = await conn.search(_prefs(), StructuredQuery(contains="editpdf"))
+    assert {e.id for e in res.events} == {"web1"}
+    assert "url.path" in res.rendering.fields_searched
 
 
 async def test_fetch_by_ids_returns_right_docs_and_kql():

@@ -30,8 +30,11 @@
 import * as React from 'react';
 import type { LucideIcon } from 'lucide-react';
 import type { NavOpts } from '@/lib/types';
+import type { CasesProps } from './pages/Cases';
+import { loadWhatsNew } from './whats-new/WhatsNewGate';
 import {
   LayoutDashboard,
+  LayoutGrid,
   ShieldAlert,
   MessageSquare,
   BarChart3,
@@ -49,7 +52,6 @@ import {
   Cpu,
   BookOpen,
   Brain,
-  Workflow,
   Inbox,
   Users as UsersIcon,
   ShieldCheck,
@@ -64,6 +66,8 @@ import {
   Columns3,
   BookMarked,
   BookOpenText,
+  FileText,
+  UserCheck,
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------- */
@@ -79,8 +83,11 @@ export type PageId =
   | 'case_manager'
   | 'investigate'
   | 'chat'
+  | 'reports'
   | 'intelligence'
+  | 'analytics'
   | 'metrics'
+  | 'team'
   | 'effectiveness'
   | 'models'
   | 'scans'
@@ -95,6 +102,7 @@ export type PageId =
   | 'sources'
   | 'cost'
   | 'inbox'
+  | 'whats_new'
   | 'account'
   | 'sessions'
   | 'settings'
@@ -138,7 +146,10 @@ export interface NavPerm {
  * it needs (default: RBAC only).
  */
 export interface FeatureCtx {
-  /** RBAC axis: true when auth/RBAC are off, else consults the permission matrix. */
+  /**
+   * RBAC axis: true when auth/RBAC are off, else consults the signed-in person's
+   * effective grants (GET /api/account/permissions).
+   */
   hasPermission: (resource: string, action: string) => boolean;
   /** Prefs feature-toggle axis: is a named opt-in feature flag enabled? Default true. */
   prefsEnabled?: (flag: string) => boolean;
@@ -159,6 +170,14 @@ export interface FeatureNode {
   group: NavGroupId;
   /** Optional RBAC gate; consumed by the default {@link FeatureNode.enabled}. */
   perm?: NavPerm;
+  /**
+   * The page this row opens when it is pressed; defaults to the row's own id (Round 14,
+   * SPEC §2.2 item 2). A group row whose target is one of its children resolves to that
+   * child's page only while the child is visible to the viewer, else to the first
+   * child the viewer can see, else to its own id (`navTarget` in nav.ts), so a row never
+   * opens a page the viewer cannot read.
+   */
+  target?: PageId;
   /**
    * Optional child destinations (expandable disclosure nav). Children are thin leaves
    * (never nested further) that a host feature tabs between. A child id MUST be a
@@ -192,6 +211,13 @@ export interface FeatureChild {
   icon?: LucideIcon;
   perm?: NavPerm;
   enabled?: (ctx: FeatureCtx) => boolean;
+  /**
+   * The page this child opens; defaults to its id. A child is the current page when the
+   * page equals its target (or its id when it has none). The Overview group's "Cyber
+   * Defence Center" child keeps its historical id `dashboard` and targets `overview`, so
+   * the landing page has one URL (SPEC §2.2 item 3).
+   */
+  target?: PageId;
 }
 
 /**
@@ -212,6 +238,19 @@ export function featureEnabled(
 /* -------------------------------------------------------------------------- */
 
 /**
+ * The permission requirements more than one row names, one object each. They are shared
+ * so the registry (an entry module) ships each requirement once, however many rows carry
+ * it; a row that needs one of these names the constant, never a copy.
+ */
+const METRICS_VIEW: NavPerm = { resource: 'metrics', action: 'view' };
+const CASES_READ: NavPerm = { resource: 'cases', action: 'read' };
+const SOURCES_READ: NavPerm = { resource: 'sources', action: 'read' };
+const COST_VIEW: NavPerm = { resource: 'cost', action: 'view' };
+const RAG_READ: NavPerm = { resource: 'rag', action: 'read' };
+const RUNBOOKS_READ: NavPerm = { resource: 'runbooks', action: 'read' };
+const MEMORY_READ: NavPerm = { resource: 'memory', action: 'read' };
+
+/**
  * The one typed feature table. Order is authoritative (drives rail order). Every
  * top-level rail feature keeps `hidden` falsey; consolidated deep-link-only sub-pages
  * are `hidden: true`. `nav.ts` derives NAV_GROUPS / PAGE_IDS / lookups from this.
@@ -219,24 +258,29 @@ export function featureEnabled(
 export const FEATURES: FeatureNode[] = [
   /* ---- Overview -------------------------------------------------------- */
   {
+    // Round 14 (SPEC §2.2): the app still lands on the Cyber Defence Center (`overview`),
+    // but pressing the Overview row opens the Dashboards library. A viewer without
+    // `metrics:view` cannot open the library, so for them the row opens its first visible
+    // child (the Cyber Defence Center, `overview`) and the Dashboards child is hidden.
     id: 'overview',
     label: 'Overview',
     icon: LayoutDashboard,
     group: 'overview',
+    target: 'dashboards',
     children: [
-      { id: 'dashboard', label: 'Dashboard', icon: Gauge },
-      // Round-5 G7 (CD5): the build-your-own custom dashboards surface. Ships ON by
-      // default (a read-only per-role default layout; Edit mode to customize) and is
-      // gated on the SAME `metrics:view` grant the backend routes_dashboards.py
-      // require, so it never appears for a principal who can't read the metrics it
-      // renders. RBAC off → always visible (back-compat).
+      // The historical `dashboard` child id is kept; it opens `#/overview` (the router
+      // normalises `#/dashboard` there), so the landing page has one URL.
+      { id: 'dashboard', label: 'Cyber Defence Center', icon: Gauge, target: 'overview' },
+      // The Dashboards library (built-in boards and the viewer's own). Gated on the SAME
+      // `metrics:view` grant the backend routes_dashboards.py require.
       {
         id: 'dashboards',
         label: 'Dashboards',
-        icon: LayoutDashboard,
-        perm: { resource: 'metrics', action: 'view' },
+        icon: LayoutGrid,
+        perm: METRICS_VIEW,
       },
-      { id: 'standup', label: 'Standup', icon: CalendarDays },
+      // GET /api/standup and the standup reads need `metrics:view` (Round 16 D11).
+      { id: 'standup', label: 'Standup', icon: CalendarDays, perm: METRICS_VIEW },
     ],
   },
 
@@ -247,36 +291,42 @@ export const FEATURES: FeatureNode[] = [
     label: 'Case Manager',
     icon: Columns3,
     group: 'triage',
-    perm: { resource: 'cases', action: 'read' },
+    perm: CASES_READ,
   },
   {
     id: 'campaigns',
     label: 'Campaigns',
     icon: Network,
     group: 'triage',
-    perm: { resource: 'cases', action: 'read' },
+    perm: CASES_READ,
   },
   {
     id: 'logs',
     label: 'Logs',
     icon: List,
     group: 'triage',
-    perm: { resource: 'sources', action: 'read' },
+    perm: SOURCES_READ,
   },
   {
     id: 'chat',
     label: 'Workspace',
     icon: MessageSquare,
     group: 'triage',
+    // Chat · Investigate · Reports (SPEC §10.6). Reports is a standalone lazy route
+    // (its own chunk), not a Workspace tab: the library lists every saved report, and
+    // the reports API is owner-scoped behind cases:read (SPEC §9.2), so the rail and the
+    // palette hide it from a role that could only ever see the page's explanation.
     children: [
       { id: 'chat', label: 'Chat', icon: MessageSquare },
       { id: 'investigate', label: 'Entity investigation', icon: SearchIcon },
+      { id: 'reports', label: 'Reports', icon: FileText, perm: CASES_READ },
     ],
   },
   {
     // The old Automated Scans dashboard repeated the same autonomous-case state
-    // already exposed more completely by Case Manager. Keep the id + lazy route for
-    // bookmarked links, but remove it from the primary information architecture.
+    // already exposed more completely by Case Manager. Round 14 (D27): `#/scans` is a
+    // redirect to Case Manager filtered to agent-closed cases (router PAGE_REDIRECTS);
+    // the id stays registered so the redirect fires instead of a fall back to Overview.
     id: 'scans',
     label: 'Automated scans (legacy)',
     icon: ScanLine,
@@ -302,30 +352,26 @@ export const FEATURES: FeatureNode[] = [
         id: 'knowledge',
         label: 'Knowledge corpus',
         icon: BookOpen,
-        perm: { resource: 'rag', action: 'read' },
+        perm: RAG_READ,
       },
       {
+        // Round 14 (SPEC §4.10.1): one Runbooks feature replaces the two former
+        // destinations; their page ids redirect here for one release (D44).
         id: 'runbooks',
-        label: 'Reference runbooks',
+        label: 'Runbooks',
         icon: BookMarked,
-        perm: { resource: 'runbooks', action: 'read' },
+        perm: RUNBOOKS_READ,
       },
       {
         id: 'memory',
         label: 'Operator memory',
         icon: Brain,
-        perm: { resource: 'memory', action: 'read' },
-      },
-      {
-        id: 'playbooks',
-        label: 'Response playbooks',
-        icon: Workflow,
-        perm: { resource: 'playbooks', action: 'read' },
+        perm: MEMORY_READ,
       },
       {
         // GET /api/personas is an authenticated read-only catalog and has no
         // resource-specific RBAC gate. Keep the Console aligned with that contract
-        // instead of hiding the reference roster behind playbooks:read.
+        // instead of inventing a stricter one.
         id: 'personas',
         label: 'Agent personas',
         icon: UsersIcon,
@@ -335,26 +381,33 @@ export const FEATURES: FeatureNode[] = [
 
   /* ---- Analytics ------------------------------------------------------- */
   {
-    id: 'metrics',
+    // The group has its own id (Round 14, finding 20) and opens Metrics, so on `#/metrics`
+    // the current element and the breadcrumb name the page ("Metrics"), never the group.
+    // `#/analytics` is a redirect to `#/metrics` (router PAGE_REDIRECTS).
+    id: 'analytics',
     label: 'Analytics',
     icon: BarChart3,
     group: 'analytics',
+    target: 'metrics',
     children: [
-      // The Metrics page loads GET /api/metrics, which routes_metrics.py gates on
-      // `metrics:view` — so the nav child gates on the SAME grant (mirroring the
-      // `dashboards` sibling), never showing an entry that would 403 on open. (`cost`
-      // and `models` stay ungated: their GET endpoints — /api/usage/summary,
-      // /api/llm/models — are auth-only, no per-resource grant, so gating them would
-      // hide a page the principal can actually read.)
-      { id: 'metrics', label: 'Metrics', icon: BarChart3, perm: { resource: 'metrics', action: 'view' } },
+      // Each child gates on the grant its page's reads need, so the navigation never
+      // offers a page that would answer 403: Metrics and Agent effectiveness read
+      // `metrics:view` endpoints (GET /api/metrics, /api/metrics/agent-improvement),
+      // and Cost reads GET /api/usage/summary, which needs `cost:view` (Round 14
+      // roles-11). Models reads GET /api/llm/models, which needs `models:read`
+      // (Round 16, B01).
+      { id: 'metrics', label: 'Metrics', icon: BarChart3, perm: METRICS_VIEW },
+      // Round 15 (SPEC D3.1, D3.2): per-person work counts from the audit log, for a
+      // SOC manager (and, read only, an auditor). GET /api/team/* needs `team:view`.
+      { id: 'team', label: 'Team activity', icon: UserCheck, perm: { resource: 'team', action: 'view' } },
       {
         id: 'effectiveness',
         label: 'Agent effectiveness',
         icon: TrendingUp,
-        perm: { resource: 'metrics', action: 'view' },
+        perm: METRICS_VIEW,
       },
-      { id: 'cost', label: 'Cost', icon: DollarSign },
-      { id: 'models', label: 'Models', icon: Cpu },
+      { id: 'cost', label: 'Cost', icon: DollarSign, perm: COST_VIEW },
+      { id: 'models', label: 'Models', icon: Cpu, perm: { resource: 'models', action: 'read' } },
       {
         id: 'baseline',
         label: 'Baseline',
@@ -363,24 +416,34 @@ export const FEATURES: FeatureNode[] = [
       },
       {
         id: 'batchjobs',
-        label: 'Batch jobs',
+        label: 'Jobs',
         icon: Layers,
-        perm: { resource: 'models', action: 'read' },
       },
     ],
   },
 
-  /* ---- Notifications --------------------------------------------------- */
+  /* ---- Communication ---------------------------------------------------- *
+   * Round 16 (SPEC D5): the group keeps its id `notifications` (stored navigation state
+   * and tests key on it) and is labelled Communication. Its two pages, Inbox and What's
+   * new, make the row a disclosure; pressing the row opens Inbox, its own page. The
+   * top-bar bell keeps the name Notifications. What's new needs no grant: the notes ship
+   * with the Console, like the Help Center.                                  */
   {
     id: 'inbox',
-    label: 'Notifications',
+    label: 'Communication',
     icon: Bell,
     group: 'notifications',
-    children: [{ id: 'inbox', label: 'Inbox', icon: Inbox }],
+    children: [
+      { id: 'inbox', label: 'Inbox', icon: Inbox },
+      // No icon of its own (entry bytes): the command palette shows the group's.
+      { id: 'whats_new', label: "What's new" },
+    ],
   },
 
   /* ---- Platform -------------------------------------------------------- */
-  { id: 'sources', label: 'Sources', icon: Database, group: 'platform' },
+  // Every Sources read (the list, health, coverage) needs `sources:read`, so the row, the
+  // palette entry and the console map (app help) gate on it, like Logs.
+  { id: 'sources', label: 'Sources', icon: Database, group: 'platform', perm: SOURCES_READ },
   {
     id: 'audit',
     label: 'Audit log',
@@ -419,82 +482,50 @@ export const FEATURES: FeatureNode[] = [
     ],
   },
   {
+    // D25: one name per page. The nav item and the page are both "Help Center".
     id: 'docs',
-    label: 'Documentation',
+    label: 'Help Center',
     icon: BookOpenText,
     group: 'platform',
     navPlacement: 'footer',
   },
 
-  /* ---- Hidden-but-routable consolidated sub-pages ---------------------- *
-   * Round-2 W4 / Round-3 disclosure: these keep their PageId + App.renderPage
-   * arm (deep-linkable) but are NOT rail items. Some duplicate a rail id (e.g.
-   * they also appear as a child above); the derivation de-dupes PAGE_IDS. The
-   * `group` here is only a bookkeeping home — hidden features never enter a rail
-   * group. Order mirrors the old HIDDEN_ROUTE_IDS list for stability.            */
-  { id: 'dashboard', label: 'Dashboard', icon: Gauge, group: 'overview', hidden: true },
-  { id: 'investigate', label: 'Entity investigation', icon: SearchIcon, group: 'triage', hidden: true },
-  { id: 'cost', label: 'Cost', icon: DollarSign, group: 'analytics', hidden: true },
-  { id: 'models', label: 'Models', icon: Cpu, group: 'analytics', hidden: true },
-  { id: 'standup', label: 'Standup', icon: CalendarDays, group: 'overview', hidden: true },
+  /* ---- Hidden-but-routable pages ------------------------------------------ *
+   * Ids that keep a route and a PageId (deep links, redirects) but no rail item and
+   * no visible child of the same id. Round 15 (SPEC §3.1): the hidden copies of
+   * visible children (dashboard, investigate, cost, models, standup, knowledge,
+   * runbooks, memory, personas, roles, users) are gone: `PAGE_IDS` already holds every
+   * child id and `navLabel` resolves children first, so they added only entry bytes.
+   * The `group` here is only a bookkeeping home; hidden features never enter a rail
+   * group.                                                                     */
+  // Round 14 (D44): the two retired destinations stay routable for one release as
+  // redirects to `#/runbooks` (router PAGE_REDIRECTS). Their label is the page they open.
   {
-    id: 'knowledge',
-    label: 'Knowledge corpus',
-    icon: BookOpen,
-    group: 'intelligence',
-    hidden: true,
-    perm: { resource: 'rag', action: 'read' },
-  },
-  {
-    id: 'runbooks',
-    label: 'Reference runbooks',
+    id: 'catalog',
+    label: 'Runbooks',
     icon: BookMarked,
     group: 'intelligence',
     hidden: true,
-    perm: { resource: 'runbooks', action: 'read' },
-  },
-  {
-    id: 'memory',
-    label: 'Operator memory',
-    icon: Brain,
-    group: 'intelligence',
-    hidden: true,
-    perm: { resource: 'memory', action: 'read' },
-  },
-  {
-    id: 'catalog',
-    label: 'Response playbooks',
-    icon: Library,
-    group: 'intelligence',
-    hidden: true,
-    perm: { resource: 'playbooks', action: 'read' },
+    perm: RUNBOOKS_READ,
   },
   {
     id: 'playbooks',
-    label: 'Response playbooks',
-    icon: Workflow,
+    label: 'Runbooks',
+    icon: BookMarked,
     group: 'intelligence',
     hidden: true,
-    perm: { resource: 'playbooks', action: 'read' },
-  },
-  {
-    id: 'personas',
-    label: 'Agent personas',
-    icon: UsersIcon,
-    group: 'intelligence',
-    hidden: true,
+    perm: RUNBOOKS_READ,
   },
   // Round-5 Sett-B: the six formerly-standalone admin/account homes
   // (account/sessions/security/roles/users/admin_sessions) collapsed INTO Settings
   // sections. Their PageIds stay registered (deep-link back-compat) but the router
   // (SETTINGS_REDIRECTS) rewrites `#/<id>` → `#/settings?s=<sectionId>` — the standalone
-  // App.renderPage arms are no longer the primary home. Keeping them here keeps
-  // `isPageId('roles')` true so the redirect fires instead of a 404-to-Overview.
+  // App.renderPage arms are no longer the primary home. Keeping them registered keeps
+  // `isPageId('account')` true so the redirect fires instead of a 404-to-Overview
+  // (`roles` and `users` are Settings children above, so they stay registered there).
   { id: 'account', label: 'Account', icon: Settings, group: 'platform', hidden: true },
   { id: 'sessions', label: 'Sessions', icon: MonitorSmartphone, group: 'platform', hidden: true },
   { id: 'security', label: 'Security', icon: ShieldCheck, group: 'platform', hidden: true },
-  { id: 'roles', label: 'Roles', icon: KeyRound, group: 'platform', hidden: true },
-  { id: 'users', label: 'Users', icon: UsersIcon, group: 'platform', hidden: true },
   { id: 'admin_sessions', label: 'Admin sessions', icon: MonitorSmartphone, group: 'platform', hidden: true },
 ];
 
@@ -507,7 +538,7 @@ export const FEATURE_GROUPS: { id: NavGroupId; label: string }[] = [
   { id: 'triage', label: 'Triage' },
   { id: 'intelligence', label: 'Intelligence' },
   { id: 'analytics', label: 'Analytics' },
-  { id: 'notifications', label: 'Notifications' },
+  { id: 'notifications', label: 'Communication' },
   { id: 'platform', label: 'Platform' },
 ];
 
@@ -521,18 +552,18 @@ export const FEATURE_GROUPS: { id: NavGroupId; label: string }[] = [
  * chunk only when navigated to; `App.tsx`'s single `<Suspense>` covers the fetch, and
  * its `<ErrorBoundary>` catches a failed chunk load instead of white-screening. All
  * targets are DEFAULT exports (verified) so the bare `import()` resolves to the
- * `{ default }` module `React.lazy` expects; the two component-directory pages
- * (`UnifiedLogsSheet`, and — historically — others) are named-export-adapted below.
+ * `{ default }` module `React.lazy` expects (every route now lives under `pages/`).
  *
  * NOTE: Login + the first-run Wizard are intentionally NOT here — they own first paint
  * (the login gate + OOBE) and stay EAGERLY imported in `App.tsx`, framer-motion-free.
  */
 const Home = React.lazy(() => import('./pages/Home'));
+// The Dashboards library and its boards read `board` from the router (`useRoute`).
 const Dashboards = React.lazy(() => import('./pages/Dashboards'));
-const Cases = React.lazy(() => import('./pages/Cases'));
+// Cases takes its initial filters from the route, `initialRule` among them (SPEC §4.6.6).
+const Cases: React.LazyExoticComponent<React.ComponentType<CasesProps>> = React.lazy(() => import('./pages/Cases'));
 const CaseManager = React.lazy(() => import('./pages/CaseManager'));
 const Workspace = React.lazy(() => import('./pages/Workspace'));
-const Scans = React.lazy(() => import('./pages/Scans'));
 const Analytics = React.lazy(() => import('./pages/Analytics'));
 const Intelligence = React.lazy(() => import('./pages/Intelligence'));
 const Sources = React.lazy(() => import('./pages/Sources'));
@@ -554,13 +585,19 @@ const AdminSessions = React.lazy(() => import('./pages/AdminSessions'));
 const Models = React.lazy(() => import('./pages/Models'));
 const Roles = React.lazy(() => import('./pages/Roles'));
 const InboxPage = React.lazy(() => import('./pages/Inbox'));
-// The `logs` route renders the STANDALONE full-page view — the module's DEFAULT export
-// (`UnifiedLogsView`), not the `UnifiedLogsSheet` sheet variant (which needs open/onClose).
-const UnifiedLogs = React.lazy(() => import('./components/UnifiedLogsSheet'));
+// The release tracker reads its deep-link keys (`v`, `h`) from the router (`useRoute`). Its
+// chunk also holds the welcome host, so the route and the gate share one import thunk.
+const WhatsNewPage = React.lazy(loadWhatsNew);
+// The `logs` route renders the standalone Logs page, which also honours the chat's
+// "Open in Logs" deep link (`logQuery`/`from`/`to`/`sourceId`, SPEC §10.7) and otherwise
+// shows the shared `UnifiedLogsBody` browser.
+const UnifiedLogs = React.lazy(() => import('./pages/UnifiedLogs'));
+const Reports = React.lazy(() => import('./pages/Reports'));
 const Campaigns = React.lazy(() => import('./pages/Campaigns'));
 const Tuning = React.lazy(() => import('./pages/Tuning'));
 const BatchJobs = React.lazy(() => import('./pages/BatchJobs'));
 const BaselineStats = React.lazy(() => import('./pages/Baseline'));
+const TeamActivity = React.lazy(() => import('./pages/TeamActivity'));
 const Docs = React.lazy(() => import('./pages/Docs'));
 
 /** The context a route render thunk may read (never `onNavigate` — pages use `useNavigate`). */
@@ -590,11 +627,10 @@ export interface RouteDef {
  * switch AND the parallel eager lazy-declaration table.
  *
  * Host pages (`overview`/`chat`/`metrics`/`intelligence`) read their active sub-`tab`
- * from the route ctx; the two deep-link leaves that force a specific sub-view
- * (`dashboard` → Dashboard tab, `playbooks`/`personas` → their Intelligence surface)
- * pass a fixed `tab`. `cases`
- * seeds its status filter from `opts.status` and its severity facet from `opts.severity`
- * (#38 drill-through); `settings` receives `onRerunWizard`. No route passes `onNavigate`
+ * from the route ctx; the deep-link leaves that force a specific sub-view pass a fixed
+ * `tab`. `cases` seeds its status filter from `opts.status`, its severity facet from
+ * `opts.severity` (#38 drill-through) and its Rule filter from `opts.rule` (Round 14);
+ * `settings` receives `onRerunWizard`. No route passes `onNavigate`
  * — pages use `useNavigate()`/`useNavigateOptional()`.
  */
 export const ROUTES: Record<PageId, RouteDef> = {
@@ -605,6 +641,9 @@ export const ROUTES: Record<PageId, RouteDef> = {
     render: (c) => <Workspace tab={c.opts?.tab} caseId={c.opts?.caseId} />,
   },
   metrics: { element: Analytics, render: (c) => <Analytics tab={c.opts?.tab} /> },
+  // The Analytics group's own id redirects to `#/metrics` (router PAGE_REDIRECTS); this
+  // entry is the defensive fallback should the redirect entry ever be dropped.
+  analytics: { element: Analytics },
   intelligence: { element: Intelligence, render: (c) => <Intelligence tab={c.opts?.tab} /> },
 
   /* ---- Deep-link leaves that force a host sub-tab ----
@@ -616,19 +655,23 @@ export const ROUTES: Record<PageId, RouteDef> = {
    *   Overview     → dashboard | standup
    *   Workspace    → chat | investigate
    *   Analytics    → metrics | effectiveness | cost
-   *   Intelligence → knowledge | runbooks | memory | playbooks | personas
+   *   Intelligence → knowledge | runbooks | memory | personas
    * Children that are GENUINELY standalone pages (they are NOT a tab of any host —
    * `dashboards` [custom-dashboard builder], `models`, `baseline`, `batchjobs`, `inbox`)
    * keep a standalone route below. */
+  // `dashboard` and the retired `playbooks` / `catalog` ids are redirects (router
+  // PAGE_REDIRECTS: `#/dashboard` to `#/overview`, the other two to `#/runbooks`); these
+  // entries are the defensive fallback should a redirect entry ever be dropped.
   dashboard: { element: Home, render: () => <Home tab="dashboard" /> },
   dashboards: { element: Dashboards },
-  playbooks: { element: Intelligence, render: () => <Intelligence tab="playbooks" /> },
+  playbooks: { element: Intelligence, render: () => <Intelligence tab="runbooks" /> },
   personas: { element: Intelligence, render: () => <Intelligence tab="personas" /> },
 
   /* ---- Standalone admin / notification surfaces ---- */
   models: { element: Models },
   roles: { element: Roles },
   inbox: { element: InboxPage },
+  whats_new: { element: WhatsNewPage },
 
   /* ---- Triage ---- */
   cases: {
@@ -636,9 +679,12 @@ export const ROUTES: Record<PageId, RouteDef> = {
     render: (c) => (
       <Cases
         initialStatus={c.opts?.status}
+        initialAssignee={c.opts?.assignee}
+        initialTag={c.opts?.tag}
         initialSeverity={c.opts?.severity}
         initialNoiseOutcome={c.opts?.noiseOutcome}
         initialWindowHours={c.opts?.window}
+        initialRule={c.opts?.rule}
       />
     ),
   },
@@ -646,16 +692,21 @@ export const ROUTES: Record<PageId, RouteDef> = {
     element: CaseManager,
     render: (c) => <CaseManager initialCaseId={c.opts?.caseId} />,
   },
-  scans: { element: Scans },
+  // D27: `#/scans` redirects to `#/case_manager?closedBy=agent` (router PAGE_REDIRECTS);
+  // the retired Automated scans page is gone, so the fallback is Case Manager itself.
+  scans: { element: CaseManager },
   approvals: { element: Approvals },
   sources: { element: Sources },
 
   /* ---- Round-4 surfaces ---- */
+  // Both read their deep-link opts from the router (no render thunk: entry budget).
   logs: { element: UnifiedLogs },
+  reports: { element: Reports },
   campaigns: { element: Campaigns },
   tuning: { element: Tuning },
   batchjobs: { element: BatchJobs },
   baseline: { element: BaselineStats },
+  team: { element: TeamActivity },
   docs: { element: Docs },
 
   /* ---- Host-tab leaves: route THROUGH the host with a forced tab (see rule above) --- */
@@ -666,8 +717,8 @@ export const ROUTES: Record<PageId, RouteDef> = {
   knowledge: { element: Intelligence, render: () => <Intelligence tab="knowledge" /> },
   runbooks: { element: Intelligence, render: () => <Intelligence tab="runbooks" /> },
   memory: { element: Intelligence, render: () => <Intelligence tab="memory" /> },
-  // `catalog` is a compatibility alias for the old combined destination.
-  catalog: { element: Intelligence, render: () => <Intelligence tab="playbooks" /> },
+  // `catalog` is a compatibility alias for the old combined destination (a redirect).
+  catalog: { element: Intelligence, render: () => <Intelligence tab="runbooks" /> },
 
   /* ---- Settings-redirected ids: INTENTIONALLY-unreachable-but-registered ----
    * `account`/`sessions`/`admin_sessions`/`security`/`users`/`roles` always redirect to

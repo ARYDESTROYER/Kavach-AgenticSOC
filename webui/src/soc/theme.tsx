@@ -26,6 +26,7 @@ import {
   type Material,
 } from './theme-tokens';
 import { LOGIN_BRANDING_DEFAULTS } from './components/auth/login.api';
+import { setBaseDocumentTitle } from './chat-activity/document-title';
 
 type ThemeMode = 'light' | 'dark' | 'system';
 
@@ -103,7 +104,11 @@ function applyFavicon(branding: Branding): void {
   link.href = href;
 }
 
-/** Set document.title from org + product names. */
+/**
+ * Set the document title's BASE from org + product names. The chat activity prefix
+ * ("●" / "✓") is composed on top by `chat-activity/document-title.ts`, so a branding
+ * refresh never wipes it and it never leaks into a branding value.
+ */
 function applyDocumentTitle(branding: Branding): void {
   if (typeof document === 'undefined') return;
   const org = branding.org_name.trim();
@@ -112,7 +117,7 @@ function applyDocumentTitle(branding: Branding): void {
   // instead of clobbering it to a different fallback string, which flickers on load.
   if (!org && !product) return;
   const title = Array.from(new Set([org || 'Agentic SOC', product].filter(Boolean))).join(' · ');
-  if (title) document.title = title;
+  if (title) setBaseDocumentTitle(title);
 }
 
 /**
@@ -162,13 +167,28 @@ export interface ThemeContextValue {
   /**
    * Re-fetch GET /api/branding and re-apply it to every consumer (accent CSS vars,
    * favicon, document title, material). Exposed so a WRITER (the BrandingEditor's
-   * Save) or a READER that must never show stale copy (the Login screen, on every
-   * mount) can force this shared, session-lived context back in sync with the backend
-   * without a full page reload. Best-effort: a failed refetch silently keeps whatever
-   * branding is currently in effect (never regresses to built-in defaults).
+   * Save) or a READER that must never show stale copy (the sign-in page, when the
+   * branding is not fresh) can force this shared, session-lived context back in sync
+   * with the backend without a full page reload. Best-effort: a failed refetch silently
+   * keeps whatever branding is currently in effect (never regresses to built-in
+   * defaults).
    */
   refreshBranding: () => Promise<void>;
+  /**
+   * The branding freshness flag (Round 16 WP04), read by the sign-in page on mount:
+   * true when a branding fetch succeeded less than {@link BRANDING_FRESH_MS} ago and no
+   * sign-in has used it since ({@link ThemeContextValue.markBrandingUsed}). On a cold
+   * load the page waits for this provider's own first fetch (`ready`) and paints from
+   * it, so GET /api/branding is sent once; the page shown after a sign-out fetches
+   * again. A function, because freshness depends on the time it is read.
+   */
+  brandingFresh: () => boolean;
+  /** The sign-in page calls this when it hands off into the Console. */
+  markBrandingUsed: () => void;
 }
+
+/** How long a settled branding fetch stays fresh for the sign-in page. */
+export const BRANDING_FRESH_MS = 30_000;
 
 const ThemeContext = React.createContext<ThemeContextValue | null>(null);
 
@@ -213,17 +233,21 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // Fetch + apply the latest branding doc (best-effort; on any failure it keeps
   // whatever branding is already in effect — never regresses to defaults). Shared by
   // the initial mount fetch below AND any external caller (the BrandingEditor's Save,
-  // the Login screen's own mount) that needs every consumer of this session-lived
-  // context resynced with the backend without a hard page reload — this is the fix for
-  // "saved branding doesn't reach the login screen": the provider is mounted once at
-  // the app root and otherwise never refetches.
+  // the sign-in page when the branding is stale) that needs every consumer of this
+  // session-lived context resynced with the backend without a hard page reload. This
+  // is the fix for "saved branding doesn't reach the login screen": the provider is
+  // mounted once at the app root and otherwise never refetches.
   const mounted = React.useRef(true);
+  // When the last successful fetch settled (ms epoch), or null when none has, or when
+  // a sign-in has used it since. A ref: reading it never re-renders anyone.
+  const brandingFetchedAt = React.useRef<number | null>(null);
   const refreshBranding = React.useCallback(async () => {
     try {
       const b = await api.getBranding();
       if (!mounted.current) return;
       const merged: Branding = { ...DEFAULT_BRANDING, ...b };
       const resolvedMaterial = applyBranding(merged);
+      brandingFetchedAt.current = Date.now();
       setBranding(merged);
       setMaterial(resolvedMaterial);
     } catch {
@@ -243,14 +267,32 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, [refreshBranding]);
 
+  const brandingFresh = React.useCallback(() => {
+    const at = brandingFetchedAt.current;
+    return at !== null && Date.now() - at < BRANDING_FRESH_MS;
+  }, []);
+  const markBrandingUsed = React.useCallback(() => {
+    brandingFetchedAt.current = null;
+  }, []);
+
   const setTheme = React.useCallback((next: ThemeMode) => {
     setMode(next);
     writeStoredMode(next);
   }, []);
 
   const value = React.useMemo<ThemeContextValue>(
-    () => ({ theme: mode, isDark, setTheme, branding, material, ready, refreshBranding }),
-    [mode, isDark, setTheme, branding, material, ready, refreshBranding],
+    () => ({
+      theme: mode,
+      isDark,
+      setTheme,
+      branding,
+      material,
+      ready,
+      refreshBranding,
+      brandingFresh,
+      markBrandingUsed,
+    }),
+    [mode, isDark, setTheme, branding, material, ready, refreshBranding, brandingFresh, markBrandingUsed],
   );
 
   return (

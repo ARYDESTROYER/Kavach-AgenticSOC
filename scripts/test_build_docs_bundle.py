@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -73,6 +76,166 @@ class DocumentationBundleTests(unittest.TestCase):
                 ["/docs/", "/docs/installed/"],
             )
             self.assertIn("/docs/0.1/", (output / "index.html").read_text(encoding="utf-8"))
+
+
+def _fake_built_tree(output: Path, docs_version: str, pages: tuple[str, ...]) -> None:
+    version_root = output / docs_version
+    (version_root / "search").mkdir(parents=True)
+    (version_root / "search" / "search_index.json").write_text("{}", encoding="utf-8")
+    for page in pages:
+        index = version_root / page / "index.html"
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text('<meta name="generator" content="mkdocs-test">', encoding="utf-8")
+
+
+class LegacyRedirectTests(unittest.TestCase):
+    PAGES = ("", "analyst/chat/", "analyst/case-manager/", "releases/0.2.0/")
+
+    def _bundle(self, output: Path) -> None:
+        _fake_built_tree(output, "0.2", self.PAGES)
+        bundle.write_bundle_metadata(output, version="0.2.0", docs_version="0.2", channel="Testing")
+        written = bundle.write_legacy_redirects(output, docs_version="0.2")
+        self.assertEqual(written, len(self.PAGES) * len(bundle.legacy_lines("0.2")))
+
+    def test_the_legacy_line_is_named_and_never_the_current_line(self) -> None:
+        self.assertIn("0.1", bundle.LEGACY_DOC_LINES)
+        self.assertEqual(bundle.legacy_lines("0.2"), ("0.1",))
+        self.assertEqual(bundle.legacy_lines("0.1"), ())
+
+    def test_every_current_page_has_a_redirect_in_the_old_line(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_temp:
+            output = Path(raw_temp)
+            self._bundle(output)
+            bundle.validate_bundle(output, version="0.2.0", docs_version="0.2", channel="Testing")
+
+            stub = (output / "0.1" / "analyst" / "case-manager" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(
+                '<meta http-equiv="refresh" content="0; url=/docs/0.2/analyst/case-manager/">', stub
+            )
+            self.assertIn('<link rel="canonical" href="/docs/0.2/analyst/case-manager/">', stub)
+            home = (output / "0.1" / "index.html").read_text(encoding="utf-8")
+            self.assertIn('url=/docs/0.2/"', home)
+            # The script runs before the no-script fallback.
+            self.assertLess(stub.index("<script>"), stub.index('http-equiv="refresh"'))
+
+    def test_the_anchored_stub_keeps_the_fragment(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_temp:
+            output = Path(raw_temp)
+            self._bundle(output)
+            stub = (output / "0.1" / "analyst" / "chat" / "index.html").read_text(encoding="utf-8")
+            match = re.search(r"<script>(.*?)</script>", stub)
+            self.assertIsNotNone(match)
+            script = match.group(1)
+            self.assertEqual(script, 'location.replace("/docs/0.2/analyst/chat/" + location.hash)')
+            node = shutil.which("node")
+            if node is None:
+                return
+            # Run the exact script against a stand-in location: a stored citation
+            # such as /docs/0.1/analyst/chat/#sources must land on #sources.
+            driver = (
+                "let target = null;"
+                "const location = { hash: '#sources', replace(url) { target = url; } };"
+                f"{script};"
+                "process.stdout.write(target);"
+            )
+            landed = subprocess.run(
+                [node, "-e", driver], check=True, capture_output=True, text=True
+            ).stdout
+            self.assertEqual(landed, "/docs/0.2/analyst/chat/#sources")
+
+    def test_a_missing_or_wrong_stub_fails_the_bundle_check(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_temp:
+            output = Path(raw_temp)
+            self._bundle(output)
+            (output / "0.1" / "analyst" / "chat" / "index.html").unlink()
+            with self.assertRaisesRegex(RuntimeError, "anchored citation page"):
+                bundle.validate_bundle(output, version="0.2.0", docs_version="0.2")
+        with tempfile.TemporaryDirectory() as raw_temp:
+            output = Path(raw_temp)
+            self._bundle(output)
+            (output / "0.1" / "releases" / "0.2.0" / "index.html").write_text(
+                bundle._redirect_page("/docs/0.2/releases/0.2.0/", "x"), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(RuntimeError, "does not redirect"):
+                bundle.validate_bundle(output, version="0.2.0", docs_version="0.2")
+
+    def test_the_curated_release_notes_never_reach_the_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_temp:
+            output = Path(raw_temp)
+            self._bundle(output)
+            notes = output / "0.2" / "releases" / "notes"
+            notes.mkdir(parents=True)
+            (notes / "0.2.0.json").write_text('{"schema": 1}', encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, r"/docs/0\.2/releases/notes/"):
+                bundle.validate_bundle(output, version="0.2.0", docs_version="0.2")
+
+    def test_mkdocs_excludes_every_folder_the_bundle_check_refuses(self) -> None:
+        """The ``exclude_docs`` block names ``releases/notes/``, so MkDocs never copies
+        the curated What's new notes into the Help Center (and so into the image)."""
+        excluded: set[str] = set()
+        inside = False
+        for line in (bundle.ROOT / "mkdocs.yml").read_text(encoding="utf-8").splitlines():
+            if line.startswith("exclude_docs:"):
+                inside = True
+                continue
+            if inside:
+                if line and not line.startswith(" "):
+                    break
+                entry = line.strip()
+                if entry and not entry.startswith("#"):
+                    excluded.add(entry)
+        self.assertTrue(excluded, "mkdocs.yml has no exclude_docs block")
+        for folder in bundle.NON_BUNDLED_DOC_DIRS:
+            self.assertIn(f"{folder}/", excluded)
+            self.assertTrue((bundle.ROOT / "docs" / folder).is_dir(), folder)
+
+    def test_the_target_can_never_close_the_script(self) -> None:
+        script = bundle._fragment_script("/docs/0.2/</script><b>/")
+        self.assertTrue(script.startswith("<script>") and script.endswith("</script>"))
+        self.assertNotIn("<", script[len("<script>") : -len("</script>")])
+
+
+
+def _material_config(version: object) -> str:
+    config = {"base": ".", "features": [], "version": version}
+    return (
+        '<meta name="generator" content="mkdocs-test">'
+        f'<script id="__config" type="application/json">{json.dumps(config)}</script>'
+    )
+
+
+class VersionListTests(unittest.TestCase):
+    """The bundled Help Center never asks for /docs/versions.json (WP16)."""
+
+    def test_the_bundled_build_sets_no_version_provider(self) -> None:
+        source = (bundle.ROOT / "scripts" / "build_docs_bundle.py").read_text(encoding="utf-8")
+        self.assertIn('"TLSOC_DOCS_VERSION_PROVIDER": ""', source)
+        config = (bundle.ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+        # The published site keeps Mike: the variable is unset there.
+        self.assertIn("provider: !ENV [TLSOC_DOCS_VERSION_PROVIDER, mike]", config)
+
+    def test_the_provider_is_read_from_the_page_configuration(self) -> None:
+        mike = {"provider": "mike", "default": "stable", "alias": True}
+        self.assertEqual(bundle.version_provider(_material_config(mike)), "mike")
+        self.assertEqual(bundle.version_provider(_material_config({"provider": None})), "")
+        self.assertEqual(bundle.version_provider(_material_config(None)), "")
+        self.assertEqual(bundle.version_provider('<meta name="generator" content="mkdocs-test">'), "")
+
+    def test_a_landing_page_that_asks_for_a_version_list_fails_the_check(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_temp:
+            output = Path(raw_temp)
+            _fake_built_tree(output, "0.2", ("",))
+            bundle.write_bundle_metadata(output, version="0.2.0", docs_version="0.2", channel="Testing")
+            bundle.write_legacy_redirects(output, docs_version="0.2")
+            bundle.validate_bundle(output, version="0.2.0", docs_version="0.2", channel="Testing")
+            (output / "0.2" / "index.html").write_text(
+                _material_config({"provider": "mike", "default": "stable", "alias": True}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "versions.json"):
+                bundle.validate_bundle(output, version="0.2.0", docs_version="0.2", channel="Testing")
 
 
 if __name__ == "__main__":

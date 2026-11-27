@@ -1,6 +1,6 @@
 # TROUBLESHOOTING.md — Agentic SOC
 
-A consolidated symptom → likely cause → fix → confirm playbook spanning deploy,
+A consolidated symptom → likely cause → fix → confirm guide spanning deploy,
 runtime, and usage of the **vendor-agnostic** suite. Each entry tells you how to
 **confirm** the fix.
 
@@ -14,7 +14,7 @@ Quick triage:
 ```bash
 # Backend health (the agnostic stack publishes :8088; or exec into the container)
 curl -s localhost:8088/api/health ; echo
-#   -> {"status":"ok","version":"0.1.12","es_connected":...,"store_type":"...","setup_complete":...}
+#   -> {"status":"ok","version":"0.2.0","es_connected":...,"store_type":"...","setup_complete":...}
 
 # Same health THROUGH the web UI's nginx proxy (proves the SPA → backend path)
 curl -fsS http://localhost:8080/api/health ; echo
@@ -66,18 +66,25 @@ client — see the callout above; it does not confirm Postgres).
 ### A2. pgvector extension missing
 
 **Symptom.** Backend logs `Could not ensure pgvector extension (...); RAG uses
-JSON cosine`; RAG works but native kNN does not.
+JSON cosine`. Knowledge search still works.
 
 **Likely cause.** The Postgres image lacks the `vector` extension or the role
 can't `CREATE EXTENSION`.
 
+**What it means since 0.2.0.** The store ranks knowledge chunks in the backend process
+with a cached in-memory matrix (single-threaded numpy, then an exact re-score), on SQLite
+and PostgreSQL alike, so most corpora never use pgvector. pgvector ranks only a corpus too
+large for that matrix, or a process without numpy. Without it, such a corpus is ranked in
+Python: slower, with the same results.
+
 **Fix.** Use the **`pgvector/pgvector:pg16`** image (the agnostic compose already
-does) or install the extension package and grant create privilege. The suite is
-**fail-safe**: without pgvector it degrades to JSON + Python cosine, so this is a
-performance/quality note, not an outage.
+does) or install the extension package and grant create privilege. This is a performance
+note for very large corpora, not an outage. `GET /api/diagnostics/health` shows
+`event_loop` (the worst and 99th-percentile loop lag over the last minute) if you suspect
+slow searches.
 
 **How to confirm.** Backend logs `pgvector extension ensured`;
-`docker exec tlsoc-postgres psql -U tlsoc -d tlsoc -c '\dx'` lists `vector`.
+`docker exec tlsoc-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\\dx"'` lists `vector`.
 
 ### A3. Chose the wrong `STATE_BACKEND`
 
@@ -463,8 +470,9 @@ subsequent `POST /api/poll` runs normally.
 
 **Likely cause.** No or invalid LLM key → the system **fails safe to a human**
 (the router defaults to UNCERTAIN; any pipeline failure yields `needs_human`
-rather than dropping the alert). Chat shows "assistant unavailable" in the same
-situation.
+rather than dropping the alert). In the same situation a chat answer carries a notice
+that the model is not configured or its key was rejected; questions about the product
+are still answered at no cost from the bundled Help Center.
 
 **Fix.** Configure a valid provider key (Settings shows `anthropic_api_key:
 configured ✓` and/or `openai_api_key: configured ✓`); confirm the per-role model
@@ -474,7 +482,7 @@ names are valid for that provider.
 > way.** If a role is pointed at a custom model whose `base_url` is unreachable,
 > whose endpoint requires a key you didn't set (`litellm_api_key` / `LITELLM_API_KEY`
 > blank), or that returns an incompatible response shape, the gateway call fails and
-> the case (or chat turn) fails safe to `needs_human` / "assistant unavailable" —
+> the case fails safe to `needs_human` (a chat turn shows the provider notice) —
 > exactly like a missing cloud key. Use **Settings → Models → "Add local model" →
 > Test** (`POST /api/llm/providers/test`, non-metered) to isolate a bad `base_url` /
 > missing key from an unrelated pipeline issue before touching anything else.
@@ -484,6 +492,115 @@ names are valid for that provider.
 
 > This is fail-safe behaviour, not a bug: routing to a human beats silently
 > dismissing an alert.
+
+---
+
+## M2. A rule never auto-closes and the agent reports "no context" for a field that is there
+
+**Symptom.** One detection rule routes to `needs_human` on essentially every case,
+and the case evidence says something like *"…alert from 10.97.3.201; no HTTP or
+execution context."* — while a direct query against the index shows the record
+plainly carries `url.path`, `http.request.method` and `user_agent.original`. Raising
+`investigator_model.max_tokens` or `caps.timeout_seconds` changes nothing, and
+growing the analyst-confirmed precedent corpus for that rule changes nothing either.
+
+**Likely cause.** The agent is telling the truth about *its inputs*. Each sample
+event reaches the model as a **bounded projection** of the record, not the whole
+record, and the field that decides your rule is not in the projection. Before
+0.1.13 that projection was a fixed seven keys with no way to widen it; since 0.1.13
+it defaults to the ECS set that usually carries the verdict, but a source with a
+non-ECS schema (a vendor prefix like `data.url`, a custom detection field) still
+needs to name its own paths. The tell that it is this and not a model problem: the
+verdict does not improve with more tokens, more time, or more precedent, because
+none of those supply a missing per-case discriminator.
+
+**Fix.** Add the deciding paths to the evidence projection.
+
+1. **Find out what your alerts actually carry.** Open **Sources → your source →
+   Advanced — field mapping**, paste one real alert record and press *Suggest
+   mappings*. `POST /api/sources/{id}/analyze-sample` returns
+   `suggested_evidence_fields` — which of the default evidence paths that record
+   carries — alongside the full `fields` inventory of every path in it.
+2. **Set the projection.** Deployment-wide in **Settings → General → Case evidence
+   fields**; for a single source, through its `evidence_fields` config key on
+   `POST /api/sources` (there is no per-source Console control for this yet). Paths
+   are dotted and are read the same way as the field mapping, so `data.url` and
+   `data.srcip` work. An empty list restores the pre-0.1.13 identity-only
+   projection; `["*"]` sends the whole record, bounded only by the per-event
+   character budget beside it.
+3. **Re-investigate one case** and read the new verdict and evidence.
+
+**How to confirm.** Ask the agent in **Chat** to query the source for the entity
+(e.g. `ip:10.97.3.201`) and look at the result table: each row now carries the fields
+you added. That is the direct check — the rows the agent sees are the rows you see.
+
+> **Two things that will NOT confirm it.** The Investigation trace shows the audited
+> prompt *excerpt*, which is truncated at 1,000 characters and begins with the
+> memory, runbook and precedent blocks, so it usually ends before the sample events;
+> its absence there proves nothing. And a free-text `contains` query is an analysed
+> *term* match, not a substring scan: it matches a word in an analysed field
+> (`message`, `event.original`) but matches an exact-value `keyword` field only
+> against its whole value, so `contains: "editpdf"` will not find
+> `/mod/assign/feedback/editpdf/ajax.php`. The projection is the fix; the search
+> disclosure only stops a zero being misread as an absence.
+
+> **Rules that genuinely have no per-alert context are a different problem.**
+> Aggregation and ES|QL detections (excessive-404 enumeration, session-key reuse
+> across IPs, request-rate credential stuffing) alert on a *count*, so no single URL
+> or user agent exists to attach. Widening the projection correctly does nothing for
+> them — they need analyst precedent (§ Settings → Detection → precedent) or a
+> suppression/analyst policy, not more fields.
+
+---
+
+## N0. A replay experiment reports "insufficient evidence"
+
+**Symptom.** A `replay_experiment` job succeeded, but `arm_comparison.verdict` is
+`insufficient_evidence` or `indistinguishable_from_noise` and there is no number to
+act on.
+
+**Cause.** That is the answer, not a failure. The harness measures each arm's own
+self-consistency first and refuses to call a difference real unless it clearly exceeds
+that floor. Read `reason`: `noise_floor_not_measured` (`repeats < 2` cannot measure a
+floor at all), `run_incomplete` (an interrupted or cancelled run), `no_paired_fixtures`,
+`single_arm`, or `noise_floor_undersampled` (repeat cells were lost to exclusion, so the
+floor rests on fewer comparisons than the table it would gate — `noise_floor_coverage`
+shows the shortfall). An insufficient-evidence result carries its raw counts and NO
+rate, difference or p-value: it is never converted into a score.
+
+A separate verdict, `underpowered`, means the difference DID clear the floor but this
+many discordant pairs cannot reach `alpha` under any split — add fixtures. Distinguish
+it from `indistinguishable_from_noise` by reading `above_noise_floor` and
+`significant_at_alpha`, which are reported separately from their conjunction
+`exceeds_noise_floor`.
+
+**Fix.** Run with `repeats >= 2`, enough fixtures for the paired table to be
+informative (check `arm_comparison.n_pairs`, `b` and `c` — never read `p_exact`
+without them), and a `spend_bound_usd` high enough that the run does not cancel.
+
+**Also note.** The harness cannot answer a retrospective question about a change that
+already shipped: the originating log events age out and the stored fallback strips
+record content, so no fixture for a past build can be rebuilt. Capture runs forward.
+See [`docs/development/replay-harness.md`](development/replay-harness.md).
+
+**How to confirm.** `report.json` carries `noise_floor.measured: true`, a non-zero
+`arm_comparison.n_pairs`, and `spend.tripped: false`.
+
+---
+
+## N0b. A replay experiment failed with "cannot be resumed"
+
+**Symptom.** A `replay_experiment` job that was running when the worker restarted comes
+back `failed`, with a failure reason saying the run cannot be resumed.
+
+**Cause.** Deliberate. `spend_bound_usd` applies to the whole job, and a run's accrual
+is read from a run-scoped ledger mirror a new worker cannot reconstruct. Resuming would
+hand the remaining fixtures a fresh, untouched copy of the ceiling and let one
+interruption spend it twice.
+
+**Fix.** Submit a new run for the remaining fixtures. The first attempt's spend is
+already visible in the usage ledger under `surface = "replay"` and in its keyed
+`job:<id>:replay-spend` audit row; the refusal itself spends nothing.
 
 ---
 
@@ -497,6 +614,29 @@ read-only mode`.
 `curl -X PUT .../api/settings -d '{"read_only_settings_mode": false}'`.
 
 **How to confirm.** `GET /api/settings` returns `"read_only": false`.
+
+**Symptom: a save answers `503 audit_unavailable`.** Since Round 14 every settings, user,
+role, source, runbook and dashboard change, and every job file download, writes its
+audit row first; when the row cannot be written, nothing changes. Check the audit
+store's health and the management key's write rights. On an Elasticsearch state backend
+upgraded from an earlier build, the backend extends the audit mapping itself at every
+start. When its log says it could not ("Audit template ... could not be read" or "could
+not be updated", "Audit index mappings could not be read", "Audit index ... mapping could
+not be extended", or "Audit index ... already maps ... another way"), apply the shipped
+audit template and roll the audit write index (`docs/operations/upgrades.md`, "Applying
+the Round 14 audit template"): until the mapping is extended, a date-like value in an
+audit row can map a field as a date and later rows are refused.
+
+**Symptom: on PostgreSQL the Audit log's People and settings or Agent activity view
+answers `503 audit_unavailable`, while All still works, and account activity is empty.**
+An earlier build could not read an audit row with a `\u0000` in it through a filter;
+one failed sign-in with a NUL in the username wrote such a row. Upgrade: the current
+build cleans audit text on write, refuses such usernames (a sign-in with one is an
+ordinary `401`), and reads older rows as if
+they had been cleaned (they are never rewritten). Read-only check for stored rows:
+`SELECT count(*) FROM audit WHERE strpos(doc::text, '\u0000') > 0;`. A failed read is now
+reported as `503 audit_unavailable` by account activity and as "The audit trail did not
+answer" by chat, never as no rows.
 
 ---
 

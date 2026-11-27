@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import Depends, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from ..models import NotificationPref
@@ -27,11 +27,33 @@ from .deps import current_username, get_state, require_permission
 
 logger = logging.getLogger("tlsoc.api.inapp")
 
+
+async def _visible_inbox_items(
+    state: AppState,
+    user: str,
+    *,
+    unread_only: bool = False,
+) -> list:
+    inbox = getattr(state, "inbox", None)
+    if inbox is None:
+        return []
+    items, _ = await inbox.list_for_user(
+        user, unread_only=unread_only, limit=0, offset=0
+    )
+    from ..engine.batch_inbox import filter_visible_batch_notes
+
+    return await filter_visible_batch_notes(state, user, items)
+
+
+def _public_item(item) -> dict[str, Any]:
+    from ..engine.batch_inbox import public_inbox_item
+
+    return public_inbox_item(item)
+
 # Own router; the integrator mounts it with ``Depends(require_auth)`` like the
 # monolith, so GET routes inherit the auth gate. Same prefix as the monolith so the
 # paths read ``/api/notifications/inbox*`` (no collision with the existing
 # /api/notifications/{providers,preview,test,channels/...} routes).
-from fastapi import APIRouter
 
 router = APIRouter(prefix="/api")
 
@@ -56,9 +78,11 @@ async def get_inbox(
         return {"items": [], "total": 0, "limit": _bound_limit(limit), "offset": max(0, offset)}
     lim = _bound_limit(limit)
     off = max(0, int(offset or 0))
-    items, total = await inbox.list_for_user(user, unread_only=unread_only, limit=lim, offset=off)
+    visible = await _visible_inbox_items(state, user, unread_only=unread_only)
+    total = len(visible)
+    items = visible[off : off + lim]
     return {
-        "items": [n.model_dump(mode="json") for n in items],
+        "items": [_public_item(n) for n in items],
         "total": total,
         "limit": lim,
         "offset": off,
@@ -74,7 +98,7 @@ async def get_unread_count(
     """The CURRENT user's unread badge count (``state in {unseen, seen}``)."""
     user = current_username(request)
     inbox = getattr(state, "inbox", None)
-    count = await inbox.unread_count(user) if inbox is not None else 0
+    count = len(await _visible_inbox_items(state, user, unread_only=True)) if inbox is not None else 0
     return {"unread": int(count)}
 
 
@@ -91,10 +115,13 @@ async def mark_inbox_read(
     inbox = getattr(state, "inbox", None)
     if inbox is None:
         return {"ok": False, "detail": "inbox unavailable"}
+    visible = await _visible_inbox_items(state, user)
+    if not any(item.id == notification_id for item in visible):
+        return {"ok": False, "detail": "not found"}
     updated = await inbox.mark_read(user, notification_id)
     if updated is None:
         return {"ok": False, "detail": "not found"}
-    return {"ok": True, "item": updated.model_dump(mode="json")}
+    return {"ok": True, "item": _public_item(updated)}
 
 
 @router.post("/notifications/inbox/read-all")
@@ -106,7 +133,11 @@ async def mark_inbox_read_all(
     """Mark EVERY not-yet-read item in the current user's inbox read."""
     user = current_username(request)
     inbox = getattr(state, "inbox", None)
-    count = await inbox.mark_all_read(user) if inbox is not None else 0
+    count = 0
+    if inbox is not None:
+        for item in await _visible_inbox_items(state, user, unread_only=True):
+            if await inbox.mark_read(user, item.id) is not None:
+                count += 1
     return {"ok": True, "marked": int(count)}
 
 
@@ -122,6 +153,9 @@ async def dismiss_inbox_item(
     inbox = getattr(state, "inbox", None)
     if inbox is None:
         return {"ok": False, "detail": "inbox unavailable"}
+    visible = await _visible_inbox_items(state, user)
+    if not any(item.id == notification_id for item in visible):
+        return {"ok": False, "dismissed": False}
     existed = await inbox.dismiss(user, notification_id)
     return {"ok": bool(existed), "dismissed": bool(existed)}
 

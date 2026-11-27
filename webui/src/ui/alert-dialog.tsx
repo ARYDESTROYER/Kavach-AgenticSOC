@@ -17,7 +17,7 @@ import * as React from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { cn } from '@/lib/cn';
 import { buttonVariants } from '@/ui/button';
-import { modalOverlay } from '@/lib/ui-recipes';
+import { modalOverlay, modalSurface } from '@/lib/ui-recipes';
 
 const AlertDialog = DialogPrimitive.Root;
 const AlertDialogTrigger = DialogPrimitive.Trigger;
@@ -83,13 +83,9 @@ const AlertDialogContent = React.forwardRef<
           if (!dismissible) e.preventDefault();
         }}
         className={cn(
-          // Match dialog.tsx: bound the height + scroll internally so a tall confirm
-          // dialog can't clip its Action/Cancel footer off-screen.
-          'fixed left-1/2 top-1/2 z-50 grid max-h-[85dvh] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto',
-          'rounded-lg border border-border bg-card p-6 text-foreground shadow-elev2',
-          'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
-          'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95',
-          'duration-200',
+          // The same centred modal panel as dialog.tsx (one recipe): 14px radius, bounded
+          // height, overlay elevation, a spring enter that zooms about the centre.
+          modalSurface,
           className,
         )}
         {...props}
@@ -118,7 +114,7 @@ const AlertDialogTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Title
     ref={ref}
-    className={cn('text-lg font-semibold leading-none tracking-tight text-foreground', className)}
+    className={cn('text-lg font-semibold leading-none text-foreground', className)}
     {...props}
   />
 ));

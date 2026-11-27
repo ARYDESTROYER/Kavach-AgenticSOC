@@ -33,7 +33,7 @@ import asyncio
 import hashlib
 import logging
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from ..constants import SESSIONS_KEY, SESSIONS_NS
@@ -96,6 +96,12 @@ def new_refresh_token() -> str:
 def _to_epoch(value: Any) -> float | None:
     dt = parse_es_timestamp(value)
     return dt.timestamp() if dt is not None else None
+
+
+def _iso_epoch(epoch: float | None) -> str:
+    if epoch is None:
+        return ""
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
 
 
 class SessionStore:
@@ -187,6 +193,13 @@ class SessionStore:
             "ua_os": "",
             "client_type": "",
             "mfa_method": "",
+            # Round 12 (Remember me): a remembered sign-in is judged against the
+            # remember_me policy limits (see app.auth.session_limits). ``remember_seconds``
+            # is the lifetime granted at creation (display + forensics only — the LIVE
+            # policy is authoritative), ``token_expires_at`` the access token's ``exp``.
+            "remember": False,
+            "remember_seconds": 0,
+            "token_expires_at": "",
         }
 
     # ----- token-version (per-user) ----------------------------------------- #
@@ -199,6 +212,148 @@ class SessionStore:
         the user whose stamped ``tv`` no longer matches."""
         entries = await self._load()
         return self._tv_from(entries, username)
+
+    async def strict_deferred_authority(
+        self,
+        *,
+        sid: str,
+        username: str,
+        token_version: int,
+        idle_timeout: int,
+        absolute_lifetime: int,
+        sudo_window: int,
+        remember_idle: int = 0,
+        remember_absolute: int = 0,
+        remember_fallback_idle: int = 0,
+        remember_fallback_absolute: int = 0,
+    ) -> bool:
+        """Fail-closed one-snapshot authority check for deferred privileged work.
+
+        General request authentication deliberately tolerates a transient session
+        registry outage for backwards compatibility. A reset/export/storage effect
+        cannot: it may run after the originating request is gone. This reads the
+        exact session row and the user's current token-version sentinel from one
+        strict KV snapshot, then applies the *live* expiry and sudo-window policy.
+        """
+        return (
+            await self.strict_deferred_authority_expires_at(
+                sid=sid,
+                username=username,
+                token_version=token_version,
+                idle_timeout=idle_timeout,
+                absolute_lifetime=absolute_lifetime,
+                sudo_window=sudo_window,
+                remember_idle=remember_idle,
+                remember_absolute=remember_absolute,
+                remember_fallback_idle=remember_fallback_idle,
+                remember_fallback_absolute=remember_fallback_absolute,
+            )
+            is not None
+        )
+
+    async def strict_deferred_authority_expires_at(
+        self,
+        *,
+        sid: str,
+        username: str,
+        token_version: int,
+        idle_timeout: int,
+        absolute_lifetime: int,
+        sudo_window: int,
+        remember_idle: int = 0,
+        remember_absolute: int = 0,
+        remember_fallback_idle: int = 0,
+        remember_fallback_absolute: int = 0,
+    ) -> int | None:
+        """Return the exact live step-up expiry in epoch milliseconds.
+
+        A strict storage/corruption failure raises. A known but stale, revoked, or
+        mismatched session returns ``None``. This lets sensitive admission report a
+        registry outage separately while every deferred effect remains fail closed.
+        """
+        getter = getattr(self._kv, "get_strict", None) or self._kv.get
+        doc = await getter(SESSIONS_NS, SESSIONS_KEY)
+        if not isinstance(doc, dict) or not isinstance(doc.get("entries", []), list):
+            raise RuntimeError("session authority registry is unavailable")
+        entries = [row for row in doc.get("entries", []) if isinstance(row, dict)]
+        row = next((entry for entry in entries if entry.get("sid") == sid), None)
+        if row is None or _norm(row.get("username", "")) != _norm(username):
+            return None
+        try:
+            stamped = int(row.get("token_version", -1))
+        except (TypeError, ValueError):
+            return None
+        current = self._tv_from(entries, username)
+        if stamped != int(token_version) or current != int(token_version):
+            return None
+        if self.is_active(
+            row,
+            idle_timeout=max(0, int(idle_timeout)),
+            absolute_lifetime=max(0, int(absolute_lifetime)),
+            remember_idle=max(0, int(remember_idle)),
+            remember_absolute=max(0, int(remember_absolute)),
+            remember_fallback_idle=max(0, int(remember_fallback_idle)),
+            remember_fallback_absolute=max(0, int(remember_fallback_absolute)),
+        ) is not None:
+            return None
+        last_authn = _to_epoch(row.get("last_authn_at")) or _to_epoch(
+            row.get("created_at")
+        )
+        if last_authn is None:
+            return None
+        expires_at = last_authn + max(1, int(sudo_window))
+        if now_utc().timestamp() > expires_at:
+            return None
+        return int(expires_at * 1000)
+
+    async def strict_request_authority(
+        self,
+        *,
+        sid: str,
+        username: str,
+        token_version: int,
+        idle_timeout: int,
+        absolute_lifetime: int,
+        remember_idle: int = 0,
+        remember_absolute: int = 0,
+        remember_fallback_idle: int = 0,
+        remember_fallback_absolute: int = 0,
+    ) -> str | None:
+        """Validate one request session from a strict, read-only KV snapshot.
+
+        Normal request handling may lazily register/touch a signed session for
+        backwards compatibility. A closed factory boundary cannot permit either
+        write. This seam therefore returns the usual rejection reason (or
+        ``"unknown"``) without mutating the registry and raises on storage/corrupt
+        uncertainty so the caller can fail closed.
+        """
+
+        getter = getattr(self._kv, "get_strict", None) or self._kv.get
+        doc = await getter(SESSIONS_NS, SESSIONS_KEY)
+        if doc is None:
+            return "unknown"
+        if not isinstance(doc, dict) or not isinstance(doc.get("entries", []), list):
+            raise RuntimeError("session authority registry is unavailable")
+        entries = [row for row in doc.get("entries", []) if isinstance(row, dict)]
+        row = next((entry for entry in entries if entry.get("sid") == sid), None)
+        if row is None or _norm(row.get("username", "")) != _norm(username):
+            return "unknown"
+        try:
+            row_tv = int(row.get("token_version", -1))
+        except (TypeError, ValueError):
+            return REASON_TV_MISMATCH
+        current_tv = self._tv_from(entries, username)
+        if row_tv != int(token_version) or current_tv != int(token_version):
+            return REASON_TV_MISMATCH
+        return self.is_active(
+            row,
+            idle_timeout=max(0, int(idle_timeout)),
+            absolute_lifetime=max(0, int(absolute_lifetime)),
+            remember_idle=max(0, int(remember_idle)),
+            remember_absolute=max(0, int(remember_absolute)),
+            remember_fallback_idle=max(0, int(remember_fallback_idle)),
+            remember_fallback_absolute=max(0, int(remember_fallback_absolute)),
+        )
 
     @staticmethod
     def _tv_from(entries: list[dict[str, Any]], username: str) -> int:
@@ -229,9 +384,17 @@ class SessionStore:
         ua_os: str = "",
         client_type: str = "",
         mfa_method: str = "",
+        remember: bool = False,
+        remember_seconds: int = 0,
+        token_expires_at: str = "",
     ) -> dict[str, Any]:
         """Register a new session row (idempotent on ``sid`` — re-creating an existing
-        sid refreshes its metadata instead of duplicating). Returns the stored row."""
+        sid refreshes its metadata instead of duplicating). Returns the stored row.
+
+        ``remember`` marks a "Remember me" sign-in: the caller passes the REMEMBERED
+        limits as ``idle_timeout`` / ``absolute_lifetime`` so the stamped expiry
+        timestamps describe the remembered session (the live policy still decides,
+        see :meth:`is_active`)."""
         row = self._blank_row(sid, username)
         now = now_utc()
         if absolute_lifetime > 0:
@@ -244,6 +407,9 @@ class SessionStore:
             ip=ip or "", ip_city=ip_city or "", ip_country=ip_country or "",
             ua_raw=ua_raw or "", ua_browser=ua_browser or "", ua_os=ua_os or "",
             client_type=client_type or "", mfa_method=mfa_method or "",
+            remember=bool(remember),
+            remember_seconds=max(0, int(remember_seconds or 0)) if remember else 0,
+            token_expires_at=token_expires_at or "",
         )
 
         def apply(entries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -340,7 +506,8 @@ class SessionStore:
         return await self._mutate(apply)
 
     async def rekey_and_rotate(self, old_sid: str, new_sid: str, new_hash: str,
-                               *, idle_timeout: int = 0) -> dict[str, Any] | None:
+                               *, idle_timeout: int = 0,
+                               token_expires_at: str = "") -> dict[str, Any] | None:
         """Rotate a session on REFRESH while preserving ONE logical row.
 
         The existing row's ``sid`` is re-keyed to ``new_sid`` (so the freshly-minted
@@ -361,6 +528,8 @@ class SessionStore:
                 row["last_active_at"] = now.isoformat()
                 if idle_timeout > 0:
                     row["idle_expiry_at"] = (now + timedelta(seconds=int(idle_timeout))).isoformat()
+                if token_expires_at:
+                    row["token_expires_at"] = token_expires_at
                 return row
             return None
 
@@ -478,8 +647,39 @@ class SessionStore:
 
     # ----- activity / expiry checks ----------------------------------------- #
     @staticmethod
+    def limits_for_row(row: dict[str, Any] | None, *, idle_timeout: int = 0,
+                       absolute_lifetime: int = 0, remember_idle: int = 0,
+                       remember_absolute: int = 0, remember_fallback_idle: int = 0,
+                       remember_fallback_absolute: int = 0) -> tuple[int, int]:
+        """``(idle, absolute)`` that apply to ``row``: the remembered pair for a row
+        created by a "Remember me" sign-in while remembered limits are supplied
+        (``remember_absolute > 0``), else the standard pair.
+
+        A remembered row whose principal is no longer remembered (Remember me turned
+        off, or the role excluded: ``remember_absolute == 0``) is judged as a
+        standard sign-in and never looser than one (Round 12 final review, L1): its
+        absolute limit is also capped at the standard access-token lifetime
+        (``remember_fallback_absolute``, from ``created_at``) and an explicit
+        remembered inactivity limit (``remember_fallback_idle``) keeps applying when
+        it is stricter than the standard one."""
+        from ..auth.session_limits import strictest
+
+        if row is not None and bool(row.get("remember")):
+            if int(remember_absolute or 0) > 0:
+                absolute = int(remember_absolute)
+                idle = int(remember_idle or 0)
+                return (idle if 0 < idle <= absolute else absolute, absolute)
+            return (
+                strictest(int(idle_timeout or 0), int(remember_fallback_idle or 0)),
+                strictest(int(absolute_lifetime or 0), int(remember_fallback_absolute or 0)),
+            )
+        return (int(idle_timeout or 0), int(absolute_lifetime or 0))
+
+    @staticmethod
     def is_active(row: dict[str, Any] | None, *, idle_timeout: int = 0,
-                  absolute_lifetime: int = 0) -> str | None:
+                  absolute_lifetime: int = 0, remember_idle: int = 0,
+                  remember_absolute: int = 0, remember_fallback_idle: int = 0,
+                  remember_fallback_absolute: int = 0) -> str | None:
         """Return a rejection REASON string if the session is NOT usable, else None.
 
         Pure (no I/O) so the deps layer can call it after a single ``get``. Rejects
@@ -488,11 +688,26 @@ class SessionStore:
         live POLICY OVERRIDE — when >0 they are recomputed from ``created_at`` /
         ``last_active_at`` so a policy change takes effect on stored rows; the
         per-row stamped expiry timestamps are the fallback. A missing row is the
-        caller's concern (lazy-register), NOT a rejection here."""
+        caller's concern (lazy-register), NOT a rejection here.
+
+        Round 12: a row with ``remember: true`` is judged against ``remember_idle`` /
+        ``remember_absolute`` when ``remember_absolute > 0`` (build both pairs with
+        :func:`app.auth.session_limits.session_limits`); otherwise — Remember me
+        turned off, or a caller without remembered limits — the standard pair
+        applies, tightened as :meth:`limits_for_row` describes so the row ends where a
+        standard sign-in would. Shortening the remembered duration, turning
+        Remember me off or excluding the role therefore only ever shortens older
+        remembered sessions, from their next request."""
         if row is None:
             return None  # caller decides (lazy-register an unknown sid)
         if row.get("revoked"):
             return REASON_REVOKED
+        idle_timeout, absolute_lifetime = SessionStore.limits_for_row(
+            row, idle_timeout=idle_timeout, absolute_lifetime=absolute_lifetime,
+            remember_idle=remember_idle, remember_absolute=remember_absolute,
+            remember_fallback_idle=remember_fallback_idle,
+            remember_fallback_absolute=remember_fallback_absolute,
+        )
         now = now_utc().timestamp()
         # Absolute lifetime: created_at + policy, else the stamped timestamp.
         created = _to_epoch(row.get("created_at"))
@@ -513,6 +728,55 @@ class SessionStore:
             if idle_exp is not None and now > idle_exp:
                 return REASON_IDLE
         return None
+
+    @staticmethod
+    def effective_expiry(row: dict[str, Any] | None, *, idle_timeout: int = 0,
+                         absolute_lifetime: int = 0, remember_idle: int = 0,
+                         remember_absolute: int = 0, remember_fallback_idle: int = 0,
+                         remember_fallback_absolute: int = 0) -> tuple[str, str]:
+        """``(expires_at, idle_expires_at)`` ISO timestamps for ``row`` under the LIVE
+        policy — the same arithmetic :meth:`is_active` applies, so the UI never shows
+        an expiry the server does not enforce. ``expires_at`` is the earlier of the
+        absolute limit and the access token's own ``exp``; ``idle_expires_at`` moves
+        with activity. Empty strings when unknown."""
+        if row is None:
+            return ("", "")
+        hard, soft = SessionStore._expiry_epochs(
+            row, idle_timeout=idle_timeout, absolute_lifetime=absolute_lifetime,
+            remember_idle=remember_idle, remember_absolute=remember_absolute,
+            remember_fallback_idle=remember_fallback_idle,
+            remember_fallback_absolute=remember_fallback_absolute,
+        )
+        return (_iso_epoch(hard), _iso_epoch(soft))
+
+    @staticmethod
+    def _expiry_epochs(row: dict[str, Any], *, idle_timeout: int = 0,
+                       absolute_lifetime: int = 0, remember_idle: int = 0,
+                       remember_absolute: int = 0, remember_fallback_idle: int = 0,
+                       remember_fallback_absolute: int = 0) -> tuple[float | None, float | None]:
+        """``(hard, soft)`` epoch seconds behind :meth:`effective_expiry`: the hard
+        limit (absolute lifetime or the access token's ``exp``, whichever is earlier)
+        and the inactivity deadline. ``None`` when unknown."""
+        idle, absolute = SessionStore.limits_for_row(
+            row, idle_timeout=idle_timeout, absolute_lifetime=absolute_lifetime,
+            remember_idle=remember_idle, remember_absolute=remember_absolute,
+            remember_fallback_idle=remember_fallback_idle,
+            remember_fallback_absolute=remember_fallback_absolute,
+        )
+        created = _to_epoch(row.get("created_at"))
+        if absolute > 0 and created is not None:
+            hard: float | None = created + absolute
+        else:
+            hard = _to_epoch(row.get("absolute_expiry_at"))
+        token_exp = _to_epoch(row.get("token_expires_at"))
+        if token_exp is not None:
+            hard = token_exp if hard is None else min(hard, token_exp)
+        last_active = _to_epoch(row.get("last_active_at"))
+        if idle > 0 and last_active is not None:
+            soft: float | None = last_active + idle
+        else:
+            soft = _to_epoch(row.get("idle_expiry_at"))
+        return (hard, soft)
 
     @staticmethod
     def reauth_age_seconds(row: dict[str, Any] | None) -> float | None:
@@ -559,9 +823,48 @@ class SessionStore:
 
     # ----- safe public projection ------------------------------------------- #
     @staticmethod
-    def public(row: dict[str, Any]) -> dict[str, Any]:
+    def public(row: dict[str, Any], limits: Any = None) -> dict[str, Any]:
         """A UI-safe projection — NEVER the refresh hashes (#10). Metadata is PLAIN
-        text (#9)."""
+        text (#9).
+
+        Round 12: projects ``remember`` / ``remember_seconds`` and, when the live
+        ``limits`` (:class:`app.auth.session_limits.SessionLimits`, built for the
+        row's owner) are supplied, what the server enforces under them — the same
+        :meth:`is_active` evaluation every protected request runs:
+
+        * ``active`` / ``ended_reason`` — whether the session can still be used, else
+          why it ended (``revoked`` | ``idle_expired`` | ``absolute_expired``; a row
+          whose access token's own ``exp`` has passed counts as ``absolute_expired``,
+          as ``/auth/me`` reports it).
+        * ``expires_at`` — the earliest moment the server ends a live session if it
+          is not used again: the earlier of the inactivity deadline
+          (``effective_idle_expires_at``) and the hard limit
+          (``effective_absolute_expires_at``, which activity never extends).
+        * ``remember`` — true only while the session is live AND the policy still
+          remembers it (Remember me on, the owner's role not excluded), so an ended
+          session is never shown as a remembered device that is still signed in."""
+        out = SessionStore._public_fields(row)
+        if limits is not None:
+            kwargs = limits.kwargs() if hasattr(limits, "kwargs") else dict(limits)
+            hard, soft = SessionStore._expiry_epochs(row, **kwargs)
+            reason = SessionStore.is_active(row, **kwargs)
+            if reason is None and hard is not None and now_utc().timestamp() > hard:
+                reason = REASON_ABSOLUTE
+            known = [t for t in (hard, soft) if t is not None]
+            out["expires_at"] = _iso_epoch(min(known) if known else None)
+            out["effective_idle_expires_at"] = _iso_epoch(soft)
+            out["effective_absolute_expires_at"] = _iso_epoch(hard)
+            out["active"] = reason is None
+            out["ended_reason"] = reason or ""
+            if out["remember"] and (
+                reason is not None or int(kwargs.get("remember_absolute", 0) or 0) <= 0
+            ):
+                out["remember"] = False
+                out["remember_seconds"] = 0
+        return out
+
+    @staticmethod
+    def _public_fields(row: dict[str, Any]) -> dict[str, Any]:
         return {
             "sid": row.get("sid", ""),
             "username": row.get("username", ""),
@@ -581,4 +884,7 @@ class SessionStore:
             "ua_os": row.get("ua_os", ""),
             "client_type": row.get("client_type", ""),
             "mfa_method": row.get("mfa_method", ""),
+            "remember": bool(row.get("remember", False)),
+            "remember_seconds": int(row.get("remember_seconds", 0) or 0)
+            if bool(row.get("remember", False)) else 0,
         }

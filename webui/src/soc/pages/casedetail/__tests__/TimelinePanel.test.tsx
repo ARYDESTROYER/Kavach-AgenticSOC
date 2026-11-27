@@ -1,7 +1,7 @@
 /**
- * TimelinePanel — the clean "what happened" narrative (task 5 split).
+ * TimelinePanel: the clean "what happened" narrative (task 5 split).
  *
- * The Timeline tab now holds ONLY the six-stage <StageTimeline> narrative — no AI
+ * The Timeline tab now holds ONLY the six-stage <StageTimeline> narrative: no AI
  * assessment, no DecisionCard, no ReAct trace (those moved to <InvestigationPanel>).
  * Verifies the "what happened" header + the stage story render, and that the
  * loading/error states pass through.
@@ -114,8 +114,8 @@ const LIVE_SIX_STAGE_STORY: TimelineStagesResponse = {
   ],
 };
 
-describe('TimelinePanel — the "what happened" narrative', () => {
-  it('renders the "What happened" header and the stage story', () => {
+describe('TimelinePanel: the "what happened" narrative', () => {
+  it('renders the stage story, leaving its "What happened" heading to the Overview section', () => {
     render(
       <TimelinePanel
         stages={STAGES}
@@ -124,8 +124,9 @@ describe('TimelinePanel — the "what happened" narrative', () => {
         onRetryStages={vi.fn()}
       />,
     );
-    expect(screen.getByText('What happened')).toBeInTheDocument();
     expect(screen.getByText('Six alerts from Lab Elastic')).toBeInTheDocument();
+    // Round 15 (D8.3): the Overview's "What happened" section owns the heading.
+    expect(screen.queryByText('What happened')).toBeNull();
   });
 
   it('does NOT render the AI assessment / decision / trace (those live on Investigation)', () => {
@@ -151,8 +152,8 @@ describe('TimelinePanel — the "what happened" narrative', () => {
         onRetryStages={vi.fn()}
       />,
     );
-    // The header is always present; the stage body shows the loading skeleton (no story).
-    expect(screen.getByText('What happened')).toBeInTheDocument();
+    // The stage body shows the loading state (no story).
+    expect(screen.getByText('Loading timeline')).toBeInTheDocument();
     expect(screen.queryByText('Six alerts from Lab Elastic')).toBeNull();
   });
 
@@ -168,7 +169,7 @@ describe('TimelinePanel — the "what happened" narrative', () => {
     expect(await axe(container)).toHaveNoViolations();
   });
 
-  it('renders the live six-stage Case Manager story in order and opens Investigation from the trace CTA', () => {
+  it('renders the live six-stage story in order and opens Investigation from the trace CTA', () => {
     const onOpenInvestigation = vi.fn();
     const { container } = render(
       <TimelinePanel
@@ -176,7 +177,6 @@ describe('TimelinePanel — the "what happened" narrative', () => {
         stagesLoading={false}
         stagesError={null}
         onRetryStages={vi.fn()}
-        presentation="case-manager"
         onOpenInvestigation={onOpenInvestigation}
       />,
     );
@@ -202,14 +202,13 @@ describe('TimelinePanel — the "what happened" narrative', () => {
     expect(onOpenInvestigation).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps backend source material fenced in a CodeBlock in Case Manager presentation', () => {
+  it('keeps backend source material fenced in a CodeBlock', () => {
     const { container } = render(
       <TimelinePanel
         stages={LIVE_SIX_STAGE_STORY}
         stagesLoading={false}
         stagesError={null}
         onRetryStages={vi.fn()}
-        presentation="case-manager"
       />,
     );
 
@@ -219,14 +218,13 @@ describe('TimelinePanel — the "what happened" narrative', () => {
     expect(container.querySelector('script')).toBeNull();
   });
 
-  it('has no axe violations in Case Manager presentation', async () => {
+  it('has no axe violations with the live story and its trace link', async () => {
     const { container } = render(
       <TimelinePanel
         stages={LIVE_SIX_STAGE_STORY}
         stagesLoading={false}
         stagesError={null}
         onRetryStages={vi.fn()}
-        presentation="case-manager"
         onOpenInvestigation={vi.fn()}
       />,
     );

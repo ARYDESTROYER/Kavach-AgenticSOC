@@ -29,6 +29,24 @@ from app.models import Case, Entity, TriggerReason
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+DECLARED_SOURCE_ID = "src-0-10"
+
+
+def _declared_source(ceiling: float = 10.0, source_id: str = DECLARED_SOURCE_ID) -> SourceInstance:
+    """A source that DECLARES its native severity-ladder ceiling.
+
+    One number describes any native ladder, so these tests can pin a raw 8 as a
+    source-asserted CRITICAL without depending on the connector type or on the retired
+    ``raw <= 10 ? raw*10`` magnitude guess. Cases must carry the matching ``source_id``
+    for the declaration to resolve."""
+    return SourceInstance(
+        id=source_id,
+        source_type=SourceType.ELASTICSEARCH,
+        display_name="declared native ladder",
+        severity_scale_max=ceiling,
+    )
+
+
 def _case(
     *,
     case_id: str = "case-w07",
@@ -101,8 +119,11 @@ def test_advisory_bands_returns_five_fields() -> None:
     prefs = Preferences(
         asset_criticality={"203.0.113.50": 90.0},
         priority_matrix=PriorityMatrix(enabled=True),
+        sources=[_declared_source(10.0)],
     )
-    bands = advisory_bands(_case(risk=72.0, severity_max=8.0), prefs)
+    bands = advisory_bands(
+        _case(risk=72.0, severity_max=8.0, source_id=DECLARED_SOURCE_ID), prefs
+    )
     assert set(bands) == {
         "severity_band",
         "severity_source",
@@ -110,7 +131,8 @@ def test_advisory_bands_returns_five_fields() -> None:
         "urgency_band",
         "priority_level",
     }
-    # severity_max 8.0 (unknown scale -> *10 -> 80) -> critical, source-asserted.
+    # severity_max 8.0 on the source's DECLARED 0-10 ladder -> 8/10*100 = 80 -> critical,
+    # source-asserted.
     assert bands["severity_band"] == "critical"
     assert bands["severity_source"] == "source_asserted"
     # asset criticality 90 -> high impact; risk 72 -> high urgency; high/high -> P1.
@@ -121,7 +143,8 @@ def test_advisory_bands_returns_five_fields() -> None:
 
 def test_advisory_bands_severity_source_flip() -> None:
     prefs = Preferences()
-    # A source-asserted severity flags source_asserted.
+    # A source-asserted severity flags source_asserted — whatever ladder resolves, the
+    # PROVENANCE is about who produced the number, not about how it was projected.
     asserted = advisory_bands(_case(severity_max=8.0), prefs)
     assert asserted["severity_source"] == "source_asserted"
     # No source severity -> DERIVED from the deterministic risk total.
@@ -130,45 +153,64 @@ def test_advisory_bands_severity_source_flip() -> None:
     assert derived["severity_band"] == "medium"   # risk 45 -> medium (5-band)
 
 
-def test_native_demo_source_severity_is_already_ocsf_0_100() -> None:
-    """Read-only demo overlays are absent from Preferences.sources by design.
+def test_an_unconfigured_source_is_the_identity_ladder_with_no_id_allowlist() -> None:
+    """The hardcoded demo-source-id frozenset is GONE, and the default replaced it.
 
-    Their receiver path has already normalized severity to the OCSF 0-100 scale,
-    so a low score of 10 must stay low instead of the unknown-scale fallback
-    multiplying it to 100 (critical).
+    That allowlist existed for exactly one reason: to force a known set of ids onto the
+    identity projection, because the fallback for everything else was the
+    ``raw <= 10 ? raw*10`` magnitude guess. UNDECLARED now MEANS the identity projection,
+    so the special case became the default and the id list could be deleted — which also
+    fixed the demo id the stale frozenset had omitted and removed a hardcoded id list
+    from a vendor-agnostic engine.
+
+    Pinned as an EQUIVALENCE, not as a value, so a re-introduced allowlist would fail
+    this test: an id that was on the old list, one that was missing from it, and an
+    arbitrary id must all resolve identically, with or without a ``demo`` tag.
     """
-    case = _case(severity_max=10.0, source_id="demo-wazuh")
-    case.tags = ["demo"]
-    result = severity_band_from_events(case, Preferences())
-    assert result["scale"] == "ocsf_0_100"
-    assert result["value"] == 10.0
-    assert result["band"] == "low"
+    prefs = Preferences()          # nothing configured -> nothing to resolve, for any id
+    baseline = severity_band_from_events(_case(severity_max=10.0, source_id="ordinary"), prefs)
+    assert baseline["scale_max"] == 100.0
+    assert baseline["value"] == 10.0
+    assert baseline["band"] == "low"
+
+    for source_id in ("demo-wazuh", "demo-splunk", "demo-entra-id", "demo-qradar"):
+        case = _case(severity_max=10.0, source_id=source_id)
+        assert severity_band_from_events(case, prefs) == baseline, source_id
+        case.tags = ["demo"]
+        assert severity_band_from_events(case, prefs) == baseline, source_id
 
 
-def test_real_source_with_demo_prefix_keeps_its_declared_native_scale() -> None:
-    prefs = Preferences(sources=[SourceInstance(
-        id="demo-wazuh",
-        source_type=SourceType.WAZUH,
-        display_name="Real production Wazuh",
-    )])
-    result = severity_band_from_events(
-        _case(severity_max=10.0, source_id="demo-wazuh"), prefs,
+def test_a_configured_source_keeps_its_declared_ladder_whatever_its_id_looks_like() -> None:
+    """A configured source's DECLARED ceiling is the only input — its id is inert.
+
+    An id that merely LOOKS like a demo id used to be a real hazard, because the retired
+    allowlist matched on the id string. Now the id is not consulted at all: two sources
+    that differ only in their id resolve identically."""
+    declared = severity_band_from_events(
+        _case(severity_max=10.0, source_id="demo-wazuh"),
+        Preferences(sources=[_declared_source(16.0, source_id="demo-wazuh")]),
     )
-    assert result["scale"] == "wazuh_0_16"
-    assert result["value"] == pytest.approx(62.5, abs=0.01)
+    assert declared["scale_max"] == 16.0
+    assert declared["value"] == pytest.approx(62.5, abs=0.01)
+
+    neutral = severity_band_from_events(
+        _case(severity_max=10.0, source_id="prod-sensor"),
+        Preferences(sources=[_declared_source(16.0, source_id="prod-sensor")]),
+    )
+    assert neutral["value"] == declared["value"]
+    assert neutral["band"] == declared["band"]
+    assert neutral["scale_max"] == declared["scale_max"]
 
 
-def test_real_source_with_incidental_demo_tag_keeps_declared_scale() -> None:
-    prefs = Preferences(sources=[SourceInstance(
-        id="prod-wazuh",
-        source_type=SourceType.WAZUH,
-        display_name="Production Wazuh",
-    )])
-    case = _case(severity_max=10.0, source_id="prod-wazuh")
-    case.tags = ["demo"]  # an analyst-authored tag alone is not an isolation invariant
-    result = severity_band_from_events(case, prefs)
-    assert result["scale"] == "wazuh_0_16"
-    assert result["value"] == pytest.approx(62.5, abs=0.01)
+def test_an_incidental_demo_tag_cannot_steer_a_declared_ladder() -> None:
+    """An analyst-authored tag is not an isolation invariant and must not pick a ladder."""
+    prefs = Preferences(sources=[_declared_source(16.0, source_id="prod-sensor")])
+    untagged = severity_band_from_events(_case(severity_max=10.0, source_id="prod-sensor"), prefs)
+    tagged_case = _case(severity_max=10.0, source_id="prod-sensor")
+    tagged_case.tags = ["demo"]
+    assert severity_band_from_events(tagged_case, prefs) == untagged
+    assert untagged["scale_max"] == 16.0
+    assert untagged["value"] == pytest.approx(62.5, abs=0.01)
 
 
 def test_advisory_bands_priority_none_when_matrix_disabled() -> None:
@@ -183,13 +225,27 @@ def test_advisory_bands_priority_none_when_matrix_disabled() -> None:
 
 
 def test_advisory_bands_no_prefs_resolves_only_severity() -> None:
-    # prefs=None -> only the (prefs-free) severity axis resolves; the rest stay None.
+    """prefs=None -> only the (prefs-free) severity axis resolves; the rest stay None.
+
+    With no Preferences there is no source to resolve, so the severity axis falls back to
+    the IDENTITY ceiling and reads the raw number as-is. That is the honest answer, and
+    it is the SAME answer the declared path gives once a ladder exists — the second half
+    below proves the difference is the declaration and nothing else."""
     bands = advisory_bands(_case(severity_max=8.0), None)
-    assert bands["severity_band"] == "critical"
     assert bands["severity_source"] == "source_asserted"
+    assert bands["severity_band"] == "low"        # 8/100 -> low, no magnitude guess
     assert bands["impact_band"] is None
     assert bands["urgency_band"] is None
     assert bands["priority_level"] is None
+
+    # The SAME case, once its source declares a 0-10 ladder, reads CRITICAL — so the
+    # prefs-free reading above is a missing declaration, never a lost provenance.
+    declared = advisory_bands(
+        _case(severity_max=8.0, source_id=DECLARED_SOURCE_ID),
+        Preferences(sources=[_declared_source(10.0)]),
+    )
+    assert declared["severity_band"] == "critical"
+    assert declared["severity_source"] == "source_asserted"
 
 
 _FIVE_KEYS = {
@@ -222,8 +278,11 @@ def test_advisory_bands_fail_open_when_internal_raises(monkeypatch) -> None:
     prefs = Preferences(
         asset_criticality={"203.0.113.50": 90.0},
         priority_matrix=PriorityMatrix(enabled=True),
+        sources=[_declared_source(10.0)],
     )
-    bands = advisory_bands(_case(risk=72.0, severity_max=8.0), prefs)
+    bands = advisory_bands(
+        _case(risk=72.0, severity_max=8.0, source_id=DECLARED_SOURCE_ID), prefs
+    )
     assert set(bands) == _FIVE_KEYS
     assert bands["severity_band"] == "critical"   # severity axis still resolves
     assert bands["impact_band"] is None           # the raising axis degrades to None
@@ -241,9 +300,12 @@ async def test_list_cases_populates_advisory_bands(app_state) -> None:
     prefs = state.prefs.model_copy(update={
         "asset_criticality": {"203.0.113.50": 90.0},
         "priority_matrix": PriorityMatrix(enabled=True),
+        "sources": [_declared_source(10.0)],
     })
     await state.update_prefs(prefs)
-    await state.cases.save(_case(case_id="case-list-1", risk=72.0, severity_max=8.0))
+    await state.cases.save(_case(
+        case_id="case-list-1", risk=72.0, severity_max=8.0, source_id=DECLARED_SOURCE_ID,
+    ))
 
     res = await list_cases(state=state, from_=None, to=None)
     case = next(c for c in res.cases if c.case_id == "case-list-1")
@@ -261,9 +323,12 @@ async def test_get_case_populates_advisory_bands(app_state) -> None:
     prefs = state.prefs.model_copy(update={
         "asset_criticality": {"203.0.113.50": 90.0},
         "priority_matrix": PriorityMatrix(enabled=True),
+        "sources": [_declared_source(10.0)],
     })
     await state.update_prefs(prefs)
-    await state.cases.save(_case(case_id="case-get-1", risk=72.0, severity_max=8.0))
+    await state.cases.save(_case(
+        case_id="case-get-1", risk=72.0, severity_max=8.0, source_id=DECLARED_SOURCE_ID,
+    ))
 
     case = await get_case("case-get-1", state=state)
     assert case.severity_band == "critical"

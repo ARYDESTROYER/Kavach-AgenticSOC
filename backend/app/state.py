@@ -12,11 +12,11 @@ without a restart.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import logging
 import secrets as stdlib_secrets
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable
 
 from .agents.chat import ChatEngine
@@ -25,12 +25,14 @@ from .agents.pipeline import InvestigationPipeline
 from .agents.standup import StandupService
 from .audit.audit_log import AuditLogger
 from .cache import Cache
-from .config import Preferences, Secrets
+from .config import EnrichmentConfig, Preferences, Secrets
 from .engine.ingest import IngestService
+from .engine.mutation_gate import MutationAdmissionGate
 from .engine.release_discovery import ReleaseDiscoveryService
 from .es.base import BaseESClient
 from .es.indices import bootstrap_indices
 from .llm.gateway import LLMGateway
+from .llm.provider_health import ProviderHealth
 from .llm.providers import BaseProvider
 from .stores.cases import CaseStore
 from .stores.config_store import ConfigStore
@@ -41,6 +43,35 @@ from .tools.rag import RagService
 logger = logging.getLogger("tlsoc.state")
 
 _ES_SECRET_FIELDS = {"es_api_key", "es_mgmt_api_key", "es_url", "es_ca_cert", "es_verify_certs"}
+
+# How long closing mutation admission waits for cancelled chat turns to unwind
+# (abort their reservation, close their source client) before the reset drains.
+_CHAT_TURN_CANCEL_TIMEOUT_S = 10.0
+
+# How many real cases investigated while Demo Mode is on keep their post-investigation
+# runbook attachment until Demo Mode ends (Round 14 SPEC §4.10.4). Past it the oldest
+# is dropped (logged); that case is attached by its next status, tag or verdict change.
+_RUNBOOK_ATTACH_DEFERRED_MAX = 5_000
+
+
+class _ChatTurnAwareMutationGate(MutationAdmissionGate):
+    """The factory-reset admission gate, plus chat turns (chat revamp SPEC §6.1(b)).
+
+    A running chat turn holds ``admit()`` for its whole lifetime (it can outlive the
+    HTTP request that started it), so the reset's drain would otherwise wait for every
+    in-flight turn and time out. Closing admission therefore cancels every registered
+    turn FIRST; a reset-cancelled turn aborts its reservation and persists nothing."""
+
+    def __init__(self, on_close: Callable[[], Any]) -> None:
+        super().__init__()
+        self._on_close = on_close
+
+    async def close(self, owner: str) -> None:
+        await super().close(owner)
+        try:
+            await self._on_close()
+        except Exception as exc:  # noqa: BLE001 -- the drain still bounds the reset
+            logger.warning("cancelling chat turns on reset failed (%s)", type(exc).__name__)
 
 
 class AppState:
@@ -79,6 +110,17 @@ class AppState:
         # stack so REAL cases are hidden + isolated; disable GC's it + the real
         # state returns intact.
         self._demo = None
+        # Real cases the real pipeline investigated while Demo Mode was on (Round 14
+        # SPEC §4.10.4): their post-investigation runbook attachment waits until Demo
+        # Mode ends, because the run engine binds the ACTIVE stack. Insertion-ordered
+        # ids (oldest first), bounded by ``_RUNBOOK_ATTACH_DEFERRED_MAX``, drained once
+        # Demo Mode is off (``_drain_deferred_runbook_attachments``). Process-local.
+        self._runbook_attach_deferred: dict[str, None] = {}
+        self._runbook_attach_drain: asyncio.Task[Any] | None = None
+        # Bumped on every Demo switch (enable, disable; a reset is both): a cache filled
+        # by a build compares it before and after, so even a switch there and back
+        # within one build (the run id the same both times) is seen (``demo_generation``).
+        self._demo_generation = 0
         self._demo_sim = None
         # Serialize enable/reset/disable as one lifecycle transaction. Without this,
         # concurrent enables can each create a live ticker before the later request
@@ -91,6 +133,7 @@ class AppState:
         # Round-4 Wave-3: the lazily-built batch service is memoised here; _wire()
         # clears it so a credential/store rebuild re-binds it to the fresh gateway/store.
         self._batch_service = None
+        self._job_runner = None
         # Round-4 Wave-4: the gated background schedulers (threshold-tuner / campaign /
         # batch-jobs). Started in startup() (behind start_poller), cancelled in
         # shutdown(). Tuning observation and campaign grouping are default ON; async
@@ -119,7 +162,12 @@ class AppState:
                 "last_error": "",
                 "processed": 0,
             }
-            for name in ("threshold_tuner", "campaign_correlation", "batch_jobs")
+            for name in (
+                "threshold_tuner",
+                "campaign_correlation",
+                "baseline_producer",
+                "batch_jobs",
+            )
         }
         # The single, long-lived streaming baseline model behind the EVENT-feed detection
         # funnel (Wave-4). Warmed from baseline_store on first use; None until built. It
@@ -142,6 +190,12 @@ class AppState:
         # source keeps the conservative cold-start flat window. Advisory only — never feeds
         # decide() (#3).
         self._source_event_ticks: dict[str, int] = {}
+        # Aggregate LLM/embedding provider health (consecutive auth/quota/transport
+        # failures per provider). Kept across _wire() rebuilds — a credential change
+        # rebuilds the gateway, and a failure run that reset on every rebuild could
+        # never cross its threshold, which is precisely the outage this must catch.
+        # Advisory only — never feeds decide() (#3), and it writes no ledger row (#6).
+        self._provider_health = ProviderHealth()
         # Serialize preference writes. ``config_store.save`` is a full-document replace
         # with no CAS, and ``update_prefs`` assigns ``self.prefs`` outside any lock, so
         # two concurrent writers (e.g. an operator source edit racing the nightly
@@ -151,6 +205,81 @@ class AppState:
         # it so a caller's edit is applied against the freshest prefs. Created in __init__
         # (not _wire) so it is a single stable lock across credential-driven rewires.
         self._prefs_lock = asyncio.Lock()
+        from .engine.investigation_gate import InvestigationGate
+
+        self.investigation_gate = InvestigationGate()
+        # Round 16 (SPEC §4.5 WP08): which AI investigations are queued or running, in
+        # memory only (frames on the process bus, never the Demo one), and the per-case
+        # write locks the real and Demo pipelines share with a person's case actions.
+        # Built here (not in _wire) so a credential-driven rebuild keeps both.
+        from .agents.pipeline import CaseLocks
+        from .engine.investigation_registry import InvestigationRegistry
+        from .realtime import get_event_bus
+
+        self.investigation_registry = InvestigationRegistry(
+            get_event_bus, on_finished=self._investigation_finished,
+        )
+        self.case_locks = CaseLocks()
+        # Process-local registry of running chat turns (chat revamp SPEC §6.1(b)):
+        # strong references to each turn task, per-user/global concurrency admission
+        # and Stop. Built lazily by ``chat_turns``.
+        self._chat_turns = None
+        # Process-local half of the factory-reset write fence. The durable Jobs and
+        # Batch documents protect claims/submissions across replicas; this gate drains
+        # already-admitted unsafe HTTP requests in the supported single-process runtime.
+        # Closing it also cancels running chat turns (they hold admission themselves).
+        self.mutation_gate = _ChatTurnAwareMutationGate(self.cancel_chat_turns)
+        # Detached notification/automation work can outlive the request that spawned
+        # it. Keep every tenant-writing task reachable so factory reset can cancel and
+        # await it after closing HTTP admission and before clearing state.
+        self._mutation_tasks: set[asyncio.Task[Any]] = set()
+        # BaseSettings folds environment values into mutable dicts. Capture their boot
+        # value once so reset removes runtime UI additions without erasing environment-
+        # supplied connector/SSO/notification credentials.
+        self._runtime_secret_fields = frozenset(
+            {
+                # UI-set model and embedding credentials.
+                # The read-only log-surface key is tenant/source authority; restore
+                # its boot value while preserving the active management URL/key and
+                # state backend that own this reset transaction.
+                "es_api_key",
+                "openai_api_key",
+                "anthropic_api_key",
+                "litellm_api_key",
+                "azure_openai_api_key",
+                "aws_access_key_id",
+                "aws_secret_access_key",
+                "aws_session_token",
+                "vertex_api_key",
+                "embedding_api_key",
+                # Every provider field mutable through routes_enrichment.
+                "abuseipdb_api_key",
+                "virustotal_api_key",
+                "greynoise_api_key",
+                "shodan_api_key",
+                "censys_api_id",
+                "censys_api_secret",
+                "binaryedge_api_key",
+                "ipinfo_token",
+                "otx_api_key",
+                "pulsedive_api_key",
+                "spur_api_key",
+                "xforce_api_key",
+                "xforce_api_password",
+                "urlscan_api_key",
+                "hibp_api_key",
+                "honeypot_access_key",
+                "abusech_auth_key",
+                # Runtime maps managed by source/SSO/notification routes.
+                "connector_secrets",
+                "sso_client_secrets",
+                "notification_secrets",
+            }
+        )
+        self._boot_runtime_secrets = {
+            field: copy.deepcopy(getattr(secrets, field))
+            for field in self._runtime_secret_fields
+        }
         # Continuation cursors for privileged portable exports are signed with a
         # purpose-separated server key.  A configured auth JWT secret makes the
         # key stable across replicas/restarts; the no-secret development profile
@@ -180,6 +309,258 @@ class AppState:
     @property
     def demo_active(self) -> bool:
         return self._demo is not None
+
+    @property
+    def demo_run_id(self) -> str | None:
+        """The active Demo run's identity (its ``run_id``), or None when Demo is off.
+        Every enable and every reset builds a new stack under a new run id, so a cache
+        of answers read from the demo-swapped stores keys on this, never on
+        :attr:`demo_active` alone: another run's answer is never served."""
+        demo = self._demo
+        if demo is None:
+            return None
+        return str(getattr(demo, "run_id", "") or "") or f"stack-{id(demo):x}"
+
+    @property
+    def demo_generation(self) -> int:
+        """How many Demo switches (enable, disable) this process has seen. A cache
+        that stores what a build read reads this before the build and stores the answer
+        only when it is unchanged afterwards: :attr:`demo_run_id` alone cannot tell a
+        build that Demo was enabled and disabled again while it ran (None both times)."""
+        return self._demo_generation
+
+    def spawn_mutation_task(self, coro, *, name: str | None = None) -> asyncio.Task[Any]:
+        """Spawn one tracked tenant-writing task, rejecting work after admission closes."""
+
+        if self.mutation_gate.closed:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            raise RuntimeError("factory reset mutation fence is closed")
+        task = asyncio.create_task(coro, name=name)
+        self._mutation_tasks.add(task)
+        task.add_done_callback(self._mutation_tasks.discard)
+        return task
+
+    async def cancel_mutation_tasks(self) -> int:
+        """Cancel and await every detached tenant writer registered before reset.
+
+        Then forget every tracked AI investigation and case lock (Round 16 WP08): a
+        cancelled spawned run has ended its handle, and nothing writes a case now."""
+
+        cancelled = 0
+        while self._mutation_tasks:
+            tasks = list(self._mutation_tasks)
+            cancelled += len(tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.investigation_registry.clear()
+        self.case_locks.clear()
+        return cancelled
+
+    # ------------------------------------------------------------------ #
+    # Round 16 (SPEC §4.5 WP08, D10): AI investigation runs. The registry is memory
+    # only; the Demo stack holds its own while Demo Mode is on.
+    # ------------------------------------------------------------------ #
+    @property
+    def investigations(self):
+        """The AI investigation registry for the active real/Demo boundary (SPEC §3.2):
+        ``GET /api/investigations/active`` answers from the Demo stack's own registry
+        while Demo Mode is on."""
+        demo = self._demo
+        if demo is not None:
+            registry = getattr(demo, "investigation_registry", None)
+            if registry is not None:
+                return registry
+        return self.investigation_registry
+
+    def case_lock(self, case_id: str) -> asyncio.Lock:
+        """The per-case write lock a person's case action holds across its read and
+        save (shared with the pipelines, which take it only inside a signature lock)."""
+        return self.case_locks.lock(case_id)
+
+    def _investigation_finished(self, handle, *, demo=None) -> None:
+        """The registry's finish hook (SPEC §4.5 WP08, D10): the Inbox notices of a
+        finished run, written by a tracked task so the run never waits on them and a
+        factory reset can cancel them. Only a manual run's requester and a person whose
+        close the run replaced get one; job and automatic runs get no item. Never
+        raises."""
+        coro = None
+        try:
+            manual = handle.trigger == "manual" and bool(handle.requested_by)
+            if not handle.case_id or not (manual or handle.close_replaced):
+                return
+            coro = self._write_investigation_notices(handle, demo)
+            self.spawn_mutation_task(coro, name=f"investigation-notices:{handle.run_id}")
+        except Exception as exc:  # noqa: BLE001 (a notice never touches a run)
+            if coro is not None:
+                coro.close()
+            logger.debug("investigation finish notices skipped: %s", exc)
+
+    async def _write_investigation_notices(self, handle, demo=None) -> int:
+        """Write the finish notices of one run into the stores of the stack that ran it
+        (the Demo stack's own Inbox, audit and bus while it is the active one). Copy is
+        built from enums only (#7, #9). The ``case.close_replaced`` row is written
+        before the Inbox item it explains (#2). Returns the items delivered."""
+        from .constants import ActionType, NotificationCategory
+        from .models import InAppNotification
+        from .realtime import get_event_bus
+
+        if demo is not None:
+            inbox, audit, cases, bus = demo.inbox, demo.audit, demo.cases, demo.event_bus
+        else:
+            inbox, audit, cases, bus = self._real_inbox, self._real_audit, self._real_cases, get_event_bus()
+        case_id = str(handle.case_id)
+        label = case_id
+        try:
+            stored = await cases.get(case_id)
+            label = str(getattr(stored, "case_number", "") or "") or case_id
+        except Exception:  # noqa: BLE001 - the id stands in for the number
+            pass
+        notes: list[InAppNotification] = []
+        replaced = handle.close_replaced if isinstance(handle.close_replaced, dict) else None
+        replaced_by = str((replaced or {}).get("by") or "").strip()
+        if replaced and replaced_by:
+            try:
+                await audit.record_strict(
+                    action_type=ActionType.DECISION, surface="case", actor="pipeline",
+                    actor_type="system", outcome="success", case_id=case_id,
+                    action="case.close_replaced", run_id=handle.run_id,
+                    result_summary=(
+                        f"an AI investigation replaced the close by {replaced_by}: "
+                        f"{replaced.get('from_status')} -> {replaced.get('to_status')}"
+                    ),
+                    tool_input={
+                        "run_id": handle.run_id, "closed_by": replaced_by,
+                        "from_status": replaced.get("from_status"),
+                        "to_status": replaced.get("to_status"),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - no row, no notice
+                logger.warning("case.close_replaced audit failed for %s: %s", case_id, exc)
+                replaced_by = ""
+            if replaced_by and await self._inbox_category_allows(
+                replaced_by, NotificationCategory.ASSIGNMENT.value,
+            ):
+                notes.append(InAppNotification(
+                    recipient=replaced_by,
+                    category=NotificationCategory.ASSIGNMENT.value,
+                    title=f"An AI investigation replaced your close of case {label}",
+                    body=(
+                        "It was already running when you closed the case. It finished with "
+                        f"the verdict {_ai_verdict_words(handle.verdict_after)} and set the "
+                        f"status to {_ai_status_words(handle.status_after)}. Your disposition "
+                        "and note are kept."
+                    ),
+                    case_id=case_id, url=f"/cases/{case_id}",
+                    ref={"kind": "investigation", "run_id": handle.run_id, "event": "close_replaced"},
+                ))
+        requester = str(handle.requested_by or "").strip()
+        if (
+            handle.trigger == "manual" and requester
+            and requester.lower() != replaced_by.lower()
+            and await self._inbox_category_allows(requester, NotificationCategory.SYSTEM.value)
+        ):
+            notes.append(InAppNotification(
+                recipient=requester,
+                category=NotificationCategory.SYSTEM.value,
+                title=f"AI investigation finished on case {label}",
+                body=_ai_finish_body(handle),
+                case_id=case_id, url=f"/cases/{case_id}",
+                ref={"kind": "investigation", "run_id": handle.run_id},
+            ))
+        delivered = 0
+        for note in notes:
+            try:
+                await inbox.append(note)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("investigation notice for %s failed: %s", note.recipient, exc)
+                continue
+            delivered += 1
+            try:
+                await audit.record(
+                    action_type=ActionType.INAPP_NOTIFY, surface="investigation",
+                    actor="pipeline", actor_type="system", outcome="success", case_id=case_id,
+                    result_summary=f"investigation_{handle.outcome or 'finished'} -> {note.recipient}",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                bus.publish(
+                    "notifications", "inapp", {"category": note.category, "case_id": case_id},
+                    audience=[note.recipient],
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return delivered
+
+    async def _inbox_category_allows(self, user: str, category: str) -> bool:
+        """False when ``user`` switched ``category`` off in their Inbox preferences (the
+        rule of ``routes_auto_close_review._inapp_allows``). A read failure delivers."""
+        store = getattr(self, "notif_prefs", None)
+        if store is None:
+            return True
+        try:
+            pref = await store.get(user)
+            entry = (getattr(pref, "categories", {}) or {}).get(category)
+        except Exception:  # noqa: BLE001
+            return True
+        return not (isinstance(entry, dict) and entry.get("enabled") is False)
+
+    def restore_environment_runtime_secrets(self) -> dict[str, int]:
+        """Drop tenant runtime overlays while preserving deployment/boot values.
+
+        State backend/management connection, auth/JWT, Redis, artifact and updater
+        wiring are deliberately outside this allowlist; changing them mid-run would
+        move the reset worker and durable receipt to a different authority surface.
+        """
+
+        restored: dict[str, int] = {}
+        for field, boot_value in self._boot_runtime_secrets.items():
+            current = getattr(self.secrets, field)
+            if isinstance(current, dict) and isinstance(boot_value, dict):
+                restored[field] = max(0, len(current) - len(boot_value))
+            else:
+                restored[field] = int(current != boot_value)
+            setattr(self.secrets, field, copy.deepcopy(boot_value))
+        self.gateway.reset_providers()
+        return restored
+
+    async def factory_recovery_bootstrap_allowed(self) -> bool:
+        """Whether an empty identity store may bootstrap while a reset is degraded."""
+
+        if not self.mutation_gate.degraded:
+            return False
+        try:
+            if not await self.jobs.factory_recovery_fence_matches(
+                self.mutation_gate.owner
+            ):
+                return False
+            getter = getattr(self.kv, "get_strict", None) or self.kv.get
+            from .constants import USERS_KEY, USERS_NS
+
+            doc = await getter(USERS_NS, USERS_KEY)
+            entries = doc.get("entries", []) if isinstance(doc, dict) else []
+            return not entries
+        except Exception:  # fail closed on identity-store uncertainty
+            return False
+
+    async def recover_factory_mutation_gate(self) -> str:
+        """Rehydrate the process-local safe-stop from the durable Jobs fence.
+
+        Called after the state backend schema is reachable but before tenant seeding,
+        reconciliation, or any producer starts. A real owner is returned for tests
+        and startup logging; an unreadable/corrupt registry raises so startup can
+        install an opaque, non-recoverable safe-stop rather than fail open.
+        """
+
+        owner = await self.jobs.factory_fence_owner()
+        if not owner:
+            return ""
+        await self.mutation_gate.close(owner)
+        await self.mutation_gate.mark_degraded(owner)
+        return owner
 
     # ------------------------------------------------------------------ #
     # Public accessors for the REAL (never demo-swapped) collaborators + KV.
@@ -244,6 +625,32 @@ class AppState:
         return self._real_batch_job_store
 
     @property
+    def real_inbox(self):
+        return self._real_inbox
+
+    @property
+    def real_chat_conversations(self):
+        """The REAL Workspace history store, whatever Demo Mode shows (a deleted
+        account's history is purged from it, Round 12 final review L1)."""
+        return self._real_chat_conversations
+
+    @property
+    def real_reports(self):
+        """The REAL report store (None while the reports package is unavailable)."""
+        store = getattr(self, "_real_reports", None)
+        if store is None:
+            store = self._real_reports = self._build_reports(self._kv)
+        return store
+
+    @property
+    def jobs(self):
+        return self._jobs
+
+    @property
+    def job_runner(self):
+        return self._job_runner
+
+    @property
     def kv(self):
         """The shared KV doc store backing every KV-over-KVStore store (public alias
         for the historically-private ``_kv``)."""
@@ -264,6 +671,265 @@ class AppState:
             self._oidc_state_store = store
         return store
 
+    # ------------------------------------------------------------------ #
+    # Round 14 runbooks (SPEC §4.10.6, §3.5). Built lazily over the shared KV and
+    # rebound when ``_wire()`` swaps the KV, like ``oidc_state``.
+    # ------------------------------------------------------------------ #
+    @property
+    def runbook_library(self):
+        """The operator runbook LIBRARY (``stores.runbook_library``): always the REAL
+        store. The Demo pipeline and matcher read it (D45), and while Demo Mode is on
+        every write is refused (``409 runbook_demo_readonly``)."""
+        store = getattr(self, "_runbook_library_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.runbook_library import RunbookLibraryStore
+
+            store = RunbookLibraryStore(kv, read_only=lambda: self._demo is not None)
+            self._runbook_library_store = store
+        return store
+
+    @property
+    def real_runbook_runs(self):
+        """The REAL per-case run store (``stores.runbook_runs``), whatever Demo Mode
+        shows (the cases reset clears it)."""
+        store = getattr(self, "_real_runbook_runs_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.runbook_runs import RunbookRunStore
+
+            store = RunbookRunStore(kv)
+            self._real_runbook_runs_store = store
+        return store
+
+    @property
+    def runbook_runs(self):
+        """Per-case runs for the active real/Demo boundary (SPEC §3.5): Demo cases have
+        Demo runs, stored on the Demo stack's own KV and gone when Demo Mode ends. A
+        Demo stack that does not build its own run store gets one over its KV."""
+        demo = self._demo
+        if demo is None:
+            return self.real_runbook_runs
+        store = getattr(demo, "runbook_runs", None)
+        if store is not None:
+            return store
+        cached = getattr(self, "_demo_runbook_runs", None)
+        if cached is not None and cached[0] is demo:
+            return cached[1]
+        from .stores.runbook_runs import RunbookRunStore
+
+        store = RunbookRunStore(demo.kv)
+        self._demo_runbook_runs = (demo, store)
+        return store
+
+    # ------------------------------------------------------------------ #
+    # Round 15 auto-close review (SPEC D6.3, D6.4, §3.2). The ledger is built lazily
+    # over the shared KV and rebound when ``_wire()`` swaps the KV; Demo Mode has its
+    # own ledger on the Demo stack's KV.
+    # ------------------------------------------------------------------ #
+    @property
+    def real_auto_close_review(self):
+        """The REAL auto-close review ledger (``stores.auto_close_review``), whatever
+        Demo Mode shows (the cases reset clears it)."""
+        store = getattr(self, "_real_auto_close_review_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.auto_close_review import AutoCloseReviewStore
+
+            store = AutoCloseReviewStore(kv)
+            self._real_auto_close_review_store = store
+        return store
+
+    @property
+    def auto_close_review(self):
+        """The auto-close review ledger for the active real/Demo boundary (SPEC §3.2):
+        Demo cases are sampled and reviewed in the Demo stack's ledger."""
+        demo = self._demo
+        if demo is None:
+            return self.real_auto_close_review
+        store = getattr(demo, "auto_close_review", None)
+        if store is not None:
+            return store
+        cached = getattr(self, "_demo_auto_close_review", None)
+        if cached is not None and cached[0] is demo:
+            return cached[1]
+        from .stores.auto_close_review import AutoCloseReviewStore
+
+        store = AutoCloseReviewStore(demo.kv)
+        self._demo_auto_close_review = (demo, store)
+        return store
+
+    async def _seed_demo_auto_close_reviews(self, demo_stack, cases, seed: int, now_ms: int) -> int:
+        """Seed the Demo auto-close review sample (SPEC D6.13) into ``demo_stack``'s
+        ledger, case store and audit, when the review is on. Never raises."""
+        try:
+            from .engine.auto_close_review import operator_zone
+            from .engine.demo_generator import seed_demo_auto_close_reviews
+
+            dprefs = demo_stack._demo_prefs()  # noqa: SLF001 - same module owner
+            config = dprefs.auto_close_review
+            if not config.enabled:
+                return 0
+            return await seed_demo_auto_close_reviews(
+                demo_stack.auto_close_review, cases,
+                save=demo_stack.cases.save, audit=demo_stack.audit,
+                seed=seed, now_millis=now_ms, tz=operator_zone(dprefs),
+                expiry_days=int(config.expiry_days),
+            )
+        except Exception as exc:  # noqa: BLE001 - a seeded review never blocks enable
+            logger.warning("demo auto-close review seeding failed: %s", exc)
+            return 0
+
+    def _real_review_sampler(self):
+        """The real pipeline's ``review_sampler`` (SPEC D6.3): the real ledger, the
+        control audit and the process realtime bus, each read when a case is sampled so
+        a ``_wire()`` rebuild is followed."""
+        from .engine.auto_close_review import ReviewSampler
+        from .realtime import get_event_bus
+
+        return ReviewSampler(
+            store=lambda: self.real_auto_close_review,
+            audit=lambda: self._real_audit,
+            bus=get_event_bus,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Round 15 WP4: screenshots on a case (SPEC D5.1 to D5.3, §3.2). Built lazily over
+    # the shared KV and rebound when ``_wire()`` swaps it; Demo Mode serves the Demo
+    # stack's own store (its own KV and the Demo caps).
+    # ------------------------------------------------------------------ #
+    def _case_files_in_memory(self) -> bool:
+        """True when the real KV keeps its documents in process memory (the
+        in-memory Elasticsearch fallback): screenshots then get the Demo caps."""
+        if self._is_sql_backend():
+            return False
+        from .es.fake import InMemoryESClient
+
+        return isinstance(getattr(self, "es", None), InMemoryESClient)
+
+    @property
+    def real_case_files(self):
+        """The REAL screenshot store (``stores.case_files``), whatever Demo Mode shows
+        (the cases reset clears it)."""
+        store = getattr(self, "_real_case_files_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.case_files import MEMORY_LIMITS, STANDARD_LIMITS, CaseFileStore
+
+            limits = MEMORY_LIMITS if self._case_files_in_memory() else STANDARD_LIMITS
+            store = CaseFileStore(kv, limits=limits)
+            self._real_case_files_store = store
+        return store
+
+    @property
+    def case_files(self):
+        """Screenshots for the active real/Demo boundary (SPEC §3.2): Demo cases have
+        Demo screenshots, on the Demo KV within the Demo caps, gone when Demo Mode
+        ends."""
+        demo = self._demo
+        if demo is None:
+            return self.real_case_files
+        store = getattr(demo, "case_files", None)
+        if store is not None:
+            return store
+        cached = getattr(self, "_demo_case_files", None)
+        if cached is not None and cached[0] is demo:
+            return cached[1]
+        from .stores.case_files import MEMORY_LIMITS, CaseFileStore
+
+        store = CaseFileStore(demo.kv, limits=MEMORY_LIMITS)
+        self._demo_case_files = (demo, store)
+        return store
+
+    @property
+    def legacy_procedures(self):
+        """Read-only access to the retired procedure namespaces (one release): the
+        runbook migration and the legacy export groups read them only through this
+        (``stores.legacy_procedures``, which has no write method)."""
+        from .stores.legacy_procedures import LegacyProcedureReader
+
+        return LegacyProcedureReader(self._kv)
+
+    async def _project_runbook_corpus(self, generation: str) -> bool:
+        """Step 7 of the runbook migration (SPEC §4.10.17): the full Published-only RAG
+        projection, every chunk tagged ``generation``. The RAG service supplies it
+        (``RagService.project_runbook_corpus(generation=..., library=...)``); until a
+        build has it, the projection stays pending and the next start resumes it."""
+        project = getattr(getattr(self, "rag", None), "project_runbook_corpus", None)
+        if not callable(project):
+            return False
+        result = await project(generation=generation, library=self.runbook_library)
+        return result is not False
+
+    async def run_runbook_migration(self, *, project_in_background: bool = False):
+        """Convert the stored operator procedures into runbooks once (SPEC §4.10.17,
+        E9), or resume an interrupted conversion or projection. Audited in the REAL
+        control audit as the system actor ``runbook_migration``.
+
+        :meth:`startup` passes ``project_in_background=True``: the conversion (steps 1
+        to 6, at most 200 documents, no model call) runs inline, and the RAG
+        reprojection (step 7, which embeds the whole Published corpus) runs as a
+        tracked background task (:meth:`_start_runbook_projection`), so a slow or
+        unreachable embedding provider never delays the API. Until it completes the
+        retriever excludes untagged legacy runbook chunks (#9). A failure is logged by
+        the caller and the next start resumes."""
+        from .engine.runbook_migration import run_runbook_migration
+
+        # The corpus side of the migration: ``runbook-library:`` ids replace the legacy
+        # runbook ids on purpose. Recorded before any projection (idempotent, and never
+        # over a newer build's marker), so neither this build nor an older or newer one
+        # reads the replacement as corpus loss.
+        record = getattr(getattr(self, "rag", None), "record_runbook_corpus_migration", None)
+        if callable(record):
+            await record()
+        outcome = await run_runbook_migration(
+            library=self.runbook_library,
+            legacy=self.legacy_procedures,
+            audit=self.control_audit,
+            prefs=self.prefs,
+            projector=self._project_runbook_corpus,
+            project=not project_in_background,
+        )
+        if project_in_background and not outcome.projection_completed:
+            self._start_runbook_projection()
+        legacy_dir = getattr(getattr(self.prefs, "playbooks", None), "dir", None)
+        if legacy_dir:
+            logger.warning(
+                "Preferences.playbooks.dir is set: its procedure files were converted into "
+                "runbooks once, the setting is ignored from now on and can be removed."
+            )
+        return outcome
+
+    def _start_runbook_projection(self) -> asyncio.Task[Any] | None:
+        """Run the migration's pending RAG projection (step 7) as a tracked tenant
+        writer: a factory reset or shutdown cancels it (``cancel_mutation_tasks``) and
+        the next start resumes it from the marker. Returns the task, or ``None`` when
+        writes are fenced (a reset is running) or one is already running."""
+        running = getattr(self, "_runbook_projection_task", None)
+        if running is not None and not running.done():
+            return running
+        from .engine.runbook_migration import resume_runbook_projection
+
+        async def _project() -> bool:
+            try:
+                done = await resume_runbook_projection(
+                    library=self.runbook_library, projector=self._project_runbook_corpus,
+                )
+            except Exception as exc:  # noqa: BLE001 - resumed at the next start
+                logger.warning("Runbook RAG projection did not finish (%s); it resumes at the next start", exc)
+                return False
+            if done:
+                logger.info("Runbook RAG projection completed")
+            return done
+
+        try:
+            task = self.spawn_mutation_task(_project(), name="runbook-rag-projection")
+        except RuntimeError as exc:
+            logger.warning("Runbook RAG projection not started (%s); it resumes at the next start", exc)
+            return None
+        self._runbook_projection_task = task
+        return task
+
     @property
     def cases(self):
         return self._demo.cases if self._demo is not None else self._real_cases
@@ -281,6 +947,14 @@ class AppState:
     def control_audit(self):
         """Durable audit trail for auth, RBAC, secrets, users and real settings."""
         return self._real_audit
+
+    @property
+    def demo_audit(self):
+        """The Demo stack's audit store while Demo Mode is on, else None. The audit
+        read API (Round 14 SPEC §4.5.5) reads it beside :attr:`control_audit`, so
+        real sign-ins and settings changes show next to demo agent rows (D11)."""
+        demo = self._demo
+        return demo.audit if demo is not None else None
 
     @property
     def usage_store(self):
@@ -373,6 +1047,33 @@ class AppState:
         return await self.mutate_prefs(mutate)
 
     @property
+    def enrichment_settings(self) -> EnrichmentConfig:
+        """The enrichment settings the Settings page shows and edits, for the active
+        stack (Round 14 SPEC §3.5, wro-01): the stored real settings, or while Demo
+        Mode is on the Demo sandbox's own copy. Never :attr:`execution_prefs`' block,
+        whose ``enabled`` is forced off in Demo Mode (an isolation control, not a
+        setting), so a switch always shows the value its save changes."""
+        if self._demo is not None:
+            return self._demo.enrichment_settings()
+        return self.prefs.enrichment
+
+    async def mutate_enrichment_settings(
+        self, mutate: Callable[[EnrichmentConfig], EnrichmentConfig]
+    ) -> EnrichmentConfig:
+        """Read-modify-write :attr:`enrichment_settings` for the active stack.
+
+        Off Demo Mode the real settings are saved under the prefs lock (the same
+        strict persistence as :meth:`mutate_prefs`); while Demo Mode is on the edit
+        stays in the Demo sandbox and never reaches the real settings. ``mutate`` is
+        a pure edit of the enrichment block (it returns a new model)."""
+        if self._demo is not None:
+            return await self._demo.mutate_enrichment_settings(mutate)
+        saved = await self.mutate_prefs(
+            lambda current: current.model_copy(update={"enrichment": mutate(current.enrichment)})
+        )
+        return saved.enrichment
+
+    @property
     def ingest_service(self):
         return self._demo.ingest_service if self._demo is not None else self._real_ingest_service
 
@@ -391,6 +1092,263 @@ class AppState:
         # audit rows, and an in-case chat reads the DEMO case store. Off demo, the
         # real engine — byte-for-byte as before.
         return self._demo.chat_engine if self._demo is not None else self._real_chat_engine
+
+    # ------------------------------------------------------------------ #
+    # Chat revamp wiring (SPEC §2, §5.1, §6.1, §9.1).
+    # ------------------------------------------------------------------ #
+    @property
+    def chat_turns(self):
+        """The process-local :class:`app.api.routes_chat.ChatTurnRegistry` (running
+        turns, concurrency admission, Stop). Imported lazily: the registry lives with
+        the chat routes, and this module must not import the HTTP layer at load."""
+        registry = self._chat_turns
+        if registry is None:
+            from .api.routes_chat import ChatTurnRegistry
+
+            registry = self._chat_turns = ChatTurnRegistry()
+        return registry
+
+    async def cancel_chat_turns(self) -> int:
+        """Cancel every running chat turn and wait (bounded) for each to unwind:
+        abort its reservation, persist nothing (factory reset, shutdown)."""
+        registry = self._chat_turns
+        if registry is None:
+            return 0
+        return await registry.cancel_all(timeout=_CHAT_TURN_CANCEL_TIMEOUT_S)
+
+    @property
+    def reports(self):
+        """The chat report store for the active real/demo boundary (SPEC §9.1):
+        ``stores.reports.ReportStore`` over the shared KV, or the demo stack's own
+        store over the demo KV (purged when Demo Mode is disabled)."""
+        if self._demo is not None:
+            return self._demo.reports
+        store = getattr(self, "_real_reports", None)
+        if store is None:
+            store = self._real_reports = self._build_reports(self._kv)
+        return store
+
+    @staticmethod
+    def _build_reports(kv):
+        """``ReportStore(kv)``, or None while the reports package is not installed
+        (the property retries on the next access)."""
+        try:
+            from .stores.reports import ReportStore
+        except ImportError:
+            return None
+        return ReportStore(kv)
+
+    def chat_source_connector(self, source_id: str | None):
+        """Resolve the chat request's selected source: ``(connector, owned_client,
+        effective_id, effective_name)``. ``None`` connector = the default (primary)
+        source. Raises :class:`ChatSourceUnavailable` (route: 422
+        ``chat_source_unavailable``) for an explicit id that is unknown, disabled,
+        receiver-only or cannot be built. Demo Mode resolves only demo adapters.
+
+        Also the tool context's ``source_resolver``: a tool that names a source gets
+        the same answer as the request, and closes ``owned_client`` after use."""
+        if not source_id:
+            if self.demo_active:
+                from .engine.demo_sources import DEMO_SOURCE_SPECS
+
+                spec = DEMO_SOURCE_SPECS["splunk"]
+                return None, None, spec.source_id, spec.display_name
+            primary = self.execution_prefs.primary_source()
+            return (
+                None,
+                None,
+                primary.id if primary is not None else None,
+                (primary.display_name or primary.id) if primary is not None else "Primary source",
+            )
+        if self.demo_active:
+            connector = self.demo_source_connector(source_id)
+            if connector is None:
+                raise ChatSourceUnavailable("The selected source is unavailable for chat.")
+            row = next((r for r in self.demo_sources_overlay() if r.get("id") == source_id), {})
+            return connector, None, source_id, str(row.get("display_name") or source_id)
+        src = next((s for s in self.prefs.sources if s.id == source_id and s.enabled), None)
+        if src is None:
+            raise ChatSourceUnavailable("The selected source is unknown or disabled.")
+        from .connectors.registry import get_registry
+
+        if not get_registry().is_pull(src.source_type):
+            raise ChatSourceUnavailable("The selected source does not provide a query surface.")
+        try:
+            from .connectors.elastic import ElasticConnector
+            from .connectors.opensearch import OpenSearchConnector
+            from .connectors.wazuh import WazuhConnector
+            from .constants import SourceType
+
+            es_client, owned = self.es_client_for_source(src)
+            cfg = {**(src.config or {})}
+            if src.display_name:
+                cfg.setdefault("display_name", src.display_name)
+            if src.source_type == SourceType.OPENSEARCH:
+                conn = OpenSearchConnector(es_client, config=cfg, connector_id=src.id)
+            elif src.source_type == SourceType.WAZUH:
+                conn = WazuhConnector(es_client, config=cfg, connector_id=src.id)
+            else:
+                conn = ElasticConnector(es_client, config=cfg, connector_id=src.id)
+        except Exception as exc:  # noqa: BLE001
+            raise ChatSourceUnavailable(
+                "The selected source could not be prepared for chat."
+            ) from exc
+        return conn, (es_client if owned else None), src.id, src.display_name or src.id
+
+    def _chat_browse_targets(self, prefs: Preferences | None = None) -> list:
+        """Every browse-capable source of the active tenant view (the chat
+        ``search_logs`` all-sources fan-out). Lazy: no client is opened here."""
+        from .engine.log_rows import demo_browse_targets, tenant_browse_targets
+
+        if self.demo_active:
+            return demo_browse_targets(
+                self.demo_sources_overlay(), prefs=prefs or self.prefs,
+                demo_source_connector=self.demo_source_connector,
+            )
+        from .connectors.registry import get_registry
+
+        return tenant_browse_targets(
+            self.prefs.sources, prefs=prefs or self.prefs, registry=get_registry(),
+            es_client_for_source=self.es_client_for_source, ingest_service=self.ingest_service,
+        )
+
+    async def _chat_source_health_rows(self) -> list[dict]:
+        """The ``GET /api/sources/health`` rows (demo overlay in Demo Mode)."""
+        if self.demo_active:
+            return self.demo_source_health_overlay()
+        from .engine.source_health import sources_health_rows
+
+        return await sources_health_rows(
+            self.prefs,
+            poller=getattr(self, "poller", None),
+            silent_sources=getattr(self, "silent_sources", None),
+            cursor_store=getattr(self, "cursor_store", None),
+            ingest_service=getattr(self, "ingest_service", None),
+            last_event_map=getattr(self, "_source_last_event", {}) or {},
+        )
+
+    async def chat_grants(self, request) -> frozenset[tuple[str, str]]:
+        """The caller's grants over every pair a chat turn can need: the tool
+        catalogue, the console map and the route-level grants (case comments,
+        memory, model choice, cost). Resolved once, WITHOUT audit rows (SPEC §5.1).
+        The first call of a process builds the tool catalogue and the Help Center index
+        off the event loop (Round 13 polish PB3: a cold Case Manager chip read paid both
+        on the loop, about 0.3 s); both are no-ops once built."""
+        from .agents.chat_tools.registry import warm_catalogue
+        from .api.deps import resolve_grants
+        from .knowledge import warm_app_knowledge
+
+        await warm_catalogue()
+        await warm_app_knowledge()
+        return await resolve_grants(request, chat_grant_pairs())
+
+    async def build_chat_tool_context(
+        self,
+        request,
+        body=None,
+        *,
+        grants: frozenset[tuple[str, str]] | None = None,
+        prefs: Preferences | None = None,
+        log_source: Any = None,
+        source_id: str | None = None,
+        case_id: str | None = None,
+    ):
+        """THE builder of a turn's :class:`~app.agents.chat_tools.base.ChatToolContext`
+        (SPEC §2, §5.1), shared by every chat route and Demo Mode.
+
+        Everything comes from the demo-switchable properties, so Demo Mode isolation is
+        structural; the demo stack overlays only its extras
+        (:meth:`DemoStack.chat_context_extras`). ``body`` is the ``ChatRequest`` (None
+        for ``/chat/context``): its ``time_range`` and ``scopes`` bound every tool and
+        can never be widened by a tool result (§4.8.4). ``grants`` are resolved here
+        when the caller did not already resolve them. ``log_source``/``source_id`` are
+        the request's explicitly selected source (None = the primary)."""
+        from . import __version__
+        from .agents.chat_tools.base import ChatToolContext
+        from .agents.chat_tools.intel import bind_enrichment
+        from .api.deps import current_username
+        from .engine.case_cluster import bind_cluster_for_case
+
+        if grants is None:
+            grants = await self.chat_grants(request)
+        prefs = prefs or self.execution_prefs
+        engine = self.chat_engine
+        effective_case = case_id
+        if effective_case is None and body is not None:
+            effective_case = body.case_id or (body.context.case_id if body.context else None)
+        fields: dict[str, Any] = {
+            "prefs": prefs,
+            "cases": self.cases,
+            "audit": self.execution_audit,
+            "control_audit": self.control_audit,
+            "usage": self.usage_store,
+            "rag": getattr(engine, "_rag", None) or self.rag_service,
+            "campaigns": self.campaign_store,
+            "proposals": self.proposals,
+            "tuning": self.tuning_store,
+            "baseline": self.baseline_store,
+            "noise": self.noise_counters,
+            "standup": self.standup_service,
+            "memory": self.memory,
+            "log_source": log_source if log_source is not None else getattr(engine, "_source", None),
+            "source_resolver": self.chat_source_connector,
+            "browse_sources": lambda: self._chat_browse_targets(prefs),
+            "enrich": bind_enrichment(
+                prefs=prefs, secrets=self.secrets, cache=self.cache,
+                registry=self.enrichment_registry,
+            ),
+            "budget_gate": self.budget_gate,
+            "demo_active": self.demo_active,
+            "grants": frozenset(grants),
+            "case_id": effective_case or None,
+            "user": current_username(request) or "default",
+            "caller": current_username(request) or "",
+            "time_range": getattr(body, "time_range", None),
+            "context_time_range": _context_time_range(body),
+            "app_version": __version__,
+            "source_health_rows": self._chat_source_health_rows,
+            "scheduler_health": self.scheduler_health,
+            "cluster_for_case": bind_cluster_for_case(
+                es=self.es, log_source=self.log_source, prefs=prefs,
+                query_source_for=self.active_source_for_id,
+            ),
+            "secrets_status": self.secrets.configured_status,
+            # Round 14: ``runbooks`` is the runbook LIBRARY (``list_runbooks`` reads its
+            # ``published_catalog``); ``runbook_runs`` the ACTIVE run store (Demo runs in
+            # Demo Mode) that ``get_case``'s runbook section reads.
+            "runbooks": self.runbook_library,
+            "runbook_runs": self.runbook_runs,
+            "rule_versions": getattr(self, "rule_versions", None),
+            # Round 12 (P1-4): the caller's chat answer ratings, over the ACTIVE chat
+            # KV (the demo stack's in Demo Mode), read as aggregates only.
+            "chat_feedback": self._chat_feedback_store(),
+            "scopes": frozenset(getattr(body, "scopes", None) or ()),
+            "source_id": source_id or None,
+        }
+        if self._demo is not None:
+            fields.update(self._demo.chat_context_extras(
+                prefs=prefs, query_source_for=self.active_source_for_id,
+            ))
+        return ChatToolContext(**fields)
+
+    def _chat_feedback_store(self):
+        """The chat feedback store over the ACTIVE chat KV (Round 12, P1-4), or None
+        when it cannot be built (the tool then reports it as not measured)."""
+        try:
+            from .stores.chat_feedback import feedback_store_for
+
+            return feedback_store_for(getattr(self.chat_conversations, "_kv", None) or self.kv)
+        except Exception:  # noqa: BLE001 -- a missing store never fails a chat turn
+            return None
+
+    @property
+    def chat_starters(self):
+        """Round 13 (SPEC-chat §3.2.3): the caller-keyed chat starter state store over
+        the ACTIVE chat KV (the demo stack's in Demo Mode, so Demo state stays in the
+        sandbox). Presentation state only: family ids, opaque keys, counters, times."""
+        from .stores.chat_starters import starters_store_for
+
+        return starters_store_for(getattr(self.chat_conversations, "_kv", None) or self.kv)
 
     @property
     def rag_service(self):
@@ -438,6 +1396,15 @@ class AppState:
         # handle survives every ``_wire()`` rebuild like the Round-3/4/5 stores. Advisory
         # presentation state only (#3-safe); never read by case_manager.decide().
         self._build_round7_stores()
+        from .engine.jobs import JobRunner
+        from .stores.jobs import JobStore
+
+        self._jobs = JobStore(self._kv)
+        if self._job_runner is None:
+            self._job_runner = JobRunner(self, self._jobs)
+        else:
+            self._job_runner.state = self
+            self._job_runner.store = self._jobs
         # Drop any memoised batch service so it re-binds to the freshly-built store +
         # gateway on the next access (a credential change rebuilds both).
         self._batch_service = None
@@ -454,6 +1421,16 @@ class AppState:
             price_overlay=self.price_overlay, budget_gate=self.budget_gate,
             custom_models=self.custom_models,
             discounted_policy=lambda: self.prefs.batch,
+            provider_health=self._provider_health,
+            # The operator's circuit-breaker policy, read per call (like the discount
+            # policy above) so a settings change takes effect without a rewire. Without
+            # this the ``resilience`` block would be a fully persisted, schema-exposed,
+            # Console-editable section that NOTHING reads: the tracker would run on its
+            # mirrored defaults forever and ``/api/diagnostics/health`` would report a
+            # policy the operator never configured. A default-constructed block is
+            # byte-identical to those mirrored defaults and leaves ``enforce`` off, so
+            # wiring it changes nothing for a deployment that never edits it (#5).
+            resilience_policy=lambda: self.prefs.resilience,
         )
         # Auth service (Wave 2). Disabled unless secrets.auth_enabled — the no-auth
         # "old version" is the default. Building it is cheap and re-runs on rewire.
@@ -476,17 +1453,15 @@ class AppState:
         # check runs in the deps layer (require_auth) against this store; the per-user
         # token_version snapshot is folded into AuthService (set_session_versions).
         self.sessions = self._build_sessions()
-        # Markdown playbook registry (loaded from disk; deterministic per-cluster
-        # selection). Reloaded in startup() once prefs (and any dir override) load.
-        self.playbooks = self._build_playbooks()
-        # Runbooks are RAG reference knowledge: immutable bundled Markdown plus a
-        # durable operator-authored layer over the shared KV store. No filesystem
-        # write, new table, or index is required for Console authoring.
-        self.runbooks = self._build_runbooks()
         # Operator MEMORY store (durable trusted facts). Backed by the SAME KV the
         # config/cursor stores use for the active backend (SQL: SqlKVStore; ES: a
         # thin EsKVStore over the config index) — no new index/table/migration.
         self._real_memory = self._build_memory()
+        # Frozen investigation fixtures for the replay harness. Over the SAME shared KV
+        # as the MEMORY store — no new index/table/migration. It is written ONLY by the
+        # observational capture sink below and read only by the replay job / its
+        # read-only routes.
+        self.replay_fixtures = self._build_replay_fixtures()
         # Agent-DRAFTED proposals awaiting human approval (HITL). Backed by the SAME
         # KV as the MEMORY store — no new index/table/migration.
         self._real_proposals = self._build_proposals()
@@ -517,7 +1492,7 @@ class AppState:
         self.log_source = self._build_log_source()
         self._real_pipeline = InvestigationPipeline(
             es, self.secrets, self.cache, self.gateway, self.rag, self._real_cases, self._real_audit,
-            source=self.log_source, playbooks=self.playbooks, memory=self._real_memory,
+            source=self.log_source, memory=self._real_memory,
             tuning_store=self._real_tuning_store,
             seq_store=self.case_seq,
             # Round 5 (Coupling-F): the realtime EventBus is a module-global singleton
@@ -527,6 +1502,18 @@ class AppState:
             # collaborators built AFTER the pipeline — the _wire() ordering (#6) is
             # preserved; only this already-available collaborator moves to the ctor.
             event_bus=self.event_bus,
+            investigation_gate=self.investigation_gate,
+            investigation_registry=self.investigation_registry,
+            case_locks=self.case_locks,
+            mutation_task_spawner=self.spawn_mutation_task,
+            # Forward fixture capture for the replay harness. Wired ONLY on the real
+            # pipeline: demo traffic is synthetic and must never enter a replay corpus.
+            fixture_sink=self.replay_fixtures.sink,
+            # Round 14 (SPEC §4.10.4, §4.10.9): the matchable runbook catalog the
+            # investigator's guidance is chosen from, and the post-investigation
+            # attachment of the matching runbook to a case that needs a person.
+            runbook_catalog=self._runbook_catalog,
+            runbook_attacher=self._attach_runbook_to_real_case,
         )
         self._real_chat_engine = ChatEngine(
             es, self.gateway, self._real_audit, self._real_cases, self.rag,
@@ -566,14 +1553,20 @@ class AppState:
         # Threshold automation (F10 / Wave 6): post-decision, #3-safe. It runs AFTER
         # apply()+save and may ONLY tag/recommend/notify/queue a re-investigation
         # (which re-runs decide())/open a HITL Proposal — never set status/close.
-        from .engine.threshold_automation import ThresholdAutomation
+        from .engine.threshold_automation import ThresholdAutomation, bind_runbook_automation
 
+        # Round 14 (SPEC §4.10.16): a ``run_playbook`` rule attaches a runbook.
+        attach_runbook, migrated_procedures = bind_runbook_automation(self)
         self.automation = ThresholdAutomation(
             self._real_proposals, self._real_audit,
             notify=self._automation_notify,
-            queue_playbook_run=self._automation_queue_playbook,
+            attach_runbook=attach_runbook,
+            migrated_procedures=migrated_procedures,
         )
         self._real_pipeline.automation = self.automation
+        # Round 15 (SPEC D6.3): the auto-close review sample, after every other
+        # post-decision hook. Real cases, the real ledger and the control audit.
+        self._real_pipeline.review_sampler = self._real_review_sampler()
         # (The realtime EventBus is now injected at pipeline CONSTRUCTION above — Round 5
         # Coupling-F — instead of this post-hoc setter. The bus is the module-global
         # singleton, best-effort + #3/#11-safe, and a no-op when realtime is off.)
@@ -619,108 +1612,190 @@ class AppState:
         except Exception as exc:  # noqa: BLE001 — counter wiring must never break a rewire
             logger.warning("noise-counter sink wiring failed (%s); counters disabled", exc)
 
-    async def _automation_notify(self, case, trigger: str) -> None:
+    async def _automation_notify(self, case, trigger: str) -> list[dict[str, Any]] | None:
         """Automation NOTIFY action → dispatch through the existing notification
-        service. Fire-and-forget; never raises into the case path."""
+        service. Returns the per-channel results (``[{"ok": bool, "detail": str,
+        ...}]``) the action's audit outcome is read from
+        (``ThresholdAutomation._maybe_notify``), or ``None`` when no notification
+        service is wired. Never raises into the case path: the service's ``dispatch``
+        catches every channel and dispatch failure itself.
+
+        The in-app inbox copy is always one of the service's results, and it reports
+        ``ok`` even when it was due for nobody (``"no recipients"``: no assignee, no
+        mention, no subscribed role member). Such a copy went out to no one, so it is
+        left out here, as a channel skipped inside its dedup window is: it never counts
+        as a channel the notification was sent on, and a notify action whose only
+        configured channel failed reads ``failure``, not ``partial``. The copy's own
+        NOTIFICATION row is unchanged."""
         notifier = getattr(self, "notifications", None)
         if notifier is None:
+            return None
+        from .notifications.inapp import INAPP_NOT_DUE_DETAILS
+
+        results = await notifier.dispatch(case, trigger)
+        if not isinstance(results, list):
+            return results
+        # ``InAppChannel.send``'s own not-due details.
+        return [
+            r for r in results
+            if not (isinstance(r, dict) and r.get("type") == "in_app"
+                    and r.get("ok") is True and r.get("detail") in INAPP_NOT_DUE_DETAILS)
+        ]
+
+    # ------------------------------------------------------------------ #
+    # Runbooks in the agent path (Round 14 SPEC §4.10.4, §4.10.9, §4.10.18)
+    # ------------------------------------------------------------------ #
+    async def _runbook_catalog(self):
+        """The matchable runbook catalog both pipelines choose the investigator's
+        guidance from: every built-in and the live version of every Published operator
+        runbook, a built-in a Published copy replaces left out (``runbook_runs.
+        load_catalog`` over the REAL library, which the Demo pipeline reads too, D45).
+        The library view carries no Demo overlay hook, so the real pipeline never
+        matches on Demo rule names; the Demo stack adds its overlay itself. A library
+        read failure raises (the investigation then runs with no runbook)."""
+        from types import SimpleNamespace
+
+        from .engine.runbook_runs import load_catalog
+
+        return await load_catalog(SimpleNamespace(runbook_library=self.runbook_library))
+
+    def runbook_catalog_overlay(self, entries):
+        """The matchable built-ins as the ACTIVE stack sees them: unchanged on the real
+        stack, and with the Demo rule names mapped onto the built-ins that cover them
+        while Demo Mode is on (``demo_runtime.overlay_demo_runbooks``), so a Demo case
+        is matched to the runbook its storyline calls for. Read by the attachment
+        path's catalog (``runbook_runs.load_catalog``) when it is given this state."""
+        demo = self._demo
+        if demo is None:
+            return tuple(entries)
+        from .engine.demo_runtime import overlay_demo_runbooks
+
+        return overlay_demo_runbooks(entries)
+
+    async def _attach_runbook_to_real_case(self, case) -> None:
+        """The REAL pipeline's post-investigation attachment (SPEC §4.10.4). The run
+        engine binds the ACTIVE stack's run store, audit and settings, so while Demo
+        Mode is on a real case is not attached here (its run and audit row would land
+        in the Demo stack and vanish with it). Its id is kept instead and the
+        attachment runs when Demo Mode ends (``_drain_deferred_runbook_attachments``),
+        against the case as it is stored then. Never raises."""
+        if self._demo is not None:
+            self._defer_runbook_attachment(str(getattr(case, "case_id", "") or ""))
             return
-        await notifier.dispatch(case, trigger)
+        from .engine.runbook_runs import reevaluate_case
 
-    async def _automation_queue_playbook(self, case, playbook_id: str) -> None:
-        """Automation RUN_PLAYBOOK action → QUEUE a re-investigation of the case with
-        the playbook forced as TRUSTED context. Detached so it never blocks the
-        case path; the re-investigation itself re-runs the deterministic decide()."""
-        import asyncio
+        await reevaluate_case(self, case, trigger="investigation")
 
-        async def _do() -> None:
+    def _defer_runbook_attachment(self, case_id: str) -> None:
+        """Keep a real case's post-investigation attachment until Demo Mode ends.
+        Bounded: past ``_RUNBOOK_ATTACH_DEFERRED_MAX`` ids the oldest is dropped (and
+        logged); that case is attached by its next status, tag or verdict change."""
+        if not case_id:
+            return
+        deferred = self._runbook_attach_deferred
+        deferred.pop(case_id, None)
+        deferred[case_id] = None
+        while len(deferred) > _RUNBOOK_ATTACH_DEFERRED_MAX:
+            dropped = next(iter(deferred))
+            deferred.pop(dropped, None)
+            logger.warning(
+                "Runbook attachment for real case %s not kept: more than %d real cases "
+                "were investigated while Demo Mode was on",
+                dropped[:80], _RUNBOOK_ATTACH_DEFERRED_MAX,
+            )
+        logger.info(
+            "Runbook attachment for real case %s deferred until Demo Mode ends",
+            case_id[:80],
+        )
+
+    def _start_deferred_runbook_attachments(self) -> asyncio.Task[Any] | None:
+        """Start attaching the real cases kept while Demo Mode was on (one tracked
+        background task; a running drain picks up whatever is kept meanwhile). Not
+        started while the factory-reset fence is closed: the ids stay kept, and the
+        drain re-reads each case, so a case a reset removed is skipped."""
+        if self._demo is not None or not self._runbook_attach_deferred:
+            return None
+        running = self._runbook_attach_drain
+        if running is not None and not running.done():
+            return running
+        try:
+            task = self.spawn_mutation_task(
+                self._drain_deferred_runbook_attachments(), name="runbook-attach-after-demo",
+            )
+        except RuntimeError as exc:
+            logger.info("Deferred runbook attachments not started: %s", exc)
+            return None
+        self._runbook_attach_drain = task
+        return task
+
+    async def _drain_deferred_runbook_attachments(self) -> None:
+        """Attach the matching runbook to each real case kept while Demo Mode was on,
+        oldest first, through the same engine call as the live trigger. Each case is
+        read again from the real store, so the run engine re-checks it (a case
+        closed or removed since gets nothing). Stops, keeping the rest, as soon as
+        Demo Mode is on again. Never raises."""
+        from .engine.runbook_runs import reevaluate_case
+
+        deferred = self._runbook_attach_deferred
+        while self._demo is None and deferred:
+            case_id = next(iter(deferred))
             try:
-                cluster = await self._automation_cluster_for_case(case)
-                if cluster is None:
-                    return
-                query_source = self.poller.source_for_id(case.source_id)
-                await self._real_pipeline.investigate_cluster(
-                    cluster, case.source_surface, self.prefs,
-                    force=True, force_playbook_id=playbook_id,
-                    query_source=query_source,
+                case = await self._real_cases.get(case_id)
+            except Exception as exc:  # noqa: BLE001 (one unreadable case never stops the rest)
+                logger.warning(
+                    "Deferred runbook attachment for real case %s skipped: %s", case_id[:80], exc,
                 )
-            except Exception:  # noqa: BLE001 — a queued re-investigation never breaks anything
-                logger.debug("automation playbook re-investigation failed for %s", case.case_id)
+                case = None
+            if self._demo is not None:
+                break  # Demo Mode is on again: this id stays kept for the next drain
+            deferred.pop(case_id, None)
+            if case is not None:
+                await reevaluate_case(self, case, trigger="investigation")
 
-        asyncio.create_task(_do())
+    def _demo_runbook_attacher(self, demo_stack):
+        """The Demo pipeline's post-investigation attachment, bound to ``demo_stack``:
+        it attaches only while that stack is the active one, so a Demo investigation
+        that finishes after Demo Mode ended (or was reset) writes nothing anywhere."""
+        async def attach(case) -> None:
+            if self._demo is not demo_stack:
+                logger.info(
+                    "Runbook attachment for Demo case %s dropped: that Demo stack is no longer active",
+                    str(getattr(case, "case_id", ""))[:80],
+                )
+                return
+            from .engine.runbook_runs import reevaluate_case
+
+            await reevaluate_case(self, case, trigger="investigation")
+
+        return attach
 
     async def _automation_cluster_for_case(self, case):
-        """Rebuild a cluster for a queued automation re-investigation (read-only).
+        """Rebuild a cluster for a stored case (read-only): the shared
+        :func:`app.engine.case_cluster.cluster_for_case`, with the real stack's
+        dependencies and stored reconstruction on (Round 16 B06).
 
-        Mirrors the routes' ``_cluster_for_case`` but kept dependency-light here to
-        avoid a routes import cycle. Returns None when no events remain."""
-        from .engine.correlation import cluster_from_events
-        from .models import RawEvent
+        The deferred-candidate drain and the bulk reinvestigate job used to rebuild a
+        push or deleted source's events with one timestamp and one rule, which
+        saturated velocity, dropped diversity and changed the deterministic risk the
+        decision reads; an aged-out pull case failed in the job while the route
+        rebuilt it. Delegating gives the drain, the job and ``POST
+        /api/cases/{id}/reinvestigate`` the same cluster, so the same stored case scores
+        the same. ``self.prefs`` and ``self.poller.source_for_id`` (never the Demo
+        switching accessors): both callers work on the real stack. Returns ``None``
+        only when nothing can be rebuilt."""
+        from .engine.case_cluster import cluster_for_case as engine_cluster_for_case
 
-        prefs = self.prefs
-        if not case.member_event_ids:
-            return None
-        query_source = self.poller.source_for_id(case.source_id)
-        events = []
-        fetch_size = max(len(case.member_event_ids), len(case.member_event_keys or []))
-        if query_source is not None:
-            try:
-                result = await query_source.fetch_by_ids(
-                    prefs, case.member_event_ids, size=fetch_size
-                )
-                events = result.events
-            except Exception:  # noqa: BLE001
-                return None
-        elif (
-            case.source_id
-            and not prefs.sources
-            and case.source_id == getattr(self.log_source, "connector_id", None)
-        ):
-            try:
-                result = await self.log_source.fetch_by_ids(
-                    prefs, case.member_event_ids, size=fetch_size
-                )
-                events = result.events
-            except Exception:  # noqa: BLE001
-                return None
-        elif case.source_id:
-            # Push/deleted sources must never fall back to the primary/global log
-            # surface. Rebuild a minimal source-local cluster from stored identity.
-            for event_id in case.member_event_ids[:200]:
-                event = RawEvent(
-                    id=event_id,
-                    timestamp_millis=case.first_seen_millis,
-                    rule=(case.rule_ids[0] if case.rule_ids else None),
-                    source={"reconstructed": True},
-                    source_id=case.source_id,
-                    source_name=case.source_name,
-                )
-                if case.entity.type.value == "ip":
-                    event.ip = case.entity.value
-                elif case.entity.type.value == "user":
-                    event.user = case.entity.value
-                elif case.entity.type.value == "host":
-                    event.host = case.entity.value
-                events.append(event)
-        else:
-            # Legacy no-source case: preserve the implicit connector behavior.
-            try:
-                result = await self.log_source.fetch_by_ids(
-                    prefs, case.member_event_ids, size=fetch_size
-                )
-                events = result.events
-            except Exception:  # noqa: BLE001
-                return None
-        members = [e for e in events if e.entity_value(case.entity.type) == case.entity.value] or events
-        if not members:
-            return None
-        cluster = cluster_from_events(case.entity.type, case.entity.value, members)
-        cluster.signature = case.cluster_signature
-        cluster.source_id = case.source_id
-        cluster.source_name = case.source_name
-        cluster.member_event_keys = list(case.member_event_keys or cluster.member_event_keys)
-        cluster.trigger_reason = None  # preserve the existing case's trigger reason
-        return cluster
+        query_source = (
+            self.poller.source_for_id(case.source_id) if case.source_id else self.log_source
+        )
+        return await engine_cluster_for_case(
+            case,
+            es=self.es,
+            log_source=self.log_source,
+            prefs=self.prefs,
+            query_source=query_source,
+            allow_stored_reconstruction=True,
+        )
 
     async def cluster_for_case(self, case):
         """Public PollerHost seam for durable deferred-candidate reconstruction."""
@@ -787,47 +1862,6 @@ class AppState:
         self.cursor_store = CursorStore(es)
         self.config_store = ConfigStore(es)
 
-    def _playbooks_dir(self) -> Path:
-        """Where playbook *.md files live: the override from prefs, else the default
-        ``backend/playbooks`` (sibling of the ``app`` package)."""
-        override = getattr(self.prefs, "playbooks", None)
-        if override is not None and override.dir:
-            return Path(override.dir)
-        return Path(__file__).resolve().parent.parent / "playbooks"
-
-    def _new_playbook_registry(self):
-        """Build a registry with ownership metadata for the active directory.
-
-        The Markdown procedures shipped in ``backend/playbooks`` are bundled
-        reference content and therefore protected from runtime edits.  A configured
-        override directory is operator-owned, so every valid playbook there may be
-        edited by a principal holding ``playbooks:manage``.
-        """
-        from .playbooks.registry import (
-            DEFAULT_BUNDLED_PLAYBOOK_FILES,
-            PlaybookRegistry,
-        )
-
-        directory = self._playbooks_dir()
-        bundled_directory = Path(__file__).resolve().parent.parent / "playbooks"
-        uses_packaged_default = (
-            directory.expanduser().resolve(strict=False)
-            == bundled_directory.resolve(strict=False)
-        )
-        if uses_packaged_default:
-            from .playbooks.durable import DurablePlaybookRegistry
-            from .stores.playbooks import PlaybookStore
-
-            return DurablePlaybookRegistry(
-                bundled_directory,
-                PlaybookStore(self._kv),
-                protected_filenames=DEFAULT_BUNDLED_PLAYBOOK_FILES,
-            )
-        # A deliberate directory override retains the legacy file-backed workflow.
-        # This is useful for Git-managed site-local catalogs; the default Console
-        # authoring path above is state-backend durable and container-safe.
-        return PlaybookRegistry(directory, protected_filenames=frozenset())
-
     def _build_memory(self):
         """Construct the operator MEMORY store over the active backend's KV. The KV
         is set in _build_state_backend, so this always has a valid handle."""
@@ -835,11 +1869,11 @@ class AppState:
 
         return MemoryStore(self._kv)
 
-    def _build_runbooks(self):
-        from .engine.runbook_service import RunbookService
-        from .stores.runbooks import RunbookStore
+    def _build_replay_fixtures(self):
+        """Construct the replay fixture catalog over the active backend's KV."""
+        from .engine.replay.fixtures import ReplayFixtureStore
 
-        return RunbookService(RunbookStore(self._kv))
+        return ReplayFixtureStore(self._kv, self.get_prefs)
 
     def _build_proposals(self):
         """Construct the agent-PROPOSAL store over the active backend's KV (the same
@@ -900,6 +1934,10 @@ class AppState:
         self.custom_models = CustomModelStore(kv)
         # Shift-handoff action items + acknowledgements (org-scoped).
         self._real_shift_handoff = ShiftHandoffStore(kv)
+        # Chat reports (chat revamp SPEC §9.1) over the SAME shared KV: one document
+        # per report plus a per-user index, no new index/table/migration. Rebuilt with
+        # the KV so it never points at a stale backend.
+        self._real_reports = self._build_reports(kv)
 
     def _build_round4_stores(self) -> None:
         """Construct the 4 Round-4 Wave-3 KV-backed stores over the active backend's KV
@@ -961,8 +1999,24 @@ class AppState:
         (#3), recomputes a ``cluster_signature`` (#4), or slows the poll/ingest path (its
         record path is fail-open)."""
         from .stores.noise_counters import NoiseCounterStore
+        from .stores.precedent_exclusions import PrecedentExclusionStore
+        from .stores.rag_corpus_migration import RagCorpusMigrationStore
+        from .stores.rag_health import RagHealthStore
 
         self._real_noise_counters = NoiseCounterStore(self._kv)
+        # Durable RAG projection-health record. ``RagService.last_projection`` is
+        # in-process only, so the evidence of a corpus collapse died on restart —
+        # which is the first thing an operator does when something looks wrong.
+        self._rag_health = RagHealthStore(self._kv)
+        # Durable, case-scoped precedent EXCLUSION markers. Without them a force-deleted
+        # precedent is re-derived by the very next projection, so the operator's action
+        # silently undid itself. Same single-KV-document pattern: no new index, no table,
+        # no migration.
+        self._precedent_exclusions = PrecedentExclusionStore(self._kv)
+        # Intentional RAG corpus migration markers (one KV document per source), so a
+        # deliberate source replacement is never read as corpus loss on either side of
+        # an upgrade or a rollback.
+        self._rag_corpus_migrations = RagCorpusMigrationStore(self._kv)
 
     @property
     def enrichment_registry(self):
@@ -1097,6 +2151,7 @@ class AppState:
                 make_provider=self.build_batch_provider,
                 get_prefs=self.get_prefs,
                 reenter=self._reenter_detections,
+                state=self,
             )
             self._batch_service = svc
         return svc
@@ -1170,9 +2225,10 @@ class AppState:
 
         Gated by the same default-OFF batch/detection toggle as the funnel; a job with no
         persisted candidates (a plain investigation batch) re-enters nothing."""
-        from .constants import SourceSurface
+        from .constants import OPEN_CASE_STATUSES, SourceSurface
         from .engine import event_detection as evdet
         from .engine.cost_gate import passes_suppression
+        from .engine.ingest import is_attach_only
 
         prefs = self.prefs
         if not (getattr(getattr(prefs, "batch", None), "enabled", False)
@@ -1208,11 +2264,22 @@ class AppState:
                 # register_candidate makes the case idempotent + visible ($0);
                 # investigate_cluster runs the ReAct investigation + the UNCHANGED decide()
                 # and dedups on the same signature (one open case per signature, #4).
-                await self._real_pipeline.register_candidate(
+                case = await self._real_pipeline.register_candidate(
                     cluster, SourceSurface.AUTOMATED_SCAN, prefs)
+                # Attach-only, as the realtime path (Round 16 B04): an open case that
+                # already has a verdict, or that a person moved, keeps its decision; a
+                # case the candidate path closed by a declaration needs no run (a run
+                # would find no open case and mint a second one, #4).
+                status = getattr(case.status, "value", case.status)
+                if is_attach_only(case) or str(status) not in OPEN_CASE_STATUSES:
+                    continue
+                # The candidate is named (``known_case_id``): a person who closes it
+                # while the run waits for the gate gets it back as they left it, never
+                # a second case with its events (#4); the queued run shows on it.
                 await self._real_pipeline.investigate_cluster(
                     cluster, SourceSurface.AUTOMATED_SCAN, prefs,
                     query_source=self.poller.source_for_id(getattr(_src, "id", None)),
+                    trigger="detection", known_case_id=case.case_id,
                 )
                 count += 1
             return count
@@ -1249,10 +2316,14 @@ class AppState:
             from .engine.event_detection import pre_aggregate
 
             seen.update(summary.signature for summary in pre_aggregate(events, prefs))
+            # One store write for the batch: a write per signature re-encoded the whole
+            # series document each time (quadratic, and a stalled event loop, PW4-10).
+            updates = {}
             for sig in seen:
                 snap = baseline.snapshot(sig)
                 if snap:
-                    await self.baseline_store.put(sig, snap)
+                    updates[sig] = snap
+            await self.baseline_store.put_many(updates)
         except Exception as exc:  # noqa: BLE001 — persistence is best-effort
             logger.debug("funnel baseline flush failed (%s)", exc)
 
@@ -1289,22 +2360,27 @@ class AppState:
             return False
         return bool(getattr(getattr(prefs, "baseline", None), "enabled", False))
 
-    async def _flush_realtime_baseline(self, engine, signature: str) -> None:
+    async def _flush_realtime_baseline(self, engine, signature: str) -> bool:
         """Persist the ONE signature's sketches back to the baseline_store (best-effort),
         then delete any signatures the LRU bound evicted this tick so ``max_series`` bounds
-        the durable store too, not just memory."""
+        the durable store too, not just memory. The boolean is operator-health evidence
+        only; callers remain fail-open exactly as before."""
+        persisted = True
         try:
             snap = engine.snapshot(signature)
             if snap:
-                await self.baseline_store.put(signature, snap)
+                await self.baseline_store.put_strict(signature, snap)
         except Exception as exc:  # noqa: BLE001 — persistence is best-effort
+            persisted = False
             logger.debug("realtime baseline flush failed (%s)", exc)
         try:
             for evicted in engine.drain_evictions():
                 if evicted != signature:
-                    await self.baseline_store.delete(evicted)
+                    await self.baseline_store.delete_strict(evicted)
         except Exception as exc:  # noqa: BLE001 — eviction cleanup is best-effort
+            persisted = False
             logger.debug("realtime baseline eviction cleanup failed (%s)", exc)
+        return persisted
 
     async def observe_source_volume(self, source_id, count, *, when: datetime | None = None):
         """Fold ONE tick's PER-SOURCE ingest volume into the baseline (silent-source /
@@ -1328,15 +2404,22 @@ class AppState:
             pass
         if not self._baseline_learning_on():
             return None
+        self._scheduler_attempt("baseline_producer")
         try:
             from .engine.baseline import source_volume_signature
 
             engine = await self._ensure_realtime_baseline()
             sig = source_volume_signature(sid)
             signal = engine.observe(sig, engine.bucket_for_time(now), float(count))
-            await self._flush_realtime_baseline(engine, sig)
+            if await self._flush_realtime_baseline(engine, sig):
+                self._scheduler_success("baseline_producer", processed=1)
+            else:
+                self._scheduler_failure(
+                    "baseline_producer", "baseline persistence was not confirmed"
+                )
             return signal
         except Exception as exc:  # noqa: BLE001 — the producer must never break a tick
+            self._scheduler_failure("baseline_producer", exc)
             logger.debug("source-volume baseline observe failed (%s)", exc)
             return None
 
@@ -1350,12 +2433,19 @@ class AppState:
         if not sig or not self._baseline_learning_on():
             return None
         now = when or datetime.now(timezone.utc)
+        self._scheduler_attempt("baseline_producer")
         try:
             engine = await self._ensure_realtime_baseline()
             signal = engine.observe(sig, engine.bucket_for_time(now), float(count))
-            await self._flush_realtime_baseline(engine, sig)
+            if await self._flush_realtime_baseline(engine, sig):
+                self._scheduler_success("baseline_producer", processed=1)
+            else:
+                self._scheduler_failure(
+                    "baseline_producer", "baseline persistence was not confirmed"
+                )
             return signal
         except Exception as exc:  # noqa: BLE001 — the producer must never break a tick
+            self._scheduler_failure("baseline_producer", exc)
             logger.debug("cluster-volume baseline observe failed (%s)", exc)
             return None
 
@@ -1620,6 +2710,7 @@ class AppState:
         configs = {
             "threshold_tuner": getattr(self.prefs, "threshold_tuning", None),
             "campaign_correlation": getattr(self.prefs, "campaign", None),
+            "baseline_producer": getattr(self.prefs, "baseline", None),
             "batch_jobs": getattr(self.prefs, "batch", None),
         }
         # Recover durable success anchors on a new process before the first tick.
@@ -1639,6 +2730,21 @@ class AppState:
                 pass
         workers: dict[str, Any] = {}
         for name, cfg in configs.items():
+            if name == "baseline_producer":
+                enabled = bool(cfg is not None and getattr(cfg, "enabled", False))
+                demo_gated = bool(
+                    getattr(getattr(self.prefs, "demo", None), "active", False)
+                )
+                workers[name] = {
+                    "enabled": enabled,
+                    "gated": demo_gated,
+                    # This producer is event-driven rather than an asyncio cadence:
+                    # enabled + non-demo means it is ready on every ingest tick.
+                    "running": bool(enabled and not demo_gated),
+                    "cadence": "on_ingest",
+                    **dict(self._scheduler_health[name]),
+                }
+                continue
             cadence = str(getattr(cfg, "cadence", "continuous"))
             enabled = bool(cfg is not None and getattr(cfg, "enabled", False))
             workers[name] = {
@@ -1766,6 +2872,10 @@ class AppState:
             try:
                 svc = self.batch_service
                 if svc.enabled() and not self._schedulers_gated_off():
+                    # Batch Inbox is a durable projection outbox. Reconcile terminal
+                    # as well as open provider rows so an Inbox outage at completion
+                    # repairs itself without needing another submission.
+                    await svc.reconcile_inbox()
                     open_jobs = await svc.store.load_open_jobs()
                     if open_jobs:
                         self._scheduler_attempt("batch_jobs")
@@ -1850,7 +2960,7 @@ class AppState:
         try:
             if await self.users.count() > 0:
                 return
-            from .auth.passwords import hash_password
+            from .auth.passwords import ahash_password
             from .constants import UserRole
 
             # When an env single-admin is configured (auth_admin_password set), that
@@ -1861,7 +2971,9 @@ class AppState:
             if self.secrets.auth_seed_admin and not env_admin:
                 created = await self.users.create_if_absent(
                     username=self.secrets.auth_seed_admin_username,
-                    password_hash=hash_password(self.secrets.auth_seed_admin_password),
+                    # Off the event loop (PBKDF2): seeding also runs after a factory reset,
+                    # while the backend serves requests.
+                    password_hash=await ahash_password(self.secrets.auth_seed_admin_password),
                     role=UserRole.SUPER_ADMIN.value,
                     active=True,
                     must_change_password=False,
@@ -1872,6 +2984,15 @@ class AppState:
                         "Seeded demo super_admin '%s' (change the password!)",
                         created.username,
                     )
+                    # What's new (SPEC D7): on an installation whose setup is already
+                    # complete, this account is new and never ran the update, so it
+                    # starts with the newest update marked seen. Before setup completes
+                    # (a fresh install, or the local demo, which seeds before it posts
+                    # setup/complete) nothing is stamped and the welcome shows once.
+                    if self.prefs.setup_complete:
+                        from .whats_new import stamp_new_account
+
+                        await stamp_new_account(self, created.username)
         except Exception as exc:  # noqa: BLE001 — seeding is best-effort
             logger.warning("User seeding failed (%s); continuing", exc)
 
@@ -1966,74 +3087,6 @@ class AppState:
         except Exception as exc:  # noqa: BLE001
             logger.warning("AuthService.set_session_versions failed (%s)", exc)
 
-    def _build_playbooks(self):
-        """Construct + load the PlaybookRegistry (never raises; a bad file is
-        skipped, an empty/missing dir yields zero playbooks → generic behaviour)."""
-        reg = self._new_playbook_registry()
-        try:
-            summary = reg.reload()
-            logger.info(
-                "Loaded %d playbook(s); skipped %d",
-                summary.get("loaded", 0), len(summary.get("skipped", [])),
-            )
-        except Exception as exc:  # noqa: BLE001 — registry should never raise; be safe
-            logger.warning("Playbook load failed (%s); continuing with none", exc)
-        return reg
-
-    def reload_playbooks(self) -> dict:
-        """Hot-reload playbooks from disk via the registry's ATOMIC validate-then-swap
-        (a wholesale-broken dir keeps the prior good live set). Re-points at the
-        configured dir first if it changed. Returns {loaded, skipped, ids}."""
-        if str(self.playbooks._directory) != str(self._playbooks_dir()):
-            self.playbooks = self._new_playbook_registry()
-        summary = self.playbooks.reload()
-        self._real_pipeline._playbooks = self.playbooks
-        return summary
-
-    async def refresh_playbooks(self) -> dict:
-        """Refresh the active catalog from its authoritative storage layer."""
-        if str(self.playbooks._directory) != str(self._playbooks_dir()):
-            self.playbooks = self._new_playbook_registry()
-        refresher = getattr(self.playbooks, "refresh", None)
-        summary = await refresher() if callable(refresher) else self.playbooks.reload()
-        self._real_pipeline._playbooks = self.playbooks
-        return summary
-
-    async def create_playbook(self, playbook_id: str, content: str, *, actor: str):
-        """Create against durable state by default, or an explicit file override."""
-        await self.refresh_playbooks()
-        creator = getattr(self.playbooks, "create_durable", None)
-        if callable(creator):
-            return await creator(playbook_id, content, actor=actor)
-        return self.playbooks.create_operator(playbook_id, content)
-
-    async def update_playbook(
-        self,
-        playbook_id: str,
-        content: str,
-        *,
-        actor: str,
-        expected_revision: int | None = None,
-    ):
-        """Update with optimistic concurrency on the durable catalog."""
-        await self.refresh_playbooks()
-        updater = getattr(self.playbooks, "update_durable", None)
-        if callable(updater):
-            if expected_revision is None:
-                current = self.playbooks.get(playbook_id)
-                if current is None:
-                    from .playbooks.registry import PlaybookNotFoundError
-
-                    raise PlaybookNotFoundError(playbook_id)
-                expected_revision = int(self.playbooks.metadata(current).get("revision", 1))
-            return await updater(
-                playbook_id,
-                content,
-                actor=actor,
-                expected_revision=expected_revision,
-            )
-        return self.playbooks.update_operator(playbook_id, content)
-
     def es_client_for_source(self, src) -> tuple[BaseESClient, bool]:
         """Return (es_client, owned) honoring the source's per-source ES connection +
         TLS settings. `owned=True` means a fresh client the CALLER must close; `False`
@@ -2125,7 +3178,12 @@ class AppState:
                 self.prefs,
                 store=store,
                 cases=self._real_cases,
-                runbooks=self.runbooks,
+                # Round 14 (SPEC §4.10.18): the Published-only runbook corpus reads the
+                # library (a provider, so a KV rebind is followed).
+                library=lambda: self.runbook_library,
+                health=getattr(self, "_rag_health", None),
+                exclusions=getattr(self, "_precedent_exclusions", None),
+                corpus_migrations=getattr(self, "_rag_corpus_migrations", None),
             )
         try:
             from .es.client import RealESClient
@@ -2141,7 +3199,10 @@ class AppState:
             self.prefs,
             store=store,
             cases=self._real_cases,
-            runbooks=self.runbooks,
+            library=lambda: self.runbook_library,
+            health=getattr(self, "_rag_health", None),
+            exclusions=getattr(self, "_precedent_exclusions", None),
+            corpus_migrations=getattr(self, "_rag_corpus_migrations", None),
         )
 
     def rebuild_log_source(self) -> None:
@@ -2191,7 +3252,41 @@ class AppState:
     async def startup(self, *, start_poller: bool = True) -> None:
         await self.cache.connect()
         await self._bootstrap_state_backend()
+        # Cache keys are namespaced by the latest sanitized factory receipt. An
+        # unavailable Jobs registry chooses a unique fail-safe namespace rather than
+        # risking reuse of prior-tenant Redis evidence.
+        try:
+            self.cache.set_tenant_epoch(await self.jobs.factory_cache_epoch())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Factory cache epoch unavailable (%s); isolating this boot", exc)
+            self.cache.set_tenant_epoch(f"unavailable-{stdlib_secrets.token_hex(16)}")
+        # Rebuild the process-local HTTP boundary from the durable fence before any
+        # producer or request can mutate tenant state. A malformed/unreadable registry
+        # fails closed with an opaque recovery owner; explicit repair is then required.
+        factory_recovery = False
+        try:
+            fence_owner = await self.recover_factory_mutation_gate()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Jobs factory-fence status unavailable; entering safe-stop: %s", exc)
+            fence_owner = f"unavailable-{stdlib_secrets.token_hex(16)}"
+            await self.mutation_gate.close(fence_owner)
+            await self.mutation_gate.mark_degraded(fence_owner)
+            factory_recovery = True
+        if fence_owner:
+            factory_recovery = True
         self.prefs = await self.config_store.load()
+        if factory_recovery:
+            # Recovery boots are deliberately minimal. Do not seed users/rules,
+            # reconcile RAG/runbooks/tuning, restore demo state, or start any Job,
+            # poller, receiver, or scheduler writer. Read-only identity hydration is
+            # enough for env-admin login or the guarded empty-store setup bootstrap;
+            # a freshly submitted factory retry starts the JobRunner explicitly.
+            await self.refresh_users()
+            logger.warning(
+                "AppState started in factory-reset recovery safe-stop (owner=%s)",
+                fence_owner,
+            )
+            return
         # First-run seeding of the built-in rule catalog (C3-1): idempotent and
         # guarded by rule_catalog_seed_version so operator edits are never clobbered.
         self.prefs = await self.config_store.seed_rule_catalog(self.prefs)
@@ -2202,13 +3297,14 @@ class AppState:
         self.rag = self._build_rag()
         self._real_pipeline._rag = self.rag
         self._real_chat_engine._rag = self.rag
-        # Reload playbooks now that prefs (incl. any dir override) are available.
-        self.playbooks = self._build_playbooks()
-        self._real_pipeline._playbooks = self.playbooks
+        # Round 14 (SPEC §4.10.17, E9): convert the stored operator procedures into
+        # runbooks once (or resume an interrupted run); the RAG reprojection then runs
+        # in the background, so startup never waits for the embedding provider.
+        # Before the Demo restore below, so the library is written as real state.
         try:
-            await self.refresh_playbooks()
-        except Exception as exc:  # noqa: BLE001 — packaged procedures still remain live
-            logger.warning("Durable playbook refresh failed (%s); using packaged set", exc)
+            await self.run_runbook_migration(project_in_background=True)
+        except Exception as exc:  # noqa: BLE001 - resumed at the next start
+            logger.error("Runbook migration did not finish (%s); it resumes at the next start", exc)
         # Round 4: now that the PERSISTED prefs (incl. configured sources) are loaded,
         # re-point the primary log surface + (re)build the PollerManager fan-out so a
         # deployment that boots WITH multiple persisted PULL sources polls ALL of them,
@@ -2265,7 +3361,17 @@ class AppState:
                 )
             except Exception as exc:  # noqa: BLE001 — never block startup on demo re-seed
                 logger.warning("Demo re-seed on startup failed (%s); continuing", exc)
-        if start_poller:
+        # Durable operator jobs are independent of polling/scheduler enablement and
+        # must recover queued/expired work even in push-only or test-controlled runs.
+        await self.job_runner.start()
+        # Publish corpus emptiness so a deployment that restarts with a lost knowledge
+        # corpus reports DEGRADED immediately, rather than waiting for the first
+        # investigation to discover it. Seed-free, one cheap count, fail-open.
+        try:
+            await self.rag.refresh_corpus_health()
+        except Exception as exc:  # noqa: BLE001 — never block startup on a probe
+            logger.warning("RAG corpus health probe failed on startup (%s); continuing", exc)
+        if start_poller and not factory_recovery:
             self.poller.start()
             self._receivers_enabled = True
             await self._start_receivers()
@@ -2277,6 +3383,13 @@ class AppState:
             # spawns them unless asked.
             await self._run_schedulers()
             await self._start_system_update_audit_reconciler()
+            # Round 16 (WP06): the event-loop lag gauge GET /api/diagnostics/health reads.
+            try:
+                from .api.routes_diagnostics import start_loop_lag_monitor
+
+                start_loop_lag_monitor(self)
+            except Exception as exc:  # noqa: BLE001 (a gauge never blocks startup)
+                logger.warning("Event-loop lag monitor did not start (%s); continuing", exc)
         logger.info(
             "AppState started (es=%s, setup_complete=%s, polling_enabled=%s)",
             type(self.es).__name__, self.prefs.setup_complete, self.prefs.polling_enabled,
@@ -2572,9 +3685,10 @@ class AppState:
     ) -> dict:
         """Engage demo mode: stamp a run_id, build the isolated stack, pre-generate a
         backdated historical case spread + a tight "just happened" pre-seed (recent
-        cases + already-processed events), eagerly seed the shared RAG corpus, run one
-        demo-local capability pass, and (in ``live``) start the simulator. If a demo is
-        already running it is disabled first (clean re-seed)."""
+        cases + already-processed events), run one demo-local capability pass, write
+        the seeded cases' Demo ledger rows, seed the shared RAG corpus once every seeded
+        case exists, and (in ``live``) start the simulator. If a demo is already running
+        it is disabled first (clean re-seed)."""
         from .config import DemoConfig
         from .engine.demo_generator import (
             build_org, generate_historical_cases, generate_recent_preseed, hits_to_raw,
@@ -2629,28 +3743,42 @@ class AppState:
                 else pending_prefs
             )
 
+        def demo_attacher(case):
+            return self._demo_runbook_attacher(demo_stack)(case)
+
+        from .engine.threshold_automation import bind_demo_runbook_automation
+
         demo_stack = DemoStack(
             self.secrets, pending_or_live_prefs, run_id=new_demo.run_id,
+            # D45: the Demo pipeline matches the real library (read only in Demo
+            # Mode) with the Demo overlay, and attaches runs to Demo cases.
+            runbook_catalog=self._runbook_catalog,
+            runbook_attacher=demo_attacher,
+            # Round 14 (SPEC §4.10.16, §4.10.18, D45): the Demo knowledge indexes project
+            # the real library's Published runbooks, and a ``run_playbook`` rule on a
+            # Demo case attaches into this stack while it is the active one.
+            runbook_library=lambda: self.runbook_library,
+            runbook_automation=bind_demo_runbook_automation(
+                self, lambda: demo_stack is not None and self._demo is demo_stack,
+            ),
+            # Round 16 (SPEC §4.5 WP08): the shared case locks; the Demo registry's
+            # finish notices go to this stack's own Inbox, audit and bus.
+            case_locks=self.case_locks,
+            on_investigation_finished=lambda handle: self._investigation_finished(
+                handle, demo=demo_stack,
+            ),
         )
-
-        # Eagerly seed the SHARED demo RAG corpus so the Knowledge page shows a populated
-        # corpus immediately (idempotent; picks up any CLOSED demo cases too).
-        try:
-            await demo_stack.rag_service.ensure_seeded()
-        except Exception as exc:  # noqa: BLE001 — a cold RAG never breaks enable
-            logger.debug("demo RAG eager-seed failed: %s", exc)
 
         # Pre-generate the backdated historical spread so "old" cases exist instantly.
+        # Round 16 (B62): each seeded case's risk is computed from its own inputs, with
+        # the asset map the Demo runs under, so it matches the case's impact chip.
         org = build_org(new_demo.seed)
         now_ms = to_millis(now_utc())
+        seed_prefs = demo_stack._demo_prefs()
         cases = generate_historical_cases(
             new_demo.seed, org, history_days=new_demo.history_days,
-            run_id=new_demo.run_id, now_millis=now_ms,
+            run_id=new_demo.run_id, now_millis=now_ms, prefs=seed_prefs,
         )
-        seeded_counter_cases = list(cases)
-        for case in cases:
-            self._write_guard(case, demo=True)
-            await demo_stack.cases.save(case)
 
         # Pre-seed a tight "just happened" window: a varied trio of recent cases (1
         # TP-escalate, 1 NEEDS_HUMAN, 1 FP — not all terminal) + ~100 events already
@@ -2661,7 +3789,59 @@ class AppState:
             recent_minutes=new_demo.preseed_recent_minutes,
             case_count=new_demo.preseed_case_count,
             event_count=new_demo.preseed_event_count,
+            prefs=seed_prefs,
         )
+        # The capability seed cases (generated here so every seeded case is numbered
+        # together; saved and acted on below).
+        hitl_cases: list = []
+        tuner_cases: list = []
+        if new_demo.force_capabilities:
+            try:
+                from .engine.demo_generator import generate_capability_seed_cases
+
+                hitl_cases, tuner_cases = generate_capability_seed_cases(
+                    new_demo.seed, org, run_id=new_demo.run_id, now_millis=now_ms,
+                    prefs=seed_prefs,
+                )
+            except Exception as exc:  # noqa: BLE001 — capability seeding never blocks enable
+                logger.warning("demo capability seeding failed: %s", exc)
+                hitl_cases, tuner_cases = [], []
+        # Every seeded case gets its display number before it is saved, oldest first,
+        # from the same nomenclature and sequence the demo pipeline continues.
+        await demo_stack.number_seeded_cases([*cases, *recent_cases, *hitl_cases, *tuner_cases])
+        # Round 16: each seeded case's own rows are kept in its Demo source before it is
+        # saved, with the trigger reason correlation records from them (its source's
+        # severity), so the Evidence tab reads its events from the first paint and the
+        # runbook match below reads the same severity the case shows. Never blocks enable.
+        try:
+            from .engine.demo_generator import seed_demo_case_rows
+
+            seed_demo_case_rows(
+                demo_stack.sources, [*cases, *recent_cases, *hitl_cases, *tuner_cases], seed_prefs,
+            )
+        except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
+            logger.warning("demo seeded case rows not kept: %s", exc)
+        # Round 14 (SPEC §4.10.9, §4.10.18, D45): the seeded cases never pass through the
+        # pipeline, so each investigated one is stamped, before it is saved, with the
+        # runbook the investigator would have read (the same match as the seeded runs
+        # below), and the Metrics "Runbook usage" panel agrees with the Runbooks
+        # library. The catalog is read once and reused for the runs. Never blocks enable.
+        demo_runbook_catalog = None
+        try:
+            from .engine.demo_generator import seed_demo_runbook_guidance
+
+            demo_runbook_catalog = await demo_stack.runbook_catalog()
+            seed_demo_runbook_guidance(
+                [*cases, *recent_cases, *hitl_cases, *tuner_cases], demo_runbook_catalog,
+                prefs=demo_stack._demo_prefs(),  # noqa: SLF001 - same module owner
+            )
+        except Exception as exc:  # noqa: BLE001 - seeded guidance never blocks enable
+            logger.warning("demo runbook guidance seeding failed: %s", exc)
+
+        seeded_counter_cases = list(cases)
+        for case in cases:
+            self._write_guard(case, demo=True)
+            await demo_stack.cases.save(case)
         for case in recent_cases:
             self._write_guard(case, demo=True)
             await demo_stack.cases.save(case)
@@ -2687,13 +3867,8 @@ class AppState:
         # records one bounded observation). Every write lands in the DEMO stores; the real
         # HITL/tuning/campaign ledgers are untouched. Gated on force_capabilities because
         # the seeded automation rule + the tuner/campaign blocks are only forced ON there.
-        if new_demo.force_capabilities:
+        if hitl_cases or tuner_cases:
             try:
-                from .engine.demo_generator import generate_capability_seed_cases
-
-                hitl_cases, tuner_cases = generate_capability_seed_cases(
-                    new_demo.seed, org, run_id=new_demo.run_id, now_millis=now_ms,
-                )
                 for case in (*hitl_cases, *tuner_cases):
                     self._write_guard(case, demo=True)
                     await demo_stack.cases.save(case)
@@ -2704,6 +3879,27 @@ class AppState:
             except Exception as exc:  # noqa: BLE001 — capability seeding never blocks enable
                 logger.warning("demo capability seeding failed: %s", exc)
 
+        # Round 14 (SPEC §4.10.18, D45): runbook runs on the seeded cases a person works,
+        # in the Demo run store, so the Runbook tab and the library metrics show Demo
+        # data from the first paint. Never blocks enable.
+        try:
+            from .engine.demo_generator import seed_demo_runbook_runs
+
+            await seed_demo_runbook_runs(
+                demo_stack.runbook_runs, list(seeded_counter_cases),
+                demo_runbook_catalog if demo_runbook_catalog is not None
+                else await demo_stack.runbook_catalog(),
+                prefs=demo_stack._demo_prefs(),  # noqa: SLF001
+                seed=new_demo.seed, now_millis=now_ms, audit=demo_stack.audit,
+            )
+        except Exception as exc:  # noqa: BLE001 - a seeded run never blocks enable
+            logger.warning("demo runbook seeding failed: %s", exc)
+
+        # Round 15 (SPEC D6.13): about six seeded automatic closes sampled for review
+        # (three pending, two agreeing, one disagreeing) in the Demo ledger, with their
+        # grades, history events and Demo audit rows. Never blocks enable.
+        await self._seed_demo_auto_close_reviews(demo_stack, list(seeded_counter_cases), new_demo.seed, now_ms)
+
         # Seed one coherent, deterministic 24h funnel delta. The transient benign batch
         # contributes inbound volume only. Every seeded case in the current dashboard
         # window contributes one correlated cluster plus at least one source event (or
@@ -2712,19 +3908,26 @@ class AppState:
         # preserves deterministic case ids while guaranteeing the presenter sees the
         # truthful invariant ``events >= clusters >= cases`` from the first paint.
         try:
-            from .constants import SEVERITY_BANDS
             from .engine import noise_counters as nc
+            from .engine.priority import band_of_case
             from .utils import parse_es_timestamp
 
             ingested = nc.count_events_by_band(preseed_raws, "ocsf_0_100")
             clustered = nc.zero_bands()
             case_events = nc.zero_bands()
             cutoff_ms = now_ms - 24 * 60 * 60 * 1000
+            try:
+                band_prefs = demo_stack._demo_prefs()  # noqa: SLF001 — same module owner
+            except Exception:  # noqa: BLE001 — banding degrades, never blocks demo enable
+                band_prefs = None
             for case in seeded_counter_cases:
                 created = parse_es_timestamp(case.created_at)
                 if created is None or to_millis(created) < cutoff_ms:
                     continue
-                band = case.severity_band if case.severity_band in SEVERITY_BANDS else "info"
+                # Resolve the band (persisted-then-derive-then-info) instead of reading
+                # the read-time-only attribute, which is unset on most seeded cases and
+                # dumped their whole clustered/case-event volume into "info".
+                band = band_of_case(case, band_prefs)
                 clustered[band] += 1
                 members = case.member_event_keys or case.member_event_ids
                 case_events[band] += max(1, len(members))
@@ -2745,11 +3948,63 @@ class AppState:
         except Exception as exc:  # noqa: BLE001 — never break enable on a capability pass
             logger.debug("demo initial capability pass failed: %s", exc)
 
-        # Commit the fully-built stack. update_prefs() does not yield after assigning
-        # self.prefs; the following synchronous assignment therefore presents one
-        # atomic off→ready transition to other asyncio tasks.
-        await self.update_prefs(pending_prefs)
+        # Round 15 (SPEC D3.12): the Demo audit rows of the seeded human work (the
+        # acknowledgements, closes, comments and assignments the seeded cases credit to
+        # the Demo SOC team), so Team activity counts what the cases show. Never blocks
+        # enable.
+        try:
+            from .engine.demo_generator import seed_demo_team_activity
+
+            await seed_demo_team_activity(demo_stack.audit, list(seeded_counter_cases), now_millis=now_ms)
+        except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
+            logger.warning("demo team activity seeding failed: %s", exc)
+
+        # Round 16 (B48, B69): the Demo ledger rows of the seeded investigations, one per
+        # seeded case with a cost (simulated Demo spend), so a case's cost, its usage,
+        # the Cost page and Agent effectiveness agree. Seeds of the Demo usage store,
+        # never a model call (#6). Never blocks enable.
+        try:
+            from .engine.demo_generator import demo_seeded_usage_docs, seed_demo_investigation_audit
+
+            usage_docs = demo_seeded_usage_docs(
+                seeded_counter_cases, model=seed_prefs.investigator_model.model,
+            )
+            for doc in usage_docs:
+                await demo_stack.usage_store.write_strict(doc)
+            # The AI's own audit rows of those investigations (prompt, query, verdict),
+            # so a seeded case's trace shows the AI's work behind its ledger row.
+            await seed_demo_investigation_audit(demo_stack.audit, seeded_counter_cases, usage_docs)
+        except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
+            logger.warning("demo seeded usage rows not written: %s", exc)
+
+        # Round 16 (B35, B47, B65): seed the Demo knowledge corpus once every seeded case
+        # and review is saved, so its first projection holds the analyst-confirmed seeded
+        # cases as precedent and the Knowledge page is full from the first paint
+        # (seeding it earlier, before the cases existed, left the precedent corpus empty
+        # and raised false agent-health alerts). A cold corpus never breaks enable.
+        try:
+            await demo_stack.rag_service.ensure_seeded()
+        except Exception as exc:  # noqa: BLE001 - a cold RAG never breaks enable
+            logger.debug("demo RAG seed failed: %s", exc)
+
+        # Commit the fully-built stack. Only the Demo switch is written, onto the LIVE
+        # settings read inside the write lock: a real settings save that landed while
+        # the stack was seeding (and has already written its ``settings.updated`` row)
+        # is kept, never undone by the copy taken before seeding. mutate_prefs() does
+        # not yield after assigning self.prefs; the following synchronous assignment
+        # therefore presents one atomic off→ready transition to other asyncio tasks.
+        await self.mutate_prefs(lambda live: live.model_copy(update={"demo": new_demo}))
         self._demo = demo_stack
+        self._demo_generation += 1
+        # Round 14: the seeded runs' Done lookup steps collect their read-only results
+        # in the background through the live engine, once the Demo stack is the active
+        # one (reset comes through here too). Never blocks enable.
+        try:
+            from .engine.demo_generator import schedule_demo_runbook_lookups
+
+            schedule_demo_runbook_lookups(self, list(seeded_counter_cases), seed=new_demo.seed)
+        except Exception as exc:  # noqa: BLE001 - seeded lookups never block enable
+            logger.warning("demo runbook lookups not started: %s", exc)
         # Start the live simulator only after the complete stack is publicly visible.
         if new_demo.mode == "live":
             self._demo_sim = DemoSimulator(demo_stack, self.get_prefs, seed=new_demo.seed)
@@ -2813,9 +4068,12 @@ class AppState:
             except Exception:  # noqa: BLE001
                 pass
             self._demo = None
-        prefs = self.prefs.model_copy(deep=True)
-        prefs.demo = DemoConfig()  # mode='off', run_id=''
-        await self.update_prefs(prefs)
+            self._demo_generation += 1
+        # Only the Demo switch is written, onto the live settings read inside the write
+        # lock, so a real settings save made while the stack was torn down is kept.
+        await self.mutate_prefs(lambda live: live.model_copy(update={"demo": DemoConfig()}))
+        # Real cases investigated while Demo Mode was on get their runbook now (§4.10.4).
+        self._start_deferred_runbook_attachments()
         logger.info("Demo mode DISABLED; real state restored")
         return await self.demo_status()
 
@@ -3081,6 +4339,23 @@ class AppState:
 
     async def shutdown(self) -> None:
         try:
+            # A turn still running at shutdown is abandoned like a reset-cancelled
+            # one: its reservation is aborted so a retry runs fresh after restart.
+            await self.cancel_chat_turns()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # Round 13: the chat starters' background readings (hunt, platform).
+            from .engine.chat_starters import close_slow_signals
+
+            await close_slow_signals(self)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await self.job_runner.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             await self.disable_demo()
         except Exception:  # noqa: BLE001
             pass
@@ -3093,11 +4368,18 @@ class AppState:
         except Exception:  # noqa: BLE001
             pass
         try:
+            from .api.routes_diagnostics import stop_loop_lag_monitor
+
+            await stop_loop_lag_monitor(self)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             await self.poller.stop()
         except Exception:  # noqa: BLE001
             pass
         self._receivers_enabled = False
         await self._stop_receivers()
+        await self.cancel_mutation_tasks()
         await self.gateway.aclose()
         await self.cache.aclose()
         owned = getattr(self, "_owned_log_client", None)
@@ -3116,6 +4398,57 @@ class AppState:
             except Exception:  # noqa: BLE001
                 pass
             self._sql_engine = None
+
+
+class ChatSourceUnavailable(ValueError):
+    """The chat request's explicit source cannot be queried (unknown, disabled,
+    receiver-only or unbuildable). The message is an engine template."""
+
+
+# Grants a chat route needs beyond the tool catalogue and the console map.
+_CHAT_ROUTE_GRANTS: frozenset[tuple[str, str]] = frozenset({
+    ("cases", "comment"),   # a case-scoped turn may write the case thread (§4.6)
+    ("memory", "manage"),   # memory proposals / the compatibility memory carve-out (§4.8)
+    ("models", "read"),     # a non-default model, money fields of /chat/context (§3.1, §8)
+    ("cost", "view"),       # spent_today / remaining on /chat/context (§8)
+})
+
+
+def chat_grant_pairs() -> frozenset[tuple[str, str]]:
+    """Every ``(resource, action)`` a chat request is evaluated against:
+    ``registry.catalogue_grant_pairs() | app.knowledge.console_grant_pairs()`` plus
+    the route-level grants. An unavailable corpus contributes nothing."""
+    from .agents.chat_tools.registry import catalogue_grant_pairs
+
+    pairs = set(catalogue_grant_pairs()) | set(_CHAT_ROUTE_GRANTS)
+    try:
+        from .knowledge import console_grant_pairs
+
+        pairs |= set(console_grant_pairs())
+    except Exception:  # noqa: BLE001 -- no corpus: no console targets to grant
+        pass
+    return frozenset(pairs)
+
+
+def _context_time_range(body: Any) -> Any:
+    """``body.context.time_range`` as a validated ``TimeRange`` (the §3.1 default
+    below the chip), or ``None`` when absent or invalid. The screen context is
+    best-effort, so a malformed window is ignored rather than failing the turn."""
+    from .models import TimeRange
+
+    context = getattr(body, "context", None)
+    raw = getattr(context, "time_range", None)
+    if not isinstance(raw, dict):
+        return None
+    start, end = raw.get("from"), raw.get("to")
+    if not isinstance(start, str) or not start.strip():
+        return None
+    try:
+        return TimeRange.model_validate({
+            "from": start, "to": end if isinstance(end, str) and end.strip() else "now",
+        })
+    except Exception:  # noqa: BLE001 -- a malformed screen window is no window
+        return None
 
 
 def _coerce_bool(v: Any, default: bool = True) -> bool:
@@ -3191,22 +4524,51 @@ def parse_user_agent(ua: str) -> dict[str, str]:
     return {"ua_browser": browser, "ua_os": os_name, "client_type": client_type}
 
 
-def client_ip_from(request) -> str:
-    """Best-effort client IP from a Starlette/FastAPI request (Wave 3, stdlib only).
+#: A verdict and a status in the Console's words, for the AI investigation notices
+#: (Round 16 SPEC §4.5 WP08; research ``ai-investigating`` §4.5). Enums only (#9).
+#: The verdict is the case header's word (the Console's ``verdictWords``): one term,
+#: "Needs human review", in the Inbox and on the case.
+_AI_VERDICT_WORDS = {
+    "TRUE_POSITIVE": "True positive",
+    "FALSE_POSITIVE": "False positive",
+    "NEEDS_HUMAN": "Needs human review",
+}
+_AI_STATUS_WORDS = {
+    "new": "New",
+    "open": "Open",
+    "needs_human": "Open, awaiting analyst",
+    "investigating": "Investigating",
+    "escalated": "Escalated",
+    "on_hold": "On hold",
+    "resolved": "Resolved",
+    "closed": "Closed",
+}
 
-    Honors a single ``X-Forwarded-For`` hop (first entry) when present, else the
-    socket peer. PLAIN text, never raises. (No trust decision is made here — the IP
-    is metadata only, never an authz input.)"""
-    try:
-        xff = request.headers.get("x-forwarded-for") or ""
-        if xff:
-            first = xff.split(",")[0].strip()
-            if first:
-                return first
-        client = getattr(request, "client", None)
-        return str(getattr(client, "host", "") or "")
-    except Exception:  # noqa: BLE001
-        return ""
+
+def _ai_verdict_words(value: Any) -> str:
+    return _AI_VERDICT_WORDS.get(str(value or "").upper(), "not recorded")
+
+
+def _ai_status_words(value: Any) -> str:
+    return _AI_STATUS_WORDS.get(str(value or "").lower(), "not recorded")
+
+
+def _ai_finish_body(handle: Any) -> str:
+    """The body of the requester's "AI investigation finished" notice, by outcome."""
+    outcome = getattr(handle, "outcome", None)
+    status = _ai_status_words(getattr(handle, "status_after", None))
+    if outcome == "routed_to_person":
+        return (
+            "The investigation could not finish, so the case was routed to a person. "
+            f"Status: {status}."
+        )
+    if outcome == "cancelled":
+        return "The investigation was stopped before it finished. The case was not changed."
+    if outcome == "failed":
+        return "The investigation could not finish and the case was not saved."
+    if outcome == "unchanged":
+        return "An open case already holds these events, so this case was not changed."
+    return f"Verdict: {_ai_verdict_words(getattr(handle, 'verdict_after', None))}. Status: {status}."
 
 
 def geo_for_ip(ip: str) -> dict[str, str]:
@@ -3249,7 +4611,9 @@ class _BatchJobService:
     saved. That boundary is surfaced as an operational limitation rather than claimed
     as exactly-once remote submission."""
 
-    def __init__(self, *, store, gateway, make_provider, get_prefs, reenter=None) -> None:
+    def __init__(
+        self, *, store, gateway, make_provider, get_prefs, reenter=None, state=None
+    ) -> None:
         self._store = store
         self._gateway = gateway
         self._make_provider = make_provider
@@ -3258,6 +4622,22 @@ class _BatchJobService:
         # event-detections into the SAME correlate→pipeline path (#4/#3). None → results
         # are only billed (a plain investigation batch), never re-entered here.
         self._reenter = reenter
+        self._state = state
+
+    async def _project_inbox(self, job) -> None:
+        if self._state is None:
+            return
+        try:
+            from .engine.batch_inbox import reconcile_batch_inbox
+
+            await reconcile_batch_inbox(self._state, job)
+        except Exception as exc:  # projection outbox is retried; provider work proceeds
+            logger.warning("LLM Batch Inbox projection failed for %s: %s", job.id, exc)
+
+    async def reconcile_inbox(self) -> None:
+        """Retry every bounded Batch Inbox outbox, including terminal rows."""
+        for job in await self._store.list_strict():
+            await self._project_inbox(job)
 
     @property
     def store(self):
@@ -3319,6 +4699,7 @@ class _BatchJobService:
                     raise RuntimeError(
                         "batch outbox disappeared while recording provider failure"
                     ) from exc
+                await self._project_inbox(failed)
                 return failed
 
             # Persist acceptance before closing the client. A slow/hung close must not
@@ -3334,6 +4715,7 @@ class _BatchJobService:
                 raise RuntimeError(
                     "batch outbox disappeared while recording provider acceptance"
                 )
+            await self._project_inbox(accepted)
             return accepted
         finally:
             if provider_client is not None:
@@ -3373,13 +4755,19 @@ class _BatchJobService:
             candidates=dict(candidates or {}),
             submitted_at=iso_now(),
         )
+        if self._state is not None:
+            from .engine.batch_inbox import prepare_batch_inbox_audience
+
+            job = await prepare_batch_inbox_audience(self._state, job)
         # This is the acceptance boundary used by the Poller cursor. Creation is a
         # strict atomic CAS: simultaneous identical submitters share one local intent.
         # The provider call is separately leased because the scheduler can observe the
         # row between this creation and the opportunistic submit below.
         job, created = await self._store.create_if_absent(job)
         if not created:
+            await self._project_inbox(job)
             return job
+        await self._project_inbox(job)
         return await self._submit_outbox(job)
 
     async def poll(self, job):
@@ -3395,7 +4783,9 @@ class _BatchJobService:
             job = await prov.poll(job)
         finally:
             await prov.aclose()
-        return await self._store.save(job)
+        saved = await self._store.save(job)
+        await self._project_inbox(saved)
+        return saved
 
     async def process(self, job, *, role: str = "investigator", surface: str = "batch"):
         """Stream a completed job's results, fold them through the ONE gateway ledger
@@ -3417,6 +4807,9 @@ class _BatchJobService:
             job, results, self._gateway, role=role, surface=surface
         )
         if not getattr(job, "candidates", None):
+            current = await self._store.get_strict(job.id)
+            if current is not None:
+                await self._project_inbox(current)
             return recorded
 
         by_id = {
@@ -3448,6 +4841,9 @@ class _BatchJobService:
                 continue
             if await self._store.complete_reentry(job.id, custom_id, token):
                 completed.append(result)
+        current = await self._store.get_strict(job.id)
+        if current is not None:
+            await self._project_inbox(current)
         return completed
 
 

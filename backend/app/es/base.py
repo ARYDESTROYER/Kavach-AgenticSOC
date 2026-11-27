@@ -101,6 +101,25 @@ class BaseESClient(ABC):
     ) -> str:
         """Index (create or overwrite) a document. Returns the document id."""
 
+    async def create_doc_strict(
+        self,
+        index: str,
+        doc_id: str,
+        doc: dict[str, Any],
+        refresh: bool = False,
+    ) -> bool:
+        """Create one owned-state document, returning False on an id conflict.
+
+        Bundled clients override this atomically.  The compatibility fallback keeps
+        third-party clients working but is only safe under caller-owned serialization.
+        Every backend failure other than an existing id propagates.
+        """
+
+        if await self.get_doc_strict(index, doc_id) is not None:
+            return False
+        await self.index_doc(index, doc, doc_id=doc_id, refresh=refresh)
+        return True
+
     @abstractmethod
     async def get_doc(self, index: str, doc_id: str) -> dict[str, Any] | None: ...
 
@@ -138,6 +157,33 @@ class BaseESClient(ABC):
         await self.index_doc(index, doc, doc_id=doc_id, refresh=refresh)
         return True
 
+    async def delete_index_strict(self, name: str) -> bool:
+        """Delete one owned-state index/pattern without masking backend failure.
+
+        ``False`` means the target was already absent.  Bundled clients implement
+        this against the management credential; compatibility clients must opt in
+        explicitly rather than inheriting a fail-soft deletion at a destructive
+        privacy boundary.
+        """
+        raise NotImplementedError(
+            "Elasticsearch client does not implement strict owned-index deletion"
+        )
+
+    async def delete_doc_strict(
+        self,
+        index: str,
+        doc_id: str,
+        refresh: bool = False,
+    ) -> bool:
+        """Delete one owned-state document without masking backend failure.
+
+        ``False`` is reserved for a real missing document/index.  Authorization,
+        connectivity, cluster, and every other failure must propagate.
+        """
+        raise NotImplementedError(
+            "Elasticsearch client does not implement strict owned-document deletion"
+        )
+
     @abstractmethod
     async def update_doc(
         self,
@@ -148,6 +194,21 @@ class BaseESClient(ABC):
     ) -> None:
         """Upsert a document (used for the single-doc config/cursor indices and
         for case updates)."""
+
+    # --- OPTIONAL additive mapping changes on owned indices (Round 15 SPEC D5.7) ---
+    async def get_index_mapping(self, index: str) -> dict[str, dict[str, Any]]:
+        """``{concrete index: {"mappings": ...}}`` for every owned index ``index``
+        names (a name, an alias or a comma list of patterns), as ``GET
+        <index>/_mapping`` answers with ``ignore_unavailable``. Bundled clients
+        implement it; a compatibility client that cannot read mappings raises, and
+        every caller treats that as "not checked"."""
+        raise NotImplementedError("Elasticsearch client cannot read index mappings")
+
+    async def put_index_mapping(self, index: str, body: dict[str, Any]) -> None:
+        """Add to the mapping of every owned index ``index`` names, as ``PUT
+        <index>/_mapping`` does (new properties, top-level parameters; Elasticsearch
+        never changes an existing field's type). Backend failures propagate."""
+        raise NotImplementedError("Elasticsearch client cannot extend index mappings")
 
     @abstractmethod
     async def search(self, index: str, body: dict[str, Any]) -> dict[str, Any]:

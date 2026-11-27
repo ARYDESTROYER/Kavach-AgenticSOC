@@ -249,14 +249,14 @@ export function NotificationPrefs({ className, onSaved }: NotificationPrefsProps
               <th scope="col" className="px-4 py-2.5 font-semibold text-foreground">
                 Category
               </th>
-              <th scope="col" className="px-3 py-2.5 text-center font-semibold text-foreground">
+              <th scope="col" className="whitespace-nowrap px-3 py-2.5 text-center font-semibold text-foreground">
                 In-app
               </th>
               {NOTIFICATION_CHANNELS.map((ch) => (
                 <th
                   key={ch.id}
                   scope="col"
-                  className="px-3 py-2.5 text-center font-semibold text-foreground"
+                  className="whitespace-nowrap px-3 py-2.5 text-center font-semibold text-foreground"
                 >
                   {ch.label}
                 </th>

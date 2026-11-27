@@ -1,0 +1,11 @@
+{
+  "package": "W3",
+  "note": "Round 14 W3 (navigation and shell) owns these files and empties this list.",
+  "entries": [
+    {
+      "rule": "spinning-refresh",
+      "file": "soc/AppShell.tsx",
+      "max": 1
+    }
+  ]
+}

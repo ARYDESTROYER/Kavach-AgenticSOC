@@ -1,5 +1,5 @@
 /**
- * `WidgetGallery` tests (Round 5 / G7, CD4 step 3) — add-from-a-curated-gallery.
+ * `WidgetGallery` tests (Round 5 / G7, CD4 step 3): add-from-a-curated-gallery.
  *
  * Asserts the gallery lists registry widgets (curated, not a blank canvas), RBAC-filters
  * entries the caller lacks the grant for, and that picking one calls `onAdd` with a
@@ -13,17 +13,17 @@ import { WidgetGallery, makeWidget } from '@/soc/dashboard/WidgetGallery';
 import { isKnownWidgetType, WIDGET_TYPES } from '@/soc/dashboard/registry';
 import { widgetId } from '@/soc/dashboard/layout-utils';
 
-describe('WidgetGallery — curated add', () => {
+describe('WidgetGallery: curated add', () => {
   it('lists registry widgets and adds a fresh allowlisted instance on pick', () => {
     const onAdd = vi.fn();
     render(<WidgetGallery open onOpenChange={vi.fn()} onAdd={onAdd} />);
 
-    // A curated gallery — several registry widgets are offered (not a blank canvas).
-    expect(screen.getByText('Needs-human queue')).toBeInTheDocument();
+    // A curated gallery: several registry widgets are offered (not a blank canvas).
+    expect(screen.getByText('Awaiting a decision')).toBeInTheDocument();
     expect(screen.getByText('Cases by verdict')).toBeInTheDocument();
 
-    // Pick the needs-human KPI.
-    fireEvent.click(screen.getByRole('button', { name: 'Add Needs-human queue' }));
+    // Pick the Needs human count ("Awaiting a decision").
+    fireEvent.click(screen.getByRole('button', { name: 'Add Awaiting a decision' }));
     expect(onAdd).toHaveBeenCalledTimes(1);
 
     const added = onAdd.mock.calls[0][0];
@@ -38,12 +38,12 @@ describe('WidgetGallery — curated add', () => {
 
   it('RBAC-filters entries the caller lacks the grant for', () => {
     const onAdd = vi.fn();
-    // Deny cost:read — the "LLM cost (window)" widget (requires cost:read) is hidden.
+    // Deny cost: the "AI spend" widget (requires cost:view) is hidden.
     const can = (resource: string) => resource !== 'cost';
     render(<WidgetGallery open onOpenChange={vi.fn()} can={can} onAdd={onAdd} />);
 
-    expect(screen.getByText('Needs-human queue')).toBeInTheDocument();
-    expect(screen.queryByText('LLM cost (window)')).not.toBeInTheDocument();
+    expect(screen.getByText('Awaiting a decision')).toBeInTheDocument();
+    expect(screen.queryByText('AI spend')).not.toBeInTheDocument();
   });
 
   it('makeWidget only produces registry-allowlisted types', () => {

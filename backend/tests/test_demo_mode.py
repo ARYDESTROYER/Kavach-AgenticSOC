@@ -21,6 +21,7 @@ import random
 import pytest
 import pytest_asyncio
 
+from app import __version__
 from app.config import ModelConfig, Secrets
 from app.constants import CaseStatus, SourceSurface, Verdict
 from app.engine import case_manager, demo_generator as gen
@@ -358,10 +359,18 @@ async def test_real_poll_cursor_untouched_in_demo(demo_state: AppState) -> None:
 # Lifecycle: enable → reset → disable
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-async def test_enable_reset_disable_lifecycle(demo_state: AppState) -> None:
+async def test_enable_reset_disable_lifecycle(
+    demo_state: AppState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TLSOC_BUILD_SHA", "demo-case-build")
     s1 = await demo_state.enable_demo(mode="seeded", seed=1337, history_days=7)
     assert s1["active"] and s1["mode"] == "seeded" and s1["case_count"] > 0
     run1 = s1["run_id"]
+    seeded_cases, seeded_total = await demo_state.cases.list(limit=500)
+    assert seeded_total == s1["case_count"]
+    assert seeded_cases
+    assert {case.app_version for case in seeded_cases} == {__version__}
+    assert {case.build_sha for case in seeded_cases} == {"demo-case-build"}
 
     # Reset re-seeds with a NEW run_id but the same deterministic spread size.
     s2 = await demo_state.reset_demo()
@@ -381,7 +390,10 @@ async def test_enable_reset_disable_lifecycle(demo_state: AppState) -> None:
 # $0 cost — every demo usage row is pricing_source='zero'
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-async def test_demo_cost_is_zero_priced(demo_state: AppState) -> None:
+async def test_demo_cost_is_zero_priced(
+    demo_state: AppState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TLSOC_BUILD_SHA", "demo-usage-build")
     await demo_state.enable_demo(mode="seeded", seed=1337, history_days=2)
     # Ignite a TRUE_POSITIVE storyline so the demo pipeline makes LLM calls.
     from app.connectors.demo import DemoPullConnector
@@ -399,6 +411,8 @@ async def test_demo_cost_is_zero_priced(demo_state: AppState) -> None:
     usage = [d for idx in demo_es.docs for d in demo_es.docs[idx].values() if "pricing_source" in d]
     assert usage, "expected the demo pipeline to write usage rows"
     assert {d["pricing_source"] for d in usage} == {"zero"}
+    assert {d["app_version"] for d in usage} == {__version__}
+    assert {d["build_sha"] for d in usage} == {"demo-usage-build"}
 
 
 # --------------------------------------------------------------------------- #

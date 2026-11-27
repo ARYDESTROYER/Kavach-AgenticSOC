@@ -53,6 +53,7 @@ from ..config import Preferences
 from ..constants import EntityType
 from ..models import Campaign, CampaignEntity, Case
 from ..utils import iso_now, parse_es_timestamp
+from .priority import band_of_case
 from .signatures import cross_source_signature
 
 logger = logging.getLogger("tlsoc.engine.campaigns")
@@ -210,11 +211,16 @@ def _campaign_id(cluster_signatures: Iterable[str]) -> str:
     return f"campaign-{digest}"
 
 
-def _rollup_severity(cases: list[Case]) -> str | None:
-    """The MAX advisory severity band across member cases (plain label, #3-safe)."""
+def _rollup_severity(cases: list[Case], prefs: Any = None) -> str | None:
+    """The MAX advisory severity band across member cases (plain label, #3-safe).
+
+    Resolved through :func:`app.engine.priority.band_of_case`, not read off
+    ``Case.severity_band`` — that field is a READ-TIME presentation value no production
+    write path persists, so the direct read rolled every campaign up to ``None``.
+    ``prefs`` is optional (it only resolves the source's declared severity ceiling)."""
     best = -1
     for case in cases:
-        band = str(getattr(case, "severity_band", None) or "").strip().lower()
+        band = str(band_of_case(case, prefs) or "").strip().lower()
         rank = _SEVERITY_RANK.get(band)
         if rank is not None and rank > best:
             best = rank
@@ -346,7 +352,7 @@ def build_campaigns(cases: list[Case], prefs: Preferences) -> list[Campaign]:
                 mitre=_rollup_mitre(members),
                 first_seen=first_seen,
                 last_seen=last_seen,
-                severity_rollup=_rollup_severity(members),
+                severity_rollup=_rollup_severity(members, prefs),
             )
         )
     # Deterministic order (stable id) for a byte-identical re-run.

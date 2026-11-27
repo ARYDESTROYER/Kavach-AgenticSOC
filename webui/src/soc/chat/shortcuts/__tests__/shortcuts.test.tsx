@@ -1,0 +1,323 @@
+/**
+ * Chat keyboard shortcuts (SPEC §10.4a): Ctrl/Cmd+Shift+O new chat, Ctrl/Cmd+Shift+S
+ * toggle history, Shift+Esc focus composer, Ctrl/Cmd+/ the sheet; never Ctrl/Cmd+K or
+ * B; nothing while an input method composes, on repeat, after another handler
+ * consumed the key, or while a modal layer owns the keyboard; registered only while
+ * enabled. The sheet lists every shortcut, including the composer keys.
+ */
+import * as React from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, renderHook, screen, within } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import { CHAT_SHORTCUTS, ariaKeyShortcuts, keyLabel, shortcutLabel } from '../shortcut-list';
+import { COPY_LAST_ANSWER_KEYS, isCopyLastAnswer } from '../../message/useCopyLastAnswer';
+import { ShortcutSheet } from '../ShortcutSheet';
+import {
+  anyLayerOpen,
+  CHAT_KEYSHORTCUTS,
+  matchChatShortcut,
+  modalLayerOpen,
+  useChatShortcuts,
+  type ChatShortcutHandlers,
+} from '../useChatShortcuts';
+
+expect.extend(toHaveNoViolations);
+
+const key = (init: Partial<KeyboardEvent>) => ({
+  key: '',
+  code: '',
+  ctrlKey: false,
+  metaKey: false,
+  shiftKey: false,
+  altKey: false,
+  isComposing: false,
+  keyCode: 0,
+  repeat: false,
+  defaultPrevented: false,
+  ...init,
+});
+
+describe('matchChatShortcut', () => {
+  it('maps the four shortcuts with Ctrl or Cmd', () => {
+    for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
+      expect(matchChatShortcut(key({ ...mod, shiftKey: true, key: 'O' }))).toBe('newChat');
+      expect(matchChatShortcut(key({ ...mod, shiftKey: true, key: 's' }))).toBe('toggleHistory');
+      expect(matchChatShortcut(key({ ...mod, key: '/' }))).toBe('openShortcuts');
+    }
+    expect(matchChatShortcut(key({ shiftKey: true, key: 'Escape' }))).toBe('focusComposer');
+    // Non-Latin layouts (the key is not a Latin character) still match the physical key.
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'Ø', code: 'KeyO' }))).toBe('newChat');
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'Щ', code: 'KeyO' }))).toBe('newChat');
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'Ы', code: 'KeyS' }))).toBe('toggleHistory');
+    // A Latin layout's own character wins: Dvorak types "o" on the physical S key.
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'O', code: 'KeyS' }))).toBe('newChat');
+  });
+
+  it('never takes over a Latin layout key through its physical position', () => {
+    // German/Spanish/Italian/Nordic: the "/" position types "-" (Ctrl+- is zoom out).
+    expect(matchChatShortcut(key({ ctrlKey: true, key: '-', code: 'Slash' }))).toBeNull();
+    // Dvorak: the "/" position types "z" (Ctrl+Z is undo in the composer).
+    expect(matchChatShortcut(key({ ctrlKey: true, key: 'z', code: 'Slash' }))).toBeNull();
+    // Dvorak: the physical O types "r" (Ctrl+Shift+R is a hard reload).
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'R', code: 'KeyO' }))).toBeNull();
+    expect(matchChatShortcut(key({ metaKey: true, shiftKey: true, key: 'r', code: 'KeyO' }))).toBeNull();
+    // Named keys never fall back to the physical position.
+    expect(matchChatShortcut(key({ ctrlKey: true, key: 'Dead', code: 'Slash' }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'Unidentified', code: 'KeyO' }))).toBeNull();
+    // A non-Latin layout's physical K/B stay the console's.
+    expect(matchChatShortcut(key({ ctrlKey: true, key: 'л', code: 'KeyK' }))).toBeNull();
+  });
+
+  it('does not prevent a Latin-layout browser shortcut that shares the physical key', () => {
+    const h = {
+      newChat: vi.fn(),
+      toggleHistory: vi.fn(),
+      focusComposer: vi.fn(),
+      openShortcuts: vi.fn(),
+    };
+    const { unmount } = renderHook(() => useChatShortcuts(h));
+    const zoomOut = new KeyboardEvent('keydown', { key: '-', code: 'Slash', ctrlKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(zoomOut);
+    const reload = new KeyboardEvent('keydown', { key: 'R', code: 'KeyO', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(reload);
+    expect(zoomOut.defaultPrevented).toBe(false);
+    expect(reload.defaultPrevented).toBe(false);
+    expect(h.openShortcuts).not.toHaveBeenCalled();
+    expect(h.newChat).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('never claims Ctrl/Cmd+K or B in any combination', () => {
+    for (const k of ['k', 'K', 'b', 'B']) {
+      for (const mods of [{ ctrlKey: true }, { metaKey: true }, { ctrlKey: true, shiftKey: true }, { metaKey: true, shiftKey: true }]) {
+        expect(matchChatShortcut(key({ ...mods, key: k }))).toBeNull();
+      }
+    }
+  });
+
+  it('ignores composing, repeated, consumed and Alt events, and plain keys', () => {
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'o', isComposing: true }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'o', keyCode: 229 }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'o', repeat: true }))).toBeNull();
+    expect(matchChatShortcut(key({ shiftKey: true, key: 'Escape', defaultPrevented: true }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, altKey: true, key: '/' }))).toBeNull();
+    expect(matchChatShortcut(key({ key: 'Escape' }))).toBeNull();
+    expect(matchChatShortcut(key({ shiftKey: true, key: 'O' }))).toBeNull();
+  });
+});
+
+describe('useChatShortcuts', () => {
+  const handlers = (): ChatShortcutHandlers => ({
+    newChat: vi.fn(),
+    toggleHistory: vi.fn(),
+    focusComposer: vi.fn(),
+    openShortcuts: vi.fn(),
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('calls the handler and prevents the browser default', () => {
+    const h = handlers();
+    renderHook(() => useChatShortcuts(h));
+    const event = new KeyboardEvent('keydown', { key: 'O', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(h.newChat).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+    fireEvent.keyDown(window, { key: 'S', metaKey: true, shiftKey: true });
+    fireEvent.keyDown(window, { key: '/', ctrlKey: true });
+    fireEvent.keyDown(window, { key: 'Escape', shiftKey: true });
+    expect(h.toggleHistory).toHaveBeenCalledTimes(1);
+    expect(h.openShortcuts).toHaveBeenCalledTimes(1);
+    expect(h.focusComposer).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers nothing while disabled and unregisters on unmount', () => {
+    const h = handlers();
+    const { rerender, unmount } = renderHook(({ on }: { on: boolean }) => useChatShortcuts(h, on), {
+      initialProps: { on: false },
+    });
+    fireEvent.keyDown(window, { key: 'O', ctrlKey: true, shiftKey: true });
+    expect(h.newChat).not.toHaveBeenCalled();
+    rerender({ on: true });
+    fireEvent.keyDown(window, { key: 'O', ctrlKey: true, shiftKey: true });
+    expect(h.newChat).toHaveBeenCalledTimes(1);
+    unmount();
+    fireEvent.keyDown(window, { key: 'O', ctrlKey: true, shiftKey: true });
+    expect(h.newChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the keyboard to an open modal dialog or a focused menu', () => {
+    const h = handlers();
+    renderHook(() => useChatShortcuts(h));
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('data-state', 'open');
+    document.body.appendChild(dialog);
+    expect(modalLayerOpen()).toBe(true);
+    fireEvent.keyDown(window, { key: 'O', ctrlKey: true, shiftKey: true });
+    expect(h.newChat).not.toHaveBeenCalled();
+    // A popover (inside a popper wrapper) without focus does not block shortcuts.
+    const wrapper = document.createElement('div');
+    wrapper.setAttribute('data-radix-popper-content-wrapper', '');
+    wrapper.appendChild(dialog);
+    document.body.appendChild(wrapper);
+    expect(modalLayerOpen()).toBe(false);
+    expect(anyLayerOpen()).toBe(true);
+    fireEvent.keyDown(window, { key: 'O', ctrlKey: true, shiftKey: true });
+    expect(h.newChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes aria-keyshortcuts values for the owning controls', () => {
+    expect(CHAT_KEYSHORTCUTS).toEqual({
+      newChat: 'Control+Shift+O Meta+Shift+O',
+      toggleHistory: 'Control+Shift+S Meta+Shift+S',
+      focusComposer: 'Shift+Escape',
+      openShortcuts: 'Control+/ Meta+/',
+    });
+  });
+
+  it('matches Ctrl/Cmd+Shift+C under the shared rules but leaves it to the answer that registers it (Round 12)', () => {
+    renderHook(() => useChatShortcuts(handlers()));
+    const event = new KeyboardEvent('keydown', { key: 'C', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
+      expect(matchChatShortcut(key({ ...mod, shiftKey: true, key: 'c' }))).toBe('copyLastAnswer');
+    }
+    // A non-Latin layout's physical C still matches.
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'С', code: 'KeyC' }))).toBe('copyLastAnswer');
+    // Dvorak types "j" on the physical C: Ctrl+Shift+J stays the browser's (console/downloads).
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'J', code: 'KeyC' }))).toBeNull();
+    // Plain Ctrl/Cmd+C stays the browser's copy; composing, repeats, Alt and consumed events are ignored.
+    expect(matchChatShortcut(key({ ctrlKey: true, key: 'c', code: 'KeyC' }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', isComposing: true }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', keyCode: 229 }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', repeat: true }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, altKey: true, key: 'c' }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', defaultPrevented: true }))).toBeNull();
+  });
+});
+
+describe('shortcut list', () => {
+  it('documents every shortcut, composer keys included, and none uses K or B', () => {
+    const ids = CHAT_SHORTCUTS.map((s) => s.id);
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        'send',
+        'newline',
+        'edit-last',
+        'stop',
+        'focus',
+        'new-chat',
+        'toggle-history',
+        'copy-last',
+        'hide-suggestion',
+        'undo-hide-suggestion',
+        'shortcuts',
+      ]),
+    );
+    for (const s of CHAT_SHORTCUTS) {
+      expect(s.keys.includes('Mod') && s.keys.some((k) => k === ('K' as never) || k === ('B' as never))).toBe(false);
+    }
+  });
+
+  it('documents Ctrl/Cmd+Shift+C exactly as the answer registers it', () => {
+    const entry = CHAT_SHORTCUTS.find((s) => s.id === 'copy-last');
+    expect(entry).toMatchObject({ label: 'Copy the last answer', keys: ['Mod', 'Shift', 'C'], where: 'chat' });
+    for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
+      expect(isCopyLastAnswer({ key: 'C', code: 'KeyC', shiftKey: true, altKey: false, ctrlKey: false, metaKey: false, ...mod })).toBe(true);
+    }
+    expect(COPY_LAST_ANSWER_KEYS).toBe('Control+Shift+C Meta+Shift+C');
+  });
+
+  it('documents Delete or Backspace on a focused suggestion (SPEC-chat §5.6)', () => {
+    const entry = CHAT_SHORTCUTS.find((s) => s.id === 'hide-suggestion');
+    expect(entry).toEqual({
+      id: 'hide-suggestion',
+      label: 'Hide a suggestion for a day',
+      keys: ['Delete'],
+      altKeys: ['Backspace'],
+      where: 'chat',
+      note: 'on a focused suggestion',
+    });
+    // Plain keys: the same words on every platform.
+    expect(shortcutLabel(['Delete'], true)).toBe('Delete');
+    expect(shortcutLabel(['Backspace'], false)).toBe('Backspace');
+  });
+
+  it('documents Ctrl/Cmd+Z on the start screen: undo the last hidden suggestion', () => {
+    const entry = CHAT_SHORTCUTS.find((s) => s.id === 'undo-hide-suggestion');
+    expect(entry).toEqual({
+      id: 'undo-hide-suggestion',
+      label: 'Undo the last hidden suggestion',
+      keys: ['Mod', 'Z'],
+      where: 'chat',
+      note: 'on the start screen',
+    });
+    expect(shortcutLabel(['Mod', 'Z'], false)).toBe('Ctrl+Z');
+    expect(shortcutLabel(['Mod', 'Z'], true)).toBe('⌘Z');
+  });
+
+  it('derives aria-keyshortcuts from the list, so a declared key is always documented', () => {
+    // A suggestion card: Delete or Backspace hides it, Ctrl/Cmd+Z undoes that.
+    expect(ariaKeyShortcuts('hide-suggestion', 'undo-hide-suggestion')).toBe('Delete Backspace Control+Z Meta+Z');
+    // The same spelling as the hand-written values for the workspace shortcuts.
+    expect(ariaKeyShortcuts('new-chat')).toBe(CHAT_KEYSHORTCUTS.newChat);
+    expect(ariaKeyShortcuts('toggle-history')).toBe(CHAT_KEYSHORTCUTS.toggleHistory);
+    expect(ariaKeyShortcuts('shortcuts')).toBe(CHAT_KEYSHORTCUTS.openShortcuts);
+    expect(ariaKeyShortcuts('focus')).toBe(CHAT_KEYSHORTCUTS.focusComposer);
+    expect(ariaKeyShortcuts('copy-last')).toBe(COPY_LAST_ANSWER_KEYS);
+    expect(ariaKeyShortcuts('edit-last')).toBe('ArrowUp');
+    expect(ariaKeyShortcuts('no-such-entry')).toBe('');
+  });
+
+  it('labels keys per platform', () => {
+    expect(shortcutLabel(['Mod', 'Shift', 'O'], false)).toBe('Ctrl+Shift+O');
+    expect(shortcutLabel(['Mod', 'Shift', 'O'], true)).toBe('⌘⇧O');
+    expect(keyLabel('Esc', true)).toBe('Esc');
+  });
+});
+
+describe('ShortcutSheet', () => {
+  it('lists every shortcut with its keys and passes axe', async () => {
+    const onOpenChange = vi.fn();
+    render(<ShortcutSheet open onOpenChange={onOpenChange} />);
+    const dialog = screen.getByRole('dialog', { name: 'Keyboard shortcuts' });
+    for (const shortcut of CHAT_SHORTCUTS) {
+      expect(within(dialog).getByText(shortcut.label)).toBeInTheDocument();
+    }
+    const terms = within(dialog).getAllByRole('term').map((t) => t.textContent);
+    expect(terms).toEqual(expect.arrayContaining(['Send', 'New line', 'Edit your last prompt (in an empty composer)', 'Stop the answer (while it runs)', 'Copy the last answer']));
+    const copy = within(dialog).getByText('Copy the last answer').closest('div') as HTMLElement;
+    expect(Array.from(copy.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(
+      /mac/i.test(navigator.platform) ? ['⌘', '⇧', 'C'] : ['Ctrl', 'Shift', 'C'],
+    );
+    const send = within(dialog).getByText('Send').closest('div') as HTMLElement;
+    expect(within(send).getByText('Enter').tagName).toBe('KBD');
+    const newline = within(dialog).getByText('New line').closest('div') as HTMLElement;
+    expect(within(newline).getAllByText(/Shift|⇧|Enter/).map((k) => k.tagName)).toEqual(['KBD', 'KBD']);
+    // Alternative keys read "Delete or Backspace", in the "Anywhere in Chat" group.
+    expect(terms).toContain('Hide a suggestion for a day (on a focused suggestion)');
+    const hide = within(dialog).getByText('Hide a suggestion for a day').closest('div') as HTMLElement;
+    expect(Array.from(hide.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(['Delete', 'Backspace']);
+    expect(hide.querySelector('dd')?.textContent).toBe('Delete or Backspace');
+    expect(hide.closest('section')).toHaveAccessibleName('Anywhere in Chat');
+    expect(terms).toContain('Undo the last hidden suggestion (on the start screen)');
+    const undo = within(dialog).getByText('Undo the last hidden suggestion').closest('div') as HTMLElement;
+    expect(Array.from(undo.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(
+      /mac/i.test(navigator.platform) ? ['⌘', 'Z'] : ['Ctrl', 'Z'],
+    );
+    expect(await axe(document.body, { rules: { region: { enabled: false } } })).toHaveNoViolations();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('renders nothing when closed', () => {
+    render(<ShortcutSheet open={false} onOpenChange={() => {}} />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // Keeps React happy about the unused import in type-only builds.
+    expect(React.isValidElement(<ShortcutSheet open={false} onOpenChange={() => {}} />)).toBe(true);
+  });
+});

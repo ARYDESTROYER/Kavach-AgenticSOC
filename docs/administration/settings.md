@@ -1,6 +1,6 @@
 ---
 title: Settings administration
-description: Configure Agentic SOC 0.1 safely, understand preference scope, and keep secrets out of persisted settings.
+description: Configure Agentic SOC 0.2 safely, understand preference scope, and keep secrets out of persisted settings.
 ---
 
 # Settings administration
@@ -15,6 +15,13 @@ When authentication and RBAC are enabled, `super_admin` and `soc_manager` have t
 built-in ability to manage settings. Other built-in roles can read settings but
 cannot change them. Custom roles can grant narrower management rights for models,
 notifications, branding, enrichment, terminology, automation, and rules.
+
+Every change saved with the **Save changes** bar is a settings write, so it needs the
+settings management permission. Someone who can read settings but not manage them can
+still open the sections the rail shows them; on a section whose changes go through the
+bar, a warning says **You can view these settings but not change them** and Save stays
+off, so an edit never ends in a refused save. Sections that save through their own
+controls (your Profile, Users, Roles & permissions) follow their own permissions.
 
 When authentication is disabled, route-level authorization is intentionally a
 no-op. Enable authentication before exposing a deployment to other users or a
@@ -34,24 +41,167 @@ The Settings UI is the preferred editing surface. The API exposes `GET /api/sett
 `Preferences` model. Do not send a stale full settings document from an external
 script: another administrator may have changed a different section in the meantime.
 
-The Console presents one searchable section rail, a single active-section heading,
-and flat divider-led setting groups. Theme selection is a compact **System / Light /
-Dark** control under **Account → Appearance & customization**. Personal theme changes
-apply immediately and follow the signed-in user; System follows the organization
-default when one is configured, otherwise the device preference.
+## How the Settings page is laid out
 
-On a narrow screen, the full section inventory moves into a searchable Sheet opened
-from one compact section trigger; it is not stacked above the active form. Settings
-URLs retain `#/settings?s=<id>&a=<anchor>`, so an authorized operator can bookmark a
-section or a specific setting group. Modified sections show a dirty indicator, and
-one sticky **Save changes / Discard** bar owns both buffered preference writes and
-write-only secret drafts across the workspace. Saving keeps the narrow API contracts:
+Settings has one header: the title and a help tip. Nothing else sits in the header while
+nothing is unsaved. On the left, a searchable rail lists the sections in five groups
+(**Account**, **General**, **Integrations**, **Security & access** and **Organization**),
+with plain group labels and no counts. **Re-run setup wizard** sits at the foot of the
+rail. On a narrow screen the whole rail moves into a searchable sheet opened from one
+compact section button, so it is never stacked above the active form.
+
+Each section opens with its own title row: the section name, a help tip that explains
+it, and **Ask about this**, which opens chat with the section as the topic. Sections
+that manage a list put their own actions on that row, for example **Add user** and
+**Refresh** on Users.
+
+Settings come in groups. Each group has a short title, an optional one-line caption,
+and one tinted panel that holds its settings as rows divided by hairlines:
+
+- A switch, a choice or a status sits at the end of its row, beside the setting's name
+  and one line of help.
+- Wide fields (lists such as evidence fields, text areas, and the **Typed-out answers**
+  choice) sit under the row text.
+- Numbers use one compact field with the unit inside it (for example `s`, `min` or `h`).
+  A long duration also reads in hours or days in its help line, for example an idle
+  timeout of `720 min` reads "(12 hours)". Clearing a number field and leaving it never
+  saves 0 or the field's minimum: most fields keep the value they had, while the four
+  session policy durations (idle timeout, absolute lifetime, re-authentication window and
+  access token lifetime) and the **Chat assistant** limits, including the daily chat
+  limit, go back to the value their **Reset** offers. Field paths and evidence fields are shown in a
+  monospace font.
+- A control that is turned off by a switch above it (for example the auto-close bars
+  while auto-close is off) is disabled and dimmed; the group's titles and help stay at
+  full contrast.
+- Below 640 px wide, every control moves under its label, so a field never covers its
+  name.
+
+Form sections are at most 44 rem (704 px) wide so a switch stays close to its label.
+Sections built around a table or a wide editor, such as Users, Roles & permissions,
+Sessions & activity, Active sessions and Enrichment, use the full width, and their
+tables reach the edges of their panel. Their switches, fields and statuses still sit as
+close to their names as in a form section, and a short form or a notice among them, such
+as the permission check on **Roles & permissions**, ends where they end.
+
+Explanations live in the help tips. A callout appears only for a condition that is true
+right now, for example **Settings are read-only** while the settings lock is on, **You
+can view these settings but not change them** for someone without the settings
+management permission, or **The kill switch is on**. Such a callout states what is saved:
+flipping the kill switch in an unsaved draft does not show it, and turning it off in a
+draft does not hide it until you save. The same goes for the **Posture** rows on
+**Single sign-on & policy**, which state what the backend enforces now.
+
+Theme selection is a compact **System / Light / Dark** control under
+**Settings → Account → Appearance**. Personal theme changes apply immediately and follow
+the signed-in user. System follows the organization default theme, which is set in one
+place: **Default theme** in **Settings → Organization → Branding**. Appearance shows that
+default as a read-only line, and administrators get a link to Branding. Appearance also
+holds **Show What's new after updates**, a personal switch that is on unless you turn it
+off.
+
+### Saving
+
+Settings URLs keep the form `#/settings?s=<id>&a=<group>`, so an authorized operator can
+bookmark a section or one group in it. A section with unsaved changes shows a dot in
+the rail. One **Save changes / Discard** bar, as wide as the section, owns both buffered
+preference writes and write-only secret drafts across the page; the section leaves room
+below its last row so the bar never covers it. Saving keeps the narrow API contracts:
 ordinary preferences are sent as a minimal top-level patch, then only non-blank
-replacement secrets are sent to the dedicated secret endpoint. If the preference
-write succeeds but a secret write fails, the saved preferences stay applied and the
-secret draft remains visible and retryable. Immediate self-contained operations still
-report their own result, but a section renderer must not create a second preference or
-credential save path.
+replacement secrets are sent to the dedicated secret endpoint. If the preference write
+succeeds but a secret write fails, the saved preferences stay applied and the secret
+draft remains visible and retryable. A few controls act at once instead of through the
+bar, for example the Enrichment providers, your Profile, and the jobs started from
+Storage & retention and Data export; they report their own result, and none of them is
+a second path for saving preferences or credentials. The note that secret
+values stay write-only appears only under sections that hold preferences or secrets.
+
+Browser **Back**, **Forward** or a typed address that would leave a page with unsaved
+changes asks first, with the same dialog as the navigation rail. Choose **Keep editing**
+to stay on the page with your changes. Reload and closing the tab still use the
+browser's own warning.
+
+**Single sign-on** can be changed only by a stored Super admin. Anyone else sees the
+settings read-only, with "Only a Super admin can change single sign-on." See
+[Authentication](authentication.md#oidc-sso).
+
+In Demo Mode, background jobs do not run. Data export, storage **Apply**, the reset
+tiers, and the Knowledge imports and precedent bootstrap are disabled, with the reason
+"Data exports are not available in Demo Mode. Turn Demo Mode off to export." or
+"Background jobs are not available in Demo Mode. Turn Demo Mode off to run this." In the
+setup wizard you can still add a real source while Demo Mode is on. It is saved, but the
+list shows only the Demo sources until Demo Mode is turned off.
+
+### Sections new or moved in this release
+
+- **General → Discounted inference** moved here from the Jobs page. It holds the live
+  Flex preference for compatible alert investigations, its standard fallback, and the
+  optional asynchronous Batch queue. Anyone who can read models can open it. It saves
+  with the rest of Settings, so changing it needs the settings management permission;
+  on the Jobs page it saved on its own and needed model management. Every built-in
+  role holds both permissions or neither, so only a custom role that holds one without
+  the other notices. Without settings management the section is read-only. The usage ledger
+  records the tier each call actually used, and neither path changes a verdict or a case
+  decision.
+- **Integrations → Runbooks** holds every runbook setting: whether runbooks are on, a
+  link to the runbook library, attaching the matching runbook to a case and the
+  **Generic incident** fallback (a checklist for people, never given to the agent as
+  guidance), guiding the agent with the runbook that specifically matches a case, using
+  Published runbooks in retrieval, the two AI help offers (**Suggest a runbook** and
+  **Draft note** on Check steps, each one model call in the cost ledger), and the
+  publishing rules (the publisher must differ from the author, step approvals, and the
+  review interval for new runbooks, from 30 to 730 days). Only Published runbook text is
+  trusted, and a runbook never closes or escalates a case, although guidance can change
+  the verdict the agent returns. **Knowledge & threat context → Retrieval** shows
+  whether Published runbooks are in retrieval and links here. See [Runbooks](../intelligence/runbooks.md).
+- **General → Data scope** starts with **Connected sources**, one row that shows how
+  many sources are enabled ("5 of 5 enabled") and opens the Sources page.
+- **Account → Security & two-factor** is one row, **Two-factor authentication**, with
+  its state (On or Off) and a **Turn on** (or **Turn off**) button; the enrollment or
+  turn-off steps open under the row and **Cancel** closes them. The last enrollment step
+  is **Verify and turn on**. **Profile** shows the same state with a **Turn on** (or
+  **Manage**) button that opens this section.
+- **General → SLA, priority & suppression** shows one row per priority in one panel,
+  each with its respond and resolve minutes and a plain reading (for example "P1
+  Critical: respond within 15 minutes, resolve within 4 hours"), followed by the clock
+  settings.
+- **Organization → All settings** shows every schema key with readable labels: group
+  titles in sentence case, and known acronyms stay in upper case (IP, URL, ID, TTL,
+  SLA, RAG).
+- **Security & access → Single sign-on & policy** lists each OIDC provider as a group
+  of labelled rows (display name, client ID, the client secret, allowed domains and
+  tenants, the group claim, the default role, the group to role map, account creation
+  and the callback URL to register). Allowed domains and tenants are lists: press Enter,
+  a comma or a space to add each one, and a pasted list becomes one entry per item. A
+  group to role map line that does not read as `group=role` with one of the six roles is
+  reported when you leave the field and is not saved; the text stays as you typed it. The
+  client secret is saved on its own with **Save secret**; only whether one is set ever
+  comes back, and a failed save keeps what you typed so you can try again. The session
+  policy ends with an
+  **Access tokens** group whose one value is not enforced in this version.
+- **Security & access → Roles & permissions** opens with a **Role-based access** group:
+  its **Enforcement** row shows **On** or **Off: every signed-in account is treated as
+  Super admin**, its caption lists the active accounts per role (for an account that may
+  manage users), and its button turns role-based access on or off after a confirmation.
+  Only an account whose stored role is Super admin can use it, after a recent sign-in;
+  otherwise the button is unavailable and the reason shows under the state. The change
+  is saved at once, not through the save bar, and is recorded in the audit log as a
+  settings change to **RBAC**. The **Role-based access** row in the Posture group of
+  **Single sign-on & policy** has a **Manage** button that opens it. The settings API no
+  longer changes `rbac.enabled` (`409 rbac_switch_moved`); use `PUT /api/rbac`. See
+  [Turn on role-based access](users-rbac.md#turn-on-role-based-access).
+- **Security & access → Single sign-on & policy** has a **Team activity** group after
+  Posture with one switch, **Team activity page** (on by default). Off, nobody can open
+  **Analytics → Team activity**, and its API answers `409 team_activity_off`. See
+  [Team activity](../analyst/team-activity.md).
+- **General → Detection** has an **Auto-close review** group beside the auto-close
+  controls: **Send automatic closes for review** (on by default), **Share of automatic
+  closes picked** (0 to 50%, default 5%), **Most picked in a day** (0 to 200, default
+  10, per day in the SLA time zone), **Most of one rule in a day** (1 to 50, default 3)
+  and **Days before a review expires** (1 to 30, default 7). A value outside its range is
+  refused when you save. See [Auto-close review](../automation/auto-close-review.md).
+- **Security & access → Users**: **Change roles** keeps only custom roles that still
+  exist. A custom role deleted after it was assigned grants nothing; the dialog names it
+  and removes it from the account when you save.
 
 ## Safe administration sequence
 
@@ -64,7 +214,7 @@ credential save path.
 
 Rules have their own version ledger and rollback controls. Threshold tuning also
 keeps an application ledger. General preference documents do not provide universal
-point-in-time rollback in version 0.1.
+point-in-time rollback in version 0.2.
 
 ## High-impact areas
 
@@ -75,9 +225,89 @@ point-in-time rollback in version 0.1.
   unless an operator explicitly enables it.
 - **Autopilot and budget:** the balanced profile enables broad collection and a
   default daily LLM budget backstop. A budget block routes work to a human; it does
-  not discard or silently close the case.
+  not discard or silently close the case. Chat is outside this budget; its only
+  spending bound is the optional daily chat spending limit (see
+  [Chat assistant](#chat-assistant)), which is off by default.
 - **Reset:** reset actions are separate, freshly authenticated, type-to-confirm
   operations. See [Reset and recovery](reset.md).
+
+## Chat assistant
+
+**Settings → General → Chat assistant** controls Workspace and Case Manager chat:
+
+- **Question limits.** **Limits per question** comes first. **Unlimited** (the default)
+  lets a question run until the assistant has answered or someone presses Stop, and
+  never cuts an answer short; loop guards still stop a question that is going nowhere
+  (the same lookup never runs twice, a question that stops making progress is asked to
+  answer, a model call that goes silent is retried once, and a very long investigation
+  wraps up with what it found). **Bounded** applies the per-question limits shown under
+  it: model calls, lookups, the token ceiling, the time limit, the answer reserve,
+  answer length and results per step. Switching modes keeps the values you set, so
+  switching back is lossless.
+- **Spending.** **Daily chat spending limit** is off by default: the AI budget (daily
+  and monthly) covers automatic investigations and never pauses chat, so this limit is
+  chat's only spending bound, and there is no monthly chat limit. With a limit, chat stops
+  starting model calls once its spending since 00:00 UTC reaches the amount, and the
+  answer says so; 0 turns the limit off. Every chat call is still recorded in the cost
+  ledger.
+- **Answers.** One **Typed-out answers** control with three choices: **Off** (answers
+  arrive whole, and the composer's **Type out answers** switch is disabled and says
+  why), **Allowed (off by default)**, and **Allowed (on by default)** (answers appear
+  word by word until a viewer turns it off). A viewer's own choice in the composer
+  wins wherever typed-out answers are allowed. Then **Animate the logo while chat
+  works**: a thin ring turns around the logo while an answer is being written. A custom
+  logo itself never moves, and the Chat item in the navigation keeps its own indicator
+  either way.
+- **Suggestions.** **Suggest questions from live data** (on by default): "New chats open
+  with questions about your queue, SLA and sources, computed from data each viewer can
+  read. No AI cost." Each viewer sees only cards their own permissions allow, and a
+  viewer can still turn the suggestions off for themselves in the composer's Options
+  (see [Workspace Chat](../analyst/chat.md#turn-suggestions-off)). Turned off here, new
+  chats offer only the everyday questions, with no catch-up line; Case Manager chat
+  keeps its case questions, which name no data.
+- **Timeouts and capacity** (in both modes): how many lookups run side by side in one
+  step (12 by default; in Bounded mode never more than the per-question lookup limit,
+  so 10 with the default limit), how long one lookup may take (45 seconds), how long a
+  model call may go silent before it is retried (900 seconds, fifteen minutes, by
+  default), and how many questions may run at once per user (12) and in total on this
+  backend (48). Over those bounds a question waits and starts by itself. Higher values
+  run more lookups and questions at once; on small model plans this can reach the
+  provider's per-minute limits, and Agentic SOC retries those calls. After an upgrade
+  from the previous build, each of these values that still equals its earlier default
+  (4 lookups at once, a 15-second lookup timeout, a 300-second model call timeout, 4
+  questions per user and 16 in total) moves to the new default once; a value you
+  changed to anything else stays as you set it. A value you chose that happens to equal
+  an earlier default cannot be told apart from it, so it moves too; set it again after
+  the upgrade.
+- **Indicator lookups:** how many indicators chat may send to enrichment providers per
+  question and per conversation (0 turns the lookup off, and chat's access list then
+  says it is turned off on this deployment), internal domain suffixes that are never
+  sent, and whether e-mail addresses may be sent.
+
+The editor accepts only values inside each knob's range, and the server clamps anything
+else, so a bad value can never reset other preferences. No setting here can let chat
+change anything: the assistant is read-only by construction. The keys are listed in the
+[configuration reference](../reference/configuration.md#chat-assistant-bounds).
+
+**Upgrading from an earlier build.** The first time a stored configuration is read, it
+moves to **Unlimited** unless an administrator had changed a per-question limit from
+its shipped value; then it stays **Bounded** with those values. Values that still hold
+the shipped default of the build that saved them move to today's defaults (see
+**Timeouts and capacity** above). A configuration from an older build, with a 30-second
+model call timeout and 2 questions per user and 8 in total, first takes 300 seconds
+(Unlimited only), 4 and 16, and then the current 900 seconds, 12 and 48; a Bounded
+configuration keeps its 30 seconds. Values an administrator had chosen are kept, even
+when one equals a later default. Each move happens once and is never repeated.
+
+## Case numbers
+
+**Settings → General → Cases** sets the format of the case number people see and say,
+such as `CASE-2026-000123`. Turn on **Use a custom case number format** first; until then
+the Console shows the internal case ID. A live preview shows sample numbers from
+**Sequence start**. The template takes
+placeholders such as `{prefix}`, `{year}`, and `{seq:06d}`, and the sequence can start
+again each calendar year, fiscal year, or fiscal quarter. The internal case ID never
+changes, and changing the format never renumbers existing cases.
 
 ## Updates and release channels
 
@@ -129,6 +359,15 @@ does not prove that bytes moved. Use **Preview** to inspect capabilities and exa
 targets, then **Apply supported lifecycle** to make the native changes. Apply is an
 explicit, freshly authenticated, audited operation.
 
+Apply submits a `storage_lifecycle_apply` background job with an exact snapshot of
+the persisted policy. The worker compares that snapshot with the authoritative saved
+policy before applying it and fails rather than acting on drifted settings. After
+`202 Accepted`, progress remains in **Analytics → Jobs** and **Inbox**; leaving Settings
+does not stop it. Cancellation is cooperative and cannot undo a native lifecycle
+change already committed. The retired direct `POST /api/storage/lifecycle/apply`
+mutation returns `410 Gone` with `durable_job_required`; GET, PUT, and Preview remain
+direct operations.
+
 Enforcement is intentionally capability-aware:
 
 - **Elasticsearch state:** Agentic SOC can install ILM only for the append-only
@@ -155,26 +394,50 @@ exists, warm data remains retained and the Console reports Archive as not config
 
 Open **Settings → Organization → Data export** when support or offline analysis
 needs all records from selected supported safe scopes. Select cases, audit, usage,
-configuration, automation, and/or knowledge. **Records per file** (up to 5,000) is a
-bounded response size, not a full-history ceiling: the Console follows authenticated
-opaque cursors and downloads numbered files until each scope explicitly reports
-complete. A cursor is bound to its requesting operator, scope, and snapshot; do not
-edit or share it. The Console shows record/file progress and supports cancellation.
+configuration, automation, and/or knowledge. Both the normal archive and the advanced
+segment strategy now submit a server-owned job. The server walks every selected scope,
+assembles one UTC-stamped ZIP, verifies it, and exposes **Download** only when the
+terminal result carries a retained `artifact_id`.
 
-The Knowledge scope includes exact catalog counts, sanitized authoritative Markdown
-for operator-owned runbooks and playbooks, and metadata-only references/manifests for
-bundled procedures. It excludes environment/source credentials, users and sessions,
+Archive mode writes one newline-delimited JSON entry per selected scope and a terminal
+`manifest.json` with counts, completion and consistency evidence, actor, and build
+provenance. The advanced strategy uses bounded cursor pages internally, but the server
+follows them and packages their numbered JSON envelopes into one ZIP; the browser no
+longer has to remain open and collect a sequence of files. **Records per file** (up to
+5,000) remains an internal segment-size control, not a full-history ceiling.
+
+After `202 Accepted`, close the dialog or navigate away. Progress, cancellation,
+partial/failure counts, and the final artifact remain in **Analytics → Jobs** and
+**Inbox**. Cancellation is cooperative: it releases work at a safe checkpoint and does
+not undo server work already performed. A cancelled or otherwise incomplete export
+exposes no artifact. The executable direct archive/segment APIs are explicitly
+OpenAPI-deprecated compatibility primitives with their synchronous/request-bound and
+cursor limits; the cursor-cancel cleanup remains available. None is the Console
+workflow.
+
+The Knowledge scope includes exact catalog counts, every operator runbook with every
+version and its Markdown source, the built-in runbooks as versioned references, and,
+for one release, the retired procedure documents unchanged. It excludes environment/source credentials, users and sessions,
 password/MFA material, browser tokens, upstream raw logs, and raw knowledge chunks.
-Each compact server response and compact Console-downloaded segment is capped at
-25 MiB, and this is not an import format, whole-application
-export, or backup/restore mechanism. Every segment is audited and requires
+Each internal archive page and compact server segment is capped at 25 MiB; the complete
+disk-backed ZIP is not a 25 MiB lifetime export. This is not an import format,
+whole-application export, or backup/restore mechanism. Preparation and terminal outcome
+are audited and require
 `data_export:export` plus a fresh sign-in, granted by default to `super_admin` and
 `soc_manager`. Exact point-in-time consistency is available on the bundled
-Elasticsearch state path; other backends disclose weaker consistency. A cursor that
+Elasticsearch state path; PostgreSQL is explicitly `bounded_at_start` and other
+backends disclose their weaker consistency. A segment cursor that
 expires (ten-minute PIT keep-alive), crosses a backend restart, or is invalid must be
 restarted for that scope.
-Unavailable/malformed registry data or an unavailable append-only audit store aborts
-the scope with an error; the Console never turns that failure into a completed export.
+Unavailable/malformed registry data, insufficient temporary space, an integrity failure,
+or an unavailable append-only audit store fails the job; the Console never turns that
+failure into a completed export. One archive assembly slot exists per backend process.
+
+Artifacts live outside the StateStore. The supported Compose profiles persist
+`/var/lib/agentic-soc/jobs` on a named volume; the local default is
+`./data/job-artifacts`. Downloads re-check file size and SHA-256. Only the newest 50
+attached artifacts are retained, so move important exports into an independently
+controlled retention system. See [Background jobs](../operations/background-jobs.md).
 
 ## Secrets
 
@@ -189,4 +452,5 @@ Discard clears only the local replacement drafts. A failed secret update never e
 or erases the attempted value, so the operator can correct the problem and retry.
 
 Continue with [Configuration reference](../operations/configuration.md),
-[Authentication](authentication.md), and [Health, backup, and restore](../operations/health-backup.md).
+[Background jobs](../operations/background-jobs.md), [Authentication](authentication.md),
+and [Health, backup, and restore](../operations/health-backup.md).

@@ -18,12 +18,21 @@ from typing import Any
 from ..utils import dotted_get
 
 _NATIVE_ID_PATHS = ("id", "_id", "uuid", "event.id", "event_id")
+#: A LEEF header's EventID names an event TYPE (a QID such as ``LoginFailed``), not
+#: one occurrence, so it is never a per-event identity (Round 16 B33). The parsed record
+#: keeps it as ``event_id`` for saved mappings and rules; only the identity skips it.
+_LEEF_NATIVE_ID_PATHS = tuple(path for path in _NATIVE_ID_PATHS if path != "event_id")
 _PREFIX = "push"
 
 
 def native_event_uid(record: dict[str, Any]) -> str | None:
-    """Return the first non-empty vendor identity in ``record``, if present."""
-    for path in _NATIVE_ID_PATHS:
+    """Return the first non-empty vendor identity in ``record``, if present.
+
+    A LEEF record (the receiver sets ``leef_version``) never uses its header EventID:
+    without a real per-event id it takes the record fingerprint plus ordinal, as CEF
+    and syslog do, so distinct events of one type are never collapsed into one."""
+    paths = _LEEF_NATIVE_ID_PATHS if "leef_version" in record else _NATIVE_ID_PATHS
+    for path in paths:
         value = dotted_get(record, path)
         if isinstance(value, list):
             value = value[0] if value else None

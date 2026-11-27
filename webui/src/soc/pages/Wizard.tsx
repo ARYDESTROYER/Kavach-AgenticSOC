@@ -12,7 +12,6 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  CheckCircle2,
   Circle,
   ClipboardCheck,
   Database,
@@ -26,26 +25,26 @@ import {
   Rocket,
   ServerCog,
   ShieldCheck,
-  Sparkles,
   Star,
   Trash2,
   TriangleAlert,
   X,
   type LucideIcon,
 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import type {
   ConfiguredStatus,
   ConnectorManifest,
+  ModelConfig,
   SecretsUpdate,
   SetupStatus,
   SourceInstance,
 } from '@/lib/types';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { humanizeToken } from '@/lib/format';
+import { properName } from '@/lib/proper-names';
 
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Label } from '@/ui/label';
@@ -56,10 +55,103 @@ import { LoadingState } from '@/design-system';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
-import { SecretField } from '@/soc/components/SecretField';
-import { SourceEditor } from '@/soc/components/SourceEditor';
+import type { SourceEditorProps } from '@/soc/components/SourceEditor';
 import { useAuth } from '@/soc/auth';
 import { isDemoActive, useDemo } from '@/soc/demo';
+import { headingOf, useReturnFocus } from '@/soc/hooks/useReturnFocus';
+import { prefetchChunks, retryingLoader } from '@/soc/lazy-retry';
+import { skipToTarget } from '@/soc/skip-link';
+
+import { canBePrimary, DEMO_MANAGED_REASON, PRIMARY_PULL_ONLY, primaryConfirmed } from './sources-primary';
+import type { RuntimeReviewStageProps } from './wizard/RuntimeReviewSteps';
+import { StepHeading } from './wizard/StepHeading';
+
+/**
+ * The source editor is a large manifest-driven form that only an operator who opens it on
+ * the Data sources stage ever sees, so it loads on demand instead of shipping with first
+ * paint (this page is eager). The import fails soft: the wizard renders outside every
+ * error boundary, so a chunk that cannot load (a redeploy, a proxy, going offline) shows
+ * a reload notice instead of throwing.
+ */
+const SourceEditor = React.lazy(
+  (): Promise<{ default: React.ComponentType<SourceEditorProps> }> =>
+    import('@/soc/components/SourceEditor').then(
+      (module) => ({ default: module.SourceEditor }),
+      () => ({ default: SourceEditorUnavailable }),
+    ),
+);
+
+function SourceEditorUnavailable(_props: SourceEditorProps) {
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+      <span>The source editor could not load. Reload the page to try again.</span>
+      <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
+        Reload
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The AI runtime and review stages (their key fields, provider table and readiness rows)
+ * load on demand too (Round 15, SPEC §3.1): first paint is the workspace stage. Once the
+ * browser is idle after the wizard mounts, their chunk is prefetched into the HTTP cache
+ * (a prefetch, never an import, as soc/lazy-retry.ts requires), so reaching either stage
+ * normally shows no wait. All their state stays here; they only render it. One lazy
+ * component serves both stages, so the second one reached renders at once. The open
+ * retries a failed chunk once under a fresh URL (`retryingLoader`), and a chunk that
+ * still cannot load shows a reload notice in both stages instead of throwing (a failed
+ * module stays failed until a reload, as with the source editor).
+ */
+const loadLaterSteps = retryingLoader(() => import('./wizard/RuntimeReviewSteps'));
+
+/** The two stages' chunks, written in by the build (vite.config.ts `chunkListPlugin`). */
+const LATER_STEP_CHUNKS = '__CHUNK_LIST:src/soc/pages/wizard/RuntimeReviewSteps.tsx__';
+
+type StageRef = { headingRef: React.RefObject<HTMLHeadingElement> };
+
+const LaterStage = React.lazy(
+  (): Promise<{ default: React.ComponentType<RuntimeReviewStageProps> }> =>
+    loadLaterSteps().then(
+      (module) => ({ default: module.RuntimeReviewStage }),
+      () => ({ default: StepUnavailable }),
+    ),
+);
+
+function StepUnavailable({ headingRef }: StageRef) {
+  return (
+    <div>
+      <StepHeading
+        headingRef={headingRef}
+        title="This step could not load"
+        description="Reload the page to try again."
+      />
+      <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
+        Reload
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * Hosts a stage that loads on demand. When its chunk is not loaded yet, its heading mounts
+ * after the fallback, once the step change's focus effect has found no heading, so it
+ * takes focus here as it mounts (just as that effect focuses it when the chunk is loaded).
+ */
+function LazyStep({ headingRef, children }: StageRef & { children: React.ReactNode }) {
+  return (
+    <React.Suspense fallback={<LoadingState label="Loading this step" layout="panel" />}>
+      <FocusOnMount headingRef={headingRef}>{children}</FocusOnMount>
+    </React.Suspense>
+  );
+}
+
+function FocusOnMount({ headingRef, children }: StageRef & { children: React.ReactNode }) {
+  React.useLayoutEffect(() => {
+    headingRef.current?.focus();
+  }, [headingRef]);
+  return <>{children}</>;
+}
 
 type StepState = 'current' | 'ready' | 'attention' | 'available';
 type PendingNavigation = { kind: 'step'; step: number } | { kind: 'exit' };
@@ -89,7 +181,7 @@ const STEPS: Array<{
     key: 'runtime',
     title: 'Connect an AI runtime',
     shortTitle: 'AI runtime',
-    description: 'Add a provider credential for live investigations, or use the mock runtime.',
+    description: 'Add a provider key so the AI agent can investigate cases.',
     icon: KeyRound,
   },
   {
@@ -114,6 +206,8 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
   const [finishError, setFinishError] = React.useState<unknown>(null);
   const [finishing, setFinishing] = React.useState(false);
   const [status, setStatus] = React.useState<SetupStatus | null>(null);
+  // The default investigation provider (authenticated settings read), for "Add a key for".
+  const [defaultProvider, setDefaultProvider] = React.useState<string>();
   const [connectors, setConnectors] = React.useState<ConnectorManifest[]>([]);
   const [sources, setSources] = React.useState<SourceInstance[]>([]);
   const [sourceEditorOpen, setSourceEditorOpen] = React.useState(false);
@@ -136,6 +230,12 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
   const [demoBusy, setDemoBusy] = React.useState(false);
   const [demoError, setDemoError] = React.useState<unknown>(null);
   const headingRef = React.useRef<HTMLHeadingElement>(null);
+  // The two confirmations open from state, not from a Radix trigger, so each hands focus
+  // back to what opened it when cancelled (SPEC §3.3, WCAG 2.4.3). A confirmed step change
+  // hands it to the new stage's heading instead.
+  const navigationOpener = useReturnFocus();
+  const liveModeOpener = useReturnFocus();
+  const modeGroupRef = React.useRef<HTMLDivElement>(null);
   const completedRef = React.useRef(false);
   const transitionLockRef = React.useRef(false);
 
@@ -172,11 +272,38 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
     } finally {
       setLoading(false);
     }
+    // Optional: without it the key notice leaves out the provider sentence. Named only
+    // when the router and the investigator use the same provider: otherwise it may name
+    // one whose key is already set while the other role is the one that cannot be called.
+    Promise.resolve()
+      .then(() => api.getSettings())
+      .then(({ prefs: p }) => {
+        const a = (p.investigator_model as ModelConfig).provider;
+        setDefaultProvider(a === (p.router_model as ModelConfig).provider ? a : undefined);
+      })
+      .catch(() => undefined);
   }, []);
 
   React.useEffect(() => {
     void loadWizard();
   }, [loadWizard]);
+
+  // Warm the AI runtime and review stages once the browser is idle (`loadLaterSteps`).
+  // Offline, or without `requestIdleCallback`, the stage loads when it is reached.
+  React.useEffect(() => {
+    const idle = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof idle.requestIdleCallback !== 'function') return undefined;
+    const handle = idle.requestIdleCallback(
+      () => {
+        if (navigator.onLine !== false) prefetchChunks(LATER_STEP_CHUNKS, import.meta.url);
+      },
+      { timeout: 15_000 },
+    );
+    return () => idle.cancelIdleCallback?.(handle);
+  }, []);
 
   React.useLayoutEffect(() => {
     if (loading || bootError) return;
@@ -210,35 +337,52 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
         } finally {
           setDemoBusy(false);
           void refreshDemo();
+          // The sources and the AI readiness both follow Demo Mode (the Demo sources;
+          // the mock runtime is usable only in Demo), so read them again before the
+          // review can show the other mode's answer.
+          await refreshStatus().catch(() => undefined);
         }
       });
     },
-    [canManageDemo, demoMode, refreshDemo, runTransition],
+    [canManageDemo, demoMode, refreshDemo, refreshStatus, runTransition],
   );
 
   const requestDemoMode = React.useCallback(
     (nextOn: boolean) => {
       if (transitionLockRef.current || nextOn === demoMode) return;
       if (!nextOn && demoMode) {
-        if (canManageDemo) setConfirmLiveMode(true);
+        if (canManageDemo) {
+          // Resolved when the confirmation closes: the checked mode (Synthetic demo after
+          // Cancel), or the stage heading while the switch keeps the choices disabled.
+          liveModeOpener.remember(() => {
+            const checked = modeGroupRef.current?.querySelector<HTMLElement>(
+              '[role="radio"][aria-checked="true"]:not(:disabled)',
+            );
+            return checked ?? headingRef.current;
+          });
+          setConfirmLiveMode(true);
+        }
         return;
       }
       applyDemoMode(nextOn);
     },
-    [applyDemoMode, canManageDemo, demoMode],
+    [applyDemoMode, canManageDemo, demoMode, liveModeOpener],
   );
 
   const configured: ConfiguredStatus = status?.configured ?? {};
-  const hasProvider =
-    Boolean(configured.anthropic_api_key) || Boolean(configured.openai_api_key);
+  // Round 15 (SPEC D2.1): whether the default investigation models can be called, from
+  // the server, never from which keys happen to be set.
+  const hasProvider = Boolean(status && status.ai_runtime_ready);
+  const provider = (status && status.ai_runtime_provider) || defaultProvider;
   const hasKeyDraft = Object.values(keyValues).some((value) => value.trim());
   const enabledSources = sources.filter((source) => source.enabled !== false);
 
   const saveKeys = React.useCallback(async (): Promise<boolean> => {
+    // Only the AI runtime stage's key fields write `keyValues`, so these are its keys.
     const body: SecretsUpdate = {};
-    for (const field of KEY_FIELDS) {
-      const value = (keyValues[field.key] || '').trim();
-      if (value) (body as Record<string, string>)[field.key] = value;
+    for (const [key, typed] of Object.entries(keyValues)) {
+      const value = typed.trim();
+      if (value) (body as Record<string, string>)[key] = value;
     }
     if (!Object.keys(body).length) return true;
 
@@ -247,30 +391,23 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
     setKeysNotice(null);
     try {
       const result = await api.updateSecrets(body);
-      setStatus((previous) =>
-        previous
-          ? {
-              ...previous,
-              configured: { ...previous.configured, ...result.configured },
-            }
-          : { setup_complete: false, configured: result.configured },
-      );
+      // The write answer is authoritative (configured booleans and, since Round 15, the
+      // readiness of the default models): applied now and again after the status read,
+      // which can be eventually consistent and briefly return the old values.
+      const { configured: saved, ai_runtime_ready, ai_runtime_provider } = result;
+      const patch = (previous: SetupStatus | null): SetupStatus => ({
+        ...(previous || { setup_complete: false }),
+        configured: { ...(previous && previous.configured), ...saved },
+        ...(ai_runtime_ready == null ? null : { ai_runtime_ready, ai_runtime_provider }),
+      });
+      setStatus(patch);
       setKeyValues({});
       try {
         await refreshStatus();
       } catch {
         setKeysNotice('Keys were saved. Live status will refresh after setup.');
       }
-      // Preserve the authoritative write response even if the subsequent status read
-      // is eventually consistent and briefly returns the old boolean.
-      setStatus((previous) =>
-        previous
-          ? {
-              ...previous,
-              configured: { ...previous.configured, ...result.configured },
-            }
-          : { setup_complete: false, configured: result.configured },
-      );
+      setStatus(patch);
       return true;
     } catch (error) {
       setKeysError(error);
@@ -338,16 +475,17 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
   );
 
   const requestNavigation = React.useCallback(
-    (navigation: PendingNavigation) => {
+    (navigation: PendingNavigation, opener?: HTMLElement) => {
       if (transitionLockRef.current) return;
       if (navigation.kind === 'step' && navigation.step === step) return;
       if (step === 1 && sourceEditorOpen) {
+        navigationOpener.remember(opener);
         setPendingNavigation(navigation);
         return;
       }
       performNavigation(navigation);
     },
-    [performNavigation, sourceEditorOpen, step],
+    [navigationOpener, performNavigation, sourceEditorOpen, step],
   );
 
   const stepStates: StepState[] = [
@@ -367,6 +505,7 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
     <div className="flex h-dvh flex-col overflow-hidden bg-canvas text-foreground">
       <a
         href="#setup-main"
+        onClick={skipToTarget}
         className="sr-only z-50 rounded-md bg-canvas px-3 py-2 text-sm font-medium text-foreground focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:ring-2 focus:ring-ring"
       >
         Skip to setup content
@@ -391,7 +530,7 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => requestNavigation({ kind: 'exit' })}
+                onClick={(event) => requestNavigation({ kind: 'exit' }, event.currentTarget)}
                 disabled={loading || transitionBusy}
               >
                 <X className="h-4 w-4" aria-hidden /> Close
@@ -404,9 +543,7 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
       <div className="grid min-h-0 flex-1 lg:grid-cols-[264px_minmax(0,1fr)]">
         <aside className="hidden min-h-0 border-r border-border bg-surface/30 lg:flex lg:flex-col">
           <div className="shrink-0 px-6 pb-5 pt-8">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              Get operational
-            </p>
+            <p className="text-sm font-semibold text-foreground">Get operational</p>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
               Configure the minimum needed to explore or begin live triage. Every choice
               can be changed later.
@@ -423,7 +560,7 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
                     item={item}
                     index={index}
                     state={stepStates[index]}
-                    onClick={() => requestNavigation({ kind: 'step', step: index })}
+                    onClick={(event) => requestNavigation({ kind: 'step', step: index }, event.currentTarget)}
                     disabled={loading || transitionBusy}
                   />
                 </li>
@@ -482,6 +619,7 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
                   {step === 0 ? (
                     <WorkspaceStep
                       headingRef={headingRef}
+                      modeGroupRef={modeGroupRef}
                       demoMode={demoMode}
                       demoBusy={demoBusy}
                       demoError={demoError}
@@ -502,25 +640,35 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
                     />
                   ) : null}
                   {step === 2 ? (
-                    <KeysStep
-                      headingRef={headingRef}
-                      configured={configured}
-                      values={keyValues}
-                      demoMode={demoMode}
-                      error={keysError}
-                      notice={keysNotice}
-                      onChange={(key, value) =>
-                        setKeyValues((previous) => ({ ...previous, [key]: value }))
-                      }
-                    />
+                    <LazyStep headingRef={headingRef}>
+                      <LaterStage
+                        stage="runtime"
+                        headingRef={headingRef}
+                        configured={configured}
+                        ready={hasProvider}
+                        provider={provider}
+                        values={keyValues}
+                        demoMode={demoMode}
+                        error={keysError}
+                        notice={keysNotice}
+                        onChange={(key, value) =>
+                          setKeyValues((previous) => ({ ...previous, [key]: value }))
+                        }
+                      />
+                    </LazyStep>
                   ) : null}
                   {step === 3 ? (
-                    <ReviewStep
-                      headingRef={headingRef}
-                      demoMode={demoMode}
-                      sources={sources}
-                      configured={configured}
-                    />
+                    <LazyStep headingRef={headingRef}>
+                      <LaterStage
+                        stage="review"
+                        headingRef={headingRef}
+                        demoMode={demoMode}
+                        sources={sources}
+                        configured={configured}
+                        ready={hasProvider}
+                        provider={provider}
+                      />
+                    </LazyStep>
                   ) : null}
 
                   {finishError ? (
@@ -542,7 +690,9 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
             <div className="mx-auto flex w-full max-w-[960px] items-center justify-between gap-3 px-5 py-4 sm:px-8 lg:px-12">
               <Button
                 variant="ghost"
-                onClick={() => requestNavigation({ kind: 'step', step: Math.max(0, step - 1) })}
+                onClick={(event) =>
+                  requestNavigation({ kind: 'step', step: Math.max(0, step - 1) }, event.currentTarget)
+                }
                 disabled={loading || step === 0 || transitionBusy}
               >
                 <ArrowLeft className="h-4 w-4" aria-hidden /> Back
@@ -558,7 +708,7 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
                 </Button>
               ) : (
                 <Button
-                  onClick={() => requestNavigation({ kind: 'step', step: step + 1 })}
+                  onClick={(event) => requestNavigation({ kind: 'step', step: step + 1 }, event.currentTarget)}
                   disabled={loading || transitionBusy}
                 >
                   {savingKeys ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
@@ -579,7 +729,11 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
         description="The source editor has unsaved work. Leaving this step will discard the draft."
         confirmLabel="Discard and continue"
         destructive
+        returnFocusRef={navigationOpener.ref}
         onConfirm={() => {
+          // The dialog still traps focus while the next stage renders, so its heading
+          // takes focus when the dialog has closed.
+          navigationOpener.remember(() => headingRef.current);
           const navigation = pendingNavigation;
           setPendingNavigation(null);
           setSourceEditorOpen(false);
@@ -590,6 +744,7 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
       <ConfirmDialog
         open={confirmLiveMode}
         onOpenChange={setConfirmLiveMode}
+        returnFocusRef={liveModeOpener.ref}
         title="Switch to a live workspace?"
         description="This disables Synthetic demo and removes its isolated sample activity. Configured live sources and provider credentials remain in place."
         confirmLabel="Disable demo and switch"
@@ -613,7 +768,7 @@ function StepButton({
   item: (typeof STEPS)[number];
   index: number;
   state: StepState;
-  onClick: () => void;
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
   disabled: boolean;
 }) {
   const Icon = item.icon;
@@ -663,36 +818,9 @@ function StepButton({
   );
 }
 
-function StepHeading({
-  headingRef,
-  eyebrow,
-  title,
-  description,
-}: {
-  headingRef: React.RefObject<HTMLHeadingElement>;
-  eyebrow: string;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="mb-8 border-b border-border pb-6">
-      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">{eyebrow}</p>
-      <h1
-        ref={headingRef}
-        tabIndex={-1}
-        className="mt-2 text-2xl font-semibold tracking-tight text-foreground outline-none sm:text-3xl"
-      >
-        {title}
-      </h1>
-      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground sm:text-base">
-        {description}
-      </p>
-    </div>
-  );
-}
-
 function WorkspaceStep({
   headingRef,
+  modeGroupRef,
   demoMode,
   demoBusy,
   demoError,
@@ -701,6 +829,8 @@ function WorkspaceStep({
   onDemoMode,
 }: {
   headingRef: React.RefObject<HTMLHeadingElement>;
+  /** The workspace-mode radio group: the live-mode confirmation returns focus into it. */
+  modeGroupRef: React.RefObject<HTMLDivElement>;
   demoMode: boolean;
   demoBusy: boolean;
   demoError: unknown;
@@ -713,12 +843,12 @@ function WorkspaceStep({
     <div>
       <StepHeading
         headingRef={headingRef}
-        eyebrow="Workspace"
         title="How do you want to start?"
         description="Use realistic synthetic activity to learn the Console, or connect your own systems for live triage. Demo data stays isolated and can be removed at any time."
       />
 
       <RadioGroup
+        ref={modeGroupRef}
         value={mode}
         onValueChange={(value) => void onDemoMode(value === 'demo')}
         disabled={transitionBusy}
@@ -854,59 +984,153 @@ function SourcesStep({
   const [adding, setAdding] = React.useState(false);
   const [editing, setEditing] = React.useState<SourceInstance | null>(null);
   const [error, setError] = React.useState<unknown>(null);
+  // Make primary in flight on this row (its Remove waits for it: see the row's Remove).
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = React.useState<SourceInstance | null>(null);
+  // The remove confirmation is an async confirm (ConfirmDialog `busy`): it stays open while
+  // the source is deleted and closes once the delete is done; a failed delete stays in it.
+  const [removing, setRemoving] = React.useState(false);
+  const [removeError, setRemoveError] = React.useState<unknown>(null);
+  // A removal or Make primary that went through while the list read after it failed: the
+  // page says what happened, never that the change was not applied, and offers to reload
+  // the list. The title names the change.
+  const [changedListError, setChangedListError] = React.useState<unknown>(null);
+  const [changedListTitle, setChangedListTitle] = React.useState('');
+  // Sources the server has confirmed removed, against the list they were removed from.
+  // Their rows leave with the dialog instead of when the list reloads (or never, if that
+  // read fails), so the list never offers a source that is gone. The next list replaces it.
+  const [removed, setRemoved] = React.useState<{
+    from: SourceInstance[];
+    ids: ReadonlySet<string>;
+  } | null>(null);
+  const sourcesRef = React.useRef(sources);
+  sourcesRef.current = sources;
+  // Says a removal worked: the dialog closes and focus moves on, which says nothing itself.
+  const [removedNote, setRemovedNote] = React.useState('');
+  // The remove confirmation opens from a row's Remove button. Cancel hands focus back to
+  // it; a removal takes the row away as the dialog closes, and focus then moves to the
+  // next row's Remove, else the list heading (SPEC §3.3).
+  const removeOpener = useReturnFocus();
+  const listRef = React.useRef<HTMLDivElement>(null);
   const editorOpen = adding || Boolean(editing);
-  const enabledSourceCount = sources.filter((source) => source.enabled !== false).length;
-  const disabledSourceCount = sources.length - enabledSourceCount;
+  const listed = React.useMemo(
+    () =>
+      removed && removed.from === sources
+        ? sources.filter((source) => !removed.ids.has(source.id))
+        : sources,
+    [removed, sources],
+  );
+  const enabledSourceCount = listed.filter((source) => source.enabled !== false).length;
+  const disabledSourceCount = listed.length - enabledSourceCount;
 
   React.useEffect(() => {
     onEditorStateChange(editorOpen);
     return () => onEditorStateChange(false);
   }, [editorOpen, onEditorStateChange]);
 
+  // Read the list again. A read that works answers any earlier list error.
+  const refreshList = async () => {
+    await onChanged();
+    setChangedListError(null);
+  };
+
+  /** Retry the list read from an error panel: it clears when the list loads. */
+  const retryList = async (show: (nextError: unknown) => void) => {
+    try {
+      await refreshList();
+      show(null);
+    } catch (nextError) {
+      show(nextError);
+    }
+  };
+
   const reload = async () => {
     setAdding(false);
     setEditing(null);
     setError(null);
     try {
-      await onChanged();
+      await refreshList();
     } catch (nextError) {
       setError(nextError);
     }
   };
 
   const setPrimary = async (source: SourceInstance) => {
+    // A Demo overlay row is read-only (B43); its row offers no Make primary.
+    if (source.demo) return;
     setBusyId(source.id);
     setError(null);
     try {
-      await api.upsertSource({
-        id: source.id,
-        source_type: source.source_type,
-        display_name: source.display_name,
-        enabled: source.enabled,
-        is_primary: true,
-        ingest_mode: source.ingest_mode ?? null,
-        config: (source.config as Record<string, unknown>) || {},
-      });
-      await onChanged();
-    } catch (nextError) {
-      setError(nextError);
+      // A failed write says the change was not applied; nothing was saved.
+      const saved = await api
+        .upsertSource({
+          id: source.id,
+          source_type: source.source_type,
+          display_name: source.display_name,
+          enabled: source.enabled,
+          is_primary: true,
+          ingest_mode: source.ingest_mode ?? null,
+          config: (source.config as Record<string, unknown>) || {},
+        })
+        .catch((nextError: unknown) => {
+          setError(nextError);
+          return null;
+        });
+      if (!saved) return;
+      // The server answers 200 even when it keeps the source non-primary (B46), so the
+      // returned list decides what the toast says.
+      if (primaryConfirmed(saved, source.id)) {
+        toast.success(
+          `${source.display_name || properName(source.source_type)} is now the primary source`,
+        );
+      } else {
+        toast.warning(PRIMARY_PULL_ONLY);
+      }
+      try {
+        await refreshList();
+      } catch (nextError) {
+        // The write went through: say only that the list did not reload.
+        setChangedListTitle('The list didn’t refresh');
+        setChangedListError(nextError);
+      }
     } finally {
       setBusyId(null);
     }
   };
 
   const remove = async (source: SourceInstance) => {
-    setBusyId(source.id);
+    if (source.demo) return;
+    setRemoving(true);
+    setRemoveError(null);
     setError(null);
     try {
       await api.deleteSource(source.id);
-      await onChanged();
     } catch (nextError) {
-      setError(nextError);
-    } finally {
-      setBusyId(null);
+      // Nothing was removed: the confirmation stays open with the reason, so Remove
+      // source tries again and Cancel keeps the source.
+      setRemoveError(nextError);
+      setRemoving(false);
+      return;
+    }
+    // The delete is done, so the confirmation closes now and the row leaves with it; the
+    // list then reloads outside the dialog, which a slow read cannot hold open.
+    // `expectRemoval` is the backstop for a row that leaves only when the list reloads (a
+    // list read from before the delete lands after it and still holds the row): focus that
+    // fell to the page body then moves to the next row's Remove, else the list heading.
+    removeOpener.expectRemoval();
+    const from = sourcesRef.current;
+    setRemoved((previous) => ({
+      from,
+      ids: new Set([...(previous && previous.from === from ? previous.ids : []), source.id]),
+    }));
+    setRemovedNote(`${source.display_name || properName(source.source_type)} removed.`);
+    setRemoving(false);
+    setPendingDelete(null);
+    try {
+      await refreshList();
+    } catch (nextError) {
+      setChangedListTitle('The source was removed, but the list didn’t refresh');
+      setChangedListError(nextError);
     }
   };
 
@@ -914,20 +1138,35 @@ function SourcesStep({
     <div>
       <StepHeading
         headingRef={headingRef}
-        eyebrow="Data sources"
         title="Connect the systems you already use"
         description="Add pull, push, queue, or object-store sources. Agentic SOC normalizes each record into the same internal event model before correlation and triage."
       />
 
       {demoMode ? (
-        <Alert variant="info" className="mb-6">
-          <FlaskConical className="h-4 w-4" aria-hidden />
-          <AlertTitle>Optional in demo</AlertTitle>
-          <AlertDescription>
-            Sample activity is already seeded. Add a real source only when you are ready to
-            test an integration.
-          </AlertDescription>
-        </Alert>
+        <p className="mb-6 flex items-start gap-2 text-sm text-muted-foreground">
+          <FlaskConical className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          <span>
+            Optional in Demo mode: sample activity is already seeded. Add a real source when
+            you are ready to test an integration.
+          </span>
+        </p>
+      ) : null}
+
+      {/* An explicit aria-live keeps this line exposed while the confirmation's exit
+          animation runs: the modal's aria-hidden pass spares only [aria-live] nodes. */}
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {removedNote}
+      </p>
+
+      {changedListError ? (
+        <LoadError
+          error={changedListError}
+          title={changedListTitle}
+          fallback="Reload the list to see the current sources."
+          retryLabel="Reload list"
+          className="mb-6"
+          onRetry={() => void retryList(setChangedListError)}
+        />
       ) : null}
 
       {error ? (
@@ -936,7 +1175,7 @@ function SourcesStep({
           title="Couldn’t update data sources"
           fallback="The source change was not applied."
           className="mb-6"
-          onRetry={() => void onChanged()}
+          onRetry={() => void retryList(setError)}
         />
       ) : null}
 
@@ -954,11 +1193,11 @@ function SourcesStep({
       ) : null}
 
       {connectors.length && !editorOpen ? (
-        <div>
+        <div ref={listRef}>
           <div className="flex flex-wrap items-center justify-between gap-3 pb-4">
             <div>
               <h2 className="text-base font-semibold text-foreground">
-                {sources.length
+                {listed.length
                   ? `${enabledSourceCount} enabled${
                       disabledSourceCount ? ` · ${disabledSourceCount} disabled` : ''
                     }`
@@ -973,17 +1212,16 @@ function SourcesStep({
             </Button>
           </div>
 
-          {sources.length ? (
+          {listed.length ? (
             <div className="divide-y divide-border border-y border-border">
-              {sources.map((source) => {
+              {listed.map((source) => {
                 const manifest = connectors.find(
                   (connector) => connector.source_type === source.source_type,
                 );
                 const secretCount = source.configured_secrets?.length || 0;
-                const canBePrimary =
-                  source.ingest_mode === 'pull' ||
-                  source.ingest_mode?.startsWith('pull_') ||
-                  manifest?.ingest_modes?.includes('pull');
+                // Only a pull source can be primary, read from the source's own mode, not
+                // from what its connector could do (B46).
+                const offerPrimary = !source.is_primary && canBePrimary(source, manifest);
                 return (
                   <div
                     key={source.id}
@@ -995,46 +1233,69 @@ function SourcesStep({
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="truncate font-semibold text-foreground">
-                          {source.display_name || manifest?.display_name || source.source_type}
+                          {source.display_name || manifest?.display_name || properName(source.source_type)}
                         </span>
                         {source.is_primary ? <Badge variant="info">Primary</Badge> : null}
                         {source.enabled === false ? <Badge variant="outline">Disabled</Badge> : null}
                       </div>
                       <p className="mt-1 truncate text-xs text-muted-foreground">
-                        {humanizeToken(source.source_type)}
-                        {source.ingest_mode ? ` · ${humanizeToken(source.ingest_mode)}` : ''}
+                        {properName(source.source_type)}
+                        {source.ingest_mode ? ` · ${properName(source.ingest_mode)}` : ''}
                         {secretCount ? ` · ${secretCount} secret${secretCount === 1 ? '' : 's'} configured` : ''}
                       </p>
                     </div>
-                    <div className="flex shrink-0 flex-wrap items-center gap-1">
-                      {!source.is_primary && canBePrimary ? (
+                    {source.demo ? (
+                      // A Demo overlay row is read-only (B43): Demo Mode owns it, and a
+                      // write to it would land in the live configuration.
+                      <p className="inline-flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                        <ShieldCheck className="h-4 w-4" aria-hidden /> {DEMO_MANAGED_REASON}
+                      </p>
+                    ) : (
+                      <div className="flex shrink-0 flex-wrap items-center gap-1">
+                        {offerPrimary ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => void setPrimary(source)}
+                            disabled={busyId === source.id}
+                          >
+                            {busyId === source.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                            ) : (
+                              <Star className="h-4 w-4" aria-hidden />
+                            )}
+                            Make primary
+                          </Button>
+                        ) : null}
+                        <Button variant="ghost" size="sm" onClick={() => setEditing(source)}>
+                          <Pencil className="h-4 w-4" aria-hidden /> Edit
+                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => void setPrimary(source)}
-                          disabled={busyId === source.id}
+                          // Neutral at rest; red only on hover, focus and in the confirm dialog.
+                          className="hover:text-critical-text focus-visible:text-critical-text aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                          onClick={(event) => {
+                            // Make primary on this row writes the whole source, and that write
+                            // creates a source that is missing: a removal racing it could be
+                            // undone. Remove waits for it; the open dialog covers the removal.
+                            if (busyId === source.id) return;
+                            removeOpener.remember(event.currentTarget, {
+                              peers: () => listRef.current?.querySelectorAll('[data-wizard-source-remove]') ?? [],
+                              empty: () => headingOf(listRef.current),
+                            });
+                            setRemoveError(null);
+                            setPendingDelete(source);
+                          }}
+                          // Busy, not disabled, like the confirm's buttons: it stays in the tab
+                          // order while Make primary runs.
+                          aria-disabled={busyId === source.id || undefined}
+                          data-wizard-source-remove=""
                         >
-                          {busyId === source.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                          ) : (
-                            <Star className="h-4 w-4" aria-hidden />
-                          )}
-                          Make primary
+                          <Trash2 className="h-4 w-4" aria-hidden /> Remove
                         </Button>
-                      ) : null}
-                      <Button variant="ghost" size="sm" onClick={() => setEditing(source)}>
-                        <Pencil className="h-4 w-4" aria-hidden /> Edit
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-critical-text"
-                        onClick={() => setPendingDelete(source)}
-                        disabled={busyId === source.id}
-                      >
-                        <Trash2 className="h-4 w-4" aria-hidden /> Remove
-                      </Button>
-                    </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1060,321 +1321,61 @@ function SourcesStep({
       {connectors.length && editorOpen ? (
         <section className="border-t border-border pt-6" aria-label="Source editor">
           <div className="mb-6">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-              {editing ? 'Edit source' : 'New source'}
-            </p>
+            <p className="text-sm text-muted-foreground">{editing ? 'Edit source' : 'New source'}</p>
             <h2 className="mt-1 text-lg font-semibold text-foreground">
               {editing
-                ? editing.display_name || humanizeToken(editing.source_type)
+                ? editing.display_name || properName(editing.source_type)
                 : 'Choose and configure a connector'}
             </h2>
           </div>
-          <SourceEditor
-            connectors={connectors}
-            existing={editing || undefined}
-            defaultPrimary={sources.length === 0}
-            onSaved={() => void reload()}
-            onCancel={() => void reload()}
-          />
+          <React.Suspense fallback={<LoadingState label="Loading the source editor" layout="panel" />}>
+            <SourceEditor
+              connectors={connectors}
+              existing={editing || undefined}
+              defaultPrimary={listed.length === 0}
+              onSaved={(notice) => {
+                // What the server confirmed; a real source saved in Demo Mode is not listed.
+                if (notice.tone === 'warning') toast.warning(notice.text);
+                else toast.success(notice.text);
+                void reload();
+              }}
+              onCancel={() => void reload()}
+            />
+          </React.Suspense>
         </section>
       ) : null}
 
       <ConfirmDialog
         open={Boolean(pendingDelete)}
         onOpenChange={(open) => {
-          if (!open) setPendingDelete(null);
+          if (open) return;
+          setPendingDelete(null);
+          setRemoveError(null);
         }}
+        busy={removing}
         title="Remove this source?"
+        returnFocusRef={removeOpener.ref}
         description={
           pendingDelete
-            ? `“${pendingDelete.display_name || pendingDelete.source_type}” and its configuration${
+            ? `“${pendingDelete.display_name || properName(pendingDelete.source_type)}” and its configuration${
                 pendingDelete.configured_secrets?.length ? ', including stored secrets,' : ''
               } will be deleted. This can’t be undone.`
             : ''
         }
         destructive
-        confirmLabel="Remove source"
+        confirmLabel={removing ? 'Removing source' : 'Remove source'}
         onConfirm={() => {
-          const source = pendingDelete;
-          setPendingDelete(null);
-          if (source) void remove(source);
+          if (pendingDelete) void remove(pendingDelete);
         }}
-      />
-    </div>
-  );
-}
-
-interface KeyField {
-  key: keyof SecretsUpdate;
-  label: string;
-  description: string;
-}
-
-const KEY_FIELDS: KeyField[] = [
-  {
-    key: 'openai_api_key',
-    label: 'OpenAI API key',
-    description: 'Default runtime for GPT-5.6 Luna completion roles and vector embeddings.',
-  },
-  {
-    key: 'anthropic_api_key',
-    label: 'Anthropic API key',
-    description: 'Optional alternate runtime for Claude models.',
-  },
-  {
-    key: 'embedding_api_key',
-    label: 'Embedding API key',
-    description: 'Optional. Leave blank to reuse the OpenAI key for knowledge retrieval.',
-  },
-];
-
-function KeysStep({
-  headingRef,
-  configured,
-  values,
-  demoMode,
-  error,
-  notice,
-  onChange,
-}: {
-  headingRef: React.RefObject<HTMLHeadingElement>;
-  configured: ConfiguredStatus;
-  values: Record<string, string>;
-  demoMode: boolean;
-  error: unknown;
-  notice: string | null;
-  onChange: (key: string, value: string) => void;
-}) {
-  const anyConfigured =
-    Boolean(configured.anthropic_api_key) || Boolean(configured.openai_api_key);
-  return (
-    <div>
-      <StepHeading
-        headingRef={headingRef}
-        eyebrow="AI runtime"
-        title="Connect the models that investigate cases"
-        description="Add at least one provider for live reasoning. Model selection, budgets, and routing stay configurable in Settings after launch."
-      />
-
-      <Alert variant={demoMode ? 'info' : anyConfigured ? 'success' : 'warning'} className="mb-6">
-        {demoMode ? (
-          <FlaskConical className="h-4 w-4" aria-hidden />
-        ) : anyConfigured ? (
-          <CheckCircle2 className="h-4 w-4" aria-hidden />
-        ) : (
-          <TriangleAlert className="h-4 w-4" aria-hidden />
-        )}
-        <AlertTitle>
-          {demoMode
-            ? 'Mock runtime available'
-            : anyConfigured
-              ? 'Live provider configured'
-              : 'A live provider is recommended'}
-        </AlertTitle>
-        <AlertDescription>
-          {demoMode
-            ? 'Demo investigations run against the deterministic mock runtime at no inference cost. A live key is optional.'
-            : anyConfigured
-              ? 'New credentials replace only the provider you update; existing secret values are never shown.'
-              : 'You can continue without a key, but live investigations will use the limited mock runtime until a provider is added.'}
-        </AlertDescription>
-      </Alert>
-
-      <div className="divide-y divide-border border-y border-border">
-        {KEY_FIELDS.map((field) => (
-          <div key={field.key} className="py-5">
-            <SecretField
-              label={field.label}
-              description={`${field.description} Stored write-only; the Console reports only whether it is configured.`}
-              configured={Boolean(configured[field.key])}
-              value={values[field.key] || ''}
-              onChange={(value) => onChange(field.key, value)}
-            />
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-4 flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
-        <LockKeyhole className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-        <p>Typed keys save automatically whenever you leave this step.</p>
-      </div>
-
-      {notice ? (
-        <Alert variant="success" className="mt-6">
-          <CheckCircle2 className="h-4 w-4" aria-hidden />
-          <AlertTitle>Keys saved</AlertTitle>
-          <AlertDescription>{notice}</AlertDescription>
-        </Alert>
-      ) : null}
-      {error ? (
-        <LoadError
-          error={error}
-          title="Couldn’t save provider keys"
-          fallback="The keys were not saved. Check the connection and try again."
-          className="mt-6"
-        />
-      ) : null}
-    </div>
-  );
-}
-
-type ReadinessState = 'ready' | 'warning' | 'optional';
-
-function ReviewStep({
-  headingRef,
-  demoMode,
-  sources,
-  configured,
-}: {
-  headingRef: React.RefObject<HTMLHeadingElement>;
-  demoMode: boolean;
-  sources: SourceInstance[];
-  configured: ConfiguredStatus;
-}) {
-  const hasProvider =
-    Boolean(configured.anthropic_api_key) || Boolean(configured.openai_api_key);
-  const enabledSources = sources.filter((source) => source.enabled !== false);
-  const disabledSourceCount = sources.length - enabledSources.length;
-  const primary = enabledSources.find((source) => source.is_primary);
-  const fullLive = !demoMode && enabledSources.length > 0 && hasProvider;
-  const heading = demoMode
-    ? 'Demo workspace is ready'
-    : fullLive
-      ? 'Ready for live triage'
-      : 'Ready with limited capabilities';
-  const description = demoMode
-    ? 'Sample cases and the mock runtime are available as soon as you launch.'
-    : fullLive
-      ? 'Your source and AI runtime are connected. Polling and triage can begin after launch.'
-      : 'You can launch now, but the Console will remain partially configured until the warnings below are resolved.';
-
-  return (
-    <div>
-      <StepHeading
-        headingRef={headingRef}
-        eyebrow="Review & launch"
-        title={heading}
-        description={description}
-      />
-
-      <div className="divide-y divide-border border-y border-border">
-        <ReadinessRow
-          icon={demoMode ? FlaskConical : ServerCog}
-          title="Workspace"
-          state="ready"
-          detail={demoMode ? 'Synthetic demo · isolated sample activity' : 'Live environment'}
-        />
-        <ReadinessRow
-          icon={Database}
-          title="Data sources"
-          state={enabledSources.length ? 'ready' : demoMode ? 'optional' : 'warning'}
-          detail={
-            enabledSources.length
-              ? `${enabledSources.length} enabled source${
-                  enabledSources.length === 1 ? '' : 's'
-                }${disabledSourceCount ? ` · ${disabledSourceCount} disabled` : ''}${
-                  primary ? ` · primary: ${primary.display_name || primary.source_type}` : ''
-                }`
-              : demoMode
-                ? `${
-                    disabledSourceCount
-                      ? `No enabled sources · ${disabledSourceCount} configured but disabled · `
-                      : ''
-                  }Optional in demo · sample activity is already seeded`
-                : disabledSourceCount
-                  ? `No enabled sources · ${disabledSourceCount} configured but disabled`
-                  : 'No source configured · live telemetry will not be ingested'
-          }
-        />
-        <ReadinessRow
-          icon={KeyRound}
-          title="AI runtime"
-          state={hasProvider ? 'ready' : demoMode ? 'optional' : 'warning'}
-          detail={
-            hasProvider
-              ? `Configured: ${[
-                  configured.anthropic_api_key ? 'Anthropic' : null,
-                  configured.openai_api_key ? 'OpenAI' : null,
-                ]
-                  .filter(Boolean)
-                  .join(', ')}`
-              : demoMode
-                ? 'Deterministic mock runtime · no inference cost'
-                : 'No provider configured · mock runtime only'
-          }
-        />
-        <div className="flex items-start gap-4 py-6">
-          <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-surface text-primary">
-            <Sparkles className="h-5 w-5" aria-hidden />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold text-foreground">Automation posture</h2>
-                <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-                  Enabled by default. Tunes investigation routing and groups related cases.
-                  Close and escalation decisions remain deterministic. Setup does not change
-                  an existing automation policy.
-                </p>
-              </div>
-              <Badge variant="success">
-                <Check className="h-3 w-3" aria-hidden /> On by default
-              </Badge>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-6 flex items-start gap-3 rounded-md border border-border bg-surface/50 px-4 py-4">
-        <Rocket className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
-        <div>
-          <p className="text-sm font-medium text-foreground">Launch is non-destructive</p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Re-run this setup from Settings at any time. Existing sources and credentials
-            remain in place unless you explicitly change or remove them.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ReadinessRow({
-  icon: Icon,
-  title,
-  detail,
-  state,
-}: {
-  icon: LucideIcon;
-  title: string;
-  detail: React.ReactNode;
-  state: ReadinessState;
-}) {
-  const status =
-    state === 'ready' ? 'Ready' : state === 'warning' ? 'Needs attention' : 'Optional';
-  return (
-    <div className="flex items-start gap-4 py-5">
-      <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-surface text-muted-foreground">
-        <Icon className="h-5 w-5" aria-hidden />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-          <Badge
-            variant={state === 'ready' ? 'success' : state === 'warning' ? 'warning' : 'outline'}
-          >
-            {state === 'ready' ? (
-              <Check className="h-3 w-3" aria-hidden />
-            ) : state === 'warning' ? (
-              <TriangleAlert className="h-3 w-3" aria-hidden />
-            ) : (
-              <Circle className="h-2.5 w-2.5" aria-hidden />
-            )}
-            {status}
-          </Badge>
-        </div>
-        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{detail}</p>
-      </div>
+      >
+        {removeError ? (
+          <LoadError
+            error={removeError}
+            title="Couldn’t remove the source"
+            fallback="The source was not removed."
+          />
+        ) : null}
+      </ConfirmDialog>
     </div>
   );
 }

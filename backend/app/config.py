@@ -16,15 +16,39 @@ This module defines the schema and the loader for the secret tier. The preferenc
 
 from __future__ import annotations
 
+import logging
+import math
 import re
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Literal
+from typing import Any, Callable, ClassVar, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .constants import CorrelationMode, EntityStrategy, EntityType, IndexRole, IngestMode, SourceType
-from .utils import dotted_get, iso_now, slug
+from .evidence_fields import (
+    DEFAULT_EVIDENCE_FIELDS,
+    DEFAULT_EVIDENCE_MAX_CHARS_PER_EVENT,
+    EVIDENCE_WILDCARD,
+    MAX_EVIDENCE_MAX_CHARS_PER_EVENT,
+    clamp_evidence_budget,
+    is_wildcard,
+    normalise_evidence_fields,
+)
+# Aliased so the module-level resolver is unambiguous next to the identically
+# named ``Preferences.free_text_search_fields`` method that wraps it.
+from .evidence_fields import free_text_search_fields as _resolve_free_text_search_fields
+from .rbac.policy import (
+    RBAC_GRANTS_VERSION,
+    grants_version_is_legacy,
+    normalise_custom_role,
+    normalise_role_grant_map,
+    normalise_role_overrides,
+    rbac_layers_name_round14_actions,
+)
+from .utils import dotted_get, iso_now, new_id, slug
+
+logger = logging.getLogger("tlsoc.config")
 
 # The provider names the per-role ModelConfig may carry. Widened in Round 3 Wave 2b to
 # make the cloud-hosted providers (azure/bedrock/vertex) + any OpenAI-compatible
@@ -143,6 +167,24 @@ class Secrets(BaseSettings):
     # ``Auth-Key`` header; unset keeps the keyless public-endpoint behaviour unchanged.
     honeypot_access_key: str | None = None
     abusech_auth_key: str | None = None
+    # --- Round 11 enrichment expansion keys (ALL optional + defaulted None, SECRET
+    # tier — same contract as above: env / in-memory only, never persisted, never
+    # returned; the UI sees a configured-boolean only). Each pairs with an
+    # ``EnrichmentConfig.use_*`` toggle; the keyless Round-11 providers
+    # (circl hashlookup / dshield / onionoo / spamhaus / cymru mhr / robtex / crt.sh)
+    # need no key here. ---
+    crowdsec_api_key: str | None = None
+    google_safebrowsing_api_key: str | None = None
+    ipqualityscore_api_key: str | None = None
+    ipdata_api_key: str | None = None
+    apivoid_api_key: str | None = None
+    maltiverse_api_key: str | None = None
+    securitytrails_api_key: str | None = None
+    criminalip_api_key: str | None = None
+    netlas_api_key: str | None = None
+    hybrid_analysis_api_key: str | None = None
+    metadefender_api_key: str | None = None
+    emailrep_api_key: str | None = None
 
     # --- Embeddings (defaults to the OpenAI key when blank) ---
     embedding_api_key: str | None = None
@@ -168,6 +210,11 @@ class Secrets(BaseSettings):
     update_supervisor_preflight_timeout_seconds: float = Field(
         default=180.0, ge=30.0, le=300.0
     )
+
+    # Private, server-only output directory for durable Jobs artifacts. The API
+    # persists opaque artifact ids, never host paths, and derives every download
+    # path beneath this root with containment/symlink checks.
+    jobs_artifact_dir: str = "./data/job-artifacts"
 
     # --- Auth (Wave 2; OPTIONAL — default OFF so the no-auth "old version" is the
     # out-of-the-box behaviour and fully available). Flip ``auth_enabled`` to require
@@ -203,6 +250,18 @@ class Secrets(BaseSettings):
     rate_limit_enabled: bool = False
     rate_limit_capacity: int = 120
     rate_limit_refill_per_second: float = 2.0
+    # --- Audit client address (Round 14 SPEC §4.5.3, E15). The proxies whose
+    # ``X-Forwarded-For`` header the audit log believes: a comma list of host names,
+    # IP addresses or CIDR ranges (env ``TRUSTED_PROXIES``). Only when the socket peer
+    # is one of them is the rightmost forwarded entry that is not itself a trusted
+    # proxy recorded as the client address (at most the last 32 entries are read);
+    # otherwise the peer itself is recorded, whatever the caller sent. Host names are
+    # resolved at startup and every 5 minutes: a name that has never resolved is
+    # ignored, and a name that stops resolving keeps its last addresses for 3 rounds.
+    # The default is the bundled Web UI service, so the Compose stack needs no setting; a
+    # deployment behind another proxy adds that proxy here. Metadata for the audit
+    # trail only, never an authorization input.
+    trusted_proxies: str = "tlsoc-webui"
 
     # When true the backend persists to Elasticsearch; when ES is unreachable it
     # automatically falls back to an in-memory store so the spine still runs.
@@ -384,6 +443,19 @@ class Secrets(BaseSettings):
             "xforce_api_password": bool(self.xforce_api_password),
             "urlscan_api_key": bool(self.urlscan_api_key),
             "hibp_api_key": bool(self.hibp_api_key),
+            # Round 11 enrichment expansion keys (configured-booleans only).
+            "crowdsec_api_key": bool(self.crowdsec_api_key),
+            "google_safebrowsing_api_key": bool(self.google_safebrowsing_api_key),
+            "ipqualityscore_api_key": bool(self.ipqualityscore_api_key),
+            "ipdata_api_key": bool(self.ipdata_api_key),
+            "apivoid_api_key": bool(self.apivoid_api_key),
+            "maltiverse_api_key": bool(self.maltiverse_api_key),
+            "securitytrails_api_key": bool(self.securitytrails_api_key),
+            "criminalip_api_key": bool(self.criminalip_api_key),
+            "netlas_api_key": bool(self.netlas_api_key),
+            "hybrid_analysis_api_key": bool(self.hybrid_analysis_api_key),
+            "metadefender_api_key": bool(self.metadefender_api_key),
+            "emailrep_api_key": bool(self.emailrep_api_key),
             "embedding_api_key": bool(self.embedding_key()),
             # Wave 2: configured-booleans only (never the values).
             "mfa_obfuscation_key": bool(self.mfa_obfuscation_key),
@@ -556,9 +628,33 @@ class RiskWeights(BaseModel):
 class CapsConfig(BaseModel):
     """Per-case caps / kill switches (Section 6.3 #4)."""
 
-    max_tool_calls: int = 8
-    max_tokens: int = 20000
-    timeout_seconds: int = 120
+    # BOUNDS (``ge=1``): a zero/negative cap cannot express a working configuration —
+    # it is a silent, $0, INVISIBLE failure, not a stricter policy. ``max_tokens=0``
+    # makes ``CaseBudget.exceeded()`` true at the FIRST loop check, before any model
+    # call, so the run fails to human with zero gateway calls and no error audit row;
+    # ``max_tool_calls=0`` burns the ReAct loop with no evidence gathered. There is
+    # deliberately NO UPPER bound: an upper bound would encode one vendor's hosted-API
+    # latency/context envelope as product policy (§6 agnosticism) and would silently
+    # revert the stored configuration of any deployer already above it.
+    #
+    # An out-of-range value that is ALREADY STORED is REPAIRED (clamped up to the
+    # floor) by ``Preferences._clamp_caps`` before this constraint is ever evaluated,
+    # because both preference loaders answer a validation error by returning a FULL
+    # DEFAULT ``Preferences()`` — and ``Preferences`` is one document that also carries
+    # ``auto_close`` (the policy ``decide()`` consumes), ``rule_catalog`` and
+    # ``sources``. Rejecting instead of repairing would silently revert all of that.
+    max_tool_calls: int = Field(default=8, ge=1)
+    max_tokens: int = Field(default=20000, ge=1)
+    timeout_seconds: int = Field(default=120, ge=1)
+    # The per-MODEL-REQUEST wall-clock bound, in seconds. ``timeout_seconds`` bounds the
+    # WHOLE case; this bounds ONE completion attempt inside it, so a single degraded
+    # request can no longer consume the entire case budget and starve every later step.
+    # It is config rather than a magic number buried in a provider constructor: the
+    # default 60 matches the historical per-client httpx timeout in ``llm/providers.py``
+    # so an unset value is byte-for-byte the behaviour that shipped before. (The OpenAI
+    # Flex service tier keeps its own, longer, published client timeout — this knob is a
+    # ceiling applied by the caller, never a floor raised under a provider.)
+    request_timeout_seconds: int = Field(default=60, ge=1)
     kill_switch: bool = False  # global emergency stop for all investigations
     # Round 4 (additive): the fan-out concurrency ceiling — how many investigations may
     # run in parallel behind the pipeline semaphore. Default 3 preserves a modest
@@ -578,6 +674,25 @@ class CapsConfig(BaseModel):
     # human-throughput band). The ``autopilot_profile`` dial scales it (conservative 10 /
     # balanced 25 / aggressive 100). Never feeds #3.
     max_auto_investigations_per_tick: int = Field(default=25, ge=1)
+
+
+def _caps_minimums() -> dict[str, int]:
+    """The ``ge=`` floor declared on each :class:`CapsConfig` field, read back OFF the
+    model rather than restated as a second list.
+
+    Derived (not hardcoded) so the repair path in ``Preferences._clamp_caps`` can never
+    drift from the constraints it repairs against: adding, changing or removing a floor
+    on ``CapsConfig`` automatically changes what gets clamped."""
+    out: dict[str, int] = {}
+    for name, field in CapsConfig.model_fields.items():
+        for meta in field.metadata:
+            ge = getattr(meta, "ge", None)
+            if ge is not None:
+                out[name] = int(ge)
+    return out
+
+
+CAPS_MINIMUMS: dict[str, int] = _caps_minimums()
 
 
 class FpAutoCloseConfig(BaseModel):
@@ -632,18 +747,24 @@ class AutoClosePolicy(BaseModel):
     )
 
 
-class PlaybookConfig(BaseModel):
-    """Markdown playbook system. When ``enabled``, the deterministically-selected
-    playbook for a cluster is injected as TRUSTED operator procedure into the
-    investigator (it can only RECOMMEND; code/settings decide). With ``enabled``
-    False, or no playbook matching, the investigator uses the generic prompt
-    exactly as before. ``dir`` overrides the default ``backend/playbooks`` location;
-    ``llm_select`` is reserved for an optional LLM-assisted selector (off by default —
-    selection is rule-based)."""
+class LegacyProcedureConfig(BaseModel):
+    """The retired procedure section (``Preferences.playbooks``), accepted on load
+    for one release (Round 14 SPEC §4.10.19). It is no longer a setting and is never
+    shown in Settings (``api.settings_schema`` hides it).
+
+    * ``enabled`` is a read-only MIRROR of ``runbooks.investigator_guidance``:
+      :meth:`Preferences._mirror_retired_runbook_keys` rewrites it on every
+      validation, so code that still reads the old key sees the new truth. A stored
+      ``false`` written before Round 14 is mapped ONCE onto
+      ``investigator_guidance=false`` (:func:`_map_retired_runbook_keys`).
+    * ``dir`` names the retired directory of operator procedure files. It is kept
+      read-only for the one-shot runbook migration (``engine.runbook_migration``),
+      which imports its ``*.md`` files once; afterwards it is ignored, and startup
+      logs a warning while it is still set.
+    * The retired ``llm_select`` key is dropped on load (it never had an effect)."""
 
     enabled: bool = True
     dir: str | None = None
-    llm_select: bool = False
 
 
 class CaseIdFormatConfig(BaseModel):
@@ -1093,9 +1214,87 @@ class EnrichmentConfig(BaseModel):
     # Project Honeypot http:BL (key-gated; needs ``Secrets.honeypot_access_key``).
     # Default OFF — the operator opts in after configuring the access key.
     use_honeypot: bool = False
+    # --- Round 11 enrichment expansion (ALL additive + defaulted; each toggle
+    # enables one provider; keys live in ``Secrets``). Keyless + quota-safe ones
+    # default ON; keyless-but-caveated ones (Spamhaus/Cymru need the host's OWN
+    # resolver — public resolvers are refused; Robtex/crt.sh can be slow) default
+    # OFF; every key-gated provider defaults OFF. ---
+    use_circl_hashlookup: bool = True      # keyless (known-good hash lookup)
+    use_dshield: bool = True               # keyless (SANS ISC sensor sightings)
+    use_onionoo: bool = True               # keyless (Tor relay/exit context)
+    use_spamhaus: bool = False             # keyless DNSBL; needs own resolver
+    use_cymru_mhr: bool = False            # keyless DNS hash lookup; needs own resolver
+    use_robtex: bool = False               # keyless passive-DNS context (slow free tier)
+    use_crt_sh: bool = False               # keyless cert-transparency context (slow)
+    use_crowdsec: bool = False
+    use_google_safebrowsing: bool = False
+    use_ipqualityscore: bool = False
+    use_ipdata: bool = False
+    use_apivoid: bool = False
+    use_maltiverse: bool = False
+    use_securitytrails: bool = False
+    use_criminalip: bool = False
+    use_netlas: bool = False
+    use_hybrid_analysis: bool = False
+    use_metadefender: bool = False
+    use_emailrep: bool = False
     # When True, a later wave FUSES the per-provider results into one normalised
     # reputation score (instead of using each provider in isolation). Default OFF.
     fusion_enabled: bool = False
+
+
+class UnconfirmedPrecedentConfig(BaseModel):
+    """Compounding guards for the LOWER-TRUST ``model_unconfirmed`` precedent tier.
+
+    A fully autonomous deployment can never satisfy the analyst-confirmed gate
+    (``engine/analyst_outcomes.analyst_confirmed_outcome``): auto-close depends on
+    precedent, precedent depends on analyst labels, and analyst labels only exist if
+    somebody works a queue the product exists to keep empty.  The escape hatch is a
+    SEPARATE, explicitly weaker tier — the agent's own unreviewed closes, labelled as
+    such — NOT a loosening of that gate.
+
+    The failure mode this block exists to prevent is the agent's own drift being fed
+    back to it as evidence.  No single guard is sufficient, so four independent ones
+    compose (every one is individually disable-able, and all of them are inert while
+    ``RagConfig.use_unconfirmed_resolved_cases`` is False):
+
+    * ``min_confidence`` — a low-confidence auto-close is exactly the judgement most
+      likely to be wrong, and it is the cheapest thing to exclude.  High confidence is
+      not accuracy, so this is a floor, never a warrant.
+    * ``min_recurrence`` — one auto-close is an anecdote; the same (entity-type, rule
+      set, outcome) pattern closed the same way N times is at least a stable, auditable
+      regularity.  This is what stops ONE hallucinated close from becoming quotable
+      precedent.  Recurrence is counted inside the bounded scan window only.
+    * ``max_age_days`` — unconfirmed precedent is a PROVISIONAL belief that decays.  If
+      it mattered, an analyst should have confirmed it by now (at which point it is
+      promoted to the confirmed tier, which never ages out); if nobody did, the
+      environment has probably moved on.  Enforced both at projection and at retrieval,
+      so a chunk already in the vector store also goes quiet on schedule.
+    * ``max_context_share`` — a hard cap on the FRACTION of a retrieval that may be the
+      model's own prior output, so a run can never be dominated by an echo of itself.
+
+    ``rank_penalty`` additionally demotes unconfirmed chunks in the blended ranking, and
+    ``max_items`` bounds how much unconfirmed precedent the projection may hold at all.
+
+    None of this touches the deterministic close/escalate decision (#3): precedent is
+    retrieved context for the investigator, and it stays UNTRUSTED-fenced (#9).
+    """
+
+    # Minimum MODEL confidence on the auto-closed case before it may be precedent.
+    min_confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    # How many times the same (entity_type, rule set, outcome) pattern must have been
+    # auto-closed the same way before ANY of them is indexed. 1 disables the guard.
+    min_recurrence: int = Field(default=3, ge=1, le=1000)
+    # Age-out horizon, in days, applied to the case's terminal timestamp.
+    max_age_days: int = Field(default=30, ge=1, le=3650)
+    # Upper bound on the FRACTION of one retrieval that may be unconfirmed precedent.
+    # The effective cap is floor(top_k * max_context_share); 0.0 blocks it entirely.
+    max_context_share: float = Field(default=0.34, ge=0.0, le=1.0)
+    # Multiplier applied to an unconfirmed chunk's final ranking score. Confirmed
+    # precedent additionally OUTRANKS unconfirmed unconditionally (tier invariant).
+    rank_penalty: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Bound on how many unconfirmed precedents the projection may hold.
+    max_items: int = Field(default=50, ge=0, le=1000)
 
 
 class RagConfig(BaseModel):
@@ -1104,7 +1303,11 @@ class RagConfig(BaseModel):
     # Minimum cosine similarity a retrieved chunk must clear to be returned.
     # Drops weakly-related noise before it reaches a prompt.
     min_score: float = 0.2
-    use_runbooks: bool = True
+    # Round 14 (SPEC §4.10.18, §4.10.19): retired, replaced by ``runbooks.rag_corpus``.
+    # Accepted on load (a stored ``false`` maps once onto ``rag_corpus=false``) and
+    # kept as a read-only MIRROR of ``runbooks.rag_corpus`` for one release, so code
+    # that still reads it sees the new setting. Hidden from Settings.
+    use_runbooks: bool = Field(default=True, json_schema_extra={"deprecated_alias": True})
     use_mitre: bool = True
     use_resolved_cases: bool = True
     use_suppression_rules: bool = True
@@ -1121,6 +1324,42 @@ class RagConfig(BaseModel):
     # (source="threat_context") in retrieval so they are injected as a TRUSTED fenced
     # block. ``use_resolved_cases`` (above) controls past-case institutional memory.
     use_threat_context: bool = True
+    # --- The LOWER-TRUST precedent tier (default OFF, #10). -------------------------
+    # ``use_resolved_cases`` indexes ONLY analyst-confirmed ground truth. A fully
+    # autonomous deployment produces none of that, so its precedent corpus is
+    # permanently empty. Turning this ON additionally indexes the agent's own
+    # auto-closed cases as a DISTINCT ``trust_class="model_unconfirmed"`` tier: never
+    # promoted to analyst-confirmed, always outranked by it, bounded by the
+    # ``unconfirmed_precedent`` guards below, rendered under a SEPARATE prompt heading
+    # that does not claim analyst provenance, and still UNTRUSTED-fenced (#9).
+    #
+    # Default FALSE so an existing deployment's retrieval is byte-identical (#10). It
+    # requires ``use_resolved_cases`` as well — it is a sub-tier of the precedent
+    # corpus, not an independent source. It NEVER loosens
+    # ``analyst_confirmed_outcome``: the threshold tuner and every other
+    # independent-ground-truth consumer see exactly what they saw before.
+    use_unconfirmed_resolved_cases: bool = False
+    unconfirmed_precedent: UnconfirmedPrecedentConfig = Field(
+        default_factory=UnconfirmedPrecedentConfig
+    )
+    # --- Projection collapse guard -------------------------------------------------
+    # The smallest fraction of the PREVIOUS corpus a freshly built projection may hold
+    # before the rebuild is treated as FAILED and refused. A projection that shrinks
+    # dramatically is not a smaller corpus, it is a broken build: the source of truth
+    # is unchanged, so the only thing that can have shrunk is our ability to read or
+    # embed it. Refusing keeps the last known-good corpus instead of replacing it with
+    # a fraction of itself (or with nothing — a projection reaching ZERO is refused
+    # unconditionally, independent of this ratio).
+    #
+    # 0.5 means "a rebuild may never silently lose half the corpus". Set to 0.0 to
+    # disable the ratio guard entirely; the zero-projection guard is NOT tunable, on
+    # purpose — an empty corpus is never a legitimate rebuild of a non-empty one.
+    #
+    # Advisory to projection VALIDATION only. It is never read by
+    # ``case_manager.decide()`` (#3) and never changes WHAT is projected — so it is
+    # deliberately absent from ``RagService._source_signature()``, where it would
+    # force a full (billable) re-embed on every threshold tweak.
+    min_projection_retention: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class PersonaConfig(BaseModel):
@@ -1135,17 +1374,224 @@ class PersonaConfig(BaseModel):
     overrides: dict[str, str] = Field(default_factory=dict)  # rule name -> persona id
 
 
-class RunbookConfig(BaseModel):
-    """Plain-text runbook KNOWLEDGE for the RAG corpus.
+#: Bumped when the meaning of a stored ``runbooks`` block changes. Version 1 is the
+#: Round 14 runbook feature (SPEC §4.10.19); a block without the stamp predates it.
+CURRENT_RUNBOOKS_CONFIG_VERSION = 1
+#: Inclusive bounds of ``RunbookConfig.review_every_days_default`` (E6), the same as a
+#: runbook's own ``review_every_days``.
+RUNBOOK_REVIEW_DAYS_MIN = 30
+RUNBOOK_REVIEW_DAYS_MAX = 730
+RUNBOOK_REVIEW_DAYS_DEFAULT = 180
+#: The boolean switches of :class:`RunbookConfig` and their defaults (D32, D33, D35).
+_RUNBOOK_SWITCH_DEFAULTS: dict[str, bool] = {
+    "enabled": True,
+    "auto_attach": True,
+    "fallback": True,
+    "investigator_guidance": True,
+    "rag_corpus": True,
+    "ai_suggest": True,
+    "ai_step_drafts": True,
+    "require_distinct_approver": False,
+    "step_approvals": False,
+}
 
-    Runbooks ship as Markdown files under ``backend/app/runbooks/`` and feed the RAG
-    ``runbook`` corpus (retrievable knowledge) when ``rag.use_runbooks`` is on and
-    ``enabled`` here. NOTE: per-cluster PROCEDURE injection is now owned by the
-    Markdown **playbook** system (``app/playbooks/`` + ``PlaybookConfig``); runbooks
-    are retrieval knowledge only. Disabling is exact: no runbook source is indexed
-    or retrieved until the operator enables it again."""
+
+class RunbookConfig(BaseModel):
+    """The one Runbooks feature (Round 14 SPEC §4.10.19), under ``Preferences.runbooks``.
+    It replaces the retired procedure section and the old reference-runbook switch.
+
+    * ``enabled``: the feature (library, runs, guidance). Never derived from an old key.
+    * ``auto_attach``: attach the matching runbook to cases that need a person (D32).
+    * ``fallback``: attach Generic incident when nothing else matches (D33).
+    * ``investigator_guidance``: feed the Published runbook that specifically matches
+      (tier 1 or higher) to the investigator as trusted, advisory guidance (#9). The
+      Generic incident fallback is never fed: it is a checklist for people. Guidance
+      can change the verdict the model returns, never ``decide()``.
+    * ``rag_corpus``: index Published runbooks for retrieval.
+    * ``ai_suggest`` / ``ai_step_drafts``: offer "Suggest a runbook" and "Draft note"
+      as clicks; each is one gateway call, ledgered and budget-gated (#6).
+    * ``require_distinct_approver``: the publisher must differ from the author (D35).
+    * ``step_approvals``: honour a step's ``approval_role`` (D35).
+    * ``review_every_days_default``: the review cadence of a new operator runbook
+      (E6), 30 to 730 days.
+    * ``runbooks_config_version``: the migration marker of the retired keys.
+
+    Retired keys are accepted on load and mapped ONCE by meaning, never by name
+    (:func:`_map_retired_runbook_keys`). A runbook, a run and these switches never
+    feed ``case_manager.decide()`` or ``AutoClosePolicy`` (#3).
+
+    :meth:`_repair` repairs, never rejects, a stored value (a malformed switch takes
+    its default, an out-of-range cadence is clamped): both preference loaders answer
+    any validation error with a full default ``Preferences()``, which would also reset
+    the close policy, the rule catalog and the sources (the ``_clamp_caps`` rule)."""
 
     enabled: bool = True
+    auto_attach: bool = True
+    fallback: bool = True
+    investigator_guidance: bool = True
+    rag_corpus: bool = True
+    ai_suggest: bool = True
+    ai_step_drafts: bool = True
+    require_distinct_approver: bool = False
+    step_approvals: bool = False
+    review_every_days_default: int = Field(
+        default=RUNBOOK_REVIEW_DAYS_DEFAULT,
+        ge=RUNBOOK_REVIEW_DAYS_MIN,
+        le=RUNBOOK_REVIEW_DAYS_MAX,
+    )
+    runbooks_config_version: int = Field(default=CURRENT_RUNBOOKS_CONFIG_VERSION, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        """Repair a stored block: a switch that is not a boolean (or a common
+        spelling of one) takes its default; the cadence is clamped into 30 to 730
+        days (its default when it is not a number); a malformed version reads as 0.
+        Never raises."""
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        for name, default in _RUNBOOK_SWITCH_DEFAULTS.items():
+            if name in out:
+                out[name] = _remember_repair_bool(out[name], default)
+        if "review_every_days_default" in out:
+            days = _remember_repair_int(out["review_every_days_default"])
+            out["review_every_days_default"] = (
+                RUNBOOK_REVIEW_DAYS_DEFAULT if days is None
+                else max(RUNBOOK_REVIEW_DAYS_MIN, min(RUNBOOK_REVIEW_DAYS_MAX, days))
+            )
+        if "runbooks_config_version" in out:
+            version = _remember_repair_int(out["runbooks_config_version"])
+            out["runbooks_config_version"] = max(0, version) if version is not None else 0
+        return out
+
+
+def _stored_bool(value: Any) -> bool | None:
+    """A stored retired switch as a bool, or ``None`` when it is absent/unreadable."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1", "yes", "on"):
+            return True
+        if text in ("false", "0", "no", "off"):
+            return False
+    if isinstance(value, int):
+        return bool(value)
+    return None
+
+
+def _section_value(section: Any, key: str) -> Any:
+    """``section[key]`` for a stored dict or ``section.key`` for a model (else None)."""
+    if isinstance(section, Mapping):
+        return section.get(key)
+    if isinstance(section, BaseModel):
+        return getattr(section, key, None)
+    return None
+
+
+#: The keys only the Round 14 :class:`RunbookConfig` has. A ``runbooks`` block that
+#: names any of them is written in the current vocabulary, stamped or not (the old
+#: block had only ``enabled``).
+_RUNBOOK_CURRENT_ONLY_KEYS: frozenset[str] = frozenset(
+    set(_RUNBOOK_SWITCH_DEFAULTS) - {"enabled"} | {"review_every_days_default"}
+)
+
+#: The retired settings keys and the successor each one now mirrors (SPEC §4.10.19):
+#: ``(section, key)`` of the retired key -> ``runbooks.<successor>``.
+RETIRED_RUNBOOK_WRITE_KEYS: dict[tuple[str, str], str] = {
+    ("rag", "use_runbooks"): "rag_corpus",
+    ("playbooks", "enabled"): "investigator_guidance",
+}
+
+
+def map_retired_runbook_writes(body: Any, current: "Preferences | None" = None) -> Any:
+    """A settings write body with each CHANGED retired runbook key carried onto its
+    successor (SPEC §4.10.19). Pure: returns a new body, never mutates ``body``.
+
+    ``rag.use_runbooks`` and ``playbooks.enabled`` are read-only mirrors of
+    ``runbooks.rag_corpus`` and ``runbooks.investigator_guidance`` (validation
+    rewrites them), so a write that changed only the retired key would answer 200 and
+    change nothing. A settings route calls this before its deep merge: a retired key
+    the body sets to a value other than ``current``'s (the stored mirror) is copied to
+    its successor, unless the body also names the successor (the successor wins). A
+    body that only echoes the stored value (a client resending a whole section) maps
+    nothing. Without ``current`` every retired key the body names is carried."""
+    if not isinstance(body, Mapping):
+        return body
+    out: dict[str, Any] = dict(body)
+    successors: dict[str, bool] = {}
+    for (section, key), successor in RETIRED_RUNBOOK_WRITE_KEYS.items():
+        block = body.get(section)
+        if not isinstance(block, Mapping) or key not in block:
+            continue
+        value = _stored_bool(block.get(key))
+        if value is None:
+            continue
+        if current is not None:
+            stored = _stored_bool(_section_value(getattr(current, section, None), key))
+            if stored is not None and stored == value:
+                continue
+        successors[successor] = value
+    if not successors:
+        return out
+    runbooks = body.get("runbooks")
+    block_out: dict[str, Any] = dict(runbooks) if isinstance(runbooks, Mapping) else {}
+    for successor, value in successors.items():
+        block_out.setdefault(successor, value)
+    out["runbooks"] = block_out
+    return out
+
+
+def _map_retired_runbook_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """The one-time mapping of the retired runbook keys (SPEC §4.10.19), on a copy.
+
+    A ``runbooks`` block stamped with ``runbooks_config_version`` >= 1 is current and
+    left alone, so an operator's later choice is never re-decided. So is an unstamped
+    block that names a key only the current :class:`RunbookConfig` has (a block code,
+    an import or Demo built in the new vocabulary): it is stamped, never remapped, so
+    its ``enabled`` keeps its new meaning. Otherwise (no block, or a block from before
+    Round 14, which held only ``enabled``) the retired keys map BY MEANING:
+
+    * ``playbooks.enabled=false`` → ``investigator_guidance=false`` (it switched off
+      the procedure in the investigator prompt);
+    * ``runbooks.enabled=false`` (the OLD meaning: stop reference-runbook retrieval)
+      → ``rag_corpus=false``; the new ``enabled`` is never derived from an old key and
+      stays true;
+    * ``rag.use_runbooks=false`` → ``rag_corpus=false``.
+
+    An explicit stored ``false`` is preserved (the Round 10 opt-out rule); an old
+    ``true`` maps to nothing (the new defaults are on). Every other key of an old
+    block is kept, and the block is stamped so this never runs twice."""
+    raw_block = data.get("runbooks")
+    if isinstance(raw_block, RunbookConfig):
+        return data  # a constructed current block
+    if isinstance(raw_block, Mapping):
+        version = _remember_repair_int(raw_block.get("runbooks_config_version"))
+        if version is not None and version >= CURRENT_RUNBOOKS_CONFIG_VERSION:
+            return data
+        if _RUNBOOK_CURRENT_ONLY_KEYS.intersection(raw_block):
+            out = dict(data)
+            out["runbooks"] = {**raw_block, "runbooks_config_version": CURRENT_RUNBOOKS_CONFIG_VERSION}
+            return out
+        block: dict[str, Any] = dict(raw_block)
+        old_enabled = _stored_bool(block.pop("enabled", None))
+    elif raw_block is None:
+        block = {}
+        old_enabled = None
+    else:
+        return data  # malformed: normal validation reports it
+    guidance = _stored_bool(_section_value(data.get("playbooks"), "enabled"))
+    use_runbooks = _stored_bool(_section_value(data.get("rag"), "use_runbooks"))
+    if guidance is False:
+        block["investigator_guidance"] = False
+    if old_enabled is False or use_runbooks is False:
+        block["rag_corpus"] = False
+    block["enabled"] = True
+    block["runbooks_config_version"] = CURRENT_RUNBOOKS_CONFIG_VERSION
+    out = dict(data)
+    out["runbooks"] = block
+    return out
 
 
 class ThreatContextConfig(BaseModel):
@@ -1319,6 +1765,463 @@ class BudgetConfig(BaseModel):
     on_exceed: Literal["warn", "block"] = "block"
 
 
+_DOMAIN_SUFFIX_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9_](?:[a-z0-9_-]{0,62})(?:\.[a-z0-9_](?:[a-z0-9_-]{0,62}))*$")
+
+# --- Chat limits migration (Round 12 SPEC D1/D6; Round 14 SPEC §4.2.2). ------------- #
+# Bumped when stored chat configurations must adopt a new limits posture exactly once
+# (the ``autopilot_config_version`` pattern, held inside the chat block). Each version
+# is one step; a stored block runs every step above its own version, in order, so a
+# block from any earlier release lands on the current defaults (see
+# :func:`_migrate_chat_limits`).
+#   1. Round 12: ``limits_mode`` decided; stall timeout and concurrency raised.
+#   2. Round 14: the "Timeouts and capacity" defaults tripled.
+CURRENT_CHAT_LIMITS_VERSION = 2
+# The per-question limit knobs and the values they shipped with before Round 12. A
+# stored configuration that still holds every one of them (or omits them) never chose
+# a limit, so it adopts ``unlimited``; one that changed any of them keeps ``bounded``
+# with its values.
+_CHAT_LIMIT_KNOB_DEFAULTS: dict[str, int] = {
+    "max_model_calls": 5,
+    "max_tool_calls": 10,
+    "turn_timeout_s": 90,
+    "turn_token_ceiling": 60_000,
+    "final_reserve_tokens": 12_000,
+    "observation_chars": 6_000,
+    "final_max_tokens": 4_000,
+}
+# Defaults that changed in Round 12: a stored value equal to the old default is the old
+# default, not a choice, so it moves to the new one. The stall timeout moves only for
+# configurations that become ``unlimited`` (``bounded`` keeps today's behaviour).
+_CHAT_CHANGED_DEFAULTS: dict[str, tuple[int, int]] = {
+    "model_step_timeout_s": (30, 300),
+    "max_concurrent_turns_per_user": (2, 4),
+    "max_concurrent_turns_global": (8, 16),
+}
+# Version 2 (Round 14, ask 5): every "Timeouts and capacity" default tripled. A stored
+# value equal to the Round 12 default moves to the tripled one, in both limits modes
+# (Round 14 D18); any other value is an administrator's choice and stays. Pinned against
+# the field defaults by ``test_chat_limits_migration.py``.
+_CHAT_TRIPLED_DEFAULTS: dict[str, tuple[int, int]] = {
+    "max_parallel": (4, 12),
+    "tool_timeout_s": (15, 45),
+    "model_step_timeout_s": (300, 900),
+    "max_concurrent_turns_per_user": (4, 12),
+    "max_concurrent_turns_global": (16, 48),
+}
+# Keys every full ``ChatAgentConfig`` dump carries (a persisted block) but a small
+# programmatic construction does not: the changed-defaults moves apply to persisted
+# blocks only, so ``ChatAgentConfig(model_step_timeout_s=30)`` keeps its 30.
+_CHAT_PERSISTED_MARKERS = ("max_indicator_lookups_per_conversation", "internal_domains", "allow_email_lookup")
+
+
+def _repair_chat_cap(raw: Any) -> float | None:
+    """``chat_daily_cap_usd`` repaired: a positive finite number, else ``None`` (off)."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw.strip()) if isinstance(raw, str) else float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def _is_persisted_chat_block(out: Mapping[str, Any]) -> bool:
+    """True for a full stored dump (see :data:`_CHAT_PERSISTED_MARKERS`)."""
+    return all(key in out for key in _CHAT_PERSISTED_MARKERS)
+
+
+def _move_old_defaults(out: dict[str, Any], moves: Mapping[str, tuple[int, int]],
+                       *, skip: frozenset[str] = frozenset()) -> frozenset[str]:
+    """Move each knob still holding exactly its old shipped default to the new one, and
+    return the knobs that hold an operator's choice instead.
+
+    A stored value that is not exactly the old default (another number, a type the
+    repair already normalised) is a choice: it is never touched, and the caller keeps it
+    out of every later step, so a value chosen under one release's defaults is not
+    mistaken for a later release's default. A knob in ``skip`` is never moved; it is
+    reported as a choice only when it differs from the old default."""
+    chosen: set[str] = set()
+    for name, (old, new) in moves.items():
+        if name not in out:
+            continue
+        value = out[name]
+        if not (isinstance(value, int) and not isinstance(value, bool) and value == old):
+            chosen.add(name)
+        elif name not in skip:
+            out[name] = new
+    return frozenset(chosen)
+
+
+def _migrate_chat_limits_v1(out: dict[str, Any], chosen: frozenset[str]) -> frozenset[str]:
+    """Version 1 (Round 12 SPEC D1/D6): decide ``limits_mode`` and raise the stall
+    timeout and concurrency defaults.
+
+    An explicit ``limits_mode`` is kept; without one the block becomes ``bounded`` when
+    any limit knob differs from its shipped default and ``unlimited`` otherwise. Old
+    defaults of the changed knobs move to the new ones (persisted blocks only); a
+    ``bounded`` block keeps its stall timeout, as Round 12 shipped. Returns the knobs
+    that hold an operator's choice (see :func:`_move_old_defaults`)."""
+    mode = out.get("limits_mode")
+    if mode not in ("unlimited", "bounded"):
+        changed = [name for name, default in _CHAT_LIMIT_KNOB_DEFAULTS.items()
+                   if name in out and out[name] != default]
+        mode = "bounded" if changed else "unlimited"
+        out["limits_mode"] = mode
+    if not _is_persisted_chat_block(out):
+        return frozenset()
+    skip = chosen | {"model_step_timeout_s"} if mode == "bounded" else chosen
+    return _move_old_defaults(out, _CHAT_CHANGED_DEFAULTS, skip=skip)
+
+
+def _migrate_chat_limits_v2(out: dict[str, Any], chosen: frozenset[str]) -> frozenset[str]:
+    """Version 2 (Round 14 SPEC §4.2.2): the tripled "Timeouts and capacity" defaults.
+    Persisted blocks only, in both limits modes (D18: a ``bounded`` call is still cut
+    at the question's remaining time, so a longer stall timeout never lengthens it).
+    A knob an earlier step found chosen stays, even when its value happens to equal a
+    Round 12 default (a pre-Round-12 block that chose 4 questions per user keeps 4)."""
+    if not _is_persisted_chat_block(out):
+        return frozenset()
+    return _move_old_defaults(out, _CHAT_TRIPLED_DEFAULTS, skip=chosen)
+
+
+# One migration step: it moves old defaults in place, never moves a knob in ``chosen``,
+# and returns the knobs it found chosen.
+_ChatLimitsStep = Callable[[dict[str, Any], frozenset[str]], frozenset[str]]
+# The migration steps, in order: ``(version, step)``. A stored block runs every step
+# whose version is above its own marker, then is stamped with the last one.
+_CHAT_LIMITS_STEPS: tuple[tuple[int, _ChatLimitsStep], ...] = (
+    (1, _migrate_chat_limits_v1),
+    (2, _migrate_chat_limits_v2),
+)
+
+
+def _migrate_chat_limits(out: dict[str, Any]) -> dict[str, Any]:
+    """The staged chat limits migration on an already-repaired block.
+
+    A block at :data:`CURRENT_CHAT_LIMITS_VERSION` is left alone (an operator's later
+    choice is never re-decided). Otherwise every step above the stored marker runs in
+    order (an absent marker is a block from before Round 12, version 0), so a
+    pre-Round-12 block chains through both: 30 s / 2 / 8 becomes 300 / 4 / 16 in step 1
+    and 900 / 12 / 48 in step 2. A value the first step to judge a knob finds chosen
+    (it differs from that release's default) is kept by every later step, so a
+    pre-Round-12 choice of 4 questions per user is not mistaken for the Round 12
+    default. The marker is then stamped. Never raises.
+
+    Known limitation (documented): an administrator who deliberately chose exactly the
+    default of the release the block was stored by cannot be told apart from it and is
+    moved once."""
+    version = out.get("chat_limits_version")
+    stored = version if isinstance(version, int) and not isinstance(version, bool) else 0
+    if stored >= CURRENT_CHAT_LIMITS_VERSION:
+        return out
+    chosen: frozenset[str] = frozenset()
+    for step_version, step in _CHAT_LIMITS_STEPS:
+        if stored < step_version:
+            chosen |= step(out, chosen)
+    out["chat_limits_version"] = CURRENT_CHAT_LIMITS_VERSION
+    return out
+
+
+class ChatAgentConfig(BaseModel):
+    """Bounds for the agentic chat loop (chat revamp SPEC §4.2). Enforced in code by
+    the chat engine and the chat routes; read-only scope is structural (the chat tools
+    cannot write), so none of these knobs can widen what chat may DO — they only bound
+    how much it may spend and how long a turn may run. Never feeds ``decide()`` (#3).
+
+    Every numeric knob carries an inclusive ``ge``/``le`` range, and
+    :meth:`_repair` CLAMPS a stored out-of-range or malformed value into that range
+    before field validation runs. This is mandatory for the same reason as
+    ``Preferences._clamp_caps``: both preference loaders answer ANY validation error by
+    returning a full default ``Preferences()``, and ``Preferences`` is one document that
+    also carries ``auto_close``, ``rule_catalog`` and ``sources``. A chat knob must
+    therefore never be able to fail validation, whatever was stored.
+
+    Round 12 (SPEC D1, D2, D5, D6): ``limits_mode`` decides whether the per-question
+    knobs apply at all. ``unlimited`` (the default) ignores ``max_model_calls``,
+    ``max_tool_calls``, ``turn_token_ceiling``, ``final_reserve_tokens``,
+    ``turn_timeout_s``, ``final_max_tokens`` and ``observation_chars`` as caps: a turn
+    ends when the model answers or the analyst presses Stop, guarded only by the
+    engine's correctness guards (no re-run of an identical lookup, the
+    no-progress guard, the per-call stall timeout and a hidden runaway fuse).
+    ``bounded`` keeps the pre-Round-12 behaviour and knobs exactly. The fields stay
+    either way so a stored configuration keeps validating and switching back is
+    lossless. A one-time ``chat_limits_version`` migration (:meth:`_repair`) moves a
+    stored configuration to ``unlimited`` unless an operator changed a limit knob away
+    from its shipped default.
+
+    Round 14 (SPEC §4.2, ask 5): the "Timeouts and capacity" defaults are tripled
+    (lookups at once 12, lookup timeout 45 s, model call timeout 900 s, questions at
+    once 12 per user and 48 in total) and two ceilings rise to fit them. Version 2 of
+    the same migration moves a stored value that still equals the Round 12 default, in
+    both limits modes; any other value stays."""
+
+    # ``model_step_timeout_s`` / ``max_model_calls`` are about the LLM, not pydantic.
+    model_config = {"protected_namespaces": ()}
+
+    limits_mode: Literal["unlimited", "bounded"] = Field(
+        default="unlimited",
+        description=("Unlimited: chat keeps working until it has answered or you press Stop. "
+                     "Bounded: the per-question limits below apply."),
+    )
+    max_model_calls: int = Field(
+        default=5, ge=1, le=12,
+        description="Model calls per chat question, including the final answer.",
+    )
+    max_tool_calls: int = Field(
+        default=10, ge=1, le=40, description="Lookups (tool calls) per chat question.",
+    )
+    max_parallel: int = Field(
+        default=12, ge=1, le=24, description="Lookups the assistant may run at once in one step.",
+    )
+    tool_timeout_s: int = Field(
+        default=45, ge=1, le=120,
+        description="Seconds one lookup may take (log fan-out keeps per-source timeouts inside it).",
+    )
+    model_step_timeout_s: int = Field(
+        default=900, ge=5, le=1_800,
+        description=("Seconds one model call may stay silent before it counts as stalled "
+                     "(a stalled call is retried once). With per-question limits, a call also "
+                     "ends when the question's time runs out."),
+    )
+    turn_timeout_s: int = Field(
+        default=90, ge=10, le=600,
+        description="Wall-clock seconds per question; stops new steps, never an in-flight model call.",
+    )
+    turn_token_ceiling: int = Field(
+        default=60_000, ge=4_000, le=1_000_000,
+        description="Input plus output tokens one question may use across all its model calls.",
+    )
+    final_reserve_tokens: int = Field(
+        default=12_000, ge=1_000, le=200_000,
+        description="Tokens always kept for writing the final answer, inside the ceiling.",
+    )
+    observation_chars: int = Field(
+        default=6_000, ge=1_500, le=60_000,
+        description="Characters of lookup results sent to the model per step (aggregated, never raw logs).",
+    )
+    final_max_tokens: int = Field(
+        default=4_000, ge=256, le=32_000,
+        description="Output tokens for the final answer (at least the chat model's own limit).",
+    )
+    max_concurrent_turns_per_user: int = Field(
+        default=12, ge=1, le=24, description="Chat questions one user may have running at the same time.",
+    )
+    max_concurrent_turns_global: int = Field(
+        default=48, ge=1, le=100, description="Chat questions this backend runs at the same time.",
+    )
+    max_indicator_lookups: int = Field(
+        default=3, ge=0, le=10,
+        description="Third-party indicator lookups per question (0 turns the lookup tool off).",
+    )
+    max_indicator_lookups_per_conversation: int = Field(
+        default=10, ge=0, le=50, description="Third-party indicator lookups per conversation.",
+    )
+    default_stream_mode: Literal["steps", "text"] = Field(
+        default="steps",
+        description="Default live mode for viewers without a personal choice: steps only, or also type out answers.",
+    )
+    allow_text_streaming: bool = Field(
+        default=True, description="Allow answers to stream word by word (\"Type out answers\").",
+    )
+    internal_domains: list[str] = Field(
+        default_factory=list, max_length=100,
+        description="Domain suffixes that are never sent to third-party enrichment.",
+    )
+    allow_email_lookup: bool = Field(
+        default=False, description="Allow e-mail addresses to be sent to third-party enrichment.",
+    )
+    # --- Round 12 (SPEC D5, D13). ------------------------------------------------- #
+    chat_daily_cap_usd: float | None = Field(
+        default=None, ge=0,
+        description=("Optional daily spending limit for chat, in US dollars. Off by default: chat "
+                     "is not paused by the daily AI budget, which covers investigations."),
+    )
+    animated_brand: bool = Field(
+        default=True,
+        description="Animate the console logo while chat is working (custom logos never animate).",
+    )
+    # --- Round 13 (SPEC-chat D9, §3.2.1). ------------------------------------------- #
+    dynamic_starters: bool = Field(
+        default=True,
+        description=("New chats open with questions about your queue, SLA and sources, computed "
+                     "from data each viewer can read. No AI cost."),
+    )
+    chat_limits_version: int = Field(
+        default=CURRENT_CHAT_LIMITS_VERSION, ge=0, le=CURRENT_CHAT_LIMITS_VERSION,
+        description="Internal marker: the chat limits migration this configuration has adopted.",
+    )
+
+    _MAX_INTERNAL_DOMAINS: ClassVar[int] = 100
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        """REPAIR (never reject) a stored value: clamp numbers into their declared
+        range, replace malformed numbers/enums/booleans with the field default, and
+        normalise ``internal_domains``. A non-dict (corrupt) block becomes defaults.
+
+        The ranges are read back off the field metadata (:func:`_field_bounds`), so the
+        repair can never drift from the constraints it repairs against. Like the caps
+        clamp this means a settings PUT carrying an out-of-range value is accepted as
+        the clamped value; the curated editor constrains its inputs to the same range."""
+        if isinstance(data, ChatAgentConfig):
+            return data
+        if not isinstance(data, Mapping):
+            if data is not None:
+                logger.warning("Preferences.chat_agent was %s; using defaults", type(data).__name__)
+            return {}
+        out: dict[str, Any] = dict(data)
+        for name, (lo, hi) in _CHAT_AGENT_BOUNDS.items():
+            if name not in out:
+                continue
+            raw = out[name]
+            default = cls.model_fields[name].default
+            value: int | None
+            if isinstance(raw, bool):  # bools are ints in Python; never accept one
+                value = None
+            elif isinstance(raw, int):
+                value = raw
+            elif isinstance(raw, float) and math.isfinite(raw):
+                value = int(raw)
+            elif isinstance(raw, str):
+                try:
+                    value = int(float(raw.strip()))
+                except (TypeError, ValueError, OverflowError):
+                    value = None
+            else:
+                value = None
+            if value is None:
+                repaired = default
+            else:
+                repaired = min(max(value, lo), hi)
+            if repaired != raw:
+                logger.warning(
+                    "Preferences.chat_agent.%s=%r is invalid or outside %d..%d; repaired "
+                    "to %r (the rest of the stored configuration is preserved)",
+                    name, raw, lo, hi, repaired,
+                )
+            out[name] = repaired
+        mode = out.get("default_stream_mode")
+        if "default_stream_mode" in out and mode not in ("steps", "text"):
+            normalised = str(mode).strip().lower() if isinstance(mode, str) else ""
+            out["default_stream_mode"] = normalised if normalised in ("steps", "text") else "steps"
+        for flag in ("allow_text_streaming", "allow_email_lookup"):
+            if flag in out and not isinstance(out[flag], bool):
+                raw_flag = out[flag]
+                if isinstance(raw_flag, str) and raw_flag.strip().lower() in ("true", "1", "yes", "on"):
+                    out[flag] = True
+                elif isinstance(raw_flag, str) and raw_flag.strip().lower() in ("false", "0", "no", "off"):
+                    out[flag] = False
+                elif isinstance(raw_flag, int):
+                    out[flag] = bool(raw_flag)
+                else:
+                    out[flag] = cls.model_fields[flag].default
+        if "internal_domains" in out:
+            out["internal_domains"] = cls.normalise_domains(out["internal_domains"])
+        # Default-on switches (SPEC D13; Round 13 SPEC-chat D9): only an explicit "off"
+        # value turns one off; anything else malformed keeps the shipped default (on).
+        for flag in ("animated_brand", "dynamic_starters"):
+            if flag in out and not isinstance(out[flag], bool):
+                raw_flag = out[flag]
+                if isinstance(raw_flag, str) and raw_flag.strip().lower() in ("false", "0", "no", "off"):
+                    out[flag] = False
+                elif isinstance(raw_flag, int) and not raw_flag:
+                    out[flag] = False
+                else:
+                    out[flag] = True
+        if "chat_daily_cap_usd" in out:
+            out["chat_daily_cap_usd"] = _repair_chat_cap(out["chat_daily_cap_usd"])
+        if "limits_mode" in out:
+            raw_mode = out["limits_mode"]
+            normalised_mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else ""
+            if normalised_mode in ("unlimited", "bounded"):
+                out["limits_mode"] = normalised_mode
+            else:
+                out.pop("limits_mode")  # malformed: decided like an absent mode below
+        return _migrate_chat_limits(out)
+
+    @property
+    def unlimited(self) -> bool:
+        """True when the per-question knobs do not apply (SPEC D1)."""
+        return self.limits_mode != "bounded"
+
+    @property
+    def effective_parallel(self) -> int:
+        """Lookups that may run side by side in one step: ``max_parallel``, and in
+        ``bounded`` mode never more than the per-question lookup budget. Computed, never
+        stored: rewriting ``max_parallel`` would make a Bounded → Unlimited round trip
+        lose the operator's value, and the engine stops lookups at ``max_tool_calls``
+        anyway (SPEC D1: switching modes is lossless)."""
+        if self.unlimited:
+            return self.max_parallel
+        return max(1, min(self.max_parallel, self.max_tool_calls))
+
+    @model_validator(mode="after")
+    def _coherent(self) -> "ChatAgentConfig":
+        """Repair cross-field incoherence instead of rejecting it: the final reserve
+        must leave room for tool rounds inside the ceiling. ``max_parallel`` is never
+        rewritten against ``max_tool_calls`` (that would not survive a mode round trip);
+        :attr:`effective_parallel` applies the bounded-mode limit at use."""
+        if self.final_reserve_tokens >= self.turn_token_ceiling:
+            self.final_reserve_tokens = max(1_000, self.turn_token_ceiling // 5)
+        return self
+
+    @classmethod
+    def normalise_domains(cls, raw: Any) -> list[str]:
+        """Lower-case, strip a leading ``*.``/``.`` and whitespace, drop anything that
+        is not a plausible DNS suffix, de-duplicate and bound the list. Never raises."""
+        if isinstance(raw, str):
+            items: list[Any] = [part for part in re.split(r"[\s,]+", raw) if part]
+        elif isinstance(raw, (list, tuple)):
+            items = list(raw)
+        else:
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            value = item.strip().lower()
+            while value.startswith("*."):
+                value = value[2:]
+            value = value.strip(".")
+            if not value or value in seen or not _DOMAIN_SUFFIX_RE.match(value):
+                continue
+            seen.add(value)
+            out.append(value)
+            if len(out) >= cls._MAX_INTERNAL_DOMAINS:
+                break
+        return out
+
+    def is_internal_domain(self, host: str) -> bool:
+        """True when ``host`` equals or ends with a configured internal suffix."""
+        value = (host or "").strip().lower().rstrip(".")
+        if not value:
+            return False
+        return any(value == d or value.endswith("." + d) for d in self.internal_domains)
+
+
+def _field_bounds(model: type[BaseModel]) -> dict[str, tuple[int, int]]:
+    """The inclusive ``(ge, le)`` range declared on every integer field of ``model``,
+    read back off the field metadata (single source of truth for the repair clamp)."""
+    out: dict[str, tuple[int, int]] = {}
+    for name, field in model.model_fields.items():
+        lo = hi = None
+        for meta in field.metadata:
+            if getattr(meta, "ge", None) is not None:
+                lo = int(meta.ge)
+            if getattr(meta, "le", None) is not None:
+                hi = int(meta.le)
+        if lo is not None and hi is not None and field.annotation is int:
+            out[name] = (lo, hi)
+    return out
+
+
+_CHAT_AGENT_BOUNDS: dict[str, tuple[int, int]] = _field_bounds(ChatAgentConfig)
+# Public alias: the settings UI and /api/chat/context render the same ranges.
+CHAT_AGENT_BOUNDS: dict[str, tuple[int, int]] = dict(_CHAT_AGENT_BOUNDS)
+
+
 class RealtimeConfig(BaseModel):
     """Live-update (SSE/websocket) plumbing config (Round 3). Defaults ON (Autopilot
     overhaul) — pure transport, the webui already falls back to polling, so ON simply
@@ -1327,6 +2230,98 @@ class RealtimeConfig(BaseModel):
 
     enabled: bool = True
     heartbeat_seconds: int = Field(default=15, ge=1)
+
+
+class ResilienceConfig(BaseModel):
+    """Provider circuit-breaker policy — SHIPPED IN ADVISORY MODE.
+
+    The aggregate provider-health tracker (``llm/provider_health.py``) has always been
+    able to SEE a total provider outage; it could never ACT on one. This block is the
+    action, and it is deliberately inert until an operator opts in:
+
+    * ``enabled`` (default ON) only turns on OBSERVATION — the count-based windows and
+      the append-only state transitions an operator reads to decide whether refusal is
+      warranted here.
+    * ``enforce`` (default **OFF**) is the only switch that lets an open breaker REFUSE
+      work. Ship advisory, read a week of real transitions, then enforce. An absent or
+      default-constructed block therefore refuses nothing, adds no ledger row (#6) and
+      never reaches ``case_manager.decide()`` (#3).
+
+    COUNT-BASED, never time-based
+    -----------------------------
+    A time window is unreachable on a low-volume deployment: a busy role at ~34 calls an
+    hour puts about one call inside a 120-second window, so a minimum-calls floor can
+    never be met and the breaker would be dead code exactly where an outage hurts most.
+    A ring of the last ``window_size`` terminal outcomes is volume-independent and
+    therefore portable across a 40-alert-a-day site and a 40-a-minute one.
+    ``outcome_max_age_seconds`` bounds how long a RUN of outcomes stays evidence, so a
+    decommissioned provider/model/role key drains and self-clears instead of pinning the
+    deployment to "open" forever. It is applied as an IDLE GAP, not as a per-sample
+    expiry: while calls keep arriving the ring is purely a count window, and the whole
+    accumulated run is discarded once the key has been SILENT for longer than the bound.
+    Expiring each sample individually would reintroduce the very volume dependency this
+    section rules out — it drains the ring faster than a modest deployment fills it, and
+    at the shipped sizes the quorum would be unreachable below roughly 240 calls a day
+    on one key.
+
+    Defaults are the published Resilience4j ``CircuitBreakerConfig`` defaults
+    (https://resilience4j.readme.io/docs/circuitbreaker — failure-rate threshold 50%,
+    COUNT_BASED sliding window, 60s wait in open state), with two deliberate,
+    documented adaptations and their reasons:
+
+    * ``window_size``/``minimum_calls`` are 20/10 rather than upstream's 100/100.
+      Upstream sizes its window for a high-QPS RPC service; an SOC role key sees orders
+      of magnitude fewer calls, and a 100-call quorum would reintroduce the exact
+      reachability defect a count window exists to remove. 10 is the smallest quorum at
+      which a 50% rate is a statement rather than noise.
+    * ``half_open_successes`` is 2 (upstream permits 10 half-open calls). Two
+      CONSECUTIVE probe successes is the cheapest evidence that a credential fix
+      actually took, and each probe is a real billable call.
+
+    ``failure_rate_threshold`` is floored at 0.50 ON PURPOSE and the floor is enforced
+    by the field constraint: at a 25% failure rate a breaker would refuse 100% of work
+    that would have succeeded 75% of the time. This breaker targets the near-total
+    regime (an expired key, an exhausted quota); partial degradation is the retry
+    budget's job, not the breaker's.
+    """
+
+    #: Maintain the outcome windows and record state transitions. Observation only.
+    enabled: bool = True
+    #: Let an OPEN breaker actually refuse work. OFF = advisory mode (the shipped
+    #: default). Turning this on can only ever route a case to NEEDS_HUMAN; it can
+    #: never close, escalate or discard one (#3/#4).
+    enforce: bool = False
+    #: Ring size: the last N terminal outcomes per key.
+    window_size: int = Field(default=20, ge=2, le=1000)
+    #: Evaluation quorum — no verdict until this many outcomes are in the ring.
+    minimum_calls: int = Field(default=10, ge=1, le=1000)
+    #: Upstream default (50%). The lower bound is a hard product constraint, not a
+    #: preference: below it the breaker refuses more work than it protects.
+    failure_rate_threshold: float = Field(default=0.5, ge=0.5, le=1.0)
+    #: Base OPEN duration before a HALF_OPEN probe is permitted (upstream default 60s).
+    #: The actual deadline uses FULL JITTER over [0, wait) — AWS Architecture Blog,
+    #: "Exponential Backoff And Jitter" (2015) — so many keys never resynchronise.
+    wait_seconds: float = Field(default=60.0, ge=1.0, le=86400.0)
+    #: Ceiling for the doubling that follows each failed probe.
+    max_wait_seconds: float = Field(default=600.0, ge=1.0, le=86400.0)
+    #: Consecutive HALF_OPEN probe successes required to close.
+    half_open_successes: int = Field(default=2, ge=1, le=100)
+    #: How long a recorded RUN of outcomes remains evidence of the CURRENT condition.
+    #: An IDLE-GAP bound, not a per-sample expiry (see the class docstring): silence
+    #: longer than this discards the run and lets a decommissioned key clear itself,
+    #: while a key that is still being called keeps a pure count window.
+    outcome_max_age_seconds: float = Field(default=3600.0, ge=60.0, le=604800.0)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> "ResilienceConfig":
+        # A quorum larger than the ring can never be met — silently clamp rather than
+        # reject, so a hand-edited stored config degrades to a working breaker instead
+        # of failing the whole Preferences load.
+        if self.minimum_calls > self.window_size:
+            object.__setattr__(self, "minimum_calls", self.window_size)
+        if self.max_wait_seconds < self.wait_seconds:
+            object.__setattr__(self, "max_wait_seconds", self.wait_seconds)
+        return self
 
 
 _GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
@@ -1399,6 +2394,14 @@ def _validated_github_branch(value: str) -> str:
     return branch
 
 
+#: The canonical public repository. It is also the update trust root.
+CANONICAL_RELEASE_REPOSITORY_URL = "https://github.com/ARYDESTROYER/Kavach-AgenticSOC"
+#: The former name of the same repository, compared ignoring case. GitHub answers the
+#: former API path with a redirect, which discovery refuses by design, so a stored
+#: preference that still names it would never see a release.
+_FORMER_RELEASE_REPOSITORY = ("arydestroyer", "agentic-kibana")
+
+
 class ReleaseUpdateConfig(BaseModel):
     """Read-only public upstream metadata discovery.
 
@@ -1410,7 +2413,7 @@ class ReleaseUpdateConfig(BaseModel):
 
     enabled: bool = True
     repository_url: str = Field(
-        default="https://github.com/ARYDESTROYER/Agentic-Kibana",
+        default=CANONICAL_RELEASE_REPOSITORY_URL,
         description="Public GitHub upstream used only for release metadata discovery.",
     )
     stable_branch: str = Field(
@@ -1431,7 +2434,13 @@ class ReleaseUpdateConfig(BaseModel):
     @field_validator("repository_url")
     @classmethod
     def _repository_is_public_github(cls, value: str) -> str:
-        return _canonical_public_github_repository(value)
+        canonical = _canonical_public_github_repository(value)
+        # After canonicalisation, the former name of this repository (in any case)
+        # moves to the current one. Any other repository, a fork included, is kept.
+        owner, repository = canonical.rsplit("/", 2)[-2:]
+        if (owner.lower(), repository.lower()) == _FORMER_RELEASE_REPOSITORY:
+            return CANONICAL_RELEASE_REPOSITORY_URL
+        return canonical
 
     @field_validator("stable_branch", "testing_branch")
     @classmethod
@@ -1483,6 +2492,40 @@ class StorageLifecycleConfig(BaseModel):
     @property
     def archive_from_days(self) -> int:
         return int(self.hot_days) + int(self.warm_days)
+
+
+class ReplayCaptureConfig(BaseModel):
+    """Forward capture of frozen investigation fixtures for the replay harness.
+
+    Purely OBSERVATIONAL: capture reads nothing the decision depends on, writes nothing
+    onto a case, and is fully error-isolated, so it can never touch ``decide()`` (#3).
+    A fixture is captured immediately after deterministic risk and BEFORE any model
+    call, so it can never encode the outcome a later replay is meant to measure.
+
+    Bounded BY CONSTRUCTION rather than by expectation: a fixed slot ring of
+    ``ring_size`` bodies, each at most ``max_fixture_bytes``, so worst-case storage is
+    the product of the two and cannot grow with uptime. A body over the byte cap, or a
+    cluster over ``max_events_per_fixture``, is skipped WHOLE — never truncated and
+    never sampled, because either would silently change the evidence a replay is scored
+    on.
+
+    A fixture holds raw log records, which is strictly more than a Case retains. No API
+    ever returns a fixture body; ``DELETE /api/replay/fixtures`` is the purge control.
+    """
+
+    enabled: bool = True
+    ring_size: int = Field(
+        default=100, ge=0, le=500,
+        description="How many frozen fixtures are retained; the oldest is evicted.",
+    )
+    max_fixture_bytes: int = Field(
+        default=131_072, ge=4_096, le=1_048_576,
+        description="Per-fixture canonical-body ceiling; a larger fixture is skipped whole.",
+    )
+    max_events_per_fixture: int = Field(
+        default=50, ge=1, le=500,
+        description="Member-event ceiling; a larger cluster is skipped whole, never sampled.",
+    )
 
 
 class StandupConfig(BaseModel):
@@ -1686,6 +2729,233 @@ class SuppressionRule(BaseModel):
         return True
 
 
+class AnalystRulePolicy(BaseModel):
+    """An operator's explicit, audited, revocable statement about their OWN estate.
+
+    This is the answer to a structural dead end: for a detection whose alerts carry no
+    per-case evidence (no payload, no URI, no response code), an investigation can never
+    verify that THIS instance is benign, so it correctly returns ``NEEDS_HUMAN`` however
+    many analyst-confirmed benign outcomes stand behind the rule. Precedent volume
+    cannot fix an evidence-sufficiency judgement. An operator therefore needs a way to
+    assert a RULE-LEVEL fact and have the system act on it deterministically, instead of
+    repeatedly trying to persuade a model with per-case evidence the source never emits.
+
+    Semantics, and what it deliberately is NOT:
+
+    * A matching cluster is CLOSED with ``disposition=false_positive`` and
+      ``decision_by=analyst_policy`` (:class:`~app.constants.DecisionBy`), with **no LLM
+      call at all** — cheaper, faster and more honest than a per-case argument.
+    * It is NOT :class:`SuppressionRule` (field==value), which DROPS matching events
+      before a case exists. This closes a VISIBLE, audited case, so the declaration
+      stays reviewable and reversible and the volume stays countable.
+    * It is NOT :class:`RuleSuppression` (the per-rule editor's alert-storm metadata),
+      which is storage-only and never drops anything.
+    * It is excluded from every agent-performance statistic (FP rate, automation rate,
+      auto-close health, noise funnel, agent-improvement evidence) so it can never
+      flatter the agent, and it is invisible to
+      ``engine.analyst_outcomes.analyst_confirmed_outcome`` so it can never become
+      training evidence for the automation that it replaces.
+    * ``decide()`` is untouched (#3): this is a separate operator-authored path that
+      runs BEFORE any verdict exists, never a new close authority layered onto the
+      verdict policy.
+
+    Revoking is ``enabled=False`` (or an ``expires_at`` lapse, or deleting the row);
+    already-closed cases stay closed and remain reopenable by an analyst as usual.
+    """
+
+    id: str = Field(default_factory=lambda: new_id("arp-"))
+    # The detection rule this declaration is about. Matched against the cluster's rule
+    # values after the same normalisation the tuner uses, and ALL of a cluster's rules
+    # must be declared before it closes (a cluster that also fired an undeclared
+    # detection is not the thing the operator declared benign).
+    rule_id: str
+    # Why. Required in spirit (the audit trail is the point); empty is permitted so an
+    # API client is never blocked, but the Console asks for it.
+    reason: str = ""
+    # Optional scope: when set, the declaration applies only to that source instance.
+    # Empty/None means every source.
+    source_id: str | None = None
+    enabled: bool = True
+    # Optional risk ceiling. ``decide()`` bounds FALSE_POSITIVE auto-close with
+    # ``max_risk_score``; without an equivalent here a declared rule closes at ANY
+    # computed risk. ``None`` keeps the unbounded behaviour; a number lets an operator
+    # say "benign here, but investigate an unusually high-scoring instance".
+    max_risk_score: float | None = Field(default=None, ge=0.0, le=100.0)
+    created_by: str = ""
+    created_at: str = Field(default_factory=iso_now)
+    expires_at: datetime | None = None
+
+    def is_live(self, now: datetime | None = None) -> bool:
+        """True when this declaration should be honoured: enabled AND not expired.
+
+        Mirrors :meth:`SuppressionRule.is_live` exactly so the two operator off-switches
+        behave identically. A naive ``expires_at`` is treated as UTC.
+        """
+        if not self.enabled:
+            return False
+        if self.expires_at is not None:
+            ref = now or datetime.now(timezone.utc)
+            exp = self.expires_at
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if ref.tzinfo is None:
+                ref = ref.replace(tzinfo=timezone.utc)
+            if exp <= ref:
+                return False
+        return True
+
+
+class PrecedentPromotionConfig(BaseModel):
+    """Give analyst-confirmed precedent real weight for the SAME detection rule.
+
+    EVIDENCE PROMOTION, not a close authority. When the rule identity under
+    investigation carries a unanimous, sufficiently large body of analyst-confirmed
+    benign outcomes, the investigator is told so explicitly and in STRUCTURED form —
+    a code-computed count — instead of being left to infer it from a handful of
+    retrieved prose snippets. The verdict still comes from the model and
+    ``engine.case_manager.decide()`` still applies the auto-close policy (#3).
+
+    Default OFF: promoting precedent changes what the model is told, and that is an
+    operator decision, not something a deployment should silently acquire on upgrade.
+    """
+
+    enabled: bool = False
+    # Minimum analyst-confirmed FALSE POSITIVE outcomes for the EXACT rule identity.
+    min_confirmed: int = Field(default=25, ge=1, le=100000)
+    # Secondary relevance floor on the retrieval RANK score of the matching precedent.
+    # NOTE: with hybrid retrieval on, that score is a min-max-normalised blend of vector
+    # similarity and BM25 — comparable within one retrieval, not across backends or
+    # queries. RULE IDENTITY is the authoritative gate; this is only a relevance floor.
+    min_similarity: float = Field(default=0.5, ge=0.0, le=1.0)
+    # How many analyst-confirmed TRUE POSITIVE outcomes the rule may carry and still be
+    # promotable. Default 0: a rule the analysts disagree about is not "benign here".
+    max_conflicting: int = Field(default=0, ge=0, le=1000)
+
+
+class PrecedentWindowConfig(BaseModel):
+    """How the bounded precedent projection window is filled.
+
+    A flat newest-N window lets ANY bulk analyst action on one rule evict every other
+    rule's precedent — precedent starvation again, this time triggered by an operator
+    doing exactly what the product asked of them. Stratifying round-robin across rule
+    identities gives every active rule an equal floor within the same bounded window.
+
+    Rule identity alone is not enough: INSIDE one rule's bucket the newest-first
+    tiebreak has the same shape one level down, so the slots fill with whatever outcome
+    the deployment currently produces most of. ``stratify_by`` is therefore an ORDERED
+    list of METADATA KEYS rather than a second boolean — a boolean would bake the axis
+    names into the type, while a key list keeps this block ignorant of what a rule or an
+    outcome is.
+    """
+
+    size: int = Field(default=200, ge=1, le=5000)
+    #: DEPRECATED alias, kept so a stored pre-``stratify_by`` preference keeps working.
+    #: It is now the master switch: ``False`` turns window fairness off entirely — the
+    #: axes AND the admission cap — and restores the projection scan's early exit.
+    #: It does NOT restore the pre-stratification ORDERING: the globally newest-first
+    #: merge across the terminal statuses, and the fair per-status scan budget, are
+    #: UNCONDITIONAL. Both fix an input-ordering contract the selector always
+    #: documented and the concatenated per-status pages never actually met.
+    stratify_by_rule: bool = True
+    #: The ordered projection METADATA KEYS to round-robin over.
+    #:
+    #: BOTH ground-truth axes are carried, ground truth OUTERMOST:
+    #:
+    #: ``outcome`` — the ANALYST-CONFIRMED label — outranks ``verdict`` because they are
+    #: different facts: an analyst who overturns the agent changes the outcome and
+    #: leaves the verdict alone, so ranking the model's own judgement above the human's
+    #: would starve the window of exactly the corrections that are worth the most.
+    #: ``outcome`` is also the only one of the two the precedent authority counts
+    #: (``engine/precedent.py`` tallies outcomes, never verdicts).
+    #:
+    #: ``verdict`` — the model's own judgement — is nevertheless REQUIRED as the inner
+    #: axis, and dropping it makes this whole block a no-op. Measured on a window of
+    #: 200 drawn from a pool where a recent bulk analyst action put a run of
+    #: ``outcome=false_positive / verdict=NEEDS_HUMAN`` at the head of every rule
+    #: bucket: rule-only selects 0 FALSE_POSITIVE / 200 NEEDS_HUMAN, ``rule+outcome``
+    #: selects 2 / 198 — indistinguishable from the defect — while ``rule+verdict``
+    #: selects 92 / 108 and ``rule+outcome+verdict`` selects 94 / 106. The reason is
+    #: structural: a deployment's analyst outcomes are near-uniform by construction
+    #: (an analyst confirms what the detection was FOR), so ``outcome`` has almost no
+    #: distinct values to round-robin over, while the compounding failure this window
+    #: exists to break lives ENTIRELY in the verdict dimension.
+    #:
+    #: An axis with a single distinct value is skipped, so neither costs anything on a
+    #: deployment where it happens to be uniform.
+    #:
+    #: Empty disables the AXES only. The admission cap is governed separately by
+    #: ``max_transaction_fraction`` (and by the master switch above), so an empty list
+    #: is NOT the same thing as plain newest-N. An axis whose values are all identical
+    #: is skipped, so a single-rule or single-outcome deployment falls back to the
+    #: remaining axes, and then to newest-first, by itself.
+    stratify_by: list[str] = Field(
+        default_factory=lambda: ["rule_identity", "outcome", "verdict"], max_length=4
+    )
+    #: The largest SHARE of the window one operator transaction (a bulk analyst action,
+    #: or the coarse time bucket that stands in for one on cases labelled before the
+    #: batch marker existed) may occupy. A FRACTION, never an absolute count, so it does
+    #: not encode one deployment's volume. It is SOFT and DEFERRED: over-cap items move
+    #: to the back of the ranking instead of being dropped, so the window still fills to
+    #: ``size`` whenever ``size`` qualifying items exist. ``0`` or ``1.0`` = no cap.
+    max_transaction_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class PrecedentFutilityConfig(BaseModel):
+    """Surface rules whose precedent is abundant but is not changing the outcome.
+
+    Read-only observability. Without it the product asks for more analyst confirmations
+    indefinitely with no signal that they cannot help.
+    """
+
+    enabled: bool = True
+    min_confirmed: int = Field(default=25, ge=1, le=100000)
+    min_recent_cases: int = Field(default=10, ge=1, le=100000)
+    max_auto_close_rate: float = Field(default=0.05, ge=0.0, le=1.0)
+
+
+class PrecedentRepairConfig(BaseModel):
+    """Bounds on the EXPLICIT, operator-invoked precedent TEXT-repair pass.
+
+    Deliberately NOT on ``PrecedentWindowConfig`` and NOT on
+    ``UnconfirmedPrecedentConfig``: both of those are dumped into the corpus SOURCE
+    SIGNATURE, so a field added there changes the signature bytes for every
+    deployment on upgrade and re-embeds the whole corpus at the operator's expense.
+    These are bounds on a maintenance pass, not a projection policy, so they must
+    never be able to trigger a reprojection.
+
+    Both thresholds are ADAPTIVE by default: ``0`` means "derive it from the
+    configured precedent window", so a deployment running a larger window gets a
+    proportionally larger allowance without anybody encoding one estate's volume here.
+
+    Nothing in this block is read by ``engine.case_manager.decide()`` (#3).
+    """
+
+    #: How many chunks ONE run may evict before the collapse guard even considers the
+    #: run large. ``0`` derives it from the precedent window size.
+    eviction_floor: int = Field(default=0, ge=0, le=100000)
+    #: The share of a tier's STORED chunks one run may evict. Combined with the floor
+    #: by AND, so lowering this cannot open the guard: at ``0.0`` EVERY eviction is
+    #: above the share and the floor alone decides. There is no value that disables it.
+    eviction_fraction: float = Field(default=0.25, ge=0.0, le=1.0)
+
+
+class PrecedentConfig(BaseModel):
+    """Rule-identity precedent: promotion, window fairness and futility reporting.
+
+    Nothing in this block is read by ``engine.case_manager.decide()`` (#3).
+    """
+
+    promotion: PrecedentPromotionConfig = Field(default_factory=PrecedentPromotionConfig)
+    window: PrecedentWindowConfig = Field(default_factory=PrecedentWindowConfig)
+    futility: PrecedentFutilityConfig = Field(default_factory=PrecedentFutilityConfig)
+    #: Bounds on the explicit text-repair pass. Not part of the corpus source
+    #: signature (see :class:`PrecedentRepairConfig`).
+    repair: PrecedentRepairConfig = Field(default_factory=PrecedentRepairConfig)
+    # How long the per-rule corpus distribution may be reused before it is recomputed.
+    # 0 disables the cache (recompute on every investigation).
+    distribution_ttl_seconds: int = Field(default=300, ge=0, le=3600)
+
+
 class AssetNetwork(BaseModel):
     """An internal-asset network: every IP inside ``cidr`` carries ``criticality``
     in the deterministic risk score's asset_criticality component (Section 6.2)."""
@@ -1697,11 +2967,11 @@ class AssetNetwork(BaseModel):
 class CrossSourceCorrelationConfig(BaseModel):
     """Optional, GLOBAL cross-source correlation (Wave 5 / F6).
 
-    Default ``enabled=False`` so today's single-source path is byte-identical out of
-    the box. When enabled, a SECOND, opt-in pass groups OPEN cases/clusters that share
-    an entity (ip/host/user/file_hash/domain) within ``time_window_seconds`` ACROSS
-    ``min_sources`` or more DISTINCT sources. It NEVER force-merges: the per-cluster
-    1:1 signature stays intact (#4) — it only ADDS ``related_case_ids`` +
+    Default ``enabled=True`` (see below); a single-source path stays byte-identical
+    because the pass is a no-op there. When enabled, a SECOND pass groups OPEN
+    cases/clusters that share an entity (ip/host/user/file_hash/domain) within
+    ``time_window_seconds`` ACROSS ``min_sources`` or more DISTINCT sources. It NEVER
+    force-merges: the per-cluster 1:1 signature stays intact (#4); it only ADDS ``related_case_ids`` +
     ``cross_source_cluster_id`` to the cases, surfacing them as RELATED.
 
     ``entity_keys`` lists the cross-source entity types considered (a superset of the
@@ -1937,6 +3207,25 @@ def upgrade_feed(raw: Any) -> dict[str, Any]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# SEEDED severity-ladder ceiling — the suite's ONE piece of built-in vendor severity
+# knowledge, and the ONLY place it appears.
+#
+# It is a SEED, not behaviour: it is written once into a source's editable
+# ``severity_scale_max`` when that source is created (or adopted on its next load, if
+# it has no declaration yet), and from that moment every severity surface reads the
+# declared NUMBER. No read path anywhere branches on ``source_type``, and this is not a
+# lookup table — there is exactly one seeded connector, and an operator who disagrees
+# simply declares a different ceiling, which the seed then leaves alone.
+#
+# Wazuh asserts severity as ``rule.level`` on a 0..16 ladder (level 12 is CRITICAL there,
+# which a 0..100 reading would mislabel LOW). Sourced from the Wazuh rules
+# classification documentation; operators running a customised rule set should declare
+# their own ceiling.
+SEEDED_SCALE_SOURCE_TYPE = SourceType.WAZUH
+SEEDED_SEVERITY_SCALE_MAX = 16.0
+
+
 class SourceInstance(BaseModel):
     """One configured log source (a connector instance).
 
@@ -1966,8 +3255,71 @@ class SourceInstance(BaseModel):
     is_primary: bool = False
     config: dict[str, Any] = Field(default_factory=dict)        # non-secret connector config
     configured_secrets: list[str] = Field(default_factory=list)  # secret field names set (not values)
+    # The operator-DECLARED ceiling of this source's NATIVE severity ladder — the single
+    # number that describes any ladder (0..10, 0..16, 0..1000). Every severity surface
+    # projects a raw source severity through ONE formula,
+    # ``min(100, max(0, raw / severity_scale_max * 100))``
+    # (:func:`app.ocsf.model.project_severity_magnitude`).
+    #
+    # ``None`` means UNDECLARED: the projection then uses
+    # ``constants.DEFAULT_SEVERITY_SCALE_MAX`` (100), i.e. the IDENTITY on the canonical
+    # OCSF ``severity_score`` every normaliser already emits. That is the honest default —
+    # with no declaration there is no evidence the number means anything other than what
+    # it says, and guessing a ladder from a value's magnitude is the bug this field
+    # retires. Optional + defaulted, so EVERY already-stored source config still
+    # validates unchanged (no migration, no backfill).
+    #
+    # Strictly positive AND FINITE: a zero/negative ceiling can never divide, and an
+    # infinite one would silently read every severity as 0 while still claiming the
+    # source asserted it (see the coercing validator below, and the fail-open guard
+    # inside the projection itself).
+    severity_scale_max: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     created_at: str = Field(default_factory=iso_now)
     updated_at: str = Field(default_factory=iso_now)
+
+    @field_validator("severity_scale_max", mode="before")
+    @classmethod
+    def _coerce_severity_scale_max(cls, value: Any) -> Any:
+        """Fail-open coercion of a stored ceiling: anything unusable reads UNDECLARED.
+
+        A hand-edited / legacy config carrying ``0``, a negative, ``""``, a non-numeric
+        or a NON-FINITE (``inf``/``nan``) ceiling must not make the whole Preferences
+        document unloadable — it degrades to ``None`` (undeclared → the default 100
+        identity projection), exactly as if the operator had never declared one. The
+        strict ``gt=0``/``allow_inf_nan=False`` bounds above still reject an explicit bad
+        value on the typed API boundary (``SourceUpsert``).
+
+        ``inf`` matters as much as ``0`` here: it passes every ``> 0`` test, divides
+        without raising, and would read EVERY severity from that source as ``0.0``
+        (Informational) while the API echoed the ceiling back as JSON ``Infinity``."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(num) or num <= 0:
+            return None
+        return num
+
+    @model_validator(mode="after")
+    def _seed_severity_scale_max(self) -> "SourceInstance":
+        """SEED (never override) the declared ceiling for a connector we ship knowledge of.
+
+        This is where the suite's only piece of vendor severity knowledge lives, and it
+        lives here DELIBERATELY: at source construction/validation time, as a seeded
+        DEFAULT the operator may edit, NOT as a runtime lookup table consulted on every
+        read. Nothing downstream branches on ``source_type`` any more — the projection
+        reads one number.
+
+        Idempotent + no-op-safe: it fires only when the ceiling is still UNDECLARED, so
+        it seeds a newly created source AND adopts an already-stored one on its next
+        load, and it can never overwrite an operator's own declaration. It is not a
+        migration: no stored document is rewritten until the operator next saves that
+        source. To choose a different ceiling, declare one; the seed then stands aside."""
+        if self.severity_scale_max is None and self.source_type == SEEDED_SCALE_SOURCE_TYPE:
+            object.__setattr__(self, "severity_scale_max", SEEDED_SEVERITY_SCALE_MAX)
+        return self
 
     def index_patterns(self) -> list[IndexPattern]:
         """The configured FEEDS for this source (canonical parser).
@@ -2052,6 +3404,13 @@ class SourceInstance(BaseModel):
         return True
 
 
+#: The keys of a stored ``RBACConfig`` dump written before Round 14 (every one is
+#: present in a persisted block; a constructed block usually names a subset).
+_RBAC_PERSISTED_MARKERS: tuple[str, ...] = (
+    "enabled", "default_role", "roles", "custom_roles", "resources", "denies",
+)
+
+
 class RBACConfig(BaseModel):
     """Role-based access control configuration (Wave 1 / F2).
 
@@ -2078,6 +3437,193 @@ class RBACConfig(BaseModel):
     custom_roles: list[dict[str, Any]] = Field(default_factory=list)
     resources: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
     denies: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    # Round 14 (SPEC §3.7, E8): the grant vocabulary these maps were written in. A
+    # stored block without it (or below 2) predates the runbook vocabulary: on load
+    # its ``runbooks:manage`` grants also gain ``runbooks:publish`` (and a deny of it
+    # also denies publish) ONCE, then the block is stamped, so a later removal of
+    # ``publish`` sticks. The ``playbooks`` -> ``runbooks`` alias applies always: on
+    # that first load it is unioned into ``runbooks``; after it a ``runbooks`` entry
+    # that is present is authoritative (the alias maps only where it is absent), so a
+    # narrowing of ``runbooks`` sticks beside the ``playbooks`` key the load kept.
+    rbac_grants_version: int = Field(default=RBAC_GRANTS_VERSION, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise_grant_layers(cls, data: Any) -> Any:
+        """Apply the Round 14 grant aliases to every stored layer (SPEC §3.7):
+        ``roles`` (REPLACE semantics per role, :func:`normalise_role_overrides`),
+        ``resources`` (additive), ``denies`` and each custom role's ``grants`` and
+        ``denies``. Runs on load and on every
+        write (the settings PUT validates the merged document), BEFORE the matrix
+        resolver could skip the retired resource. The once-only ``publish`` rule
+        applies to a block stored before Round 14 (it carries the full set of stored
+        keys but no current ``rbac_grants_version``); a constructed block (a subset of
+        keys, as code and tests build one) is read in the current vocabulary. So is a
+        block that names an action only Round 14 has (``runbooks:run``,
+        ``runbooks:publish``, ``audit:export``) in any layer: a build from before
+        Round 14 drops the unknown stamp on its next save but keeps the maps, so a
+        downgrade, a save and a re-upgrade never re-run the once-only rules over a
+        Round 14 choice (:func:`app.rbac.policy.rbac_layers_name_round14_actions`).
+        Pure on a copy; never raises (a malformed layer is passed through for normal
+        validation to report)."""
+        if not isinstance(data, dict):
+            return data
+        legacy = (
+            grants_version_is_legacy(data.get("rbac_grants_version"))
+            and all(key in data for key in _RBAC_PERSISTED_MARKERS)
+            and not rbac_layers_name_round14_actions(data)
+        )
+        out = dict(data)
+        if isinstance(out.get("roles"), dict):
+            # REPLACE semantics: an override naming one of the two procedure
+            # resources keeps the other's pre-Round 14 default (no silent loss).
+            out["roles"] = normalise_role_overrides(out["roles"], legacy=legacy)
+        if isinstance(out.get("resources"), dict):
+            out["resources"] = normalise_role_grant_map(out["resources"], legacy=legacy)
+        if isinstance(out.get("denies"), dict):
+            out["denies"] = normalise_role_grant_map(out["denies"], legacy=legacy, deny=True)
+        if isinstance(out.get("custom_roles"), list):
+            out["custom_roles"] = [
+                normalise_custom_role(spec, legacy=legacy) for spec in out["custom_roles"]
+            ]
+        # A stamp a newer build wrote is kept (this build only reads it as current),
+        # so a rollback and a save never lower it and re-run a newer once-only rule.
+        stored_stamp = data.get("rbac_grants_version")
+        newer = (
+            isinstance(stored_stamp, int)
+            and not isinstance(stored_stamp, bool)
+            and stored_stamp > RBAC_GRANTS_VERSION
+        )
+        out["rbac_grants_version"] = stored_stamp if newer else RBAC_GRANTS_VERSION
+        return out
+
+
+def _remember_repair_bool(raw: Any, default: bool) -> bool:
+    """A stored boolean, repaired: real bools pass, common string/int spellings map,
+    anything else becomes ``default`` (never raises)."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        text = raw.strip().lower()
+        if text in ("true", "1", "yes", "on"):
+            return True
+        if text in ("false", "0", "no", "off"):
+            return False
+        return default
+    if isinstance(raw, int):
+        return bool(raw)
+    return default
+
+
+def _remember_repair_int(raw: Any) -> int | None:
+    """A stored integer, repaired: ints/finite floats/numeric strings parse, bools and
+    anything else return ``None`` (the caller substitutes its default)."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float) and math.isfinite(raw):
+        return int(raw)
+    if isinstance(raw, str):
+        try:
+            return int(float(raw.strip()))
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return None
+
+
+class RememberMePolicy(BaseModel):
+    """The "Remember me" sign-in policy (Round 12, SPEC D14 / §3.1).
+
+    A remembered sign-in gets a PERSISTENT session cookie whose ``Max-Age`` (and the
+    JWT ``exp``) equal ``duration_seconds``; the session-registry row carries
+    ``remember: true`` and is judged against this policy's limits instead of the
+    standard ``idle_timeout`` / ``absolute_lifetime``. The server registry stays the
+    authority (NIST SP 800-63B-4 §5.1: cookie expiry is never relied upon).
+
+    * ``enabled`` — offer "Remember me" on the sign-in page (default ON). Turning it
+      off makes existing remembered sessions fall back to the standard limits.
+    * ``duration_seconds`` — how long a remembered device stays signed in before a
+      full sign-in (password + MFA) is required. 1 h .. 24 h, default 24 h (the
+      NIST AAL2 overall-timeout ceiling). The UI offers 6 / 12 / 24 h presets. The
+      24 h maximum also keeps the session prune-grace invariant
+      (``stores.sessions._PRUNE_GRACE_SECONDS`` must exceed every token lifetime).
+    * ``idle_seconds`` — optional inactivity limit for remembered sessions. ``None``
+      means no separate limit: remembered sessions then use the STANDARD
+      ``idle_timeout`` (so an upgrade never loosens a stricter stored policy). The
+      remembered absolute limit is likewise capped by ``absolute_lifetime``
+      (``app.auth.session_limits``).
+    * ``excluded_roles`` — roles that are never remembered (e.g. ``super_admin``).
+    * ``allow_insecure_http`` — allow a persistent cookie on a plain-HTTP,
+      non-loopback console (not recommended; off by default).
+
+    Stored values are REPAIRED, never rejected (the ``chat_agent`` convention): the
+    preference loaders answer any validation error with full defaults, so one bad
+    number must never reset the whole configuration. A live settings WRITE is
+    validated strictly instead (``routes._reject_out_of_range_remember_me`` answers
+    an out-of-range or malformed value with 422), so an administrator never gets a
+    looser policy than the one they asked for."""
+
+    enabled: bool = True
+    duration_seconds: int = Field(default=86_400, ge=3_600, le=86_400)
+    idle_seconds: int | None = Field(default=None, ge=300, le=86_400)
+    excluded_roles: list[str] = Field(default_factory=list, max_length=50)
+    allow_insecure_http: bool = False
+
+    _DURATION_BOUNDS: ClassVar[tuple[int, int]] = (3_600, 86_400)
+    _IDLE_BOUNDS: ClassVar[tuple[int, int]] = (300, 86_400)
+    _MAX_ROLES: ClassVar[int] = 50
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        if isinstance(data, RememberMePolicy):
+            return data
+        if not isinstance(data, Mapping):
+            if data is not None:
+                logger.warning(
+                    "Preferences.session_policy.remember_me was %s; using defaults",
+                    type(data).__name__,
+                )
+            return {}
+        out: dict[str, Any] = dict(data)
+        if "enabled" in out:
+            out["enabled"] = _remember_repair_bool(out["enabled"], True)
+        if "allow_insecure_http" in out:
+            out["allow_insecure_http"] = _remember_repair_bool(out["allow_insecure_http"], False)
+        if "duration_seconds" in out:
+            lo, hi = cls._DURATION_BOUNDS
+            value = _remember_repair_int(out["duration_seconds"])
+            repaired = 86_400 if value is None else min(max(value, lo), hi)
+            if repaired != out["duration_seconds"]:
+                logger.warning(
+                    "Preferences.session_policy.remember_me.duration_seconds=%r is invalid "
+                    "or outside %d..%d; repaired to %d",
+                    out["duration_seconds"], lo, hi, repaired,
+                )
+            out["duration_seconds"] = repaired
+        if "idle_seconds" in out:
+            raw_idle = out["idle_seconds"]
+            value = None if raw_idle is None else _remember_repair_int(raw_idle)
+            if value is None or value <= 0:
+                out["idle_seconds"] = None  # 0 / blank / malformed = no separate limit
+            else:
+                lo, hi = cls._IDLE_BOUNDS
+                out["idle_seconds"] = min(max(value, lo), hi)
+        if "excluded_roles" in out:
+            raw_roles = out["excluded_roles"]
+            if isinstance(raw_roles, str):
+                raw_roles = [r for r in raw_roles.split(",")]
+            roles: list[str] = []
+            if isinstance(raw_roles, (list, tuple, set)):
+                for item in raw_roles:
+                    if not isinstance(item, str):
+                        continue
+                    name = item.strip()[:64]
+                    if name and name not in roles:
+                        roles.append(name)
+            out["excluded_roles"] = roles[: cls._MAX_ROLES]
+        return out
 
 
 class SessionPolicyConfig(BaseModel):
@@ -2103,6 +3649,9 @@ class SessionPolicyConfig(BaseModel):
       step-up-gated (``require_fresh_auth``) action. Default 10 min.
     * ``notify_on_new_device`` / ``notify_on_terminate`` — best-effort operator
       notifications on a first-seen device / a session termination (default OFF).
+    * ``remember_me`` — the Round-12 "Remember me" policy (:class:`RememberMePolicy`).
+      The standard ``idle_timeout`` / ``absolute_lifetime`` keep governing every
+      sign-in that was not remembered (a browser-session cookie).
     """
 
     access_ttl: int = Field(default=3600, ge=60)             # 1h
@@ -2112,6 +3661,7 @@ class SessionPolicyConfig(BaseModel):
     sudo_reauth_window: int = Field(default=600, ge=30)      # 10 min step-up window
     notify_on_new_device: bool = False
     notify_on_terminate: bool = False
+    remember_me: RememberMePolicy = Field(default_factory=RememberMePolicy)
 
 
 class MfaConfig(BaseModel):
@@ -2286,6 +3836,144 @@ class NotificationConfig(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Round 15 (SPEC D3.4, D6.2): Team activity and the auto-close review sample.
+# --------------------------------------------------------------------------- #
+def _repair_float(raw: Any) -> float | None:
+    """A stored number, repaired: finite ints, floats and numeric strings parse; bools,
+    non-finite values and anything else return ``None`` (the caller substitutes its
+    default). Never raises."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+    elif isinstance(raw, str):
+        try:
+            value = float(raw.strip())
+        except (TypeError, ValueError, OverflowError):
+            return None
+    else:
+        return None
+    return value if math.isfinite(value) else None
+
+
+class TeamActivityConfig(BaseModel):
+    """The Team activity page (Round 15 SPEC D3.4): one switch, on by default (#10).
+
+    Off, the team routes answer ``409 team_activity_off`` and the page says which
+    switch turned it off. Reading the page also needs ``team:view`` (and, while
+    role-based access is off, a stored role of Super admin, SOC manager or Auditor).
+    A stored value is REPAIRED, never rejected (the ``chat_agent`` convention), so one
+    malformed flag can never reset the rest of the configuration. Presentation and
+    access only: it never feeds ``decide()`` (#3)."""
+
+    enabled: bool = Field(default=True, description="Show the Team activity page.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        if isinstance(data, TeamActivityConfig):
+            return data
+        if not isinstance(data, Mapping):
+            if data is not None:
+                logger.warning("Preferences.team_activity was %s; using defaults", type(data).__name__)
+            return {}
+        out: dict[str, Any] = dict(data)
+        if "enabled" in out:
+            repaired = _remember_repair_bool(out["enabled"], True)
+            if repaired is not out["enabled"]:
+                logger.warning(
+                    "Preferences.team_activity.enabled=%r is not true or false; repaired to %r",
+                    out["enabled"], repaired,
+                )
+            out["enabled"] = repaired
+        return out
+
+
+class AutoCloseReviewConfig(BaseModel):
+    """The random auto-close review sample (Round 15 SPEC D6.1, D6.2).
+
+    A deterministic, seeded, capped sample of the cases the AI agent closed
+    automatically is queued for a person to classify; their answer becomes independent
+    ground truth. On by default at 5% and 10 a day (#10). The sampler runs strictly
+    AFTER ``CaseManager.apply()`` and the save: none of these values is ever read by
+    ``decide()`` or changes a case's status, decider or disposition (#3).
+
+    Stored values are REPAIRED on load (clamped into the declared range; a malformed
+    value becomes the field default), so one bad number can never reset the whole
+    configuration. A live settings WRITE is validated strictly instead:
+    ``routes._reject_out_of_range_auto_close_review`` answers an out-of-range or
+    malformed value in the request body with 422, so an operator never gets a value
+    they did not type. The bounds are :data:`AUTO_CLOSE_REVIEW_BOUNDS`."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Send a small random sample of automatically closed cases to a person for review.",
+    )
+    sample_rate: float = Field(
+        default=0.05, ge=0.0, le=0.5,
+        description="The share of automatic closes picked for review, from 0 to 0.5.",
+    )
+    daily_cap: int = Field(
+        default=10, ge=0, le=200,
+        description="The most cases picked for review in one day (in the operator time zone).",
+    )
+    per_rule_daily_cap: int = Field(
+        default=3, ge=1, le=50,
+        description="The most cases of one detection rule picked for review in one day.",
+    )
+    expiry_days: int = Field(
+        default=7, ge=1, le=30,
+        description="Days a picked case waits for its review before it is shown as expired.",
+    )
+
+    #: ``(low, high, is_integer)`` per numeric field, the one table the load repair and
+    #: the write rejection both read (kept equal to the field constraints by a test).
+    _BOUNDS: ClassVar[dict[str, tuple[float, float, bool]]] = {
+        "sample_rate": (0.0, 0.5, False),
+        "daily_cap": (0, 200, True),
+        "per_rule_daily_cap": (1, 50, True),
+        "expiry_days": (1, 30, True),
+    }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        if isinstance(data, AutoCloseReviewConfig):
+            return data
+        if not isinstance(data, Mapping):
+            if data is not None:
+                logger.warning("Preferences.auto_close_review was %s; using defaults", type(data).__name__)
+            return {}
+        out: dict[str, Any] = dict(data)
+        if "enabled" in out:
+            out["enabled"] = _remember_repair_bool(out["enabled"], True)
+        for name, (lo, hi, integer) in cls._BOUNDS.items():
+            if name not in out:
+                continue
+            raw = out[name]
+            default = cls.model_fields[name].default
+            value = _repair_float(raw)
+            if value is None:
+                repaired: float | int = default
+            else:
+                clamped = min(max(value, float(lo)), float(hi))
+                repaired = int(clamped) if integer else clamped
+            if repaired != raw or isinstance(raw, (bool, str)):
+                logger.warning(
+                    "Preferences.auto_close_review.%s=%r is invalid or outside %s..%s; repaired "
+                    "to %r (the rest of the stored configuration is preserved)",
+                    name, raw, lo, hi, repaired,
+                )
+            out[name] = repaired
+        return out
+
+
+#: The inclusive range of every numeric ``auto_close_review`` field, and whether it is a
+#: whole number: ``{name: (low, high, is_integer)}`` (SPEC D6.2).
+AUTO_CLOSE_REVIEW_BOUNDS: dict[str, tuple[float, float, bool]] = dict(AutoCloseReviewConfig._BOUNDS)
+
+
+# --------------------------------------------------------------------------- #
 # Autopilot posture (overhaul) — one sensitivity dial that scales the three cost/
 # aggression knobs. ``balanced`` is the concrete out-of-the-box default and its bounds
 # match the field-level defaults above (risk floor 70 / daily $10 / per-tick cap 25),
@@ -2328,6 +4016,72 @@ _PERSISTED_CONFIG_MARKERS = ("data_view_pattern", "poll_interval_seconds", "setu
 
 class Preferences(BaseModel):
     """The complete UI-editable configuration. Every field has a working default."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _clamp_caps(cls, data: Any) -> Any:
+        """REPAIR (never reject) a stored ``caps`` value that is below its declared floor.
+
+        ⚠ WHY THIS IS MANDATORY, not a nicety. ``CapsConfig`` now declares ``ge=1`` on its
+        numeric caps (a zero/negative cap cannot express a working configuration). But BOTH
+        preference loaders — :class:`app.stores.config_store.ConfigStore.load` and the SQL
+        ``ConfigRepository.load`` — answer ANY validation error by catching a bare
+        ``Exception`` and returning a FULL DEFAULT ``Preferences()``. And ``Preferences`` is
+        ONE document: it also carries ``auto_close`` (the very policy ``decide()`` consumes),
+        ``rule_catalog``, ``sources``, the model config and every other operator setting. So
+        introducing the bound WITHOUT this repair path would mean a single out-of-range
+        stored integer silently reverts the close policy, the rule catalog and the source
+        list for every deployer already holding one — behind a single ``logger.warning``
+        that no UI surfaces. Repairing is the only safe way to add the bound.
+
+        Deliberately NOT gated on ``_PERSISTED_CONFIG_MARKERS`` (unlike ``_migrate_autopilot``,
+        which must not clobber a targeted programmatic opt-out): a clamp has no intent to
+        respect — an out-of-range value is unusable however it was produced — and gating it
+        would skip the repair for programmatic constructions, which is exactly where a test
+        or an internal caller would hit the new hard failure.
+
+        The floors are read back off ``CapsConfig`` (:data:`CAPS_MINIMUMS`) so this can never
+        drift from the constraints it repairs. There is no upper bound to clamp against.
+        A non-numeric value is left alone for normal field validation to report.
+
+        NOTE for the API path: because this ``before`` validator repairs first, the field
+        constraint can never fire for a value that arrives in a REQUEST BODY either — a
+        settings PUT carrying ``caps.timeout_seconds = 0`` would otherwise be silently
+        accepted-as-1 rather than rejected. ``api.routes._reject_out_of_range_caps``
+        therefore checks the REQUEST BODY (never the merged document) against
+        :data:`CAPS_MINIMUMS` and answers 422 before the merge, so a live edit is rejected
+        while a stored document stays loadable. This validator's job is only the latter."""
+        if not isinstance(data, dict):
+            return data
+        caps = data.get("caps")
+        if not isinstance(caps, dict):
+            return data
+        repaired: dict[str, Any] | None = None
+        for key, floor in CAPS_MINIMUMS.items():
+            if key not in caps:
+                continue
+            raw = caps[key]
+            if isinstance(raw, bool):  # bools are ints in Python; never coerce one
+                continue
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue  # not a number — let normal field validation report it
+            if value >= floor:
+                continue
+            if repaired is None:
+                repaired = dict(caps)
+            repaired[key] = floor
+            logger.warning(
+                "Preferences.caps.%s=%r is below the supported minimum; clamped %r -> %d "
+                "(the rest of the stored configuration is preserved)",
+                key, raw, raw, floor,
+            )
+        if repaired is None:
+            return data
+        out = dict(data)  # copy — never mutate the caller's dict in place
+        out["caps"] = repaired
+        return out
 
     @model_validator(mode="before")
     @classmethod
@@ -2445,6 +4199,54 @@ class Preferences(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def _migrate_retired_runbook_keys(cls, data: Any) -> Any:
+        """Map the retired runbook keys once (SPEC §4.10.19,
+        :func:`_map_retired_runbook_keys`). A fresh install and any document whose
+        ``runbooks`` block is already stamped are left untouched."""
+        if not isinstance(data, dict) or not data:
+            return data
+        return _map_retired_runbook_keys(data)
+
+    @model_validator(mode="after")
+    def _mirror_retired_runbook_keys(self) -> "Preferences":
+        """Keep the two retired keys equal to their successors (SPEC §4.10.19):
+        ``playbooks.enabled`` mirrors ``runbooks.investigator_guidance`` and
+        ``rag.use_runbooks`` mirrors ``runbooks.rag_corpus``. The new keys are the
+        one truth; code that still reads an old key sees it, and a stored old key can
+        never disagree with the setting the Console shows. Copies are assigned, so a
+        section model the caller passed in is never changed in place."""
+        guidance = bool(self.runbooks.investigator_guidance)
+        if self.playbooks.enabled != guidance:
+            self.playbooks = self.playbooks.model_copy(update={"enabled": guidance})
+        corpus = bool(self.runbooks.rag_corpus)
+        if self.rag.use_runbooks != corpus:
+            self.rag = self.rag.model_copy(update={"use_runbooks": corpus})
+        return self
+
+    @model_validator(mode="after")
+    def _one_org_theme_default(self) -> "Preferences":
+        """Branding ``default_theme`` is the one organization theme default (Round 16,
+        B45). An administrator's earlier choice in the legacy Appearance control
+        (``customization.default_theme``, which used to override Branding for every
+        "System" user) is kept: while Branding is still at its factory default, the
+        legacy value is copied into Branding the way the Branding editor writes it, and
+        the legacy value becomes ``system`` in the same load. So the copy happens once,
+        a second load changes nothing, and a later Branding reset is not undone by the
+        legacy value. Copies are assigned, so a section model the caller passed in is
+        never changed in place."""
+        legacy = self.customization.default_theme
+        if legacy == "system":
+            return self
+        factory = BrandingConfig.model_fields["default_theme"].default
+        if self.branding.default_theme == factory:
+            self.branding = self.branding.model_copy(
+                update={"default_theme": legacy, "theme": legacy, "dark_mode_default": False}
+            )
+        self.customization = self.customization.model_copy(update={"default_theme": "system"})
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
     def _migrate_fp_auto_close(cls, data: Any) -> Any:
         """Back-compat: a stored config predating ``auto_close`` carried only
         ``fp_auto_close``. Map it into ``auto_close.false_positive`` so old persisted
@@ -2539,8 +4341,36 @@ class Preferences(BaseModel):
     rule_name_field: str = "rule.name"
     severity_field: str = "event.severity"
     severity_threshold: float = 0.0         # min numeric severity in scope
+    # NOTE — there is deliberately NO Preferences-level severity ceiling. A source's
+    # native severity ladder is declared per SOURCE (``SourceInstance
+    # .severity_scale_max``), because that is the only tier EVERY severity surface can
+    # read: the ingest paths (OCSF normalisation, the Noise-Reduction counters, the
+    # per-feed severity floor) resolve the ceiling from the event's own source, and a
+    # global fallback they could not see would make the case chip disagree with the
+    # funnel for the same raw number. Undeclared means the identity projection (100).
     in_scope_rules: list[str] = Field(default_factory=list)   # empty == all rules
     excluded_rules: list[str] = Field(default_factory=list)
+
+    # --- Case evidence projected into prompts + searched by free text ---
+    # The extra raw-record paths the investigator/router see per sample event, the
+    # ``es_query`` tool returns per row, and free-text ``contains`` is matched
+    # against. ONE list drives all three (``app/evidence_fields.py``) so a field can
+    # never again be invisible in the prompt AND unmatchable in the query at the
+    # same time. Defaults to the ECS set that most often carries the verdict; set
+    # ``["*"]`` to ship the whole record bounded only by the size budget below, or
+    # ``[]`` for the pre-0.1.13 identity-only projection. Overridable per source via
+    # ``SourceInstance.config["evidence_fields"]``.
+    evidence_fields: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_EVIDENCE_FIELDS)
+    )
+    # Serialised-character budget for ONE projected event. When it binds, the
+    # projection drops rule-DEFINITION metadata first and names what it withheld
+    # back to the model, rather than cutting blindly mid-record.
+    evidence_max_chars_per_event: int = Field(
+        default=DEFAULT_EVIDENCE_MAX_CHARS_PER_EVENT,
+        ge=0,
+        le=MAX_EVIDENCE_MAX_CHARS_PER_EVENT,
+    )
 
     # --- Polling (Section 6.1) ---
     poll_interval_seconds: int = 30
@@ -2597,9 +4427,10 @@ class Preferences(BaseModel):
     # --- Correlation (Section 6.2) ---
     default_correlation: CorrelationRule = Field(default_factory=CorrelationRule)
     correlation_rules: dict[str, CorrelationRule] = Field(default_factory=dict)
-    # Optional, GLOBAL cross-source correlation (Wave 5 / F6). Default OFF →
-    # single-source behaviour is byte-identical. When enabled, an additive pass links
-    # open cases sharing an entity across >= min_sources sources (RELATED, never merged).
+    # Optional, GLOBAL cross-source correlation (Wave 5 / F6). Default ON since the
+    # Autopilot overhaul; a single-source tenant is a no-op. When enabled, an additive
+    # pass links open cases sharing an entity across >= min_sources sources (RELATED,
+    # never merged).
     cross_source_correlation: CrossSourceCorrelationConfig = Field(
         default_factory=CrossSourceCorrelationConfig
     )
@@ -2612,6 +4443,11 @@ class Preferences(BaseModel):
     # --- Cost gate / caps (Section 6.3) ---
     caps: CapsConfig = Field(default_factory=CapsConfig)
     suppression_rules: list[SuppressionRule] = Field(default_factory=list)
+    # Operator declarations that a detection is benign in THIS estate. Honoured
+    # deterministically with no LLM call, under the distinct ``analyst_policy`` decision
+    # owner, and excluded from every agent-performance statistic. Empty by default —
+    # nothing changes until an operator explicitly declares something.
+    analyst_rule_policies: list[AnalystRulePolicy] = Field(default_factory=list)
 
     # --- Automated scans (Surface 3) ---
     # Autopilot overhaul: the master switch defaults ON so a zero-config install actually
@@ -2635,11 +4471,18 @@ class Preferences(BaseModel):
     rag: RagConfig = Field(default_factory=RagConfig)
     standup: StandupConfig = Field(default_factory=StandupConfig)
     trace: TraceConfig = Field(default_factory=TraceConfig)
+    # Agentic chat loop bounds (chat revamp SPEC §4.2). Clamped on load, never
+    # rejected (see ChatAgentConfig._repair), so a bad stored value cannot reset the
+    # rest of this document.
+    chat_agent: ChatAgentConfig = Field(default_factory=ChatAgentConfig)
     # Multi-agent roster + plain-text runbooks/playbooks (Vigil-inspired). All
     # default ON and degrade to prior behaviour when disabled.
     personas: PersonaConfig = Field(default_factory=PersonaConfig)
+    # Round 14 (SPEC §4.10.19): the one Runbooks feature. ``playbooks`` is the retired
+    # section, accepted on load for one release (its ``enabled`` mirrors
+    # ``runbooks.investigator_guidance``; its ``dir`` is read once by the migration).
     runbooks: RunbookConfig = Field(default_factory=RunbookConfig)
-    playbooks: PlaybookConfig = Field(default_factory=PlaybookConfig)
+    playbooks: LegacyProcedureConfig = Field(default_factory=LegacyProcedureConfig)
     # Threat-context case panel (Wave 6 / F11) — advisory, read-only, fail-open.
     threat_context: ThreatContextConfig = Field(default_factory=ThreatContextConfig)
     # Threshold automation (Wave 6 / F10) — default OFF; post-decision, #3-safe. It
@@ -2689,6 +4532,11 @@ class Preferences(BaseModel):
     priority_matrix: PriorityMatrix = Field(default_factory=PriorityMatrix)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     realtime: RealtimeConfig = Field(default_factory=RealtimeConfig)
+    # Provider circuit-breaker policy. SHIPPED IN ADVISORY MODE: ``enforce`` is False,
+    # so an absent or default-constructed block observes and reports but REFUSES
+    # NOTHING. It gates whether a call is ATTEMPTED, never what a case decides (#3),
+    # and it writes no ledger row of its own (#6).
+    resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     # Public upstream metadata only. The corresponding service is hard-pinned to
     # api.github.com, cached, bounded, and read-only; this configuration can never
     # deploy or activate code.
@@ -2707,6 +4555,27 @@ class Preferences(BaseModel):
     batch: BatchConfig = Field(default_factory=BatchConfig)
     baseline: BaselineConfig = Field(default_factory=BaselineConfig)
     campaign: CampaignConfig = Field(default_factory=CampaignConfig)
+
+    # --- Replay harness fixture capture (observational; never feeds decide(), #3).
+    # ON by default because the bound is structural (ring_size x max_fixture_bytes),
+    # and because a retrospective comparison is impossible in this system: only what
+    # is captured from now on can be measured against a future change. ---
+    replay_capture: ReplayCaptureConfig = Field(default_factory=ReplayCaptureConfig)
+
+    # --- Rule-identity precedent (promotion / window fairness / futility) ---
+    # Promotion is OFF by default (it changes what the investigator is told). The window
+    # stratification and the futility report are ON: both are $0 read-side fairness and
+    # observability fixes, and a flat precedent window is an outage waiting to happen.
+    # None of it feeds ``case_manager.decide()`` (#3).
+    precedent: PrecedentConfig = Field(default_factory=PrecedentConfig)
+
+    # --- Round 15 (SPEC D3.4, D6.2). Both ON by default (#10); both repaired on load,
+    # never rejected (see their ``_repair`` validators), and a live write out of range
+    # answers 422 in ``put_settings``. Neither feeds ``case_manager.decide()`` (#3). ---
+    # The Team activity page (per-person work counts from the audit log).
+    team_activity: TeamActivityConfig = Field(default_factory=TeamActivityConfig)
+    # The random, capped sample of automatic closes sent to a person for review.
+    auto_close_review: AutoCloseReviewConfig = Field(default_factory=AutoCloseReviewConfig)
 
     # --- Autopilot posture (overhaul) ---
     # One sensitivity dial that scales the three cost/aggression knobs
@@ -2731,6 +4600,107 @@ class Preferences(BaseModel):
     def correlation_for(self, rule_value: str) -> CorrelationRule:
         """Return the correlation rule for a given rule value, or the default."""
         return self.correlation_rules.get(rule_value, self.default_correlation)
+
+    def evidence_fields_from_config(
+        self, config: "Mapping[str, Any] | None"
+    ) -> tuple[str, ...]:
+        """One source's effective evidence projection, from its raw connector config.
+
+        The single expression of the source-over-global precedence, so the two
+        callers that resolve it — the prompt path (by source id, through
+        :meth:`evidence_fields_for`) and the ``es_query`` tool (directly, from the
+        connector it is bound to) — cannot disagree. An absent key inherits the
+        global list; an explicit ``[]`` is an operator pinning the narrow
+        identity-only projection.
+        """
+        raw = (config or {}).get("evidence_fields")
+        if raw is None:
+            return normalise_evidence_fields(self.evidence_fields)
+        return normalise_evidence_fields(raw)
+
+    def evidence_budget_from_config(self, config: "Mapping[str, Any] | None") -> int:
+        """One source's effective per-event budget, clamped. See above for precedence."""
+        raw = (config or {}).get("evidence_max_chars_per_event")
+        if raw is None:
+            return self.evidence_budget()
+        return clamp_evidence_budget(raw)
+
+    def evidence_fields_for(
+        self, source_ids: Sequence[str] | None = None
+    ) -> tuple[str, ...]:
+        """The effective evidence projection for a cluster, by contributing source.
+
+        A cluster can span sources (cross-source correlation), so per-source lists
+        are UNIONED in source order rather than one winning. Union, not replace,
+        because dropping a source's decision field just because a co-correlated
+        source pinned a narrower list is precisely the invisible-field failure this
+        projection exists to prevent. A wildcard on any contributing source wins, it
+        being the superset of every other answer.
+
+        With no ``source_ids`` (or none of them configured) this is the global
+        ``evidence_fields``, which is what a single-source deployment always gets.
+        """
+        global_fields = normalise_evidence_fields(self.evidence_fields)
+        if not source_ids:
+            return global_fields
+        by_id = {s.id: s for s in self.sources}
+        out: list[str] = []
+        seen: set[str] = set()
+        matched = False
+        for source_id in source_ids:
+            source = by_id.get(source_id)
+            if source is None:
+                continue
+            matched = True
+            resolved = self.evidence_fields_from_config(source.config)
+            if is_wildcard(resolved):
+                return (EVIDENCE_WILDCARD,)
+            for path in resolved:
+                if path not in seen:
+                    seen.add(path)
+                    out.append(path)
+        if not matched:
+            return global_fields
+        return normalise_evidence_fields(out)
+
+    def evidence_budget(self) -> int:
+        """The global per-event serialised-character budget, clamped to range.
+
+        Clamped at READ time because the same key is overlaid per source through
+        ``model_copy(update=...)``, which does not validate.
+        """
+        return clamp_evidence_budget(self.evidence_max_chars_per_event)
+
+    def evidence_budget_for(self, source_ids: Sequence[str] | None = None) -> int:
+        """The per-event budget for a cluster, by contributing source.
+
+        Resolved alongside :meth:`evidence_fields_for` so the prompt path applies the
+        SAME per-source configuration to both halves of the projection — a per-source
+        field list honoured against a global budget would silently withhold the very
+        fields that source was configured to surface. A cluster spanning sources takes
+        the most generous budget, matching the union semantics of the field list.
+        """
+        if not source_ids:
+            return self.evidence_budget()
+        by_id = {s.id: s for s in self.sources}
+        budgets = [
+            self.evidence_budget_from_config(source.config)
+            for source_id in source_ids
+            if (source := by_id.get(source_id)) is not None
+        ]
+        return max(budgets) if budgets else self.evidence_budget()
+
+    def free_text_search_fields(self) -> list[str]:
+        """The fields a connector matches a free-text ``contains`` against.
+
+        Derived from the SAME ``evidence_fields`` the prompt projection uses, so a
+        field the model can see is a field the model can then search for.
+        """
+        return _resolve_free_text_search_fields(
+            rule_name_field=self.rule_name_field,
+            message_field=self.message_field,
+            evidence_fields=self.evidence_fields,
+        )
 
     def entity_strategy_for(self, source: "SourceInstance | None") -> EntityStrategy:
         """The effective entity-resolution strategy for a source: the source's own
@@ -2823,6 +4793,25 @@ class Preferences(BaseModel):
             return self.correlation_rules.get(rd.name, self.default_correlation)
         return self.default_correlation
 
+    def widest_correlation_window_seconds(self) -> int:
+        """The widest correlation window any configured rule can ask for (Round 16 B07):
+        the default window, every ``correlation_rules`` entry, and every ENABLED
+        rule-catalog definition's effective window (:meth:`correlation_for_def`, which
+        prefers the inline correlation the Detection and Rules editor saves); a
+        definition whose mode is ``never`` is skipped, it never correlates. The poller
+        and the push look-back both read it, so a catalog rule's 1-hour threshold sees
+        an hour of events, not the default window."""
+        windows = [self.default_correlation.window_seconds]
+        windows.extend(rule.window_seconds for rule in self.correlation_rules.values())
+        for rd in self.rule_catalog:
+            if not rd.enabled:
+                continue
+            resolved = self.correlation_for_def(rd)
+            if resolved.mode == CorrelationMode.NEVER:
+                continue
+            windows.append(resolved.window_seconds)
+        return max(int(w) for w in windows)
+
     def model_for(self, role: str) -> ModelConfig:
         mapping = {
             "router": self.router_model,
@@ -2841,7 +4830,12 @@ class Preferences(BaseModel):
         Seeds ONLY when the stored catalog is empty OR its
         ``rule_catalog_seed_version`` is older than ``RULE_CATALOG_SEED_VERSION``.
         A non-empty, operator-edited catalog at the current seed version is NEVER
-        overwritten. Returns True if the catalog was (re)seeded."""
+        overwritten, and a non-empty catalog at an older seed version is only
+        HEALED in place. Full seeding therefore happens on a FRESH INSTALL only,
+        and what it writes is the illustrative sample catalog documented on
+        ``default_rule_catalog`` — starter content every deployer is expected to
+        replace with their own detections. Returns True if the catalog was
+        (re)seeded."""
         if self.rule_catalog and self.rule_catalog_seed_version >= RULE_CATALOG_SEED_VERSION:
             return False
         if self.rule_catalog:
@@ -2884,10 +4878,22 @@ class Preferences(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# Built-in rule catalog (C3-1) — seeded on first run only.
+# Built-in rule catalog (C3-1) — SAMPLE starter content, seeded on first run only.
 # --------------------------------------------------------------------------- #
-# The 13 real upstream detection rules, each identified by ``event.module``.
-_REAL_EVENT_MODULES: tuple[str, ...] = (
+# ILLUSTRATIVE, NOT A CONTRACT.  These 13 ``event.module`` values are the log
+# vocabulary of ONE reference environment.  They ship so that a cold install has a
+# working, inspectable catalog instead of an empty screen — they are NOT a claim
+# about what any other deployment emits, and every deployer is expected to edit,
+# disable, or replace them with their own detections (Settings → Detection &
+# Rules).  ``maybe_seed_rule_catalog`` only writes them into an EMPTY catalog, so
+# this list affects FRESH INSTALLS ONLY and can never overwrite operator content.
+#
+# Nothing downstream may depend on a value from this list. The built-in runbooks
+# (``backend/app/runbooks/library/``) name some of these rules among their
+# ``applies_when.rule_ids``, as any-of match candidates held to the portable
+# identifier shape (``backend/tests/test_portability_contract.py``); a deployment
+# whose rules differ publishes its own copy of a built-in, which replaces it.
+_SAMPLE_EVENT_MODULES: tuple[str, ...] = (
     "mail_apache_access",
     "mail_auth",
     "mail_fim",
@@ -2906,6 +4912,7 @@ _REAL_EVENT_MODULES: tuple[str, ...] = (
 # ModSecurity sub-detections, keyed by the OWASP CRS ``rule.id`` prefix. These
 # get a LOWER ``priority`` than the generic ``modsec_audit_log`` rule so a ModSec
 # event classifies as its specific sub-rule first, falling back to the generic.
+# Same status as the list above: sample starter content for a fresh install.
 _MODSEC_SUBRULES: tuple[tuple[str, str, str], ...] = (
     ("modsec_xss", "941", "ModSecurity OWASP CRS XSS (rule.id 941xxx)"),
     ("modsec_sqli", "942", "ModSecurity OWASP CRS SQL injection (rule.id 942xxx)"),
@@ -2916,18 +4923,23 @@ _MODSEC_SUBRULES: tuple[tuple[str, str, str], ...] = (
 
 
 def default_rule_catalog() -> list[RuleDefinition]:
-    """Build the pre-baked rule catalog: the 13 ``event.module`` rules plus the 5
+    """Build the SAMPLE starter catalog: 13 ``event.module`` rules plus the 5
     ModSec sub-rules. ModSec sub-rules carry a lower ``priority`` (50) than the
-    generic rules (100) so they classify first; nothing here is hardcoded beyond
-    seeding these real detections — operators can edit/disable/extend freely."""
+    generic rules (100) so they classify first.
+
+    Every entry here is illustrative starter content taken from one reference
+    environment, and this function only ever seeds an EMPTY catalog (see
+    ``Preferences.maybe_seed_rule_catalog``) — so it shapes FRESH INSTALLS ONLY and
+    never overwrites operator edits. Operators are expected to edit, disable, or
+    replace these with the detections their own SIEM actually emits."""
     rules: list[RuleDefinition] = [
         RuleDefinition(
             name=name,
-            description=f"Upstream detection '{name}' (event.module).",
+            description=f"Sample detection '{name}' (event.module) — replace with your own.",
             match=RuleMatch(field="event.module", op="equals", value=name),
             priority=100,
         )
-        for name in _REAL_EVENT_MODULES
+        for name in _SAMPLE_EVENT_MODULES
     ]
     rules.extend(
         RuleDefinition(

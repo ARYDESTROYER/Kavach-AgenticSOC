@@ -1,5 +1,5 @@
 /**
- * NotificationsEditor — the "Alerting & Notifications" Settings surface (F5 / Wave 4).
+ * NotificationsEditor: the "Alerting & Notifications" Settings surface (F5 / Wave 4).
  *
  * Edits the `Preferences.notifications` subtree (master enable, channels, triggers,
  * dedup / rate-limit / digest / default recipients) through the parent's `update`
@@ -8,6 +8,14 @@
  * NEVER part of the config — they are pushed immediately and write-only via
  * POST /api/notifications/channels/{id}/secret; the UI only ever shows a configured
  * boolean. A per-channel "Send test" calls POST /api/notifications/test.
+ *
+ * Round 14 (SE3, Y4, SPEC §4.9.6): the section is a `SettingsSection` of grouped panels
+ * (Notifications, Channels, Email templates, Triggers, Delivery controls): each group's
+ * sentence-case title sits above one tinted panel whose rows are divided by hairlines
+ * (switches as `SettingRow`s, channels and the template editor as block rows, never a
+ * box inside the panel). The template preview sits below the editor under 1536px, and
+ * every number (port, dedup window, rate limit, digest interval) is a `NumberField` with
+ * its unit inside. With the master switch off, the groups below it read as inactive.
  *
  * Security: every value here is operator-entered (trusted); no secrets are displayed.
  * Gated by <Can resource="settings" action="manage"> at the call site.
@@ -50,7 +58,6 @@ import type {
   Preferences,
 } from '@/lib/types';
 import { NOTIFICATION_TEMPLATE_TRIGGERS } from '@/lib/types';
-import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
@@ -79,9 +86,18 @@ import { Textarea } from '@/ui/textarea';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/ui/tabs';
 
 import { HelpTip } from './HelpTip';
+import { SETTINGS_FORM_MAX_WIDTH } from './SettingsGrid';
+import { Callout } from '@/design-system/callout';
+import { useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { IconButton } from './IconButton';
+import { NumberField } from './NumberField';
 import { SecretField } from './SecretField';
-import { SectionTitle } from '@/soc/pages/settings/primitives';
+import {
+  SettingRow,
+  SettingsGroup,
+  SettingsSection,
+  SettingsSectionContext,
+} from '@/soc/pages/settings/primitives';
 
 /* ---------------------------------------------------------------- helpers --- */
 
@@ -121,7 +137,7 @@ const CHANNEL_META: Record<
     icon: Cloud,
     secretLabel: 'SMTP password / IAM secret',
     secretHelp:
-      'Either your SES SMTP password, or — if you paste an IAM access-key id below — the matching IAM secret access key (the SMTP password is derived from it). Stored write-only as a secret.',
+      'Either your SES SMTP password or, if you paste an IAM access-key id below, the matching IAM secret access key (the SMTP password is derived from it). Stored write-only as a secret.',
     note:
       'New SES accounts start in the SANDBOX: you can only send to verified identities and are rate-limited until you request production access in the SES console. Pick the AWS region your SES identities live in below.',
   },
@@ -240,33 +256,6 @@ function FieldRow({
   );
 }
 
-function SwitchRow({
-  label,
-  help,
-  checked,
-  onChange,
-}: {
-  label: string;
-  help?: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div
-      className="flex min-h-14 items-start justify-between gap-4 border-y border-border py-3"
-      data-settings-row="switch"
-    >
-      <div className="min-w-0 space-y-0.5">
-        <div className="flex items-center gap-1.5">
-          <p className="text-sm font-medium text-foreground">{label}</p>
-          {help ? <HelpTip text={help} label={`${label} help`} /> : null}
-        </div>
-      </div>
-      <Switch checked={checked} onCheckedChange={onChange} aria-label={label} />
-    </div>
-  );
-}
-
 /* ----------------------------------------------------------- channel card --- */
 
 function ChannelEditor({
@@ -380,7 +369,7 @@ function ChannelEditor({
 
   return (
     <div
-      className="space-y-4 border-y border-r border-l-2 border-border border-l-primary/40 px-4 py-4"
+      className="space-y-4"
       data-settings-editor="notification-channel"
     >
       <div className="flex items-start justify-between gap-3">
@@ -467,22 +456,19 @@ function ChannelEditor({
                     onChange={(e) => setCfg({ host: e.target.value })}
                   />
                 </FieldRow>
-                <FieldRow label="Port">
-                  <Input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    // Nullish (not `||`) so a stored 0 shows 0 (not the 587 default), and
-                    // clearing stores `undefined` (use-default) rather than a bogus 0 — the
-                    // displayed value never diverges from what Save persists.
-                    value={Number(cfg.port ?? selectedPreset?.port ?? 587)}
-                    disabled={Boolean(cfg.provider && cfg.provider !== 'custom')}
-                    onChange={(e) => {
-                      const raw = e.target.value;
-                      setCfg({ port: raw === '' ? undefined : Number(raw) });
-                    }}
-                  />
-                </FieldRow>
+                {/* Nullish (not `||`) so a stored 0 shows 0 (not the 587 default). An
+                    emptied field commits the preset's (or 587) default, so the displayed
+                    value never diverges from what Save persists. */}
+                <NumberField
+                  label="Port"
+                  value={Number(cfg.port ?? selectedPreset?.port ?? 587)}
+                  min={1}
+                  max={65535}
+                  steppers={false}
+                  defaultValue={selectedPreset?.port ?? 587}
+                  disabled={Boolean(cfg.provider && cfg.provider !== 'custom')}
+                  onChange={(v) => setCfg({ port: v })}
+                />
                 <FieldRow label="Security">
                   <Select
                     value={String(cfg.security || 'starttls')}
@@ -638,7 +624,7 @@ function ChannelEditor({
           labelAction={
             meta?.secretHelp ? <HelpTip text={meta.secretHelp} label="Secret help" /> : undefined
           }
-          description="Write-only — the console only ever knows whether it is configured, never the value."
+          description="Write-only: the console only knows whether it is configured, never the value."
           configured={configured}
           value={secretDraft}
           onChange={setSecretDraft}
@@ -676,14 +662,17 @@ function AddChannelDialog({
   open,
   onOpenChange,
   onAdd,
+  onCloseAutoFocus,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onAdd: (type: NotificationChannelType) => void;
+  /** Hands focus back to the Add channel button (SPEC §3.3). */
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Add a channel</DialogTitle>
           <DialogDescription>Pick where these alerts should be delivered.</DialogDescription>
@@ -873,8 +862,9 @@ function TemplateEditor({
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        {/* --- left: the editable template parts --- */}
+      {/* The preview sits below the editor under 1536px and beside it from there. */}
+      <div className="grid gap-4 2xl:grid-cols-2" data-testid="template-editor-grid">
+        {/* --- the editable template parts --- */}
         <div className="space-y-3">
           <FieldRow label="Subject" help="The email Subject line. Header-injection chars are stripped server-side.">
             <Input
@@ -925,13 +915,8 @@ function TemplateEditor({
           </div>
 
           {/* variable reference list */}
-          <div className="space-y-1.5 border-y border-border py-3">
-            <div className="flex items-center gap-1.5">
-              <Code2 className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Available variables
-              </p>
-            </div>
+          <div className="space-y-1.5 border-t border-border/70 pt-3">
+            <p className="text-sm font-medium text-foreground">Available variables</p>
             <div className="flex flex-wrap gap-1.5">
               {vars.map((v) => (
                 <code
@@ -945,11 +930,9 @@ function TemplateEditor({
           </div>
         </div>
 
-        {/* --- right: the SERVER-rendered preview --- */}
+        {/* --- the SERVER-rendered preview --- */}
         <div className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Preview
-          </p>
+          <p className="text-sm font-medium text-foreground">Preview</p>
           {previewError ? (
             <Alert variant="destructive">
               <X className="h-4 w-4" aria-hidden />
@@ -960,10 +943,8 @@ function TemplateEditor({
 
           {preview ? (
             <div className="space-y-3">
-              <div className="border-y border-border py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Subject
-                </p>
+              <div className="border-y border-border/70 py-2">
+                <p className="text-xs font-medium text-muted-foreground">Subject</p>
                 <p className="break-words text-sm font-medium text-foreground">{preview.subject}</p>
               </div>
               <Tabs defaultValue="html">
@@ -996,7 +977,7 @@ function TemplateEditor({
               </Tabs>
             </div>
           ) : (
-            <div className="flex h-80 flex-col items-center justify-center border-y border-dashed border-border text-center">
+            <div className="flex h-80 flex-col items-center justify-center rounded-md border border-border/70 text-center">
               <Eye className="h-5 w-5 text-muted-foreground" aria-hidden />
               <p className="mt-2 max-w-xs text-sm text-muted-foreground">
                 Render a preview to see the server-escaped subject, HTML, and plain-text
@@ -1017,7 +998,12 @@ export interface NotificationsEditorProps {
   update: (patch: Partial<Preferences>) => void;
 }
 
+/** The section's help text outside the Settings page (inside it, the registry's help wins). */
+const NOTIFICATIONS_HELP =
+  'Send alerts about decided cases to email, chat, paging or webhook channels. Notifications never change a case decision.';
+
 export function NotificationsEditor({ prefs, update }: NotificationsEditorProps) {
+  const section = React.useContext(SettingsSectionContext);
   const notif: NotificationConfig = prefs.notifications || {};
   const setNotif = (patch: Partial<NotificationConfig>) =>
     update({ notifications: { ...notif, ...patch } });
@@ -1029,6 +1015,7 @@ export function NotificationsEditor({ prefs, update }: NotificationsEditorProps)
 
   const [providers, setProviders] = React.useState<NotificationProviders | null>(null);
   const [addOpen, setAddOpen] = React.useState(false);
+  const addChannelOpener = useReturnFocus();
   const [recipientDraft, setRecipientDraft] = React.useState('');
 
   React.useEffect(() => {
@@ -1101,243 +1088,241 @@ export function NotificationsEditor({ prefs, update }: NotificationsEditorProps)
   const setTriggers = (patch: Partial<typeof triggers>) =>
     setNotif({ triggers: { ...triggers, ...patch } });
 
+  const triggerRows: Array<{ key: keyof typeof triggers; label: string; help?: string }> = [
+    {
+      key: 'on_case_created',
+      label: 'On case created',
+      help: 'Notify when a new case is created. This can be noisy on a busy stack.',
+    },
+    { key: 'on_escalated', label: 'On escalated' },
+    { key: 'on_true_positive', label: 'On true positive' },
+    { key: 'on_needs_human', label: 'On needs human' },
+    { key: 'on_closed', label: 'On closed or resolved' },
+  ];
+
   return (
-    <div className="space-y-6" data-testid="notifications-settings-surface">
-      <SectionTitle
-        title="Alerting & notifications"
-        sub="Route post-decision case alerts to email, collaboration, paging, or webhook channels without changing the deterministic case decision."
-      />
-
-      <SwitchRow
-        label="Notifications enabled"
-        help="Master switch. When off, no notifications are ever sent regardless of the channels and triggers below."
-        checked={Boolean(notif.enabled)}
-        onChange={(v) => setNotif({ enabled: v })}
-      />
-
-      <div className={cn('space-y-6', !notif.enabled && 'opacity-60')}>
-        {/* Channels */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Channels
-            </p>
-            <Button size="sm" variant="outline" onClick={() => setAddOpen(true)}>
-              <Plus className="h-4 w-4" aria-hidden />
-              Add channel
-            </Button>
-          </div>
-
-          {channels.length === 0 ? (
-            <div className="border-y border-dashed border-border px-4 py-6 text-center">
-              <Bell className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden />
-              <p className="mt-2 text-sm text-muted-foreground">
-                No channels yet. Add one to start receiving alerts.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {channels.map((ch, idx) => (
-                <ChannelEditor
-                  key={ch.id}
-                  channel={ch}
-                  presets={presets}
-                  onChange={(next) => setChannel(idx, next)}
-                  onSecretApplied={(secrets) => applyChannelSecret(ch.id, secrets)}
-                  onRemove={() => removeChannel(idx)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-
-        <Separator />
-
-        {/* Email templates */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-1.5">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Email templates
-            </p>
-            <HelpTip text="Customize the subject + HTML + plain-text body delivered by the email-style channels (SMTP / Resend / SES). Each trigger falls back to a built-in default until you override it. The server renders + escapes every case value." />
-          </div>
-          <TemplateEditor
-            templates={templates}
-            onChange={(next) => setNotif({ templates: next })}
+    <div data-testid="notifications-settings-surface">
+      <SettingsSection
+        title={section.title ?? 'Alerting & notifications'}
+        help={section.help ?? NOTIFICATIONS_HELP}
+      >
+        <SettingsGroup title="Notifications" className={SETTINGS_FORM_MAX_WIDTH}>
+          <SettingRow
+            variant="switch"
+            label="Notifications enabled"
+            help="The master switch. When it is off, nothing is sent, whatever the channels and triggers below say."
+            checked={Boolean(notif.enabled)}
+            onCheckedChange={(v) => setNotif({ enabled: v })}
           />
-        </div>
-
-        <Separator />
-
-        {/* Triggers */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-1.5">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Triggers
-            </p>
-            <HelpTip text="Which case events fire a notification. NEEDS_HUMAN cases are always held for an analyst; this only governs whether you are notified." />
-          </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <SwitchRow
-              label="On case created"
-              help="Notify when a new case is created (can be noisy on busy stacks)."
-              checked={Boolean(triggers.on_case_created)}
-              onChange={(v) => setTriggers({ on_case_created: v })}
-            />
-            <SwitchRow
-              label="On escalated"
-              checked={Boolean(triggers.on_escalated)}
-              onChange={(v) => setTriggers({ on_escalated: v })}
-            />
-            <SwitchRow
-              label="On true positive"
-              checked={Boolean(triggers.on_true_positive)}
-              onChange={(v) => setTriggers({ on_true_positive: v })}
-            />
-            <SwitchRow
-              label="On needs human"
-              checked={Boolean(triggers.on_needs_human)}
-              onChange={(v) => setTriggers({ on_needs_human: v })}
-            />
-            <SwitchRow
-              label="On closed / resolved"
-              checked={Boolean(triggers.on_closed)}
-              onChange={(v) => setTriggers({ on_closed: v })}
-            />
-          </div>
-
-          <div className="space-y-3 border-y border-border py-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <Label>Minimum risk to notify</Label>
-                <HelpTip text="Cases below this normalised risk (0–100) never trigger a notification, even when a trigger matches." />
-              </div>
-              <span className="text-sm font-semibold tabular-nums text-foreground">{minRisk}</span>
-            </div>
-            <Slider
-              min={0}
-              max={100}
-              step={1}
-              value={[minRisk]}
-              onValueChange={(vals) => setTriggers({ min_risk: vals[0] ?? 0 })}
-              aria-label="Minimum risk to notify"
-            />
-          </div>
-        </div>
-
-        <Separator />
-
-        {/* Delivery controls */}
-        <div className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Delivery controls
-          </p>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <FieldRow
-              label="Dedup window (seconds)"
-              help="Suppress duplicate alerts for the same case + trigger within this window."
-            >
-              <Input
-                type="number"
-                min={0}
-                value={notif.dedup_window_seconds ?? 300}
-                onChange={(e) => setNotif({ dedup_window_seconds: Number(e.target.value) })}
-              />
-            </FieldRow>
-            <FieldRow
-              label="Rate limit (per hour, per channel)"
-              help="Cap the number of notifications a single channel may send each hour. 0 means unlimited."
-            >
-              <Input
-                type="number"
-                min={0}
-                value={notif.rate_limit_per_hour ?? 60}
-                onChange={(e) => setNotif({ rate_limit_per_hour: Number(e.target.value) })}
-              />
-            </FieldRow>
-          </div>
-
-          <SwitchRow
-            label="Batch into a digest"
-            help="When on, matching events are batched per channel and flushed together on the interval below instead of sent immediately."
-            checked={Boolean(digest.enabled)}
-            onChange={(v) => setNotif({ digest: { ...digest, enabled: v } })}
-          />
-          {digest.enabled ? (
-            <FieldRow label="Digest interval (minutes)">
-              <Input
-                type="number"
-                min={1}
-                value={digest.interval_minutes ?? 60}
-                onChange={(e) =>
-                  setNotif({ digest: { ...digest, interval_minutes: Number(e.target.value) } })
-                }
-              />
-            </FieldRow>
+          {/* Off is a live condition, stated in words under the switch. The groups below
+              stay at full contrast because they remain editable (WCAG 1.4.3, no dimming). */}
+          {!notif.enabled ? (
+            <SettingRow variant="block">
+              <Callout intent="warning" data-testid="notifications-off-callout">
+                Notifications are off. Nothing is sent until you turn them on.
+              </Callout>
+            </SettingRow>
           ) : null}
+        </SettingsGroup>
 
-          <FieldRow
-            label="Default recipients"
-            help="Fallback email recipients used by email channels that don't set their own."
+        {/* The form groups keep the 44rem form measure so a switch stays near its label;
+            only the email templates (editor beside its preview) take the full width
+            (SPEC §4.9.6). */}
+        <div className="space-y-10" data-notifications-active={notif.enabled ? 'true' : 'false'}>
+          <SettingsGroup
+            className={SETTINGS_FORM_MAX_WIDTH}
+            title="Channels"
+            caption="Where alerts go: email, chat, paging or a webhook. Secrets save as soon as you set them."
+            action={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  addChannelOpener.remember();
+                  setAddOpen(true);
+                }}
+              >
+                <Plus aria-hidden />
+                Add channel
+              </Button>
+            }
           >
-            <Input
-              value={recipientDraft}
-              placeholder="Type an email and press Enter"
-              onChange={(e) => setRecipientDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  addDefaultRecipient();
-                }
-              }}
-            />
-            {defaultRecipients.length ? (
-              <div className="flex flex-wrap gap-1.5 pt-1.5">
-                {defaultRecipients.map((r) => (
-                  <Badge key={r} variant="outline" className="gap-1 pr-0.5">
-                    <span className="truncate">{r}</span>
-                    <IconButton
-                      label={`Remove ${r}`}
-                      tooltip={false}
-                      size="sm"
-                      variant="ghost"
-                      onClick={() =>
-                        setNotif({ default_recipients: defaultRecipients.filter((x) => x !== r) })
-                      }
-                    >
-                      <X aria-hidden />
-                    </IconButton>
-                  </Badge>
-                ))}
+            {channels.length === 0 ? (
+              <SettingRow variant="block">
+                <div className="py-3 text-center">
+                  <Bell className="mx-auto size-5 text-muted-foreground" aria-hidden />
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    No channels yet. Add one to start receiving alerts.
+                  </p>
+                </div>
+              </SettingRow>
+            ) : (
+              channels.map((ch, idx) => (
+                <SettingRow variant="block" key={ch.id}>
+                  <ChannelEditor
+                    channel={ch}
+                    presets={presets}
+                    onChange={(next) => setChannel(idx, next)}
+                    onSecretApplied={(secrets) => applyChannelSecret(ch.id, secrets)}
+                    onRemove={() => removeChannel(idx)}
+                  />
+                </SettingRow>
+              ))
+            )}
+          </SettingsGroup>
+
+          <SettingsGroup
+            title="Email templates"
+            caption="The subject, HTML and plain-text body the email channels (SMTP, Resend, SES) send. Each trigger uses a built-in default until you change it; the server escapes every case value."
+          >
+            <SettingRow variant="block">
+              <TemplateEditor
+                templates={templates}
+                onChange={(next) => setNotif({ templates: next })}
+              />
+            </SettingRow>
+          </SettingsGroup>
+
+          <SettingsGroup
+            className={SETTINGS_FORM_MAX_WIDTH}
+            title="Triggers"
+            caption="Which case events send a notification. Cases that need a person are always held for an analyst; this only decides whether you hear about it."
+          >
+            {triggerRows.map((row) => (
+              <SettingRow
+                key={row.key}
+                variant="switch"
+                label={row.label}
+                help={row.help}
+                checked={Boolean(triggers[row.key])}
+                onCheckedChange={(v) => setTriggers({ [row.key]: v } as Partial<typeof triggers>)}
+              />
+            ))}
+            <SettingRow variant="block">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-base font-medium leading-5 text-foreground">Minimum risk to notify</p>
+                    <p className="mt-0.5 text-sm text-muted-foreground">
+                      Cases below this risk (0 to 100) never send a notification, even when a trigger matches.
+                    </p>
+                  </div>
+                  <span className="shrink-0 text-base font-semibold tabular-nums text-foreground">{minRisk}</span>
+                </div>
+                <Slider
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={[minRisk]}
+                  onValueChange={(vals) => setTriggers({ min_risk: vals[0] ?? 0 })}
+                  aria-label="Minimum risk to notify"
+                />
               </div>
-            ) : null}
-          </FieldRow>
+            </SettingRow>
+          </SettingsGroup>
 
-          <FieldRow
-            label="Console base URL"
-            help="Used to build a clickable case link in the alert body, e.g. https://soc.example.com. Leave blank for no link."
-          >
-            <Input
-              value={notif.base_url || ''}
-              placeholder="https://soc.example.com"
-              onChange={(e) => setNotif({ base_url: e.target.value })}
+          <SettingsGroup title="Delivery controls" className={SETTINGS_FORM_MAX_WIDTH}>
+            <SettingRow variant="field">
+              <NumberField
+                label="Dedup window"
+                description="Suppress duplicate alerts for the same case and trigger within this window."
+                value={notif.dedup_window_seconds ?? 300}
+                min={0}
+                unit="s"
+                defaultValue={300}
+                onChange={(v) => setNotif({ dedup_window_seconds: v })}
+              />
+            </SettingRow>
+            <SettingRow variant="field">
+              <NumberField
+                label="Rate limit per channel"
+                description="Cap the notifications a single channel may send each hour. 0 means unlimited."
+                value={notif.rate_limit_per_hour ?? 60}
+                min={0}
+                unit="per hour"
+                defaultValue={60}
+                onChange={(v) => setNotif({ rate_limit_per_hour: v })}
+              />
+            </SettingRow>
+            <SettingRow
+              variant="switch"
+              label="Batch into a digest"
+              help="Matching events are batched per channel and sent together on the interval below instead of one by one."
+              checked={Boolean(digest.enabled)}
+              onCheckedChange={(v) => setNotif({ digest: { ...digest, enabled: v } })}
             />
-          </FieldRow>
+            {digest.enabled ? (
+              <SettingRow variant="field">
+                <NumberField
+                  label="Digest interval"
+                  value={digest.interval_minutes ?? 60}
+                  min={1}
+                  unit="min"
+                  defaultValue={60}
+                  onChange={(v) => setNotif({ digest: { ...digest, interval_minutes: v } })}
+                />
+              </SettingRow>
+            ) : null}
+            <SettingRow variant="block">
+              <FieldRow
+                label="Default recipients"
+                help="Fallback email recipients used by email channels that do not set their own."
+              >
+                <Input
+                  value={recipientDraft}
+                  placeholder="Type an email and press Enter"
+                  onChange={(e) => setRecipientDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addDefaultRecipient();
+                    }
+                  }}
+                />
+                {defaultRecipients.length ? (
+                  <div className="flex flex-wrap gap-1.5 pt-1.5">
+                    {defaultRecipients.map((r) => (
+                      <Badge key={r} variant="outline" className="gap-1 pr-0.5">
+                        <span className="truncate">{r}</span>
+                        <IconButton
+                          label={`Remove ${r}`}
+                          tooltip={false}
+                          size="sm"
+                          variant="ghost"
+                          onClick={() =>
+                            setNotif({ default_recipients: defaultRecipients.filter((x) => x !== r) })
+                          }
+                        >
+                          <X aria-hidden />
+                        </IconButton>
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+              </FieldRow>
+            </SettingRow>
+            <SettingRow variant="block">
+              <FieldRow
+                label="Console base URL"
+                help="Used to build a case link in the alert body, for example https://soc.example.com. Leave it blank for no link."
+              >
+                <Input
+                  value={notif.base_url || ''}
+                  placeholder="https://soc.example.com"
+                  onChange={(e) => setNotif({ base_url: e.target.value })}
+                />
+              </FieldRow>
+            </SettingRow>
+          </SettingsGroup>
         </div>
+      </SettingsSection>
 
-        {!notif.enabled ? (
-          <Alert>
-            <Bell className="h-4 w-4" aria-hidden />
-            <AlertTitle>Notifications are off</AlertTitle>
-            <AlertDescription>
-              Turn on the master switch above to start delivering alerts. Channel and trigger edits
-              are saved with the rest of Settings; secrets save immediately.
-            </AlertDescription>
-          </Alert>
-        ) : null}
-      </div>
-
-      <AddChannelDialog open={addOpen} onOpenChange={setAddOpen} onAdd={addChannel} />
+      <AddChannelDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        onAdd={addChannel}
+        onCloseAutoFocus={addChannelOpener.onCloseAutoFocus}
+      />
     </div>
   );
 }

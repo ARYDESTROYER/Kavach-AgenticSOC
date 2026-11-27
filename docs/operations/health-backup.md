@@ -21,6 +21,54 @@ Readiness does not prove that every connector, model provider, enrichment servic
 notification channel is healthy. Use source health/coverage, provider tests, and
 notification tests for those dependencies.
 
+### Subsystem degradation on `/api/health`
+
+`status` reports state-store readiness only, and keeps that meaning for compatibility.
+A subsystem that is impaired while the state store is fine is reported separately:
+
+| Field | Meaning |
+|---|---|
+| `degraded` | At least one depended-on subsystem is impaired |
+| `degraded_reasons` | Opaque codes naming each active degradation |
+
+Current codes are `rag_corpus_empty`, `rag_projection_refused`,
+`llm_provider_unauthenticated`, `llm_provider_quota_exhausted`, and
+`llm_provider_unavailable`. `degraded` is a genuine product-level alarm: an empty
+knowledge corpus means every investigation runs with no retrieved runbook passages, ATT&CK
+or precedent context (the matched runbook's guidance still reaches the investigator from
+the runbook library), and auto-close cannot fire. Alert on it.
+
+This endpoint is **unauthenticated**, so it deliberately publishes codes only, never
+corpus counts, source names, provider names, or detection posture. The
+`settings:read`-gated `/api/diagnostics/health` carries that detail, including the
+corpus-versus-source-history reconciliation and the last projection outcome. Both are
+read-only and never trigger a projection or an embedding spend.
+
+`/api/diagnostics/health` also carries two measurement blocks:
+
+- `case_population` says when the case figures in the response were read: `read_at`,
+  `age_seconds`, and `stale`, true while the last reading is shown and a new one is
+  read. The all-time case figures are read at most once a minute.
+- `event_loop` measures how late the backend's event loop runs a 100 ms timer:
+  `worst_ms` and `p99_ms` over the last `window_seconds` (60), the `samples` measured,
+  whether the timer is `running`, and a `reason` when there is no value yet. It is a
+  measurement, never an alert. Sustained values of hundreds of milliseconds mean
+  CPU-bound work is delaying chat streams, live updates and receivers.
+
+It also reports the SQL schema migration (`state` of `ok`, `failed` or `not_applicable`,
+with the statements to run when it failed); see
+[Upgrades](upgrades.md#the-audit-id-column).
+
+On PostgreSQL and SQLite, knowledge search ranks chunks from an in-memory copy of their
+embeddings, rebuilt when the corpus changes and at least once a minute. The results are
+the same as a full exact search, near ties included. With the pgvector extension
+installed, a corpus too large for memory (more than 25 million stored numbers) is ranked
+in the database. Without pgvector, search still works the same way.
+
+A degradation raised by a genuinely empty corpus resolves automatically once the
+underlying cause clears; see [background jobs](background-jobs.md) for the explicit
+rebuild and [troubleshooting](troubleshooting.md) for the diagnosis order.
+
 ## What to back up
 
 - The selected `StateStore`: cases, audit, usage, configuration, cursors, users,
@@ -32,21 +80,65 @@ notification tests for those dependencies.
 - Deployment configuration, CA material, JWT/MFA keys, and all external secrets in a
   separate protected secret backup.
 - The exact application version, commit SHA, image digests, and Compose configuration.
+- The application-job artifact directory/volume when retained ZIP exports are part of
+  the recovery objective. Job metadata alone cannot recreate a pruned or missing ZIP.
 
 Redis is an optimization/cache and is not the authoritative application backup.
 Upstream logs remain in their source systems and require their own retention/backup.
 
-**Settings → Organization → Data export** can page all records in its selected
-supported safe scopes, but it is a support/analysis artifact, not a whole-application
-backup. Its Knowledge scope preserves sanitized authoritative operator runbook and
-playbook documents plus safe bundled manifests/references, but it omits credentials,
-users/sessions, chat/collaboration state, raw upstream logs, and raw knowledge chunks,
-and has no matching import/restore endpoint. Resumable cursors are signed and bound to
-the requesting operator, scope, and snapshot. Use the selected state backend's
+### Case screenshots in the backup
+
+Screenshots added to cases are stored in the `StateStore` with the rest of the
+application state (the `case_files` key-value documents), so the database dump or
+Elasticsearch snapshot above already contains them, and a restore brings them back with
+their cases. Plan for the space they take: each image is at most 2 MiB after its
+metadata is removed, plus a thumbnail of at most 48 KiB and 640 pixels a side; a case
+holds at most 20 images and 20 MiB; the organisation holds at most 2 GiB in all (Demo
+Mode and the in-memory store at most 5 images a case and 64 MiB). Backup time, backup
+size and, on PostgreSQL, the updater's pre-update dump grow with them.
+
+On Elasticsearch the image content field (`case_file_data`) is mapped `binary` in the
+config index, so it is stored but not indexed. A new install creates the index with that
+mapping; an upgraded install adds it when the backend starts. If the field was already
+mapped as text (an image written before that start), or the mapping could not be added
+(the backend logs a warning), uploads still work, but each image's base64 is also indexed
+as text, which costs index space and indexing time until the config index is recreated
+from a snapshot restore into a fresh index.
+
+The server checks each image's structure and removes its metadata but never decodes its
+pixels: PNG, JPEG and WebP only, by their magic bytes, at most 8,192 pixels a side and
+40 megapixels. Every part it keeps besides the compressed image data and a colour
+profile must have exactly the shape its format defines, so no other bytes ride along. A
+crafted image aimed at a browser's image decoder is not detected; the type allowlist,
+the structure check, the size limits, sign-in, the audit row and strict response headers
+are the mitigations.
+
+**Settings → Organization → Data export** submits a background job that can package all
+records in its selected supported safe scopes into one verified server-assembled ZIP,
+using either the archive or internal segmented walk,
+but it is a support/analysis artifact, not a whole-application
+backup. Its Knowledge scope preserves sanitized operator runbooks (and, for one release,
+the stored documents of the two retired procedure lists, as they were stored) plus safe
+bundled runbook metadata, but it omits credentials,
+users/sessions, chat history, chat reports, collaboration state, raw upstream logs, and raw knowledge chunks,
+and has no matching import/restore endpoint. Its Cases scope lists each case's
+screenshots (id, type, size, dimensions, SHA-256, caption, filename, who added it and
+when, and deletion) but never their image bytes, and its manifest says so. The ZIP manifest proves that the server
+emitted each scope's starting count and verified the prepared artifact, not that the
+client received it or that it is recoverable. Only exact Elasticsearch scopes are fixed
+snapshots; PostgreSQL honestly reports a non-exact `bounded_at_start` view.
+Segment cursors are signed and bound to the requesting operator, scope, and snapshot;
+the server follows them and packages the envelopes into the one retained artifact.
+Use the selected state backend's
 consistent dump or snapshot mechanism for recovery.
 
+The Jobs registry retains operational summaries, not a full copy of imported text or
+selected case IDs. Artifacts are count-pruned after the newest 50 attachments and each
+download re-verifies size/SHA-256. Download and independently retain an export needed
+for recovery or evidence; an Inbox entry is not a backup.
+
 The desired Storage & retention archive stage is also not a backup mechanism in
-0.1.12. Glacier requires an independent immutable export, manifest, checksums, and a
+0.2.0. Glacier requires an independent immutable export, manifest, checksums, and a
 tested restore path. Never transition an Elasticsearch snapshot-repository prefix to
 Glacier; every repository object must remain directly readable by Elasticsearch.
 
@@ -69,9 +161,9 @@ destinations from the restore environment.
 
 ## Limitations
 
-Agentic SOC 0.1 has no built-in backup scheduler or complete versioned database migration
+Agentic SOC 0.2 has no built-in backup scheduler or complete versioned database migration
 framework. A successful dump is not sufficient evidence; test a full restore and retain
 upstream data long enough to replay after failure.
 
-See [Upgrades](upgrades.md), [Reset and recovery](../administration/reset.md), and
-[Troubleshooting](troubleshooting.md).
+See [Background jobs](background-jobs.md), [Upgrades](upgrades.md),
+[Reset and recovery](../administration/reset.md), and [Troubleshooting](troubleshooting.md).

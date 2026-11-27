@@ -7,7 +7,14 @@
  *   - `backend/app/connectors/base.py`  (ConnectorManifest / AuthField / ConnectionTest)
  *   - `backend/app/config.py`           (Preferences / SourceInstance)
  *   - `backend/app/api/routes.py`       (endpoint shapes)
+ *
+ * The Round 14 contracts live in type-only modules beside this one
+ * (`types-audit.ts`, `types-dashboards.ts`, `types-rules.ts`, `types-runbooks.ts`)
+ * and are re-exported at the end of this module, so `@/lib/types` names every
+ * contract. Their names never repeat a name declared here (a test pins it).
  */
+import type { AuditExportJobParams } from './types-audit';
+import type { MatchExplanation, RunbookGuidanceStatus } from './types-runbooks';
 
 // --------------------------------------------------------------------------- //
 // Auth (optional; the gate is a no-op when `enabled` is false).
@@ -44,18 +51,57 @@ export interface AuthUser {
   locale?: string;
 }
 
+/**
+ * Why a session ended (Round 12, GET /api/auth/me `reason`). The server reports it
+ * once, clears the cookie, and the sign-in page explains it calmly.
+ */
+export type SessionEndReason =
+  | 'revoked'
+  | 'idle_expired'
+  | 'absolute_expired'
+  | 'tv_mismatch'
+  | (string & {});
+
+/** The live session summary on an authenticated GET /api/auth/me (Round 12). */
+export interface AuthSessionSummary {
+  /** True when this session came from a "Remember me" sign-in. */
+  remember: boolean;
+  /** When the server will end the session regardless of activity (ISO). */
+  expires_at?: string;
+  /** When the session ends if it stays idle (ISO; moves with activity). */
+  idle_expires_at?: string;
+}
+
 /** GET /api/auth/me — describes whether auth is on and the session state. */
 export interface AuthMe {
   authenticated: boolean;
   auth_enabled: boolean;
   user: AuthUser | null;
+  /** Present when the presented session has ended (registry-aware, Round 12). */
+  reason?: SessionEndReason;
+  /**
+   * The limit that ended it, in seconds. Reported for API clients; the Console never
+   * shows it (Round 14 SPEC §4.1).
+   */
+  lifetime_seconds?: number;
+  /** Whether the ended session had been remembered. */
+  remembered?: boolean;
+  /** The live session summary (authenticated only). */
+  session?: AuthSessionSummary;
+  /**
+   * Round 14 (SPEC §4.4.5, D16): true when row-level data scope (`can_object`) is on
+   * and applies to this viewer's role for cases. Case-derived dashboard widgets then
+   * do not fetch and read "Hidden while row-level scope is on.".
+   */
+  object_scoped?: boolean;
 }
 
 // --------------------------------------------------------------------------- //
 // Account / profile self-service (Round-2 Wave 2) — GET/PUT /api/account/me.
 // --------------------------------------------------------------------------- //
 /**
- * GET /api/account/me — the signed-in user's own profile.
+ * GET /api/account/me — the signed-in user's own profile. The route nests it under
+ * `user` (`env_managed` beside it); `api.account.*` return it flat, as typed here.
  *
  * `username` + `role` are read-only identity; the rest are self-editable. Every
  * value is user-entered → render as PLAIN text (#9). Secrets are NEVER present
@@ -142,6 +188,30 @@ export interface Session {
   /** The client kind (e.g. "web"/"api"/"cli") + the MFA method used at sign-in. */
   client_type?: string | null;
   mfa_method?: string | null;
+  /**
+   * True for a "Remember me" sign-in (Round 12) that is still live and still
+   * remembered under the current policy; false once the session has ended.
+   */
+  remember?: boolean;
+  /** The remembered lifetime granted at sign-in, in seconds (0 when not remembered). */
+  remember_seconds?: number;
+  /**
+   * The earliest moment the server ends this session if it is not used again: the
+   * earlier of the inactivity deadline and the hard limit (ISO, live policy). In the
+   * past for a session that has ended.
+   */
+  expires_at?: string | null;
+  /** When inactivity ends it (moves with each request; ISO, live policy). */
+  effective_idle_expires_at?: string | null;
+  /** The hard limit activity never extends (ISO, live policy). */
+  effective_absolute_expires_at?: string | null;
+  /**
+   * Whether the session can still be used under the live policy (the same check
+   * every request runs). Absent from older backends.
+   */
+  active?: boolean;
+  /** Why an ended session ended (empty while active). */
+  ended_reason?: '' | 'revoked' | 'idle_expired' | 'absolute_expired' | string;
   [key: string]: unknown;
 }
 
@@ -173,7 +243,26 @@ export interface SessionPolicy {
   notify_on_new_device?: boolean;
   /** Email the user when one of their sessions is terminated. */
   notify_on_terminate?: boolean;
+  /** The "Remember me" sign-in policy (Round 12). */
+  remember_me?: RememberMePolicy;
   [key: string]: unknown;
+}
+
+/**
+ * Preferences.session_policy.remember_me (Round 12, SPEC §3.1). Durations are in
+ * SECONDS. The server repairs out-of-range values (1 h .. 24 h).
+ */
+export interface RememberMePolicy {
+  /** Offer "Remember me" on the sign-in page (default true). */
+  enabled?: boolean;
+  /** How long a remembered device stays signed in (3600..86400, default 86400). */
+  duration_seconds?: number;
+  /** Optional inactivity limit for remembered sessions; null = none. */
+  idle_seconds?: number | null;
+  /** Roles that are never remembered. */
+  excluded_roles?: string[];
+  /** Allow a remembered session on a plain-HTTP console (not recommended). */
+  allow_insecure_http?: boolean;
 }
 
 /**
@@ -188,6 +277,8 @@ export interface ActivityEvent {
   ts?: string;
   /** The action type (e.g. "AUTH_EVENT" / "USER_MGMT" / "SESSION") — plain text. */
   action?: string;
+  /** The friendly event name the Audit log shows (e.g. "Signed in"), when the server sends it. */
+  event_label?: string;
   /** A short human-readable summary of the event (UNTRUSTED — plain text). */
   detail?: string;
   /** The actor (usually the user themselves) — plain text. */
@@ -200,17 +291,22 @@ export interface ActivityEvent {
   [key: string]: unknown;
 }
 
-/** GET /api/account/activity — the user's recent audit trail. */
+/**
+ * GET /api/account/activity: the user's recent audit trail. The server answers
+ * `{activity: [...]}` with audit records (`action`, `action_type`, `result_summary`,
+ * `client.ip`, ...); `activityRows` in the Sessions page maps them onto
+ * {@link ActivityEvent}. `events` is read too, so a differently shaped answer still shows.
+ */
 export interface ActivityResponse {
-  events: ActivityEvent[];
+  activity?: ActivityEvent[];
+  events?: ActivityEvent[];
   count?: number;
   [key: string]: unknown;
 }
 
 /**
- * POST /api/auth/refresh / POST /api/auth/reauth — the step-up / rotation result.
- * The new session cookie is set HttpOnly server-side; the body carries only
- * non-secret confirmation (no token is returned to JS).
+ * POST /api/auth/reauth: the step-up result. The body carries only non-secret
+ * confirmation (no token is returned to JS).
  */
 export interface ReauthResult {
   ok: boolean;
@@ -230,8 +326,54 @@ export interface LoginResult {
   user?: AuthUser;
   /** Present (true) when the account needs a second factor before a session. */
   requires_mfa?: boolean;
+  /**
+   * Present (true) when MFA is MANDATED for the account but not yet ENROLLED: no
+   * code challenge is possible, so the client must complete enrollment at
+   * /api/auth/mfa/enroll-setup + /enroll-confirm using the same `pending_token`
+   * (confirm mints the full session). Branch on this BEFORE `requires_mfa`.
+   */
+  mfa_enrollment_required?: boolean;
   /** A short-lived half-auth token to exchange at /api/auth/mfa/verify. */
   pending_token?: string;
+  /** Round 12: whether this sign-in was remembered (persistent, bounded cookie). */
+  remembered?: boolean;
+  /** Why a remember request was or was not granted. */
+  remember_reason?: RememberReason;
+  /** When the new session's token expires (ISO). */
+  session_expires_at?: string;
+}
+
+/** The server's Remember-me decision (Round 12). */
+export type RememberReason =
+  | 'ok'
+  | 'not_requested'
+  | 'disabled'
+  | 'role_excluded'
+  | 'insecure_transport'
+  | (string & {});
+
+/** GET /api/setup/status `remember_me` — the public sign-in policy (Round 12). */
+export interface RememberMeStatus {
+  enabled: boolean;
+  /** The lifetime a new remembered sign-in gets (the policy duration, capped by the absolute lifetime). */
+  duration_seconds: number;
+  /**
+   * How long a remembered device may go unused before it is signed out (seconds);
+   * 0 or absent when no inactivity limit is shorter than `duration_seconds`.
+   */
+  idle_seconds?: number;
+  /** True when THIS console's transport would refuse a remembered session. */
+  insecure_blocked: boolean;
+  /** Whether the session cookie is marked Secure (AUTH_COOKIE_SECURE); never a secret. */
+  secure_cookies?: boolean;
+  /**
+   * Whether AUTH_COOKIE_SECURE was set explicitly rather than left at its `false`
+   * default, so the console can say "AUTH_COOKIE_SECURE=false" or "not set" truthfully.
+   * Absent from an older server; never a value.
+   */
+  secure_cookies_configured?: boolean;
+  /** How long a sign-in WITHOUT Remember me lasts (the token lifetime, AUTH_TOKEN_HOURS). */
+  standard_session_seconds?: number;
 }
 
 // --------------------------------------------------------------------------- //
@@ -306,6 +448,47 @@ export interface User {
   must_change_password: boolean;
   created_at: string;
   last_login_at: string | null;
+  /** Whether the user has ENROLLED a TOTP factor (self-service; admin can only force-disable). */
+  mfa_enabled?: boolean;
+  /**
+   * The admin-set MFA MANDATE (required ≠ enrolled — no secret is minted). A mandated
+   * but unenrolled user is walked through enrollment at their next sign-in.
+   */
+  mfa_required?: boolean;
+  /** Full/display name ("" when unset). Operator-entered → render as PLAIN text (#9). */
+  display_name?: string;
+  /** Contact email ("" when unset). Operator-entered → render as PLAIN text (#9). */
+  email?: string;
+  /** Contact/mobile number ("" when unset). Operator-entered → render as PLAIN text (#9). */
+  phone?: string;
+  /**
+   * Free-form per-user bag; the custom-role assignment rides here under
+   * `custom_roles` (names only — see PUT /api/users/{username}/roles).
+   */
+  prefs?: { custom_roles?: string[] } & Record<string, unknown>;
+}
+
+/**
+ * POST /api/users — the create-user request (users:manage). Everything beyond
+ * username/password/role is additive; the SERVER stays authoritative for validation
+ * (password ≥ 8, base role must be a built-in, email/phone sanity checks, and
+ * `custom_roles` must name EXISTING custom roles).
+ */
+export interface UserCreateOptions {
+  username: string;
+  password: string;
+  /** Base role — one of the six built-ins (backend default: analyst_tier1). */
+  role?: string;
+  /** Full name (≤200 chars; plain text, #9). */
+  display_name?: string;
+  /** Contact email (≤200 chars; must contain "@", no whitespace — server-validated). */
+  email?: string;
+  /** Mobile number (charset "+ 0-9 space - ( )" — server-validated). */
+  phone?: string;
+  /** Mandate MFA: they must set up an authenticator at their next sign-in. */
+  mfa_required?: boolean;
+  /** EXISTING custom roles to attach at creation (persisted like the assign endpoint). */
+  custom_roles?: string[];
 }
 
 export interface UsersResponse {
@@ -320,8 +503,27 @@ export interface RolesResponse {
   matrix: Record<string, Record<string, string[]>>;
 }
 
+/**
+ * GET /api/account/permissions: the signed-in person's effective grants, answered by
+ * the server's own permission resolver (the base role together with every assigned
+ * custom role, each with its denies applied). The Console's permission checks read
+ * only this map, so they show exactly what the API allows.
+ */
+export interface AccountPermissions {
+  authenticated: boolean;
+  /** The base role; `super_admin` when auth or RBAC is off. */
+  role: string;
+  /** The assigned custom roles that take part in the decision. */
+  custom_roles: string[];
+  /** False when RBAC is off: everyone signed in holds every action. */
+  rbac_enabled: boolean;
+  /** resource → the actions held on it; concrete actions only, never `*`. */
+  permissions: Record<string, string[]>;
+}
+
 // --------------------------------------------------------------------------- //
-// Agent personas + operator-managed playbooks/runbooks.
+// Agent personas. Runbooks (the one procedure feature since Round 14) are mirrored
+// in `types-runbooks.ts` and re-exported at the end of this module.
 // --------------------------------------------------------------------------- //
 /** One specialist persona the router can specialise the investigator into. */
 export interface AgentPersona {
@@ -335,109 +537,6 @@ export interface AgentPersona {
 export interface PersonasResponse {
   enabled: boolean;
   personas: AgentPersona[];
-}
-
-/** The match criteria that select a playbook for a cluster. */
-export interface PlaybookMatch {
-  rule_ids: string[];
-  entity_types: string[];
-  mitre: string[];
-  min_event_count: number | null;
-  any_tags: string[];
-}
-
-/** One plain-text runbook/playbook (mirrors the backend loader shape). */
-export interface Playbook {
-  id: string;
-  name: string;
-  version: number;
-  description: string;
-  priority: number;
-  match: PlaybookMatch;
-  suggested_tools: string[];
-  rag_queries: string[];
-  escalate_if: string;
-  suggested_verdict_bias: string;
-  /** Packaged reference procedures are readable but immutable. */
-  source_type: 'bundled' | 'operator';
-  protected: boolean;
-  editable: boolean;
-  file_name: string;
-  /** Operator catalog revision used for optimistic concurrency. */
-  revision: number;
-  /** Bundled package data or durable application StateStore data. */
-  storage: 'package' | 'state';
-  created_at?: string;
-  updated_at?: string;
-  created_by?: string;
-  updated_by?: string;
-}
-
-/** One opened Markdown document. Render as plain text; never as raw HTML. */
-export interface PlaybookDetail extends Playbook {
-  content: string;
-  body: string;
-}
-
-export interface PlaybooksResponse {
-  enabled: boolean;
-  count: number;
-  playbooks: Playbook[];
-}
-
-export interface PlaybookMutationResponse {
-  ok: boolean;
-  playbook: Playbook;
-  reload: {
-    loaded: number;
-    skipped: { file: string; reason: string }[];
-    ids: string[];
-  };
-}
-
-/** Aggregate deterministic playbook coverage over the stored case population. */
-export interface PlaybookCoverageResponse {
-  scanned_cases: number;
-  covered_cases: number;
-  uncovered_cases: number;
-  coverage_percent: number | null;
-  scan_limit: number;
-  truncated: boolean;
-  selected_playbooks: Array<{ playbook_id: string; case_count: number }>;
-  unmatched_rule_families: Array<{ rule_id: string; case_count: number }>;
-}
-
-export interface PlaybookDryRunInput {
-  rule_ids: string[];
-  entity_type: EntityTypeFull;
-  event_count: number;
-}
-
-export interface PlaybookDryRunCheck {
-  criterion: string;
-  passed: boolean;
-  expected: unknown;
-  actual: unknown;
-  reason: string;
-}
-
-export interface PlaybookDryRunCandidate {
-  playbook_id: string;
-  playbook_name: string;
-  priority: number;
-  version: number;
-  matched: boolean;
-  checks: PlaybookDryRunCheck[];
-  failed_criteria: string[];
-}
-
-/** Pure, read-only explanation of the registry's exact selection predicate. */
-export interface PlaybookDryRunResponse {
-  selected_playbook_id: string | null;
-  selection_reason: string;
-  matched_count: number;
-  candidate_count: number;
-  candidates: PlaybookDryRunCandidate[];
 }
 
 export interface SchedulerWorkerHealth {
@@ -454,99 +553,6 @@ export interface SchedulerWorkerHealth {
 export interface SchedulerHealthResponse {
   scheduler_runtime_running: boolean;
   workers: Record<string, SchedulerWorkerHealth>;
-}
-
-/**
- * One trusted investigation-reference runbook. Runbooks are retrieval knowledge,
- * not executable procedures: a match may inform an investigation, but it never
- * changes deterministic case authority.
- */
-export interface Runbook {
-  id: string;
-  title: string;
-  summary: string;
-  persona: string;
-  applies_to_rules: string[];
-  applies_to_techniques: string[];
-  applies_to_entities: string[];
-  keywords: string[];
-  source_type: 'bundled' | 'operator';
-  /** Packaged reference runbooks are protected; operator runbooks are editable. */
-  protected: boolean;
-  editable: boolean;
-  /** Opaque optimistic-concurrency token supplied back on update/delete. */
-  revision: string | number;
-  created_at: string | null;
-  updated_at: string | null;
-  /** Authoritative projection state for the runbook's RAG document. */
-  index_status: string;
-  indexed_revision: string | number | null;
-  last_indexed_at: string | null;
-  index_error: string | null;
-}
-
-/** One opened Markdown document. Render as plain text; never as raw HTML. */
-export interface RunbookDetail extends Runbook {
-  content: string;
-  body: string;
-}
-
-/** Backend-owned Runbook authoring contract exposed to Console clients. */
-export interface RunbookAuthoringStandard {
-  version: number;
-  body_max_characters: number;
-  retrieval_descriptor_max_characters: number;
-  document_max_bytes: number;
-  section_min_characters: number;
-  reserved_ids: string[];
-  character_count: string;
-  metadata_limits: {
-    title_max_characters: number;
-    summary_max_characters: number;
-    persona_max_characters: number;
-    list_max_items: number;
-    list_item_max_characters: number;
-  };
-  required_manifest_fields: string[];
-  optional_manifest_fields: string[];
-  required_body_labels: string[];
-  optional_body_labels: string[];
-  investigation_steps: string;
-  allowed_metadata_format: string;
-  allowed_body_format: string;
-  prohibited_metadata_format: string[];
-  prohibited_body_format: string[];
-}
-
-export interface RunbooksResponse {
-  enabled: boolean;
-  /** Whether runbook knowledge is currently eligible for RAG retrieval. */
-  retrieval_enabled: boolean;
-  /** Missing only while interoperating with a legacy backend during a rolling upgrade. */
-  authoring_standard?: RunbookAuthoringStandard;
-  count: number;
-  runbooks: Runbook[];
-}
-
-/** Result of reconciling one or more runbooks into the RAG corpus. */
-export interface RunbookIndexResult {
-  ok: boolean;
-  indexed: number;
-  deleted: number;
-  failed: number;
-  errors: Array<string | { id?: string; error: string }>;
-}
-
-export interface RunbookMutationResponse {
-  ok: boolean;
-  runbook: Runbook;
-  index: RunbookIndexResult;
-}
-
-export interface RunbookDeleteResponse {
-  ok: boolean;
-  id: string;
-  index: RunbookIndexResult;
 }
 
 // --------------------------------------------------------------------------- //
@@ -747,6 +753,14 @@ export interface SourceConfigExtras {
   auto_correlate?: boolean;
   /** Per-source field-mapping overrides (F9); falls back to global Preferences. */
   field_mappings_extra?: FieldMappingsExtra;
+  /**
+   * Per-source override of the case-evidence projection (the raw-record paths the
+   * agent sees and can search for). Omitted inherits the global
+   * `Preferences.evidence_fields`; `[]` pins the narrow identity-only projection.
+   */
+  evidence_fields?: string[];
+  /** Per-source override of the per-event evidence size budget, in characters. */
+  evidence_max_chars_per_event?: number;
   [key: string]: unknown;
 }
 
@@ -761,6 +775,12 @@ export interface SourceInstance {
   /** Source-native transport/format hints returned by compatible backends. */
   protocol?: string;
   format?: string;
+  /**
+   * Server-authoritative browse capability (GET /api/sources). It is the SAME
+   * `_source_can_browse` predicate the browse routes gate on — never re-derive it
+   * client-side from connector manifests or health. Optional only so an older
+   * backend degrades to "unknown".
+   */
   can_browse?: boolean;
   is_primary?: boolean;
   /**
@@ -770,6 +790,17 @@ export interface SourceInstance {
    */
   config?: Record<string, unknown> & Partial<SourceConfigExtras>;
   configured_secrets?: string[];
+  /**
+   * The operator-DECLARED ceiling of this source's NATIVE severity ladder — one number
+   * that describes any ladder (0-10, 0-16, 0-1000). Every severity surface projects a raw
+   * source severity through `min(100, max(0, raw / severity_scale_max * 100))`.
+   *
+   * `null`/absent means UNDECLARED, which projects through the IDENTITY (ceiling 100, the
+   * canonical OCSF `severity_score` scale). Declare it for any source that does NOT rate
+   * severity on 0-100, or its ratings read ~10x too low on the severity chip, in the
+   * Noise-Reduction funnel and against a feed's `severity_floor`.
+   */
+  severity_scale_max?: number | null;
   created_at?: string;
   updated_at?: string;
   /** Read-only synthetic overlay row surfaced only while Demo Mode is active. */
@@ -899,14 +930,24 @@ export interface SourceLogRow {
 /**
  * GET /api/sources/{id}/logs — a window of recent events from a source.
  *
- * `mode:"buffer"` = a push source's in-memory live tail (the server ignores
- * from/to/query); `mode:"search"` = a scoped read against a pull source.
+ * `mode:"buffer"` = a push source's PROCESS-LOCAL, VOLATILE in-memory live tail (the
+ * server ignores from/to/query and nothing survives a restart); `mode:"search"` = a
+ * real backing read against a pull source, where from/to/query apply.
+ *
+ * BOUNDED, NOT COMPLETE: the server clamps `limit` to 1..200 and there is NO
+ * pagination. Rows are always "the most recent `count`" — render them as such.
+ * `truncated` is true when more rows demonstrably existed; false does NOT prove
+ * completeness.
  */
 export interface SourceLogsResponse {
   source_id: string;
   mode: 'buffer' | 'search' | string;
   count: number;
   total?: number;
+  /** Effective server-side row cap for this response (clamped to 1..200). */
+  limit?: number;
+  /** True when more rows existed than the cap returned. */
+  truncated?: boolean;
   query?: string | null;
   logs: SourceLogRow[];
 }
@@ -928,6 +969,17 @@ export interface SourceUpsert {
   ingest_mode?: string | null;
   is_primary?: boolean;
   config?: Record<string, unknown>;
+  /**
+   * Three-state on the wire (see `SourceInstance.severity_scale_max`):
+   *   - OMITTED       -> keep whatever the stored source already declares.
+   *   - a number > 0  -> declare that ceiling.
+   *   - explicit null -> CLEAR the declaration (back to the 100 identity projection, or
+   *                      the connector's seeded default where one exists).
+   * A body that is not editing the ceiling (an Enabled toggle, a bulk action, a
+   * make-primary) MUST omit the key entirely; sending `undefined` in a JSON body is the
+   * same as omitting it, but never send `null` unless the operator is clearing it.
+   */
+  severity_scale_max?: number | null;
 }
 
 // --------------------------------------------------------------------------- //
@@ -966,6 +1018,8 @@ export function configuredSsoById(configured: ConfiguredStatus): SsoClientSecret
 
 export interface SetupStatus {
   setup_complete: boolean;
+  /** Round 12: the public "Remember me" policy for the sign-in page. */
+  remember_me?: RememberMeStatus;
   // Wave-1 OOBE + auth fields (additive).
   needs_user?: boolean;
   auth_enabled?: boolean;
@@ -973,6 +1027,17 @@ export interface SetupStatus {
   user_count?: number;
   seeded_default?: boolean;
   configured: ConfiguredStatus;
+  /**
+   * Round 15 (SPEC D2.1): whether the default investigation models (router and
+   * investigator) can be called with the credentials the backend holds.
+   */
+  ai_runtime_ready?: boolean;
+  /**
+   * Their provider family (`openai`, `anthropic`, `openai_compatible`, `azure`, `bedrock`,
+   * `vertex`, `mock`). Only the authenticated `POST /api/setup/secrets` answer carries it;
+   * the wizard patches it in after saving a key.
+   */
+  ai_runtime_provider?: string;
   data_view_pattern?: string;
   entity_mapping?: {
     source_ip_field?: string;
@@ -996,6 +1061,18 @@ export interface HealthResponse {
   state_backend?: 'elasticsearch' | 'postgres' | 'sqlite' | string;
   store_type?: string;
   setup_complete?: boolean;
+  /**
+   * A subsystem the product depends on is impaired while the state store itself is
+   * reachable (e.g. an empty knowledge corpus, or a provider rejecting our
+   * credentials). Additive: `status` keeps its historical state-store meaning.
+   */
+  degraded?: boolean;
+  /**
+   * Opaque, closed-vocabulary codes naming each active degradation. `/api/health` is
+   * public, so it carries no counts or source names — the authenticated
+   * `/api/diagnostics/health` surface owns that detail.
+   */
+  degraded_reasons?: string[];
 }
 
 /** Public, non-secret runtime release identity from `/api/health/build-info`. */
@@ -1009,6 +1086,13 @@ export interface BuildInfoResponse {
   ocsf_version: string;
   provenance_complete?: boolean;
   provenance_missing?: string[];
+  /**
+   * Additive: a build identity that IS stamped but is not an exact source revision
+   * (`commit_sha_not_exact_source_revision`) or is half-stamped
+   * (`build_identity_partially_stamped`). Never narrows `provenance_complete`, which
+   * keeps its broad "was it stamped at all" semantics so non-git builders stay honest.
+   */
+  provenance_advisories?: string[];
 }
 
 // --------------------------------------------------------------------------- //
@@ -1236,6 +1320,194 @@ export interface SystemUpdateReceipt {
 }
 
 // --------------------------------------------------------------------------- //
+// Durable background jobs (ordinary application work; NOT the supervised updater).
+// --------------------------------------------------------------------------- //
+export type BackgroundJobStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'partial'
+  | 'failed'
+  | 'cancelled';
+
+export type BackgroundJobKind =
+  | 'case_reinvestigate'
+  | 'case_lifecycle'
+  | 'case_assign'
+  | 'case_tag'
+  | 'data_export_archive'
+  | 'data_export_segment'
+  | 'precedent_bootstrap'
+  | 'runbook_reindex'
+  | 'rag_import'
+  | 'rag_rebuild'
+  | 'tiered_reset'
+  | 'storage_lifecycle_apply'
+  /** A replay experiment (submitted from the replay harness; never from a Console page). */
+  | 'replay_experiment'
+  /** Round 14 (SPEC §4.5.6): params `AuditExportJobParams` (`types-audit.ts`). */
+  | 'audit_export';
+
+export interface BackgroundJobProgress {
+  done: number;
+  total: number;
+  unit: string;
+}
+
+export interface BackgroundJobFailure {
+  item_ref: string;
+  reason: string;
+}
+
+export interface BackgroundJobResult {
+  kind: string;
+  artifact_id?: string | null;
+  counts: Record<string, number>;
+}
+
+export interface BackgroundJob {
+  job_id: string;
+  kind: BackgroundJobKind;
+  actor: string;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  status: BackgroundJobStatus;
+  progress: BackgroundJobProgress;
+  failures: BackgroundJobFailure[];
+  failure_count: number;
+  /** Number of failures omitted from the bounded `failures` array. */
+  failures_truncated: number;
+  request_fingerprint: string;
+  result?: BackgroundJobResult | null;
+  /** Secret-free resume scope. Render values only as plain data. */
+  params: Record<string, unknown>;
+  cancel_requested: boolean;
+}
+
+/**
+ * The params of the job kinds whose strict server model the Console mirrors (the
+ * `*Params` models in `backend/app/api/routes_jobs.py`, where an unknown key answers
+ * `422`). A submit that names one of these kinds as a literal is checked against its
+ * mirror by `tsc`, so a stray field (for example the single-case
+ * `require_open_steps_reason`) fails the Type check gate instead of the request.
+ */
+export interface BackgroundJobParamsByKind {
+  case_lifecycle: CaseLifecycleParams;
+  audit_export: AuditExportJobParams;
+}
+
+/** The params a submit of job kind `K` sends: its mirror, or a free object for the rest. */
+export type BackgroundJobParams<K extends BackgroundJobKind> = K extends keyof BackgroundJobParamsByKind
+  ? BackgroundJobParamsByKind[K]
+  : Record<string, unknown>;
+
+/**
+ * `POST /api/jobs`. With a literal `kind` the params are that kind's mirror; a `kind`
+ * typed as the whole union (a shared submit helper) accepts any of them.
+ */
+export interface BackgroundJobSubmit<K extends BackgroundJobKind = BackgroundJobKind> {
+  kind: K;
+  idempotency_key: string;
+  params: BackgroundJobParams<K>;
+}
+
+/** The analyst verbs a `case_lifecycle` job applies to every case it names. */
+export type CaseLifecycleAction =
+  | 'close'
+  | 'reopen'
+  | 'escalate'
+  | 'confirm_fp'
+  | 'acknowledge'
+  | 'hold'
+  | 'resume'
+  | 'resolve'
+  | 'set_disposition'
+  | 'deescalate'
+  | 'set_status';
+
+/**
+ * Params of the `case_lifecycle` job (`POST /api/jobs`; mirrors `CaseLifecycleParams`
+ * in `backend/app/api/routes_jobs.py`). The model is strict: an unknown key answers
+ * `422`, so a bulk close never forwards `require_open_steps_reason` (single-case
+ * actions only). The server sorts and de-duplicates `case_ids`, so a retry that only
+ * reorders them binds the same request.
+ */
+export interface CaseLifecycleParams {
+  /** 1 to 5,000 case ids, each 1 to 200 characters. */
+  case_ids: string[];
+  action: CaseLifecycleAction;
+  /** At most 4,000 characters. */
+  note?: string;
+  /** At most 1,000 characters. */
+  reason?: string;
+  /** At most 4,000 characters. */
+  resolution?: string | null;
+  /** Required by `set_disposition`; at most 80 characters. */
+  disposition?: Disposition | null;
+  /** True only when a person chose `disposition` for this submission (see `CaseActionInput`). */
+  disposition_declared?: boolean;
+  /** Required by `set_status`. */
+  status?: CaseStatus | null;
+  /**
+   * Round 14 (SPEC §4.10.15, D34): the bulk dialog's one shared reason for closing
+   * cases whose active runbook still has required steps open (1 to 500 characters;
+   * whitespace collapses and a blank reason is absent). Optional: a bulk close never
+   * fails an item for open steps.
+   */
+  open_steps_reason?: string | null;
+}
+
+/**
+ * What a bulk action passes for a `case_lifecycle` job before the selection is added:
+ * the params without `case_ids`. Type a bulk helper's input with it (never with the
+ * single-case `CaseActionInput`), so a single-case field fails `tsc` instead of
+ * turning the job into a `422`.
+ */
+export type CaseLifecycleInput = Omit<CaseLifecycleParams, 'case_ids'>;
+
+export interface RelatedLlmBatchJob {
+  id: string;
+  provider: string;
+  state: string;
+  model: string;
+  discount: number;
+  requests: number;
+  retrieved: number;
+  submitted_at: string | null;
+  polled_at: string | null;
+}
+
+export interface SystemWorkerHealth {
+  enabled: boolean;
+  gated: boolean;
+  running: boolean;
+  cadence: string;
+  last_attempt_at: string;
+  last_success_at: string;
+  last_error: string;
+  processed: number;
+}
+
+export interface BackgroundJobsResponse {
+  jobs: BackgroundJob[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** Present only with models:read; null otherwise. */
+  related?: {
+    llm_batches: RelatedLlmBatchJob[];
+    total: number;
+    truncated: boolean;
+  } | null;
+  /** Present only with automation:read; never projected into the personal Inbox. */
+  system_workers?: {
+    scheduler_runtime_running: boolean;
+    workers: Record<string, SystemWorkerHealth>;
+  } | null;
+}
+
+// --------------------------------------------------------------------------- //
 // Models (per-role pickers).
 // --------------------------------------------------------------------------- //
 export interface ModelsResponse {
@@ -1321,6 +1593,30 @@ export interface EnrichmentConfig {
   cache_ttl_seconds?: number;
 }
 
+/**
+ * Compounding guards for the LOWER-TRUST `model_unconfirmed` precedent tier
+ * (`RagConfig.unconfirmed_precedent`). Every guard is inert while
+ * {@link RagConfig.use_unconfirmed_resolved_cases} is false.
+ *
+ * The tier indexes the agent's OWN auto-closed verdicts — prior model judgements, not
+ * analyst decisions — so these bounds exist to stop one unreviewed close becoming
+ * quotable precedent, and to stop a run being dominated by an echo of itself.
+ */
+export interface UnconfirmedPrecedentConfig {
+  /** Minimum MODEL confidence (0..1) on the auto-closed case before it may be precedent. */
+  min_confidence?: number;
+  /** How often the same (entity-type, rule set, outcome) pattern must recur. 1 disables. */
+  min_recurrence?: number;
+  /** Age-out horizon in days, applied to the case's terminal timestamp. */
+  max_age_days?: number;
+  /** Hard cap on the FRACTION of one retrieval that may be unconfirmed precedent (0 blocks it). */
+  max_context_share?: number;
+  /** Multiplier (0..1) demoting an unconfirmed chunk's final ranking score. */
+  rank_penalty?: number;
+  /** Bound on how many unconfirmed precedents the projection may hold at all. */
+  max_items?: number;
+}
+
 export interface RagConfig {
   enabled?: boolean;
   top_k?: number;
@@ -1331,6 +1627,15 @@ export interface RagConfig {
   use_suppression_rules?: boolean;
   /** Inject imported threat-intel corpus (source="threat_context") as TRUSTED fenced context (F11). */
   use_threat_context?: boolean;
+  /**
+   * The LOWER-TRUST precedent tier — DEFAULT FALSE. Additionally indexes the agent's own
+   * auto-closed cases as a distinct `model_unconfirmed` tier: prior MODEL JUDGEMENTS, never
+   * analyst decisions. Requires `use_resolved_cases`; always outranked by analyst-confirmed
+   * precedent, bounded by {@link unconfirmed_precedent}, and still UNTRUSTED-fenced (#9).
+   */
+  use_unconfirmed_resolved_cases?: boolean;
+  /** Compounding bounds on the lower-trust tier above. */
+  unconfirmed_precedent?: UnconfirmedPrecedentConfig;
 }
 
 export interface StandupConfig {
@@ -1533,6 +1838,17 @@ export interface Preferences {
   in_scope_rules?: string[];
   excluded_rules?: string[];
 
+  /**
+   * The extra raw-record paths the agent sees per sample event, the `es_query`
+   * tool returns per row, and free-text search is matched against — ONE list
+   * driving all three (`backend/app/evidence_fields.py`). `["*"]` ships the whole
+   * record bounded only by `evidence_max_chars_per_event`; `[]` is the narrow
+   * identity-only projection. Overridable per source via `SourceConfigExtras`.
+   */
+  evidence_fields?: string[];
+  /** Serialised-character budget for ONE projected event (0 disables the extras). */
+  evidence_max_chars_per_event?: number;
+
   poll_interval_seconds?: number;
   poll_batch_size?: number;
   cold_start_lookback_minutes?: number;
@@ -1637,6 +1953,10 @@ export interface SettingsSchemaField {
   /** Enumerated choices for an enum / Literal field, else null. */
   choices: string[] | null;
   description: string | null;
+  /** Declared lower bound (`ge`), when the backend field declares one. */
+  minimum?: number;
+  /** Declared upper bound (`le`), when the backend field declares one. */
+  maximum?: number;
   /** Additive (Sett-C): the element-model descriptor for list/dict-of-model fields. */
   element?: SettingsElementSchema;
 }
@@ -2005,7 +2325,18 @@ export interface UserPrefs {
   theme_mode?: ThemeMode;
   last_list_state?: Record<string, Record<string, unknown>>;
   pinned_view_ids?: string[];
+  /**
+   * Small UI-prefs bag. `misc.chat_stream_mode` is the viewer's chat live mode
+   * (`'steps' | 'text'`, chat revamp D2); the backend normalises it and drops an
+   * invalid value so the org default (`chat_agent.default_stream_mode`) applies.
+   * Round 13: `misc.chat_suggest_start` and `misc.chat_suggest_follow_ups` are the
+   * personal suggestion switches ({@link ChatSuggestPrefs}; absent means on).
+   * Round 14: `misc.dashboards_hidden` and `misc.dismissed_intros` are lists the
+   * server normalises on load (`Round14PrefsMisc` in `types-dashboards.ts`).
+   */
   misc?: Record<string, unknown>;
+  /** Saved chat prompts (≤ 50; title ≤ 60, text ≤ 2000). Plain user text (#9). */
+  chat_prompts?: ChatPrompt[];
   updated_at?: string;
 }
 
@@ -2084,6 +2415,17 @@ export interface CaseFeedback {
   /** Estimated analyst minutes saved by the agent. */
   time_saved_minutes?: number;
   comment?: string;
+  /** Snapshot of the AI verdict that was graded. */
+  ai_verdict?: string;
+  ai_confidence?: number;
+  /**
+   * Round 15 (SPEC D6.7): `'auto_close_review'` marks a review of a randomly sampled
+   * automatic close; `review_id` names its ledger entry. Both empty for an ordinary
+   * grade. An older build drops them on save, so a review grade is also recognised
+   * from the case's `auto_close_review` history event (`isReviewGrade`).
+   */
+  origin?: string;
+  review_id?: string;
 }
 
 /** A free-form analyst comment on a case (mirrors backend). */
@@ -2131,6 +2473,10 @@ export interface StatusHistoryEntry {
 
 export interface Case {
   case_id: string;
+  /** Immutable producing build for a newly created case; null/absent on legacy rows. */
+  app_version?: string | null;
+  /** Immutable creating commit SHA; `unknown` is explicit, null/absent is historical. */
+  build_sha?: string | null;
   /** Human-facing DISPLAY id (template-driven, F7). "" → fall back to case_id. */
   case_number?: string;
   cluster_signature?: string;
@@ -2159,12 +2505,28 @@ export interface Case {
   /** Append-only lifecycle transition trail (from→to, by, when, reason). */
   status_history?: StatusHistoryEntry[];
   decision_by?: string;
+  /**
+   * The deterministic rule-identity precedent fact this investigation was given, and
+   * why it did or did not qualify. `null`/absent means the run predates the seam or
+   * never reached the investigator — never "no precedent exists".
+   */
+  precedent_signal?: PrecedentSignalRecord | null;
+  /** The operator declaration that closed this case with no model call, when one did. */
+  analyst_policy?: AnalystPolicyRecord | null;
   title?: string;
   summary?: string;
-  token_cost?: number;
+  /** The case's own AI spend; `null` for a viewer without `cost:view`. */
+  token_cost?: number | null;
   error?: string;
   agent_persona?: string;
+  /** Kept readable for cases investigated before Round 14; never written by new code. */
   playbook_id?: string;
+  /**
+   * Round 14 (SPEC §4.10.9): the Published runbook whose guidance the investigator
+   * received, and its version. Null or absent on older cases (history is never rewritten).
+   */
+  runbook_id?: string | null;
+  runbook_version?: number | null;
   /** The source instance this case originated from (additive; mirrors backend). */
   source_id?: string | null;
   /** Human-readable display name of the originating source (additive). */
@@ -2177,8 +2539,27 @@ export interface Case {
   tags?: string[];
   /** Analyst comments thread (POST /api/cases/{id}/comment). */
   comments?: CaseComment[];
-  /** Assigned analyst (POST /api/cases/{id}/assign). */
+  /** Assigned analyst (POST /api/cases/{id}/assign). Backend default is `''`, so an
+   *  UNASSIGNED case carries an empty string rather than null — test for blankness. */
   assignee?: string;
+  /**
+   * Lifecycle interval anchors, mirroring `models.py` `Case.detected_at` /
+   * `acknowledged_at` / `first_response_at`. All three are optional on the backend and
+   * default to None, so a deployment where nothing has populated them yet is the NORMAL
+   * case, not an error: a reader must distinguish "no case here has been acknowledged"
+   * from "zero acknowledged" and say the former rather than counting the latter.
+   *
+   * ADVISORY / REPORTING ONLY. `decide()` never reads them (#3).
+   */
+  detected_at?: string | null;
+  acknowledged_at?: string | null;
+  first_response_at?: string | null;
+  /**
+   * Which detection path opened this case — the backend `DetectionSource` vocabulary
+   * (`detection` | `anomaly` | `rule`). Optional and defaulted None, and ADVISORY only
+   * (#3). This is the product's own word for the concept; it is not a vendor "sensor".
+   */
+  detection_source?: string | null;
   /** Outbound notification send records (F5; additive, optional). */
   notifications_sent?: NotificationSendRecord[];
   /**
@@ -2197,8 +2578,18 @@ export interface Case {
    * → render as plain text.
    */
   automation_actions?: AutomationActionRecord[];
-  /** Knowledge sources the investigation drew on (F11; additive, UNTRUSTED text). */
+  /** Cumulative knowledge references (F11; UNTRUSTED text). Always an array. */
   knowledge_used?: Array<Record<string, unknown>>;
+  /**
+   * Whether the case's complete lifetime retrieval history is interpretable. Legacy
+   * cases stay `unavailable`; this marker is authoritative over array presence.
+   */
+  retrieval_history_status?: 'available' | 'unavailable';
+  /**
+   * Whether at least one instrumented retrieval completed for this case. An empty
+   * knowledge array is a measured zero only when this is `measured`.
+   */
+  retrieval_observation_status?: 'measured' | 'not_measured' | 'unavailable';
   /**
    * FP objection-window deadline (Round-7; additive). When the deterministic
    * auto-close policy schedules a false-positive close behind an objection window,
@@ -2242,7 +2633,86 @@ export interface AutomationActionRecord {
 export interface CasesResponse {
   cases: Case[];
   total: number;
+  /**
+   * Whether `total` is the PROVEN count of rows matching the requested `from`/`to`
+   * window across the whole corpus. `true` on the bundled Elasticsearch/SQL stores,
+   * which push the window down as a real backend clause.
+   *
+   * `false` means `total` answers a DIFFERENT question than the one asked and must not
+   * be labelled with the requested range — either a third-party case repository fell
+   * back to the bounded-scan compatibility path (so `total` is a lower bound), or a
+   * supplied `from`/`to` bound could not be parsed and was dropped, so the window that
+   * was applied is wider than the one requested (an unreadable bound is never silently
+   * resolved to `now()`, which would empty the window instead).
+   *
+   * `null`/absent when NO window was requested and the flag does not apply.
+   *
+   * A windowed `total` is no longer capped at the page size, so a client must NOT
+   * infer truncation from `cases.length >= 200` when it asked for a window.
+   */
+  window_total_exact?: boolean | null;
+
+  // ---- Paging / sort ECHOES --------------------------------------------- //
+  // Present ONLY on a response to a request that engaged one of the paging/sort
+  // parameters (`sort_field` / `sort_order` / `status_group`). A request that sends
+  // none of them receives the byte-identical legacy envelope, so every field below is
+  // optional and a client must treat absence as "this server was not asked".
+
+  /**
+   * The fields THIS deployment can sort a case listing by. The drill-down builds its
+   * sort menu from this rather than from a client-side literal, so a deployment whose
+   * store supports a different set gets the right menu with no client change.
+   */
+  sortable_fields?: string[] | null;
+  /**
+   * What the server actually sorted by. A request that asked for a field outside
+   * `sortable_fields` is answered in the DEFAULT order, and this is how a client finds
+   * out rather than believing its sort was honoured.
+   */
+  sort_field?: string | null;
+  sort_order?: string | null;
+  /**
+   * The limit the server actually applied, after its own clamp. Without this a client
+   * that asked for more than the server serves cannot tell a CLAMP from a small result
+   * set — the clamp emits no error, no header and no other signal.
+   */
+  limit_applied?: number | null;
+  offset_applied?: number | null;
+  /**
+   * The deepest `offset` this endpoint accepts for `limit_applied`. Offset paging on
+   * the bundled Elasticsearch backend has a hard result-window ceiling; a client uses
+   * this to stop asking rather than to discover the ceiling as an error.
+   */
+  max_offset?: number | null;
+  /**
+   * Round 12 (WP-CM): the queue filters the server applied, echoed only when the
+   * request sent them (`q`, `assignee`, `severity`). The search echo is the normalised,
+   * case-folded term list joined by single spaces.
+   */
+  search_applied?: string | null;
+  assignee_applied?: string | null;
+  severity_applied?: string | null;
+  verdict_applied?: string | null;
+  /**
+   * Round 14 (SPEC §4.6.1): the exact rule value the list was filtered by, echoed as
+   * stored (never trimmed or case-folded); present only when `rule` was sent. Plain
+   * text (#9).
+   */
+  rule_applied?: string | null;
+  /** Round 14: the `closed_by` filter the server applied, present only when it was sent. */
+  closed_by_applied?: CaseClosedBy | null;
+  /** The multi-status lifecycle group that was applied, if any. */
+  status_group_applied?: string | null;
 }
+
+/**
+ * Who closed a terminal case, in the exact-aggregation engine's values (the
+ * `closed_by` filter of `GET /api/cases`): `agent` (an automatic close), `analyst` (a
+ * person), `analyst_policy` (an operator's declared-benign policy) and `system`
+ * (deterministic routing, and older rows with no recorded decider). Any other value
+ * answers `400`.
+ */
+export type CaseClosedBy = 'agent' | 'analyst' | 'analyst_policy' | 'system';
 
 // --------------------------------------------------------------------------- //
 // Global search (W7c) — GET /api/search?q= — powers the Cmd-K palette + top bar.
@@ -2310,58 +2780,6 @@ export interface BulkResult {
   results: BulkResultItem[];
 }
 
-// --------------------------------------------------------------------------- //
-// Audit-log viewer (W7c) — GET /api/audit — read-only over the append-only audit
-// (#2). Gated by audit:view server-side. EVERY field is system/operator/LOG-derived
-// → render as PLAIN text (#9); `prompt_excerpt`/`tool_output_summary` carry fenced
-// UNTRUSTED log data and render only inside a code block. No mutate path exists.
-// --------------------------------------------------------------------------- //
-/** One append-only audit record (mirrors backend `AuditDoc`). */
-export interface AuditRecord {
-  ts?: string;
-  case_id?: string | null;
-  surface?: string;
-  actor?: string;
-  action_type?: string;
-  model?: string | null;
-  prompt_excerpt?: string | null;
-  query_text?: string | null;
-  tool_name?: string | null;
-  tool_input?: unknown;
-  tool_output_summary?: string | null;
-  result_summary?: string | null;
-  [key: string]: unknown;
-}
-
-/** GET /api/audit — bounded, NEWEST-first list + total. */
-export interface AuditResponse {
-  records: AuditRecord[];
-  total: number;
-}
-
-/** Query params for GET /api/audit (all optional; filters are ANDed). */
-export interface AuditQuery {
-  actor?: string;
-  /** The audit `action_type` value (the wire param name is `action`). */
-  action?: string;
-  surface?: string;
-  case_id?: string;
-  /** ISO lower/upper time bounds (wire param names `from`/`to`). */
-  from?: string;
-  to?: string;
-  limit?: number;
-}
-
-/**
- * GET /api/scans/notifications — how many automated-scan cases are new since the
- * caller's last-seen timestamp. Drives the "N new" pill on the Scans surface.
- */
-export interface ScanNotifications {
-  new_count: number;
-  since?: string | null;
-  now?: string | null;
-}
-
 /**
  * Navigation options threaded through `Navigate` (router.tsx / App.tsx) so
  * deep-links / drill-throughs can pre-seed a destination page's filters/tab.
@@ -2405,13 +2823,62 @@ export interface CaseActionInput {
   priority?: string;
   /** Optional follow-up tags to attach as part of the action. */
   tags?: string[];
-  /** set_disposition: the investigative outcome to record. */
+  /** set_disposition / close: the investigative outcome to record. */
   disposition?: Disposition;
+  /**
+   * GROUND-TRUTH INTENT: true only when a human affirmatively chose `disposition` in
+   * this very action. The backend applies the disposition either way but records it as
+   * independent analyst evidence only when this is set, so a client echoing a stored
+   * (model-derived) disposition back cannot manufacture ground truth. Omit it — the
+   * default — unless the operator really made the choice.
+   */
+  disposition_declared?: boolean;
   /** set_status: the lifecycle status to move to. */
   status?: CaseStatus;
   /** Deprecated compatibility input; the Console does not expose escalation tiers. */
   level?: number;
+  /**
+   * Round 14 (SPEC §4.10.15, D34): why a person closes with required runbook steps
+   * still open (at most 500 characters, audited on `case.closed_with_open_steps`). The
+   * server collapses runs of whitespace and treats a blank reason as absent. Also a
+   * `case_lifecycle` job param ({@link CaseLifecycleParams}), where one shared reason
+   * covers the whole bulk close.
+   */
+  open_steps_reason?: string;
+  /**
+   * Round 14: ask the server to answer `409 runbook_steps_open` (with the open steps)
+   * instead of closing when required steps are open and no reason is given. The
+   * Console sends it so it can show the close dialog; a close never blocks otherwise.
+   * Single-case actions only; a `case_lifecycle` job refuses it (422).
+   */
+  require_open_steps_reason?: boolean;
+  /**
+   * Round 15 (SPEC D4.2): what the person did about the case, at most 8 values
+   * (`constants.CASE_ACTIONS_TAKEN_MAX`) from the fixed vocabulary (an unknown value
+   * answers 422). Stored on the history entry and the audit row; never model text.
+   */
+  actions_taken?: CaseActionTaken[];
+  /**
+   * Round 15 (SPEC D6.9): the action was taken from an auto-close review ("Reopen
+   * case", "Reopen and escalate"). Recorded only; single-case actions only (a bulk
+   * body that sends it answers 422).
+   */
+  review_via?: 'auto_close_review' | null;
 }
+
+/** Round 15 (SPEC D4.2): the fixed "actions taken" vocabulary (`constants.CASE_ACTIONS_TAKEN`). */
+export type CaseActionTaken =
+  | 'no_action_needed'
+  | 'blocked_indicator'
+  | 'isolated_host'
+  | 'disabled_account'
+  | 'reset_credentials'
+  | 'removed_malware'
+  | 'patched_or_hardened'
+  | 'notified_owner'
+  | 'escalated_externally'
+  | 'tuned_detection'
+  | 'other';
 
 /** Response from POST /api/settings/case-id/preview (F7 live preview). */
 export interface CaseIdPreview {
@@ -2432,6 +2899,12 @@ export interface CaseIdFormatConfig {
 export interface ChatTurn {
   role: 'user' | 'assistant';
   content: string;
+  /**
+   * Who authored a USER turn's text (SPEC §4.8.2). The server counts a client-history
+   * user turn as user-authored ONLY when it says `user`; absent or any other origin
+   * never authorises an indicator lookup on a later turn.
+   */
+  origin?: ChatOrigin;
 }
 
 /** One durably stored Workspace-chat message. Assistant rows retain the original
@@ -2441,6 +2914,13 @@ export interface ChatConversationMessage extends ChatTurn {
   id: string;
   created_at: string;
   response?: ChatResponse | null;
+  /**
+   * Client-derived (user messages only): who authored the stored prompt (SPEC §4.8),
+   * read from the stored `response.origin`. Absent = `user`. Ask again and the
+   * composer's ↑ recall must keep a follow-up / starter / command / continue origin
+   * after a reload, exactly as they do in the live session.
+   */
+  origin?: ChatOrigin;
   idempotency_key?: string | null;
   model?: string | null;
   source_id?: string | null;
@@ -2463,11 +2943,42 @@ export interface ChatConversationSummary {
   /** True when older turns were removed from this bounded transcript. */
   history_truncated?: boolean;
   oldest_retained_at?: string | null;
+  // --- Chat revamp (SPEC §7.5; additive). Legacy rows: totals are null → show "—". ---
+  /** Pinned conversations (≤ 10) are exempt from the 50-conversation eviction. */
+  pinned?: boolean;
+  /** This conversation's draft report, when one exists. */
+  report_id?: string | null;
+  /** The last composer time window used in this conversation. */
+  time_range?: ChatTimeRange | null;
+  total_tokens?: number | null;
+  total_cost?: number | null;
+  usage_turns?: number | null;
+  /** Round 12 (SPEC D13): live state for the history rail and the nav indicator. */
+  status?: ChatConversationStatus;
+  /** An answer arrived that the owner has not opened yet. */
+  unread?: boolean;
 }
+
+export type ChatConversationStatus = 'idle' | 'running' | 'needs_input' | 'failed';
 
 /** Full per-user Workspace conversation returned when a rail row is opened. */
 export interface ChatConversation extends ChatConversationSummary {
   messages: ChatConversationMessage[];
+  /** Round 12 (SPEC D4): newest message id folded into the stored conversation summary. */
+  summary_covers_through?: string | null;
+  /**
+   * Round 12 (WP-API): older messages not in `messages` (the read returns the newest
+   * window). Read them with `GET chat/conversations/{id}/messages?before=<first id>`.
+   */
+  earlier_message_count?: number;
+}
+
+/** `GET /api/chat/conversations/{id}/messages` (Round 12): oldest first, full text. */
+export interface ChatMessagePage {
+  conversation_id: string;
+  messages: ChatConversationMessage[];
+  /** Older messages still before this page (0 = the page starts the conversation). */
+  earlier_message_count: number;
 }
 
 export interface ChatConversationsResponse {
@@ -2480,6 +2991,8 @@ export interface ChatConversationsResponse {
   oldest_retained_at?: string | null;
   limit?: number;
   offset?: number;
+  /** With `?q=` only (Round 12): the search hit its read budget; older messages of some conversations were not searched. */
+  search_incomplete?: boolean;
 }
 
 export interface ChatTable {
@@ -2508,6 +3021,7 @@ export interface ChatMemorySuggestion {
 }
 
 export interface ChatResponse {
+  /** The final answer prose (Markdown subset; render with the chat Markdown renderer). */
   answer: string;
   /** True only when an oversized response snapshot was compacted in saved history. */
   truncated?: boolean;
@@ -2530,16 +3044,791 @@ export interface ChatResponse {
   effective_model?: string | null;
   effective_source_id?: string | null;
   effective_source_name?: string | null;
+  // --- Chat revamp (SPEC §3.2; additive). Every field is optional so legacy saved
+  // turns keep rendering; persisted values were validated leniently server-side. ---
   /**
-   * Optional provenance the chat engine may attach (additive; render only when
-   * present). All values are UNTRUSTED — render as plain text / the `CodeBlock`
-   * primitive (`soc/components/CodeBlock`), never as markup.
+   * Answer blocks (BLOCKS.md). Deliberately `unknown[]`: always pass them through
+   * `parseBlocks()` (`soc/chat/blocks/schema.ts`) before rendering (G9).
    */
-  tools?: RationaleTool[];
-  knowledge?: RationaleKnowledge[];
-  reasoning?: string;
-  /** Inline citations the answer references (UNTRUSTED — plain text). */
-  citations?: Array<{ n: number; source: string; snippet?: string; ref?: string }>;
+  blocks?: unknown[];
+  blocks_version?: number;
+  /** The run log: one entry per tool call or model step. */
+  steps?: ChatStep[];
+  /** `null` on legacy replays and turns that recorded no usage ("Usage not recorded"). */
+  usage?: TurnUsage | null;
+  /** Sources the answer cites by id (`D1` docs, `C2` case, `K3` knowledge, `M1` ATT&CK). */
+  citations?: ChatCitation[];
+  console_links?: ConsoleLink[];
+  /** ≤ 3 follow-up chips (display-sanitised). Only the latest turn shows them. */
+  follow_ups?: string[];
+  answer_kind?: ChatAnswerKind;
+  notice?: TurnNotice | null;
+  /** The live mode this answer ran with (`null` on legacy rows). */
+  stream_mode?: ChatStreamMode | null;
+  turn_id?: string | null;
+  /** The persisted assistant message id (reports reference it). */
+  message_id?: string | null;
+  /**
+   * The persisted id of the question this answer replies to, when saved (Round 12
+   * WP-FIX1): a live question carries it like a restored one, so a search hit or link
+   * to it is found on screen. Never stored on the answer.
+   */
+  user_message_id?: string | null;
+  /** A model-proposed memory change awaiting human confirmation (`memory:manage`). */
+  memory_proposal?: MemoryProposal | null;
+  /** Case turns only: whether the answer reached the case thread (null = not a case turn). */
+  case_saved?: boolean | null;
+  /** The `not_saved` notice whenever `case_saved` is false, whatever the top notice is. */
+  case_save_notice?: TurnNotice | null;
+  /** Round 12 (SPEC D10): a clarifying question instead of a guess. Model text: render as text. */
+  clarify?: ChatClarify | null;
+  /** Round 12 (SPEC D11): the report the server saved from this answer. */
+  saved_report?: ChatSavedReport | null;
+  /** Round 12 (WP-API): the report the answer asked for could not be saved (the answer is saved). */
+  saved_report_error?: ChatReportSaveError | null;
+  /** Round 12 (SPEC D3): continuation steps used for the final answer. */
+  continued?: number;
+  /** Round 12 (SPEC D4): earlier context was summarised in this turn. */
+  compacted?: boolean;
+  /**
+   * Round 12 (final review): the chat command this turn replied to (`/compact`), or null
+   * for an answer. A command reply is a quiet note: no source, no answer actions, and
+   * real usage (zero when no model call ran).
+   */
+  command?: ChatCommand | null;
+}
+
+/** Round 12 (SPEC §3.1). Options are model-authored: render as untrusted text (#9). */
+export interface ChatClarify {
+  /** ≤ 200 characters. */
+  question: string;
+  /** ≤ 4 options, each ≤ 80 characters. */
+  options: string[];
+  allow_custom: boolean;
+}
+
+/** Round 12 (SPEC D11): created by the server from the persisted message. */
+export interface ChatSavedReport {
+  id: string;
+  title: string;
+  items: number;
+  /** Sections of the answer that did not fit the report's item or size limit. */
+  skipped?: number;
+}
+
+/** Round 12 (WP-API): why the report a chat answer asked for was not saved. `message` is a server template. */
+export interface ChatReportSaveError {
+  code: 'report_limit' | 'report_unavailable' | 'report_empty';
+  message: string;
+  /** The same save may work later (offer "Save as report"). */
+  retryable: boolean;
+  /**
+   * What the answer's header asked for (server-side: `POST /api/reports/from-answer`
+   * reads them from the stored answer). Model-derived; the console never shows them.
+   */
+  title?: string | null;
+  template?: ReportTemplateName | null;
+}
+
+/** `GET /api/chat/turns/active` (SPEC D13). `label` is an engine template. */
+export interface ChatActiveTurn {
+  turn_id: string;
+  conversation_id?: string | null;
+  case_id?: string | null;
+  started_at: string;
+  label: string;
+  lookups: number;
+  tokens: number;
+  status: 'running' | 'needs_input';
+}
+
+export type ChatFeedbackRating = 'up' | 'down';
+export type ChatFeedbackReason = 'wrong' | 'incomplete' | 'slow' | 'other';
+
+/** `POST /api/chat/feedback` (SPEC §3.2). Stored and audited; never used for training. */
+export interface ChatFeedbackRequest {
+  conversation_id: string;
+  message_id: string;
+  rating: ChatFeedbackRating;
+  reason?: ChatFeedbackReason | null;
+  /** ≤ 1000 characters. */
+  comment?: string;
+}
+
+// --------------------------------------------------------------------------- //
+// Chat revamp contracts (docs/research/2026-10-chat-revamp/SPEC.md §3, §4.2, §4.5,
+// §8, §9.1). Mirrors backend `models.py`; the shared enums are pinned to
+// `soc/chat/chat-stream-events.contract.json` (and the block enums to
+// `soc/chat/blocks/answer-blocks.contract.json`) by paired contract tests.
+// Every string here may be model- or log-influenced: render as text (#9, G1/G7).
+// --------------------------------------------------------------------------- //
+export type ChatStreamMode = 'steps' | 'text';
+export type ChatScope = 'logs' | 'cases' | 'metrics' | 'intel' | 'docs' | 'platform';
+export type ChatOrigin =
+  | 'user'
+  | 'follow_up'
+  | 'starter'
+  | 'command'
+  | 'continue'
+  | 'clarify'
+  | 'retry_step';
+export type ChatStepKind = 'tool' | 'model';
+export type ChatStepStatus = 'ok' | 'error' | 'denied' | 'timeout' | 'skipped' | 'cancelled';
+export type ChatStepBasis = 'exact' | 'newest_n' | 'sample' | 'cached';
+export type ChatAnswerKind = 'data' | 'product_help' | 'mixed' | 'conversation';
+/** Round 12 (final review): the chat commands a reply can answer (`ChatResponse.command`). */
+export type ChatCommand = 'compact';
+export type TurnNoticeKind =
+  | 'partial'
+  | 'cap'
+  | 'budget'
+  | 'provider'
+  | 'breaker'
+  | 'denied'
+  | 'timeout'
+  | 'cancelled'
+  | 'unsupported'
+  | 'not_saved'
+  | 'limited'
+  | 'stopped_repeating'
+  | 'compacted';
+export type ChatCitationKind = 'doc' | 'case' | 'knowledge' | 'mitre' | 'query';
+export type MemoryProposalOp = 'add' | 'remove';
+export type ChatBudgetState = 'ok' | 'approaching' | 'reached';
+export type TextStreamingReason = 'disabled_by_admin' | 'model_does_not_stream';
+export type ReportTemplateName =
+  | 'investigation'
+  | 'hunt'
+  | 'ioc'
+  | 'shift'
+  | 'posture'
+  | 'custom'
+  | 'executive'
+  | 'monthly'
+  | 'infographic'
+  | 'investigation_brief';
+export type ReportItemKind = 'block' | 'section';
+
+/**
+ * The composer time window (backend `TimeRange`). Each bound is `now`,
+ * `now-<n>[m|h|d|w|M|y]` (lower-case `m` is minutes, `M` months, `y` years, so `now-6M`
+ * is six months) or ISO-8601, and `from` may also be `"all"` (`{ from: 'all' }`, the
+ * "All time" chip, which never clamps); `from < to` (else HTTP 422). Round 12 (SPEC
+ * D7a): chat scope windows have no span limit. No range at all is the composer's
+ * **Auto** default: no outer limit, each lookup's own default.
+ * Named `ChatTimeRange` to stay distinct from `TimeRangePicker`'s own `TimeRange`.
+ */
+export interface ChatTimeRange {
+  from: string;
+  /** Defaults to `now` server-side. */
+  to?: string;
+}
+
+/** `POST /api/chat` and `POST /api/chat/stream` body (same shape for both). */
+export interface ChatRequest {
+  message: string;
+  case_id?: string | null;
+  history?: ChatTurn[];
+  context?: Record<string, unknown> | null;
+  model?: string | null;
+  source_id?: string | null;
+  conversation_id?: string | null;
+  persist_conversation?: boolean;
+  idempotency_key?: string | null;
+  /** Presentation only (D2); never part of the request identity. */
+  stream_mode?: ChatStreamMode;
+  /** Composer @-scopes; unknown values are dropped server-side. */
+  scopes?: ChatScope[];
+  time_range?: ChatTimeRange | null;
+  /** Only `user` counts as user-authored for the indicator taint rule (§4.8). */
+  origin?: ChatOrigin;
+  /** The assistant message id this turn continues (after a `cap` notice). */
+  continue_of?: string | null;
+  /**
+   * "Ask about this" (SPEC A7): the `console_map` topic the turn was started from
+   * (`^[a-z0-9_:.-]{1,121}$`, the server's `CHAT_TOPIC_PATTERN`, a superset of the
+   * console-link id grammar). Retrieval pins that topic's sections; never prompt text.
+   */
+  topic?: string | null;
+}
+
+/** Usage of one model call (or one query-embedding call on a tool step). */
+export interface StepUsage {
+  input_tokens: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  output_tokens: number;
+  cost: number;
+  latency_ms: number;
+  /** The provider omitted usage or the call was cancelled mid-stream (show `≈`). */
+  estimated?: boolean;
+  embedding_calls?: number;
+  embedding_tokens?: number;
+  embedding_cost?: number;
+}
+
+/**
+ * Running / final usage of a turn. "Input tokens" for users = uncached + cache read +
+ * cache write; `total_tokens` also adds output and embedding tokens. `simulated`
+ * marks Demo Mode synthetic pricing; `estimated` marks any estimated part.
+ */
+export interface TurnUsage {
+  calls: number;
+  embedding_calls: number;
+  input_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost: number;
+  latency_ms: number;
+  model: string | null;
+  pricing_source: string | null;
+  simulated: boolean;
+  estimated: boolean;
+  context_window: number | null;
+  peak_prompt_tokens: number;
+}
+
+/** One run-log row (SPEC §3.3). `untrusted_params` and `query` are untrusted text. */
+export interface ChatStep {
+  /** Display order, 1-based. */
+  index: number;
+  /** Turn-global tool-call ordinal (`tN` artifact refs); tool steps only. */
+  ordinal?: number | null;
+  kind: ChatStepKind;
+  tool?: string | null;
+  /** Engine template ("Searched logs"). */
+  label: string;
+  /** Engine-whitelisted display chips; values display-sanitised. */
+  params: Record<string, string | number | boolean | null>;
+  status: ChatStepStatus;
+  duration_ms: number;
+  /** Engine template + numbers + enums only. */
+  summary: string;
+  untrusted_params?: Record<string, string>;
+  /** Native query text (render as untrusted code). */
+  query?: string | null;
+  rows?: number | null;
+  basis?: ChatStepBasis | null;
+  /** e.g. "newest 200 of 1,284,113", "3 of 4 sources answered". */
+  coverage?: string | null;
+  sources?: string[];
+  /** Model steps only. */
+  usage?: StepUsage | null;
+  /** Steps sharing a group ran in one parallel batch. */
+  group?: number | null;
+  /** Round 12: owner-scoped key for the step inspector. */
+  observation_ref?: string | null;
+  /** Round 12: progress of a long aggregate scan. */
+  progress?: ChatStepProgress | null;
+}
+
+/** Round 12 (SPEC §3.1). `total` is null when the store cannot say up front. */
+export interface ChatStepProgress {
+  done: number;
+  total?: number | null;
+  /** Display noun ("cases"). */
+  unit: string;
+}
+
+/** A cited source, referenced by id in the answer (SPEC §3.5). */
+export interface ChatCitation {
+  id: string;
+  kind: ChatCitationKind;
+  title: string;
+  untrusted?: boolean;
+  /** `/docs/<major.minor>/<path>/#anchor` (validated). */
+  doc?: string | null;
+  case_id?: string | null;
+  /**
+   * Round 16 (B42): the case's display number (`CASE-000043`) for a case citation.
+   * Display text only; navigation uses `case_id`. Absent on older transcripts.
+   */
+  case_number?: string | null;
+  /** `T1234` or `T1234.001`. */
+  technique?: string | null;
+  snippet?: string | null;
+}
+
+/**
+ * A console destination resolved server-side from `console_map` (never from model
+ * text). A link with `allowed: false` renders as plain text naming `requires`.
+ */
+export interface ConsoleLink {
+  id: string;
+  label: string;
+  page: string;
+  opts?: Record<string, string | number>;
+  allowed: boolean;
+  requires?: string | null;
+}
+
+/** A model-proposed memory change; confirmed by a human through the memory routes. */
+export interface MemoryProposal {
+  op: MemoryProposalOp;
+  /** `add`: the proposed fact (≤ 500). */
+  text?: string | null;
+  /** `remove`: exact entry ids only. */
+  ids?: string[];
+}
+
+/** Why a turn is partial, stopped, refused or not saved (SPEC §4.5). */
+export interface TurnNotice {
+  kind: TurnNoticeKind;
+  message: string;
+  retryable: boolean;
+}
+
+/** One row of the caller's tool catalogue (GET /api/chat/context). */
+export interface ChatToolInfo {
+  name: string;
+  label: string;
+  scope: ChatScope;
+  data_source?: string;
+  /** `resource:action` grants, all required. */
+  requires: string[];
+  /** A kind-gated tool (no `requires`) is allowed when at least one kind is. */
+  allowed: boolean;
+  /**
+   * The grants the caller lacks (empty when allowed). For a kind-gated tool with no
+   * usable kind: every per-kind grant, any ONE of which unlocks it.
+   */
+  missing?: string[];
+  /** kind → the extra `resource:action` that kind needs. */
+  kind_requires?: Record<string, string>;
+  /** The kinds the caller may use. */
+  kinds_allowed?: string[];
+  /**
+   * The deployment has the tool switched on (SPEC A30). Absent means true. `false` is a
+   * tool the caller holds the grants for (`allowed` stays true) that configuration
+   * turned off, e.g. `lookup_indicator` when `max_indicator_lookups` is 0: no grant
+   * would help, so the UI says "Turned off on this deployment" and offers nothing that
+   * needs it.
+   */
+  available?: boolean;
+}
+
+export interface TextStreamingInfo {
+  available: boolean;
+  reason?: TextStreamingReason | null;
+}
+
+/** The public §4.2 bounds (never `internal_domains`). */
+export interface ChatContextBounds {
+  max_model_calls: number;
+  max_tool_calls: number;
+  max_parallel: number;
+  tool_timeout_s: number;
+  model_step_timeout_s: number;
+  turn_timeout_s: number;
+  turn_token_ceiling: number;
+  final_reserve_tokens: number;
+  observation_chars: number;
+  final_max_tokens: number;
+  max_indicator_lookups: number;
+  default_stream_mode: ChatStreamMode;
+  allow_text_streaming: boolean;
+  /** Round 12 (SPEC D13): animate the brand ring while chat works (`ChatAgentConfig.animated_brand`). */
+  animated_brand?: boolean;
+}
+
+/** Effective per-million rates (present only with `models:read`). */
+export interface ChatRates {
+  input_per_million: number;
+  output_per_million: number;
+  cache_read_per_million?: number | null;
+}
+
+/** The daily budget the meter ring measures (present only with `models:read`). */
+export interface ChatBudgetInfo {
+  enabled: boolean;
+  daily_limit: number | null;
+  soft_warn_pct: number;
+  on_exceed: 'warn' | 'block';
+}
+
+/**
+ * `GET /api/chat/context` (SPEC §8): the composer meter and access catalogue.
+ * Money fields are present only with `models:read`; `spent_today`/`remaining`
+ * additionally need `cost:view`. Without them the meter shows tokens and
+ * `budget_state` only.
+ */
+export interface ChatContextInfo {
+  model: string | null;
+  context_window: number | null;
+  max_output_tokens: number;
+  chars_per_token: number;
+  static_prompt_tokens: number;
+  history_tokens: number;
+  history_exchanges?: number;
+  tools: ChatToolInfo[];
+  text_streaming: TextStreamingInfo;
+  bounds: ChatContextBounds;
+  /** actual ÷ estimate of the last turn in this conversation. */
+  calibration?: number | null;
+  budget_state?: ChatBudgetState | null;
+  rates?: ChatRates | null;
+  simulated?: boolean | null;
+  budget?: ChatBudgetInfo | null;
+  spent_today?: number | null;
+  remaining?: number | null;
+  /** §10.5 empty-state starters (server-built; Demo and production share the shape). */
+  starters?: ChatStarter[];
+  /** Round 12 (SPEC D1): chat limits mode. */
+  limits_mode?: 'unlimited' | 'bounded';
+  /** Round 12 (SPEC D7): operator timezone for calendar windows and buckets. */
+  timezone?: string;
+}
+
+// ---- Round 13 chat starters (SPEC-chat §3.2.1; mirrors backend `models.py`). ---- //
+
+/** What a starter card does when clicked (SPEC-chat §3.9). */
+export type StarterAction = 'send' | 'open_conversation' | 'use_prompt';
+/** The kind of a starter's typed reference. */
+export type StarterRefKind = 'case' | 'rule' | 'source' | 'campaign' | 'technique' | 'conversation' | 'prompt';
+/** Drives the decorative urgency dot only; the reason words carry the meaning. */
+export type StarterUrgency = 'none' | 'attention' | 'critical';
+/** Where starters show: a new Workspace chat, an open thread (catch-up line), Case Manager chat. */
+export type StarterSurface = 'home' | 'thread' | 'case';
+
+/**
+ * A typed reference a card names or opens. Display it as text only; it is server-validated
+ * against a strict per-kind grammar and the client never builds a link or a prompt from it.
+ */
+export interface ChatStarterRef {
+  kind: StarterRefKind;
+  /** 1..128 characters. */
+  value: string;
+}
+
+/**
+ * One starter card. Shown only if every tool in `tools` is allowed.
+ *
+ * For action `send`, `prompt` is both the visible question and the exact text the client
+ * sends with `origin: 'starter'` (byte for byte; never edited, never placed in the
+ * composer). `open_conversation` and `use_prompt` cards are display-only: `prompt` is
+ * their card text and `ref` names the conversation or saved prompt. Every Round 13 field
+ * is optional so a pre-Round-13 payload (and `GET /api/chat/context` `starters`) still
+ * parses.
+ */
+export interface ChatStarter {
+  /** The FAMILY id (one card per family). Pre-Round-13 ids stay valid. */
+  id: string;
+  /** Short family name for older clients (≤ 40). */
+  label: string;
+  /** Equals `reason` for older clients (≤ 120). */
+  description: string;
+  prompt: string;
+  tools: string[];
+  /** Round 13: the server template id the card was worded from. */
+  template?: string | null;
+  /** Round 13: why the card is here (≤ 60 by copy); muted, under the question. */
+  reason?: string;
+  /** Round 13: default `'send'`. */
+  action?: StarterAction;
+  ref?: ChatStarterRef | null;
+  /** Round 13: opaque 16-hex key for `POST /api/chat/starters/events`. */
+  key?: string | null;
+  /** Round 13: default `'none'`. */
+  urgency?: StarterUrgency;
+  /** ISO 8601 UTC. */
+  as_of?: string | null;
+  /** ISO 8601 UTC. */
+  expires_at?: string | null;
+}
+
+/** One clause of the catch-up line ("5 new cases (2 critical)"); clicking sends `starter`. */
+export interface ChatCatchUpClause {
+  /** 1..60 characters, rendered as text. */
+  text: string;
+  /** Always action `send`. */
+  starter: ChatStarter;
+}
+
+/**
+ * "Since {since_label}: clause, clause and clause." The server keeps the whole line at
+ * most 160 characters (it drops clauses from the end); render it in exactly that shape.
+ */
+export interface ChatCatchUp {
+  /** ISO 8601 UTC. */
+  since: string;
+  /** "09:12", "yesterday 18:40", "Mon 18:40" or "12 Oct" (operator time zone). */
+  since_label: string;
+  /** At most 4. */
+  clauses: ChatCatchUpClause[];
+}
+
+/** `GET /api/chat/starters?surface=&conversation_id=&case_id=` (SPEC-chat §3.2.2). */
+export interface ChatStartersInfo {
+  surface: StarterSurface;
+  /** `chat_agent.dynamic_starters`; false: the evergreen set only and no catch-up line. */
+  enabled: boolean;
+  /** ISO 8601 UTC. */
+  as_of: string;
+  /** ISO 8601 UTC (`as_of` + 120 s): refetch on focus after it. */
+  expires_at: string;
+  /** IANA time zone the labels were built in (`SlaPolicy.timezone`). */
+  timezone: string;
+  /** At most 6, server order. The client shows the first 4 (lane ≥ 560 px) or 3. */
+  starters: ChatStarter[];
+  catch_up?: ChatCatchUp | null;
+}
+
+/** `POST /api/chat/starters/events` body (204; 422 on unknown fields or bad keys; 429 past 30/min). */
+export interface ChatStarterEvent {
+  type: 'viewed' | 'used' | 'dismissed';
+  /** Default `'home'`. */
+  surface?: StarterSurface;
+  /** At most 6 keys, each 16 lowercase hex characters. A `thread` `viewed` event carries none. */
+  keys?: string[];
+}
+
+/**
+ * Round 13 personal suggestion switches in `UserPrefs.misc` (SPEC-chat §3.2.1). Absent
+ * means on; the backend removes a value that is not a boolean.
+ */
+export interface ChatSuggestPrefs {
+  /** "Suggestions when a chat starts": the start cards and the thread catch-up line. */
+  chat_suggest_start?: boolean;
+  /** "Suggested follow-ups": the follow-up chips after an answer. */
+  chat_suggest_follow_ups?: boolean;
+}
+
+// ---- end of Round 13 chat starters ------------------------------------------- //
+
+/** `GET /api/chat/topics/{topic_id}`: the templated "Ask about this" question. */
+export interface ChatTopicQuestion {
+  topic: string;
+  question: string;
+}
+
+/** `Preferences.chat_agent` (SPEC §4.2). Out-of-range stored values are clamped. */
+export interface ChatAgentConfig {
+  max_model_calls: number;
+  max_tool_calls: number;
+  max_parallel: number;
+  tool_timeout_s: number;
+  model_step_timeout_s: number;
+  turn_timeout_s: number;
+  turn_token_ceiling: number;
+  final_reserve_tokens: number;
+  observation_chars: number;
+  final_max_tokens: number;
+  max_concurrent_turns_per_user: number;
+  max_concurrent_turns_global: number;
+  max_indicator_lookups: number;
+  max_indicator_lookups_per_conversation: number;
+  default_stream_mode: ChatStreamMode;
+  allow_text_streaming: boolean;
+  /** Domain suffixes never sent to third-party enrichment. */
+  internal_domains: string[];
+  allow_email_lookup: boolean;
+  /** Round 12 (SPEC D13): the turning ring around the console logo while chat works (default on). */
+  animated_brand?: boolean;
+  /**
+   * Round 12 (SPEC D1): `unlimited` (default) — the per-question knobs above
+   * (`max_model_calls`, `max_tool_calls`, `turn_token_ceiling`, `final_reserve_tokens`,
+   * `turn_timeout_s`, `final_max_tokens`, `observation_chars`) do not apply and a
+   * question runs until it answers or the analyst presses Stop (the engine's loop
+   * guards still apply); `bounded` keeps those knobs as caps.
+   */
+  limits_mode?: ChatLimitsMode;
+  /**
+   * Round 12 (SPEC D5): optional daily chat spending limit in US dollars; `null` / absent
+   * = off (the default). The daily AI budget never pauses chat.
+   */
+  chat_daily_cap_usd?: number | null;
+  /** Round 12: internal marker of the chat limits migration the block adopted (pass through). */
+  chat_limits_version?: number;
+  /**
+   * Round 13 (SPEC-chat D9): new chats open with questions computed from live data each
+   * viewer can read (no AI cost). Default on; off serves the evergreen set and no catch-up line.
+   */
+  dynamic_starters?: boolean;
+}
+
+/** `ChatAgentConfig.limits_mode` (Round 12 SPEC D1). */
+export type ChatLimitsMode = 'unlimited' | 'bounded';
+
+/** Declaration-merges the chat agent bounds onto `Preferences`. */
+export interface Preferences {
+  chat_agent?: ChatAgentConfig;
+}
+
+/** One saved composer prompt (`UserPrefs.chat_prompts`). */
+export interface ChatPrompt {
+  id: string;
+  /** ≤ 60 characters. */
+  title: string;
+  /** ≤ 2000 characters. `{name}` placeholders are filled in before sending (Round 12). */
+  text: string;
+  /** Round 12 prompt library category. */
+  category?: ChatPromptCategory | null;
+  favorite?: boolean;
+}
+
+export type ChatPromptCategory = 'triage' | 'hunt' | 'ioc' | 'posture' | 'reporting' | 'app_help';
+
+/** `PATCH /api/chat/conversations/{id}`: at least one of `title` / `pinned`. */
+export interface ChatConversationUpdateRequest {
+  /** 1..80 characters, single line. */
+  title?: string;
+  /** Pinning never changes `updated_at`; an 11th pin is 409 `chat_pin_limit`. */
+  pinned?: boolean;
+}
+
+/** Where a `?q=` content search matched a conversation. */
+export interface ChatConversationMatch {
+  message_id?: string | null;
+  /** ≤ 160 characters, display-sanitised. */
+  snippet: string;
+}
+
+/** A conversation summary returned by a content search. */
+export interface ChatConversationSearchHit extends ChatConversationSummary {
+  match?: ChatConversationMatch | null;
+}
+
+// ---- Reports (SPEC §9) ------------------------------------------------------ //
+export interface ReportItemSource {
+  conversation_id: string;
+  message_id: string;
+  block_id?: string | null;
+}
+
+/** Captured server-side at add time. */
+export interface ReportItemScope {
+  window?: string | null;
+  sources?: string[];
+  /** The model id that produced the answer. */
+  generated_by?: string | null;
+  app_version?: string | null;
+  demo?: boolean;
+}
+
+/** The `block` of a `section` item: a whole added answer. */
+export interface ReportSectionSnapshot {
+  /** The user's question. */
+  title: string;
+  /**
+   * Raw block dicts: the answer's Markdown, then that turn's blocks (≤ 13 in all).
+   * Pass through `parseBlocks(blocks, { limit: LIMITS.section_blocks })`.
+   */
+  blocks: unknown[];
+  /** More blocks were offered than a section holds; caption it "top N" (G4). */
+  truncated?: boolean;
+}
+
+export interface ReportItem {
+  id: string;
+  kind: ReportItemKind;
+  /**
+   * `kind: 'block'` → one answer block; `kind: 'section'` → a
+   * {@link ReportSectionSnapshot}. Always re-validate client-side (`parseBlocks`).
+   */
+  block: unknown;
+  /** User-authored note (≤ 500). */
+  note?: string | null;
+  source: ReportItemSource;
+  scope: ReportItemScope;
+  added_at: string;
+}
+
+/** The AI-written summary; stale when `based_on_version` < the report `version`. */
+export interface ReportSummary {
+  executive_summary: string;
+  next_steps: string[];
+  model?: string | null;
+  usage: TurnUsage;
+  generated_at: string;
+  based_on_version: number;
+}
+
+/** `POST /api/reports/{id}/summary?dry_run=1`. */
+export interface ReportSummaryEstimate {
+  prompt_tokens: number;
+  max_output_tokens: number;
+  total_tokens: number;
+  /** Present only with `models:read`. */
+  cost?: number | null;
+  simulated?: boolean;
+  model?: string | null;
+}
+
+export interface Report {
+  id: string;
+  owner: string;
+  /** ≤ 120 characters. */
+  title: string;
+  template: ReportTemplateName;
+  conversation_id?: string | null;
+  /** ≤ 40 items. */
+  items: ReportItem[];
+  summary?: ReportSummary | null;
+  created_at: string;
+  updated_at: string;
+  /** Strict-CAS version: send it back as `expected_version`. */
+  version: number;
+}
+
+/** One row of `GET /api/reports`. */
+export interface ReportListEntry {
+  id: string;
+  title: string;
+  template: ReportTemplateName;
+  /** The conversation whose draft this report is (at most one per conversation). */
+  conversation_id?: string | null;
+  /**
+   * The conversation the report came from: the one conversation all its items name, else
+   * the draft's. Reports saved from an answer or a whole conversation carry only this.
+   * Absent on rows written before it existed.
+   */
+  source_conversation_id?: string | null;
+  item_count: number;
+  created_at?: string | null;
+  updated_at: string;
+  version: number;
+  has_summary?: boolean;
+}
+
+export interface ReportCreateRequest {
+  title?: string;
+  template?: ReportTemplateName;
+  conversation_id?: string | null;
+}
+
+/** `PATCH /api/reports/{id}`; 409 `report_version_conflict` on a stale version. */
+export interface ReportPatchRequest {
+  expected_version: number;
+  title?: string;
+  template?: ReportTemplateName;
+  /** A permutation of the remaining item ids. */
+  item_order?: string[];
+  /** item id → note (`null` clears it). */
+  notes?: Record<string, string | null>;
+  remove_items?: string[];
+}
+
+export interface ReportDeleteRequest {
+  expected_version: number;
+}
+
+/**
+ * `POST /api/reports/add` — add BY REFERENCE: the server loads the block (or the
+ * whole answer as a section when `block_id` is absent) from the caller's persisted
+ * Workspace message. Block JSON is never sent from the client.
+ */
+export interface ReportAddRequest {
+  conversation_id: string;
+  message_id: string;
+  block_id?: string | null;
+  report_id?: string | null;
+}
+
+export interface ReportSummaryRequest {
+  idempotency_key?: string | null;
+  expected_version?: number | null;
 }
 
 export type UsageProcessingTier = 'standard' | 'flex' | 'batch' | 'unconfirmed';
@@ -2599,6 +3888,11 @@ export interface StandupResponse {
   window_hours?: number;
   summary?: string;
   aggregate?: Record<string, unknown>;
+  /**
+   * The summary's AI spend in USD. It follows `cost:view` (Round 16): without the grant
+   * the key stays and reads `null`. Absent when the Standup is turned off.
+   */
+  cost?: number | null;
   [key: string]: unknown;
 }
 
@@ -2650,12 +3944,24 @@ export interface Branding {
 export interface FeedbackStats {
   graded_cases: number;
   feedback_count: number;
-  /** 0..1 fraction of cases where the analyst agreed with the agent. */
-  agreement_rate: number;
-  /** 0..1 averages of the per-case quality scores. */
+  /** 0..1 agreement over grades that carry an assessment (agree/partial/disagree).
+   *  `null` when graded cases exist but none carries an agreement signal (a grade on
+   *  a settled Needs-human hand-off compares nothing) — render it as not measured. */
+  agreement_rate: number | null;
+  /** How many grades carry an agreement signal (the agreement denominator). */
+  agreement_signals?: number;
+  /**
+   * 0..1 averages of the per-case quality scores, each over the grades that RATED it
+   * (Round 15 SPEC D4.5). `0.0` when nothing rated it: read it with its `*_rated`
+   * count, and show "not rated" when the count is 0.
+   */
   avg_accuracy: number;
   avg_reasoning_quality: number;
   avg_action_appropriateness: number;
+  /** Round 15 (SPEC D4.5): how many grades rated each sub-score (a value above 0). */
+  accuracy_rated?: number;
+  reasoning_quality_rated?: number;
+  action_appropriateness_rated?: number;
   /** Total analyst minutes saved across graded cases. */
   time_saved_minutes: number;
   /** Distribution of recorded actual outcomes (label → count). */
@@ -2672,7 +3978,8 @@ export interface CasesPerDay {
 /**
  * One UTC-day bucket of the burndown series (GET /api/metrics → `burndown`): how many
  * cases were `opened` that day vs how many reached a terminal (resolved/closed) state.
- * Powers the open-vs-resolved BurnDownChart. Advisory / reporting only (never #3).
+ * The open-vs-resolved burndown series (no Console chart draws it today). Advisory /
+ * reporting only (never #3).
  */
 export interface BurndownPoint {
   /** UTC date, `YYYY-MM-DD`. */
@@ -2740,6 +4047,23 @@ export interface VerdictBreakdown {
   [key: string]: number;
 }
 
+/** Honest case-level knowledge-reference coverage from GET /api/metrics. */
+export interface RetrievalHistoryMetrics {
+  status: 'available' | 'unavailable' | 'insufficient_evidence';
+  available: boolean;
+  reason: string;
+  loaded_cases: number;
+  total_cases: number;
+  truncated: boolean;
+  eligible_cases: number;
+  history_available_cases: number;
+  history_unavailable_cases: number;
+  completed_attempt_cases: number;
+  cases_with_references: number | null;
+  reference_coverage: number | null;
+  formula: string;
+}
+
 /** GET /api/metrics — the analytics dashboard payload. */
 export interface Metrics {
   total_cases: number;
@@ -2751,12 +4075,28 @@ export interface Metrics {
   by_disposition?: Record<string, number>;
   by_verdict: VerdictBreakdown;
   persona_usage: Record<string, number>;
+  /**
+   * Cases per Published runbook that guided the investigation (Round 14, runbook id to
+   * count; `none` when no runbook reached the investigator). Usage only: it never says a
+   * runbook made a case faster or slower.
+   */
+  runbook_usage: Record<string, number>;
+  /**
+   * @deprecated Round 14: the retired procedure usage, kept by the server for one release
+   * (read from the field earlier releases stored). Read `runbook_usage`.
+   */
   playbook_usage: Record<string, number>;
   /** Mean normalised risk score (0..100). */
   avg_risk_score: number;
   /**
+   * How many scored cases `avg_risk_score` divides by (Round 16, additive). The server
+   * does not send the sum, so Average risk explains itself as the mean over this count.
+   * Optional so an older backend reads as unknown.
+   */
+  avg_risk_case_count?: number;
+  /**
    * Active Risk Index (Round-7; additive) — the canonical top-right instrument on the
-   * Security Command Center. The mean deterministic `risk_score` over NON-TERMINAL
+   * Cyber Defence Center. The mean deterministic `risk_score` over NON-TERMINAL
    * (still-open) cases only, 0..100 (0.0 when there are no open cases). Distinct from
    * `avg_risk_score` (which spans ALL cases). Advisory presentation only (never #3).
    */
@@ -2768,8 +4108,9 @@ export interface Metrics {
   resolved_count: number;
   cases_per_day: CasesPerDay[];
   /**
-   * Open-vs-resolved per UTC day over the trend window (additive) — the BurnDownChart
-   * series. Each point is `{date, opened, resolved}`. Advisory only (never #3).
+   * Open-vs-resolved per UTC day over the trend window (additive): the burndown series
+   * (no Console chart draws it today). Each point is `{date, opened, resolved}`. Advisory
+   * only (never #3).
    */
   burndown?: BurndownPoint[];
   /**
@@ -2779,9 +4120,91 @@ export interface Metrics {
    */
   timing_trend?: TimingTrendPoint[];
   feedback: FeedbackStats;
+  /**
+   * Case-level reference coverage only. Missing/mixed/truncated history has a null
+   * headline and is never presented as zero or as retrieval quality.
+   */
+  retrieval_history?: RetrievalHistoryMetrics;
+  /**
+   * Round 12 (additive). `total_cases`, `open_cases`, `needs_human_cases`,
+   * `closed_cases`, `by_status`, `by_verdict` and `by_disposition` are exact store-wide
+   * counts when `counts_exact` is true; when false, `counts_note` says which could not
+   * be counted (those fall back to the analysed cases).
+   */
+  counts_exact?: boolean;
+  counts_note?: string;
+  /**
+   * Round 12 (additive). Every other figure (average risk, active risk index, MTTR,
+   * cases per day, burndown, timing trend, usage, feedback) is computed over the newest
+   * `fetched` of `store_total` cases; `truncated` is true when that is not every case.
+   */
+  truncated?: boolean;
+  store_total?: number;
+  fetched?: number;
   /** Compact cost summary (shares the UsageSummary shape; fields optional). */
   cost: Partial<UsageSummary> & Record<string, unknown>;
   window_hours?: number;
+  [key: string]: unknown;
+}
+
+// --------------------------------------------------------------------------- //
+// Bucketed metric trends (GET /api/metrics/trends?window_hours=) — the hover-
+// trendline series behind the Overview (Cyber Defence Center) landing metrics.
+// Buckets are zero-filled across the whole window and cohort-bucketed by case
+// `created_at`; `fp_rate` mirrors the posture false-positive-rate semantics per
+// bucket (null when the bucket has no verdicted denominator) and `alerts` comes
+// from the durable noise counters (null when counters are absent). Aggregate
+// counts only — no raw log text (#9). Advisory presentation only — never #3.
+// --------------------------------------------------------------------------- //
+
+/** One zero-filled trend bucket. `t` is the bucket-start instant (UTC ISO). */
+export interface MetricsTrendBucket {
+  t: string;
+  /** Cases created in this bucket. */
+  new_cases: number;
+  /** Of this bucket's arrival cohort: now closed / auto-closed / FP-verdicted /
+   *  needs-human / escalated. */
+  closed: number;
+  auto_closed: number;
+  /**
+   * The three-way LAST-WRITER `decision_by` partition of `closed`, over the same
+   * policy-excluded graded cohort: `auto_closed` (agent) + `human_closed` (analyst) +
+   * `system_closed` (the honest residual — deterministic SYSTEM routing plus legacy
+   * records carrying no provenance) === `closed`, exactly, in every bucket. Never fold
+   * `system_closed` into either side. Optional: older backends omit both, so a consumer
+   * must treat their absence as "close attribution not reported", never as zero.
+   *
+   * HONESTY: `decision_by` records the LAST decider, not proof of who did the work — an
+   * agent-closed case a human later merely acknowledges migrates into `human_closed`.
+   */
+  human_closed?: number;
+  system_closed?: number;
+  false_positives: number;
+  needs_human: number;
+  escalated: number;
+  /** Cohort cases counted ONCE that reached a human (NEEDS_HUMAN verdict OR
+   *  escalated). `needs_human` and `escalated` overlap — never sum them;
+   *  chart this field instead. Optional: older backends omit it. */
+  sent_to_human?: number;
+  /** Percent 0-100, or null when the bucket has no verdicted denominator. */
+  fp_rate: number | null;
+  /** Raw alerts ingested (durable noise counters), or null when unavailable. */
+  alerts: number | null;
+}
+
+/**
+ * GET /api/metrics/trends — the bucketed trend payload (24-48 buckets spanning
+ * the requested window). `truncated` reports a bounded case scan honestly.
+ */
+export interface MetricsTrends {
+  window_hours: number;
+  bucket_minutes: number;
+  generated_at: string;
+  buckets: MetricsTrendBucket[];
+  /** True when the bounded case fetch could not cover the whole window. */
+  truncated: boolean;
+  store_total: number;
+  fetched: number;
   [key: string]: unknown;
 }
 
@@ -3026,6 +4449,15 @@ export interface AgentAlertVolumeOutcome {
   ingested_direction: AgentOutcomeDirection;
   after_clustering_direction: AgentOutcomeDirection;
   definition: AgentOutcomeDefinition;
+  /**
+   * Whether the two compared windows' per-SEVERITY-BAND splits may be compared at all.
+   * The volume totals above are band-independent and stay comparable either way; the
+   * per-band comparison is withheld (with a measured reason) when the two windows
+   * cannot be shown to have banded on the same declared severity ceiling — the durable
+   * counters store bands, not raw severities, so a historical split can never be
+   * re-projected onto a changed ladder. Optional: an older backend omits it.
+   */
+  severity_band_comparison?: { available: boolean; reason: string };
 }
 
 export interface AgentTuningContextPeriod {
@@ -3164,7 +4596,7 @@ export interface AgentImprovementEvidence {
 // math). The ONE shared provenance vocabulary consumed by `ProvenanceTag` + the
 // `DataTableColumn.provenance` header tag + the per-cell severity provenance.
 // --------------------------------------------------------------------------- //
-export type Provenance = 'source' | 'ai' | 'code';
+export type Provenance = 'source' | 'ai' | 'code' | 'analyst';
 
 // --------------------------------------------------------------------------- //
 // Noise-Reduction funnel (Round-7 ★) — GET /api/metrics/noise-reduction?window_hours=.
@@ -3172,7 +4604,7 @@ export type Provenance = 'source' | 'ai' | 'code';
 // A durable "total raw alerts by severity → what the AI reduced it to" funnel: the
 // `ingested`/`clustered` stages come from durable noise counters (by severity band),
 // the `cases` + outcome stages from a live tally of the case store. Powers the
-// "Noise reduced by N%" headline on the Security Command Center. Every value is an
+// "Noise reduced by N%" headline on the Cyber Defence Center. Every value is an
 // aggregate count / label (no raw log text). Advisory presentation only — never #3.
 // --------------------------------------------------------------------------- //
 /**
@@ -3238,7 +4670,16 @@ export interface NoiseReduction {
     available: boolean;
     /** When the counters began accumulating (ISO), or null when unavailable. */
     since: string | null;
-    /** True while counters are still warming up (partial coverage of the window). */
+    /**
+     * When the RETAINED counters start covering (ISO): `since` bounded by the 90-day
+     * retention floor. Additive (Round 12); absent from older servers.
+     */
+    coverage_start?: string | null;
+    /**
+     * True when the alert stages do not cover the whole window: the counters started
+     * (or retention now starts) inside it, or a counted case predates them. Alert-based
+     * reductions are then withheld or flagged as partial coverage.
+     */
     incomplete: boolean;
   };
   cases_meta: {
@@ -3317,6 +4758,492 @@ export interface NoiseLineage {
     store_truncated: boolean;
   };
   limitations: string;
+}
+
+// --------------------------------------------------------------------------- //
+// Operator diagnostics — the SILENT failures, made observable.
+// GET /api/diagnostics/health (settings:read) · GET /api/metrics/auto-close-health
+// (metrics:view). Both are read-only, seed-free, and ADVISORY: nothing here is ever
+// an input to the deterministic close/escalate decision (#3).
+//
+// THE CONTRACT THAT MATTERS: `alerts` are positively-detected conditions and
+// `unknowns` are signals that could NOT be evaluated. They are separate lists on
+// purpose — an empty `alerts` with a non-empty `unknowns` is "we could not tell",
+// never "everything is fine". There is deliberately no composite health score.
+// --------------------------------------------------------------------------- //
+
+/** One diagnostics finding — an entry in either `alerts` or `unknowns`. */
+export interface DiagnosticsFinding {
+  id: string;
+  /** `critical` | `warning` on an alert; always `unknown` on an unknown. */
+  severity: string;
+  title: string;
+  /** Plain-text explanation (rendered escaped, never as markup). */
+  detail: string;
+  /** Suggested operator remediation; may be empty. */
+  remediation: string;
+}
+
+/** The last RAG projection's per-source before/after outcome (in-process only). */
+export interface DiagnosticsProjection {
+  /** False until a projection has run IN THIS PROCESS — reported, never faked as zero. */
+  available: boolean;
+  /** `recorded` | `not_yet_projected`. */
+  state: string;
+  scope: string;
+  reason: string;
+  sources: Record<string, Record<string, unknown>>;
+  shrank_sources: string[];
+  collapsed_sources: string[];
+}
+
+/** How much analyst-confirmed ground truth the fetched case history actually holds. */
+export interface PrecedentGroundTruth {
+  analyst_confirmed_cases: number;
+  terminal_cases: number;
+  scanned_cases: number;
+  by_outcome: Record<string, number>;
+  by_evidence_source: Record<string, number>;
+  zero_analyst_confirmed_cases: boolean;
+  truncated: boolean;
+  store_total: number;
+  fetched: number;
+}
+
+/**
+ * The per-case precedent fact. `status` is one of `qualified` | `insufficient` |
+ * `conflicting` | `not_retrieved` | `unavailable` | `disabled` | `not_applicable`.
+ */
+export interface PrecedentSignalRecord {
+  status: string;
+  reason: string;
+  qualifies: boolean;
+  rule_identity: string;
+  rule_ids: string[];
+  confirmed_false_positive: number;
+  confirmed_true_positive: number;
+  retrieved_matching: number;
+  top_score: number | null;
+  min_confirmed: number;
+  min_similarity: number;
+  truncated: boolean;
+}
+
+/** The operator declaration(s) that closed a case deterministically, with no LLM call. */
+export interface AnalystPolicyRecord {
+  policy_ids: string[];
+  rule_ids: string[];
+  reasons: string[];
+}
+
+/** Precedent-corpus health: size, per-source counts, and the explicit starvation flag. */
+export interface PrecedentCorpusHealth {
+  /** The corpus itself could be read at all. */
+  available: boolean;
+  /** The analyst-confirmed count below is a trustworthy TOTAL (not a lower bound). */
+  known: boolean;
+  reason: string;
+  /** `ok` | `starved` | `disabled` | `unknown`. */
+  status: string;
+  status_reason: string;
+  rag_enabled: boolean;
+  precedent_source: string;
+  precedent_source_enabled: boolean;
+  /** True when the lower-trust `model_unconfirmed` tier shares this corpus source. */
+  unconfirmed_tier_enabled: boolean;
+  precedent_documents: number;
+  precedent_chunks: number;
+  analyst_confirmed_precedent_documents: number;
+  analyst_confirmed_count_exact: boolean;
+  /** THE flag: "0 analyst-confirmed precedents available", as a diagnosable state. */
+  zero_analyst_confirmed_precedents: boolean;
+  /** True only when the source is ENABLED and positively known to be empty. */
+  starved: boolean;
+  total_chunks: number;
+  total_documents: number;
+  chunks_by_source: Record<string, number>;
+  documents_by_source: Record<string, number>;
+  projection: DiagnosticsProjection;
+  ground_truth: PrecedentGroundTruth;
+}
+
+/** Analyst-confirmed precedent held for ONE rule identity (the canonical rule set). */
+export interface RulePrecedentCounts {
+  rule_identity: string;
+  rule_ids: string[];
+  false_positive: number;
+  true_positive: number;
+  total: number;
+  unanimous_false_positive: boolean;
+}
+
+/** How analyst-confirmed precedent is spread across rule identities. */
+export interface PrecedentDistribution {
+  /** False ONLY when the corpus could not be read — an empty map is a real zero. */
+  available: boolean;
+  reason: string;
+  /** The corpus read hit its bound, so every count is a LOWER bound. */
+  truncated: boolean;
+  /** The operator turned the precedent source OFF — configured, not unmeasurable. */
+  disabled: boolean;
+  scanned_chunks: number;
+  rule_identities: number;
+  /** Precedent projected before rule identity existed: retrievable, not rule-matchable. */
+  unattributed_documents: number;
+  total_confirmed: number;
+  returned: number;
+  by_rule: RulePrecedentCounts[];
+}
+
+/** A rule whose precedent is abundant but is NOT changing the outcome. */
+export interface FutileRule {
+  rule_identity: string;
+  rule_ids: string[];
+  rules: string;
+  cases: number;
+  measurable_cases: number;
+  /** Cases that never reached a decision — excluded from the auto-close rate. */
+  undecided: number;
+  routed_to_human: number;
+  auto_closed: number;
+  analyst_closed: number;
+  /** Cases a human had to look at: routed to one, or closed by one. */
+  human_involved: number;
+  policy_closed: number;
+  auto_close_rate: number | null;
+  analyst_confirmed_benign: number;
+  analyst_confirmed_malicious: number;
+  detail: string;
+  remediation: string;
+}
+
+/** Is the precedent an operator has built actually changing anything? */
+export interface PrecedentEffectiveness {
+  promotion_enabled: boolean;
+  promotion_min_confirmed: number;
+  window_size: number;
+  window_stratified: boolean;
+  distribution: PrecedentDistribution;
+  /** True only when the futility report actually RAN. An empty `futile_rules` with
+   *  this false means "not measured", never "measured, nothing found". */
+  futility_measured: boolean;
+  /** Why it did not run, when it did not. */
+  futility_reason: string;
+  futile_rules: FutileRule[];
+  futile_rule_count: number;
+}
+
+/** The in-place SQL schema-migration outcome. `failed` breaks strict audit writes. */
+export interface SchemaMigrationHealth {
+  available: boolean;
+  /** `ok` | `failed` | `not_applicable`. */
+  state: string;
+  state_backend: string;
+  detail: string;
+  /** Remediation SQL, when the backend supplied one. */
+  remediation: string;
+  failed: boolean;
+  reason: string;
+}
+
+/** One window's auto-close tally. `rate` is the DASH string when it cannot be measured. */
+export interface AutoCloseWindow {
+  decided: number;
+  auto_closed: number;
+  routed_to_human: number;
+  analyst_decided: number;
+  /** 0..1 — or the backend DASH string `'—'` when `available` is false. */
+  rate: number | string;
+  available: boolean;
+  /** Honest reason the rate is unavailable (plain text). Never a fabricated 0. */
+  reason: string;
+}
+
+/** A read-only mirror of the operator's auto-close policy (display only, #3). */
+export interface AutoClosePolicySnapshot {
+  available: boolean;
+  any_enabled: boolean;
+  false_positive_enabled: boolean;
+  true_positive_enabled: boolean;
+  reason: string;
+}
+
+/**
+ * The explicit auto-close health status. NEVER a score:
+ * `disabled` (configured off) · `no_volume` (nothing decided — a quiet period, not an
+ * outage) · `collapsed` (rate fell to ~0 while volume held steady — THE outage signal) ·
+ * `never_fired` · `degraded` · `insufficient_evidence` · `ok`.
+ */
+export type AutoCloseHealthStatus =
+  | 'disabled'
+  | 'no_volume'
+  | 'collapsed'
+  | 'never_fired'
+  | 'degraded'
+  | 'insufficient_evidence'
+  | 'ok';
+
+/** GET /api/metrics/auto-close-health — the rolling auto-close signal. */
+export interface AutoCloseHealth {
+  window_hours: number;
+  generated_at: string;
+  current: AutoCloseWindow;
+  baseline: AutoCloseWindow;
+  lifetime: AutoCloseWindow;
+  policy: AutoClosePolicySnapshot;
+  status: AutoCloseHealthStatus | string;
+  reason: string;
+  collapsed: boolean;
+  volume_steady: boolean;
+  comparable: boolean;
+  needs_attention: boolean;
+  thresholds: Record<string, number>;
+  truncated: boolean;
+  store_total: number;
+  fetched: number;
+}
+
+/**
+ * Why the auto-close bar was or was not met, as recorded in the append-only DECISION
+ * audit row. Mirrors `case_manager.decide()`'s predicate; `unrecorded` is first-class
+ * (the row predates the tokens, or no policy was available to classify against) and is
+ * never guessed at.
+ */
+export type AutoCloseGateOutcome =
+  | 'cleared'
+  | 'blocked_confidence'
+  | 'blocked_risk'
+  | 'blocked_confidence_and_risk'
+  | 'class_disabled'
+  | 'not_closable'
+  | 'unrecorded';
+
+/** Gate-outcome counts. Keys are `AutoCloseGateOutcome`; every outcome is always present. */
+export type AutoCloseGateCounts = Record<AutoCloseGateOutcome | string, number>;
+
+/**
+ * One window of the RECORDED auto-close tally. Same rate contract as
+ * `AutoCloseWindow` (`rate` is the DASH string when it cannot be measured) plus the
+ * counts that keep the population honest.
+ *
+ * `analyst_decided` is STRUCTURALLY ZERO here — `decide()` only ever authors `agent`
+ * or `system`, so any analyst share in the legacy series is a later overwrite.
+ */
+export interface RecordedAutoCloseWindow {
+  decided: number;
+  auto_closed: number;
+  routed_to_human: number;
+  /** Always 0 under this predicate; retained for shape-compatibility with the legacy block. */
+  analyst_decided: number;
+  /**
+   * The deliberate $0 operator-declared-benign population, outside the rate entirely.
+   * Almost all of it has NO decision record (the analyst-policy close never calls
+   * `decide()`), and such a case has no decision instant, so that part is SET-WIDE and
+   * repeats across blocks — see `policy_closed_no_decision_record`.
+   */
+  policy_closed: number;
+  /** The set-wide part of `policy_closed`: closed by operator rule, `decide()` never ran. */
+  policy_closed_no_decision_record: number;
+  /**
+   * Terminal/verdicted cases with no decision entry — `decide()` demonstrably never
+   * ran. Analyst-policy closes are NOT pooled here; they are named above.
+   */
+  no_decision_record: number;
+  /** Decisions whose recorded timestamp could not be read (set-wide, so it repeats per block). */
+  unusable_timestamp: number;
+  /** Decisions taken during a recorded dependency outage; out of numerator AND denominator. */
+  excluded_outage: number;
+  excluded_outage_by_subsystem: Record<string, number>;
+  gate: AutoCloseGateCounts;
+  /** Decisions the append-only trail can explain (everything but `unrecorded`). */
+  gate_explained: number;
+  /** 0..1 — `gate_explained / decided`. An EVIDENCE-QUALITY figure, not a performance one. */
+  gate_coverage: number;
+  /** Decisions whose verdict class was a candidate for auto-close at all. */
+  closable_class: number;
+  /** 0..1 — or the backend DASH string when `available` is false. */
+  rate: number | string;
+  available: boolean;
+  reason: string;
+}
+
+/**
+ * An interval the deployment holds POSITIVE EVIDENCE was an outage, derived from its
+ * own provider-health / RAG-health records. `start` is null when no success was ever
+ * observed (open-ended backwards); `start_known` says so explicitly.
+ */
+export interface AutoCloseOutageWindow {
+  start: string | null;
+  end: string;
+  /**
+   * `llm_provider`, and only its COMPLETION channel — the one that gates verdict
+   * production. A degraded embedding channel and a stale knowledge corpus both fail
+   * soft (verdicts still ran), so they appear under `outage.context` instead.
+   */
+  subsystem: string;
+  detail: string;
+  start_known: boolean;
+}
+
+/** A non-completion provider channel reporting a failure. Context, never an exclusion. */
+export interface AutoCloseDegradedChannel {
+  key: string;
+  channel: string;
+  state: string;
+  last_failure_at: string;
+  last_success_at: string;
+  detail: string;
+}
+
+/**
+ * Dependency conditions that are real but do NOT stop a verdict being produced, so
+ * none of them removes a decision from the denominator. Render beside the windows.
+ */
+export interface AutoCloseDependencyContext {
+  degraded_channels: AutoCloseDegradedChannel[];
+  /** ISO-8601 instant a collapsed projection refusal left the corpus stale, or ''. */
+  corpus_stale_since: string;
+  corpus_stale_detail: string;
+  note: string;
+}
+
+/** One bucket of the gate-breakdown time series. */
+export interface RecordedAutoCloseGateBucket {
+  /** Bucket START, ISO-8601 UTC. */
+  t: string;
+  decided: number;
+  auto_closed: number;
+  /** Windowable policy closes only — the set-wide record-less ones belong to no bucket. */
+  policy_closed: number;
+  excluded_outage: number;
+  closable_class: number;
+  gate: AutoCloseGateCounts;
+  gate_explained: number;
+  gate_coverage: number;
+}
+
+/**
+ * The bucketed gate breakdown. An EVIDENCE-QUALITY signal: how much of the trail can
+ * still explain why auto-close did or did not fire. `tuning_target` is always false —
+ * never drive a threshold change from this; the tuner learns from independent
+ * analyst-confirmed outcomes instead. Render the `disclaimer` wherever it is shown.
+ */
+export interface RecordedAutoCloseGateSeries {
+  signal: 'evidence_quality' | string;
+  tuning_target: false;
+  bucket_minutes: number;
+  outcomes: AutoCloseGateOutcome[];
+  closable_outcomes: AutoCloseGateOutcome[];
+  audit_rows_seen: number;
+  /**
+   * How far back the DECISION audit page was read, or null when the caller did not
+   * say. A decision anchored outside this span stays `unrecorded` — the audit row is
+   * paired to the anchored decision by INSTANT, never borrowed from a later run — so
+   * render this beside `gate_coverage` to explain a low number.
+   */
+  audit_span_hours: number | null;
+  buckets: RecordedAutoCloseGateBucket[];
+  disclaimer: string;
+}
+
+/**
+ * The recorded-series status. The legacy `AutoCloseHealthStatus` vocabulary plus
+ * `outage_excluded` — every decision in the window was taken during a recorded
+ * dependency outage, so auto-close cannot be measured from them.
+ */
+export type RecordedAutoCloseHealthStatus = AutoCloseHealthStatus | 'outage_excluded';
+
+/**
+ * GET /api/metrics/auto-close-health/recorded — the auto-close rate measured from the
+ * APPEND-ONLY decision trail.
+ *
+ * A SEPARATE series from `AutoCloseHealth`, not a replacement: the legacy endpoint is
+ * unchanged and still served. Expect the two to differ. This one anchors each case on
+ * its FIRST recorded decision (stable under reinvestigation) and reads what that entry
+ * RECORDED, so a later analyst acknowledge/re-tag/reopen can never move a historical
+ * number; it also excludes recorded dependency outages. `legacy_series.note` carries
+ * the discontinuity in prose — surface it beside any comparison.
+ */
+export interface RecordedAutoCloseHealth {
+  window_hours: number;
+  generated_at: string;
+  /** `first` (default, stable under reinvestigation) or `last` (the legacy clock). */
+  anchor: 'first' | 'last' | string;
+  source: 'append_only_decision_trail' | string;
+  current: RecordedAutoCloseWindow;
+  baseline: RecordedAutoCloseWindow;
+  lifetime: RecordedAutoCloseWindow;
+  policy: AutoClosePolicySnapshot;
+  status: RecordedAutoCloseHealthStatus | string;
+  reason: string;
+  collapsed: boolean;
+  volume_steady: boolean;
+  comparable: boolean;
+  needs_attention: boolean;
+  outage: {
+    /**
+     * false means "we hold no health OBSERVATION" — NEVER "there was no outage". It is
+     * keyed off the recorded provider rows, not off whether a tracker object exists, so
+     * a deployment that has never made a model call reports false.
+     */
+    evidence_available: boolean;
+    /** What the health records SAY. */
+    windows: AutoCloseOutageWindow[];
+    /**
+     * What was actually EXCLUDED. Identical to `windows` except where a window had no
+     * known start (nothing on record ever succeeded): that one is clamped backwards to
+     * the earliest instant the report covers rather than extrapolated over all history.
+     */
+    applied_windows: AutoCloseOutageWindow[];
+    excluded_current: number;
+    excluded_lifetime: number;
+    /** Real but non-gating dependency conditions. Nothing here excludes a decision. */
+    context: AutoCloseDependencyContext;
+  };
+  gate_series: RecordedAutoCloseGateSeries;
+  legacy_series: { name: string; note: string };
+  thresholds: Record<string, number>;
+  truncated: boolean;
+  store_total: number;
+  fetched: number;
+}
+
+/** GET /api/diagnostics/health — the operator diagnostics roll-up. */
+export interface DiagnosticsHealth {
+  generated_at: string;
+  window_hours: number;
+  demo_active: boolean;
+  state_backend: string;
+  precedent_corpus: PrecedentCorpusHealth;
+  /** Per-rule precedent distribution + the "more confirmations will not help" finding. */
+  precedent_effectiveness?: PrecedentEffectiveness;
+  schema_migration: SchemaMigrationHealth;
+  auto_close: AutoCloseHealth;
+  /** POSITIVELY DETECTED conditions. */
+  alerts: DiagnosticsFinding[];
+  /** Signals that could NOT be evaluated. Not problems — and not a clean bill either. */
+  unknowns: DiagnosticsFinding[];
+  alert_count: number;
+  unknown_count: number;
+}
+
+/**
+ * GET /api/rag/precedent/bootstrap — preview of the bulk lower-trust ratification
+ * (POST adds `ratified`/`indexed`/`remaining`). Read-only; the tier is never enabled here.
+ */
+export interface PrecedentBootstrapStatus {
+  tier_enabled: boolean;
+  use_resolved_cases: boolean;
+  use_unconfirmed_resolved_cases: boolean;
+  trust_class: string;
+  provenance: string;
+  acknowledgement_required: string;
+  max_batch: number;
+  guards: UnconfirmedPrecedentConfig;
+  /** Explicit statements of what bootstrapping does NOT do (plain text). */
+  does_not: string[];
+  eligible: number;
+  pending: number;
 }
 
 // --------------------------------------------------------------------------- //
@@ -3543,7 +5470,11 @@ export interface RationaleTool {
   summary?: string;
 }
 
-/** The playbook actually injected into the investigation + its selection context. */
+/**
+ * The procedure an investigation from before Round 14 was given (the retired playbook
+ * feature) and why. Kept so old cases still explain themselves; a Round 14 run reports
+ * {@link RationaleRunbook} instead and leaves this empty.
+ */
 export interface RationalePlaybook {
   id: string;
   version?: string;
@@ -3551,11 +5482,42 @@ export interface RationalePlaybook {
   consulted?: boolean;
 }
 
+/**
+ * Round 14 (SPEC §4.10.9): the runbook that guided the latest investigation run.
+ * Selected and consulted are different facts: `id` is set only when the runbook's
+ * Published guidance reached the investigator (`consulted`), while `selected_id`
+ * names the runbook the matcher chose even when the run never used it (the cheap
+ * router path, guidance turned off, a runbook over the guidance budget). Every string
+ * is plain text (#9); a runbook never decides the case (#3).
+ */
+export interface RationaleRunbook {
+  id: string;
+  version: number | null;
+  /** The runbook title when it was recorded, else empty. */
+  title: string;
+  /** Why it was chosen (the match explanation in words), or why no runbook guided the run. */
+  reason: string;
+  consulted: boolean;
+  /** The matcher's choice; empty when nothing matched or on a run before Round 14. */
+  selected_id: string;
+  /** The guidance outcome; empty on a run before Round 14. */
+  status: RunbookGuidanceStatus | '';
+  /** The match tier (3 rule, 2 technique, 1 other criteria, 0 the fallback), when one matched. */
+  tier: MatchExplanation['tier'] | null;
+  explanation: MatchExplanation | null;
+}
+
 /** One procedure selected for the latest run, kept distinct from consultation. */
 export interface RationaleProcedureSelection {
   selected_id: string;
   selection_reason: string;
   consulted: boolean;
+}
+
+/** Round 14: the runbook half of the latest run's procedure provenance. */
+export interface RationaleRunbookProvenance extends RationaleProcedureSelection {
+  version: number | null;
+  title: string;
 }
 
 /** One exact retrieval query issued by the latest investigation run. */
@@ -3567,8 +5529,15 @@ export interface RationaleRetrievalQueryGroup {
 /** Append-only latest-run projection of selected and actually consulted procedures. */
 export interface RationaleProcedureProvenance {
   persona: RationaleProcedureSelection;
+  /** The retired playbook selection of a run before Round 14 (empty on newer runs). */
   playbook: RationaleProcedureSelection;
+  /** Round 14: the runbook selection of the latest run (absent from an older server). */
+  runbook?: RationaleRunbookProvenance;
   consultation_path: string;
+  /** Latest-run retrieval observation; missing legacy telemetry is unavailable. */
+  retrieval_status?: 'measured' | 'not_attempted' | 'unavailable';
+  /** Stable machine-readable reason for a skipped or unavailable observation. */
+  retrieval_reason?: string;
   retrieval_query_groups: RationaleRetrievalQueryGroup[];
   knowledge: RationaleKnowledge[];
 }
@@ -3607,7 +5576,10 @@ export interface CaseRationale {
   persona?: string;
   /** Exact selected-vs-consulted facts from the latest procedure-provenance audit row. */
   procedure_provenance?: RationaleProcedureProvenance;
+  /** The procedure of an investigation before Round 14 (legacy rows; read beside `runbook`). */
   playbook?: RationalePlaybook | null;
+  /** Round 14: the runbook that guided the latest run (absent from an older server). */
+  runbook?: RationaleRunbook | null;
   /** Operator memories the investigation drew on. */
   memory_used?: string[];
   knowledge?: RationaleKnowledge[];
@@ -4103,6 +6075,16 @@ export interface DashboardLayout {
   schema_version?: number;
   created_at?: string;
   updated_at?: string;
+  /**
+   * Round 14 (SPEC §4.4.1): the window the board's time-range picker starts on.
+   * Absent or null means the client default `now-24h`.
+   */
+  default_window?: 'now-24h' | 'now-7d' | 'now-30d' | 'now-90d' | null;
+  /**
+   * Round 14: the built-in board this one was copied from (for example
+   * `builtin:soc-operations`), shown as "Copied from SOC operations". Plain data.
+   */
+  derived_from?: string | null;
   [key: string]: unknown;
 }
 
@@ -4132,6 +6114,8 @@ export interface Preferences {
   asset_networks?: AssetNetwork[];
   /** Operator field==value suppression rules (matching events are dropped). */
   suppression_rules?: SuppressionRuleConfig[];
+  analyst_rule_policies?: AnalystRulePolicyConfig[];
+  precedent?: PrecedentConfig;
   /** Per-priority SLA response/resolution policy (advisory, #3-safe). */
   sla?: SlaPolicy;
   /** Impact × Urgency → Priority matrix (advisory, #3-safe). */
@@ -4148,6 +6132,33 @@ export interface Preferences {
   campaign?: CampaignConfig;
   /** ORG-level pervasive-customization defaults (terminology / views / dashboards). */
   customization?: CustomizationConfig;
+  /** Round 15 (SPEC D3.4): the Team activity page switch. */
+  team_activity?: TeamActivityConfig;
+  /** Round 15 (SPEC D6.2): the random auto-close review sample. */
+  auto_close_review?: AutoCloseReviewConfig;
+}
+
+/** `Preferences.team_activity` (Round 15 SPEC D3.4). Repaired on load, never rejected. */
+export interface TeamActivityConfig {
+  /** Show the Team activity page (default true). */
+  enabled: boolean;
+}
+
+/**
+ * `Preferences.auto_close_review` (Round 15 SPEC D6.2). Repaired on load; a settings
+ * write out of range answers 422. Never read by `decide()` (#3).
+ */
+export interface AutoCloseReviewConfig {
+  /** Send a small random sample of automatic closes to a person (default true). */
+  enabled: boolean;
+  /** Share of automatic closes picked, 0 to 0.5 (default 0.05). */
+  sample_rate: number;
+  /** Most cases picked a day, 0 to 200 (default 10). */
+  daily_cap: number;
+  /** Most cases of one rule picked a day, 1 to 50 (default 3). */
+  per_rule_daily_cap: number;
+  /** Days a pick waits before it shows as expired, 1 to 30 (default 7). */
+  expiry_days: number;
 }
 
 /**
@@ -4156,6 +6167,59 @@ export interface Preferences {
  * reason are additive provenance for agent-PROPOSED rules. `field`/`value`/`reason`/
  * `rationale` are operator/agent text → render as plain text (#9).
  */
+/**
+ * An operator's explicit, audited, revocable declaration that a detection is benign in
+ * THIS estate. Matching clusters close deterministically with no LLM call, as
+ * `decision_by='analyst_policy'`. Unlike `SuppressionRuleConfig` (a field==value event
+ * DROP) the case stays visible, audited and reopenable.
+ */
+/** `Preferences.precedent.promotion` — the analyst-precedent promotion opt-in. */
+export interface PrecedentPromotionConfig {
+  enabled?: boolean;
+  min_confirmed?: number;
+  min_similarity?: number;
+  max_conflicting?: number;
+  [key: string]: unknown;
+}
+
+/** `Preferences.precedent.window` — how the bounded projection window is filled. */
+export interface PrecedentWindowConfig {
+  size?: number;
+  /** DEPRECATED alias, now the master switch for window fairness (axes + cap). */
+  stratify_by_rule?: boolean;
+  /** Ordered projection METADATA KEYS to round-robin over, e.g. rule identity then outcome. */
+  stratify_by?: string[];
+  /** Largest share of the window one operator transaction may occupy. Soft + deferred. */
+  max_transaction_fraction?: number;
+  [key: string]: unknown;
+}
+
+/** `Preferences.precedent` — promotion, window fairness and futility reporting. */
+export interface PrecedentConfig {
+  promotion?: PrecedentPromotionConfig;
+  window?: PrecedentWindowConfig;
+  futility?: Record<string, unknown>;
+  distribution_ttl_seconds?: number;
+  [key: string]: unknown;
+}
+
+export interface AnalystRulePolicyConfig {
+  id: string;
+  rule_id: string;
+  reason?: string;
+  /** Optional scope: when set, the declaration applies only to that source instance. */
+  source_id?: string | null;
+  enabled?: boolean;
+  /** Optional risk ceiling — above it the case is investigated instead of closed. */
+  max_risk_score?: number | null;
+  created_by?: string;
+  created_at?: string;
+  expires_at?: string | null;
+  /** Derived server-side: enabled AND not expired. */
+  live?: boolean;
+  [key: string]: unknown;
+}
+
 export interface SuppressionRuleConfig {
   field: string;
   value: string;
@@ -4186,3 +6250,263 @@ export interface UserPrefs {
   /** Per-user saved custom dashboards (dashboard id → layout). */
   dashboards?: Record<string, DashboardLayout>;
 }
+
+// --------------------------------------------------------------------------- //
+// Round 16 contracts (SPEC §4.3 WP01), mirrored from `backend/app/models.py`.
+// Type-only: zero runtime bytes. Every string a case, source or person controls is
+// rendered as a text node (#9).
+// --------------------------------------------------------------------------- //
+
+/** How the velocity factor was found: `rate`, or 0 below 3 events. */
+export type RiskVelocityRule = 'below_min_events' | 'rate';
+/** Where the reputation input came from. */
+export type RiskReputationSource = 'enrichment' | 'not_ip_entity' | 'enrichment_off' | 'not_looked_up';
+/** How the asset policy matched the entity (the matched range is never stored). */
+export type RiskAssetMatch = 'network' | 'exact' | 'none';
+
+/** The five risk weights in force when a score was computed. */
+export interface RiskWeightsSnapshot {
+  volume: number;
+  velocity: number;
+  reputation: number;
+  diversity: number;
+  asset_criticality: number;
+}
+
+/** The reference points at which a factor reaches full score. */
+export interface RiskReferences {
+  volume: number;
+  velocity: number;
+  diversity: number;
+}
+
+/**
+ * What one risk score was computed from (backend `RiskInputs`, recorded beside
+ * `compute_risk`). `rule_values` are source-controlled strings (at most 50, each at
+ * most 256 characters); `rule_type_count` is the count the diversity factor used.
+ */
+export interface RiskInputs {
+  event_count: number;
+  span_seconds: number;
+  effective_window_seconds: number;
+  rate_per_minute: number | null;
+  velocity_rule: RiskVelocityRule;
+  rule_values: string[];
+  rule_type_count: number;
+  reputation_input: number;
+  reputation_source: RiskReputationSource;
+  asset_value: number;
+  asset_match: RiskAssetMatch;
+  weights: RiskWeightsSnapshot;
+  total_weight: number;
+  zero_weight_fallback: boolean;
+  refs: RiskReferences;
+  scored_at: string;
+  inputs_version: number;
+}
+
+/**
+ * A case's stored risk factors (each rounded to 2 decimals) and total. `inputs` is
+ * absent on every score computed before the inputs were recorded ("not recorded").
+ */
+export interface RiskBreakdown {
+  volume?: number;
+  velocity?: number;
+  reputation?: number;
+  diversity?: number;
+  asset_criticality?: number;
+  total?: number;
+  inputs?: RiskInputs | null;
+}
+
+/** Additive `Case` field mirrored from backend `Case.risk_breakdown`. */
+export interface Case {
+  risk_breakdown?: RiskBreakdown | null;
+}
+
+export type InvestigationState = 'queued' | 'running' | 'finished';
+export type InvestigationPhase = 'queued' | 'triage' | 'specialist' | 'evidence' | 'verdict' | 'decision';
+export type InvestigationTrigger = 'automatic' | 'manual' | 'job' | 'drain' | 'detection';
+export type InvestigationOutcome =
+  | 'decided'
+  | 'routed_to_person'
+  | 'closed_by_policy'
+  | 'unchanged'
+  | 'cancelled'
+  | 'failed';
+
+/**
+ * One AI investigation run (backend `InvestigationView`). Ids, enums, ISO timestamps and
+ * integers only. `requested_by_you` and `requested_by` come only from the caller-scoped
+ * route; `requested_by` only for a holder of `users:manage`.
+ */
+export interface InvestigationView {
+  run_id: string;
+  case_id: string | null;
+  state: InvestigationState;
+  phase: InvestigationPhase;
+  trigger: InvestigationTrigger;
+  queued_at: string;
+  started_at: string | null;
+  deadline_at: string | null;
+  time_cap_seconds: number;
+  finished_at: string | null;
+  outcome: InvestigationOutcome | null;
+  status_after: string | null;
+  verdict_after: string | null;
+  requested_by_you?: boolean;
+  requested_by?: string | null;
+}
+
+/** The investigation gate's use. */
+export interface InvestigationSlots {
+  in_use: number;
+  cap: number;
+}
+
+/** `GET /api/investigations/active` (memory only; another replica's runs are not seen). */
+export interface InvestigationsActive {
+  items: InvestigationView[];
+  recent: InvestigationView[];
+  new_runs: number;
+  slots: InvestigationSlots;
+  process_local: boolean;
+  generated_at: string;
+}
+
+/** The `case.investigation` SSE frame: a view without the viewer fields, plus two counts. */
+export type InvestigationFrame = Omit<InvestigationView, 'requested_by_you' | 'requested_by'> & {
+  active: number;
+  new_runs: number;
+};
+
+/** How a trace span's cost and latency were found. */
+export type TraceSpanCostBasis = 'exact' | 'split';
+
+/**
+ * The bounded audit record behind one trace span (backend `TraceSpanDetail`). The texts
+ * can carry fenced UNTRUSTED log data: render them in `CodeBlock` or as text (#9).
+ */
+export interface TraceSpanDetail {
+  tool_input: unknown;
+  query_text: string | null;
+  tool_output_summary: string | null;
+  prompt_excerpt: string | null;
+  result_summary: string | null;
+  outcome: string | null;
+  run_id: string | null;
+  app_version: string | null;
+  build_sha: string | null;
+  truncated: boolean;
+}
+
+/** Where a ledger row's rates came from. */
+export type UsagePriceBasis = 'catalog' | 'overlay' | 'custom' | 'mock' | 'demo_simulated';
+
+/** One ledger row of a case (backend `UsageDoc`); the rate fields are absent on older rows. */
+export interface CaseUsageRow {
+  app_version?: string | null;
+  build_sha?: string | null;
+  ts: string;
+  surface: string;
+  case_id?: string | null;
+  role: string;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost: number;
+  currency: string;
+  latency_ms: number;
+  outcome: string;
+  pricing_source: string;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  batch: boolean;
+  processing_tier: string;
+  idempotency_key?: string | null;
+  failure_class: string;
+  attempts: number;
+  usage_estimated: boolean;
+  input_rate_per_million?: number | null;
+  output_rate_per_million?: number | null;
+  cache_read_rate_per_million?: number | null;
+  cache_write_rate_per_million?: number | null;
+  cache_write_ttl?: string | null;
+  price_basis?: UsagePriceBasis | string | null;
+}
+
+/** A case's ledger spend split as the Console shows it. */
+export interface CaseUsageTotals {
+  pipeline: number;
+  chat: number;
+  /** Runbook AI help (surface `runbook`); absent from a server before it was split out. */
+  runbook?: number;
+  other: number;
+}
+
+/** `GET /api/cases/{case_id}/usage` (served only with `cost:view`). */
+export interface CaseUsagePage {
+  case_id: string;
+  rows: CaseUsageRow[];
+  returned: number;
+  rows_total: number | null;
+  truncated: boolean;
+  totals: CaseUsageTotals;
+  token_cost: number | null;
+  reconciles: boolean | null;
+}
+
+export type CaseEventsUnavailableReason = 'aged_out' | 'push_source_not_retrievable' | 'source_unavailable';
+
+/**
+ * One raw record behind a case: the `/api/logs` row contract plus where it came from and
+ * which findings cite it. Every value is source-controlled UNTRUSTED data (#9).
+ */
+export interface CaseEventRow {
+  id: string;
+  ts: string;
+  source_ip?: string | null;
+  user?: string | null;
+  host?: string | null;
+  rule?: string | null;
+  severity?: unknown;
+  message?: string | null;
+  _raw?: Record<string, unknown>;
+  index?: string | null;
+  source_id?: string | null;
+  in_evidence?: number[];
+  [key: string]: unknown;
+}
+
+/** `GET /api/cases/{case_id}/events`. */
+export interface CaseEventsPage {
+  case_id: string;
+  available: boolean;
+  reason: CaseEventsUnavailableReason | null;
+  returned: number;
+  expected: number;
+  truncated: boolean;
+  limit: number;
+  next_cursor: string | null;
+  rows: CaseEventRow[];
+}
+
+/**
+ * The What's new keys of `UserPrefs.misc` (normalised on load by the backend):
+ * `whats_new_seen` is the newest release-notes update id seen, `whats_new_auto` the
+ * "Show What's new after updates" switch (absent means on).
+ */
+export interface WhatsNewPrefsMisc {
+  whats_new_seen?: string;
+  whats_new_auto?: boolean;
+}
+
+// --------------------------------------------------------------------------- //
+// Round 14 contracts, re-exported (type-only: zero runtime bytes). New code may
+// import them from here or from their own module; both name the same declarations.
+// --------------------------------------------------------------------------- //
+export type * from './types-audit';
+export type * from './types-dashboards';
+export type * from './types-rules';
+export type * from './types-runbooks';

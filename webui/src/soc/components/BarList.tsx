@@ -19,10 +19,15 @@ export interface BarListProps {
   items: BarListItem[];
   /** Optional value formatter (defaults to locale integer). */
   format?: (value: number) => string;
-  /** Show each row's share of the max as a trailing %. */
+  /** Show each row's percentage as a trailing figure (see `percentOf`). */
   showPercent?: boolean;
-  /** Optional card title (plain text). */
-  title?: string;
+  /**
+   * What the trailing percentage is a share of: `max` (default) is relative to the
+   * largest row, `total` is the row's share of the sum of every row, which is what a
+   * reader expects a percentage beside a count to mean. Bar lengths are relative to the
+   * largest row either way. A share that rounds to nothing reads "<1%", never 0%.
+   */
+  percentOf?: 'max' | 'total';
   /** Show a 1-based rank index gutter on each row. */
   showRank?: boolean;
   /** Empty-state message when items is empty. */
@@ -39,10 +44,18 @@ function defaultFormat(v: number): string {
   }
 }
 
+/** A row's trailing percentage: whole numbers, "<1%" for a share that rounds to nothing. */
+function percentText(share: number): string {
+  if (share > 0 && share < 0.5) return '<1%';
+  return `${Math.round(share)}%`;
+}
+
 /**
  * Ranked horizontal bar list — the dashboard "Product Category Signals" /
  * "Severity Pressure" look. Bars use the `bg-accent-bar` gradient by default or a
  * per-item token color. Labels are UNTRUSTED → rendered as plain text. Token-themed.
+ * Figures are Inter with tabular numerals (Round 14, SPEC §3.1); the list has no title of
+ * its own: the module around it names it (a `Panel` or `SectionTitle`).
  */
 export const BarList = React.forwardRef<HTMLDivElement, BarListProps>(
   (
@@ -50,7 +63,7 @@ export const BarList = React.forwardRef<HTMLDivElement, BarListProps>(
       items,
       format = defaultFormat,
       showPercent = false,
-      title,
+      percentOf = 'max',
       showRank = false,
       emptyLabel = 'No data',
       className,
@@ -58,14 +71,10 @@ export const BarList = React.forwardRef<HTMLDivElement, BarListProps>(
     ref,
   ) => {
     const max = items.reduce((m, it) => Math.max(m, it.value || 0), 0) || 1;
+    const total = items.reduce((sum, it) => sum + Math.max(0, it.value || 0), 0) || 1;
 
     return (
       <div ref={ref} className={cn('flex flex-col', className)}>
-        {title ? (
-          <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {title}
-          </div>
-        ) : null}
         {items.length === 0 ? (
           <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
             {emptyLabel}
@@ -78,7 +87,7 @@ export const BarList = React.forwardRef<HTMLDivElement, BarListProps>(
               return (
                 <li key={`${it.label}-${i}`} className="flex items-start gap-3">
                   {showRank ? (
-                    <span className="mt-1.5 w-6 shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground">
+                    <span className="mt-1.5 w-6 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
                       {String(i + 1).padStart(2, '0')}
                     </span>
                   ) : null}
@@ -87,7 +96,7 @@ export const BarList = React.forwardRef<HTMLDivElement, BarListProps>(
                       <span className="truncate text-sm font-medium text-foreground">
                         {it.label}
                       </span>
-                      <span className="shrink-0 font-mono text-sm font-semibold tabular-nums text-foreground">
+                      <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
                         {format(value)}
                       </span>
                     </div>
@@ -117,8 +126,8 @@ export const BarList = React.forwardRef<HTMLDivElement, BarListProps>(
                           <span />
                         )}
                         {showPercent ? (
-                          <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
-                            {Math.round(pct)}%
+                          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                            {percentText(percentOf === 'total' ? (Math.max(0, value) / total) * 100 : pct)}
                           </span>
                         ) : null}
                       </div>

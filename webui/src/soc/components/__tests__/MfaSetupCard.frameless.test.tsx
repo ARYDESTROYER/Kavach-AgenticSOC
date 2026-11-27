@@ -21,7 +21,7 @@ describe('MfaSetupCard — frameless', () => {
   it('renders its own "Two-factor authentication" heading by default', () => {
     render(<MfaSetupCard enabled={false} />);
     expect(screen.getByRole('heading', { name: 'Two-factor authentication' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /enable two-factor/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /turn on two-factor/i })).toBeInTheDocument();
   });
 
   it('drops its internal heading (+ frame) when frameless, keeping the action', () => {
@@ -29,6 +29,6 @@ describe('MfaSetupCard — frameless', () => {
     // No duplicate heading — the parent (login Card) supplies "Secure your account".
     expect(screen.queryByRole('heading', { name: 'Two-factor authentication' })).toBeNull();
     // The enrollment action is still present.
-    expect(screen.getByRole('button', { name: /enable two-factor/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /turn on two-factor/i })).toBeInTheDocument();
   });
 });

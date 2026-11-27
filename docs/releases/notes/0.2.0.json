@@ -1,0 +1,1054 @@
+{
+  "schema": 1,
+  "version": "0.2.0",
+  "status": "released",
+  "date": "2026-11-27",
+  "title": "Visible AI work, explainable numbers and a clearer Case Manager",
+  "summary": "Everything since 0.1.1 in one release, under a new repository identity and the Apache-2.0 license.",
+  "docs": "releases/0.2.0/",
+  "updates": [
+    {
+      "id": "0.2.0.2026-12",
+      "date": "2026-11-27",
+      "title": "Visible AI work, explainable numbers and a clearer Case Manager",
+      "highlights": [
+        {
+          "id": "ai-working",
+          "kind": "new",
+          "area": "cases",
+          "title": "See when the AI is working on a case",
+          "summary": "The queue, the case header, the navigation and the close dialogs show when an AI investigation is running or waiting.",
+          "details": [
+            "The case header shows **AI working** with the time so far, or **AI queued**. Its popover says who started the run.",
+            "The Case Manager item in the navigation counts the cases the AI is working on.",
+            "The run's result stays authoritative. A close made while it runs is replaced by its result, and the close dialogs say so before you act.",
+            "When a run you started finishes, or a run replaces your close, your Inbox tells you."
+          ],
+          "requires": "cases:read",
+          "open": {"page": "case_manager"},
+          "help": "analyst/case-manager/",
+          "featured": true,
+          "screenshot": {
+            "light": "ai-working-light.webp",
+            "dark": "ai-working-dark.webp",
+            "alt": "Case header with the AI working chip and its popover open. The popover lists the five steps of the run with the current one marked, says You started it with the time so far and the time cap, and says what happens to a close made before it finishes.",
+            "caption": "The AI working chip and its popover."
+          }
+        },
+        {
+          "id": "case-workspace",
+          "kind": "improved",
+          "area": "cases",
+          "title": "A clearer Case Manager",
+          "summary": "Each part of a case has one place. The header takes two lines, the case facts sit in their own column, and the queue folds away when you need the width.",
+          "details": [
+            "The header's second line keeps the case number, severity, status, risk, AI verdict, owner and SLA on one line.",
+            "Press **]** to show or hide the case facts. In a narrow pane they open in a side sheet.",
+            "Press **[** to fold the queue into a narrow strip. J and K still move through the cases.",
+            "The Brief opens with the case's next step and four lanes: Evidence, AI, Decision and People."
+          ],
+          "requires": "cases:read",
+          "open": {"page": "case_manager"},
+          "help": "analyst/case-manager/#read-the-workspace",
+          "featured": true,
+          "screenshot": {
+            "light": "case-workspace-light.webp",
+            "dark": "case-workspace-dark.webp",
+            "alt": "Case Manager with the queue on the left, one row marked AI working, and an open case on its Evidence tab with its two-line header, the six tabs and the case facts column on the right. The navigation counts one case the AI is working on.",
+            "caption": "The Case Manager in this update."
+          }
+        },
+        {
+          "id": "repository-identity",
+          "kind": "improved",
+          "area": "administration",
+          "title": "A new repository identity for updates",
+          "summary": "Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater.",
+          "details": [
+            "Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact letter case.",
+            "The bootstrap refuses a missing line or the former name, prints the line to add, and never edits .env.",
+            "Releases 0.1.12 and earlier stay valid under the former name. The public Help Center moved to the new Pages address."
+          ],
+          "requires": "system_updates:read",
+          "help": "operations/upgrades/#the-repository-was-renamed",
+          "featured": true,
+          "screenshot": {
+            "light": "repository-identity-light.webp",
+            "dark": "repository-identity-dark.webp",
+            "alt": "Updates and releases settings with the Public repository field set to the ARYDESTROYER/Kavach-AgenticSOC GitHub address and the Stable and Testing branch fields below it.",
+            "caption": "The new repository identity in Settings."
+          }
+        },
+        {
+          "id": "case-tabs",
+          "kind": "improved",
+          "area": "cases",
+          "title": "Case tabs in a new order",
+          "summary": "Six tabs: Brief, Evidence, AI investigation, Response, Activity and Chat. Alt+2, Alt+4 and Alt+5 now open Evidence, Response and Activity, and Chat moves to Alt+6.",
+          "details": [
+            "Alt+1 to Alt+6 open the tabs in that order.",
+            "Before, Alt+2 opened Runbook, Alt+4 opened Collaboration and Alt+5 opened Chat.",
+            "A link to the retired Timeline or Threat context tab opens Evidence at the matching section."
+          ],
+          "requires": "cases:read",
+          "open": {"page": "case_manager"},
+          "help": "analyst/case-manager/#the-six-tabs",
+          "featured": true,
+          "screenshot": {
+            "light": "case-tabs-light.webp",
+            "dark": "case-tabs-dark.webp",
+            "alt": "Brief tab of a case the AI closed as a false positive, under the six tabs Brief, Evidence, AI investigation, Response, Activity and Chat, with the Evidence, Assessment, Decision and People lanes.",
+            "caption": "The six case tabs, with the Brief open."
+          }
+        },
+        {
+          "id": "explain-numbers",
+          "kind": "new",
+          "area": "cases",
+          "title": "Every number shows its math",
+          "summary": "Hover a risk score, a decision or a dashboard figure for its formula with the real numbers. Press it for the inputs, the steps and the rounding.",
+          "details": [
+            "On a case: the risk score, the close or escalate decision, the priority, the SLA and the AI cost.",
+            "On dashboards and Metrics: the KPI figures, with the cases behind them.",
+            "**Copy calculation** copies the whole arithmetic.",
+            "A case scored before this version keeps its stored factors. Where its inputs were not kept, the panel says they were not recorded."
+          ],
+          "requires": "cases:read",
+          "open": {"page": "case_manager"},
+          "help": "analyst/explainable-numbers/",
+          "featured": true,
+          "screenshot": {
+            "light": "explain-numbers-light.webp",
+            "dark": "explain-numbers-dark.webp",
+            "alt": "Risk score panel for one case with the weights in force, each factor's formula and value, the weighted sum, the total, the rounding and the provenance, with a Copy calculation button.",
+            "caption": "The risk score with its math."
+          }
+        },
+        {
+          "id": "whats-new",
+          "kind": "new",
+          "area": "help",
+          "title": "What's new and Communication",
+          "summary": "This welcome appears once after each update. The Communication group holds Inbox and What's new, the release tracker.",
+          "details": [
+            "Open **Communication**, then **What's new**, to read every release with its highlights and screenshots.",
+            "Turn the welcome off with **Show What's new after updates** in Settings, Account, Appearance."
+          ],
+          "open": {"page": "whats_new"},
+          "help": "releases/whats-new/",
+          "featured": true,
+          "screenshot": {
+            "light": "whats-new-light.webp",
+            "dark": "whats-new-dark.webp",
+            "alt": "Communication, What's new page with the version rail listing 0.2.0 and 0.1.1, the 0.2.0 release summary, area filters and the newest update's highlights.",
+            "caption": "The release tracker in Communication."
+          }
+        },
+        {
+          "id": "sign-in",
+          "kind": "improved",
+          "area": "security",
+          "title": "A quieter sign-in page",
+          "summary": "The sign-in page uses the Console's own colours and moves once as it opens. The Remember me row shows only its name.",
+          "details": [
+            "Checking **Remember me** opens a warning first. It says how long this device stays signed in.",
+            "When an administrator turned Remember me off, or the connection is not secure, the row stays visible and disabled, with the reason.",
+            "A single sign-on error shows a fixed sentence, never text from the address bar."
+          ],
+          "help": "getting-started/first-run/#sign-in-later",
+          "featured": true,
+          "screenshot": {
+            "light": "sign-in-light.webp",
+            "dark": "sign-in-dark.webp",
+            "alt": "Sign-in page at the password step with the masked password field, a Remember me checkbox with no duration, and the Sign in button.",
+            "caption": "The sign-in page."
+          }
+        },
+        {
+          "id": "case-records",
+          "kind": "new",
+          "area": "cases",
+          "title": "Every case record within reach",
+          "summary": "The Evidence tab lists the raw events behind a case. The case facts open every stored field and each AI call with its cost.",
+          "details": [
+            "Open an event for every field as a table or as JSON, then copy or download it.",
+            "**View all fields** in the case facts shows every stored field of the case.",
+            "The cost in the case facts lists each AI call with its tokens and its cost formula.",
+            "Raw events need the `sources:read` permission. AI costs need `cost:view`."
+          ],
+          "requires": "cases:read",
+          "open": {"page": "case_manager"},
+          "help": "analyst/case-manager/#case-facts",
+          "screenshot": {
+            "light": "case-records-light.webp",
+            "dark": "case-records-dark.webp",
+            "alt": "Case facts with the View all fields sheet open, showing every stored field of the case as a searchable tree with Copy JSON and Download buttons."
+          }
+        },
+        {
+          "id": "access-fixes",
+          "kind": "security",
+          "area": "security",
+          "title": "Access and account security fixes",
+          "summary": "Case reads, the settings read and Standup now check permissions, and account security is stricter.",
+          "details": [
+            "A role without the permission now gets an Access denied answer from these reads.",
+            "An account an administrator creates or resets must change its temporary password before anything else.",
+            "Ten wrong second-factor codes in a row pause second-factor checks for 5 minutes, doubling up to an hour.",
+            "Changing your own password signs out your other sessions. An administrator's reset signs the account out everywhere.",
+            "Only a Super admin with a fresh sign-in can change single sign-on settings.",
+            "Single sign-on no longer links an account created through another provider because the email matches."
+          ],
+          "help": "administration/authentication/#sessions"
+        },
+        {
+          "id": "fixes",
+          "kind": "fixed",
+          "area": "platform",
+          "title": "Fixes across the application",
+          "summary": "Fixes from a full review of the application, in the AI pipeline, SLA timers, metrics, settings, Demo Mode and accessibility.",
+          "details": [
+            "A case a person closed before an automatic AI run started stays closed.",
+            "The SLA response clock stops for a case the AI agent closed.",
+            "Settings refuses values that cannot work together, such as a response target longer than the resolution target.",
+            "In Demo Mode, a seeded case's cost has usage rows behind it, and its risk score matches its factors.",
+            "Focus, names and reflow work better with a keyboard, a screen reader and a phone."
+          ]
+        },
+        {
+          "id": "license",
+          "kind": "new",
+          "area": "platform",
+          "title": "Apache-2.0 license",
+          "summary": "Agentic SOC is free software under the Apache License 2.0.",
+          "details": [
+            "The license text is in the repository and in each image."
+          ],
+          "help": "releases/0.2.0/#license"
+        }
+      ]
+    },
+    {
+      "id": "0.2.0.2026-11-25",
+      "date": "2026-11-25",
+      "title": "Team activity, case screenshots and a calmer Case Manager",
+      "highlights": [
+        {
+          "id": "team-activity",
+          "kind": "new",
+          "area": "administration",
+          "title": "Team activity",
+          "summary": "Per-person, per-day work counts from the audit log, for SOC managers and auditors.",
+          "details": [
+            "Counts come with their context. The page never ranks people or gives them a score.",
+            "A chart per day, a sheet for each person with their events, and a CSV download."
+          ],
+          "requires": "team:view",
+          "open": {"page": "team"},
+          "help": "analyst/team-activity/",
+          "screenshot": {
+            "light": "team-activity-light.webp",
+            "dark": "team-activity-dark.webp",
+            "alt": "Team activity page for today, under a notice that role-based access is off. It shows people active, cases closed by people, acknowledged, reviews completed and the median time to acknowledge, a work per day chart, and the People table with Download CSV.",
+            "caption": "Team activity in the seeded Demo."
+          }
+        },
+        {
+          "id": "case-screenshots",
+          "kind": "new",
+          "area": "cases",
+          "title": "Screenshots on cases",
+          "summary": "Add PNG, JPEG or WebP screenshots to a case. Their metadata is removed and they are never sent to a model.",
+          "details": [
+            "Paste, drag and drop or pick a file, with an optional caption.",
+            "Up to 20 images per case, 2 MiB each and 20 MiB per case."
+          ],
+          "requires": "cases:read",
+          "open": {"page": "case_manager"},
+          "help": "analyst/collaboration/",
+          "screenshot": {
+            "light": "case-screenshots-light.webp",
+            "dark": "case-screenshots-dark.webp",
+            "alt": "Files section of a case's Activity tab with a caption field, the Add screenshots button that also takes a drop or a paste, and one added screenshot with its caption, who added it and when.",
+            "caption": "Screenshots on a case's Activity tab."
+          }
+        },
+        {
+          "id": "auto-close-review",
+          "kind": "new",
+          "area": "automation",
+          "title": "A review of automatic closes",
+          "summary": "About 5% of automatic closes are picked for a person to review, at most 10 a day and 3 per rule.",
+          "details": [
+            "You classify the case before you see what the AI decided.",
+            "A review never changes the case unless you reopen it.",
+            "Reviews stay out of agent statistics. Agent effectiveness shows the agreement once 30 reviews exist."
+          ],
+          "requires": "cases:read",
+          "open": {"page": "case_manager"},
+          "help": "automation/auto-close-review/",
+          "screenshot": {
+            "light": "auto-close-review-light.webp",
+            "dark": "auto-close-review-dark.webp",
+            "alt": "Case Manager on the Review scope with three automatically closed cases waiting. One is open with the note that it was picked at random for review, beside the Review this auto-close panel that asks What was it before it shows the AI's answer.",
+            "caption": "A review of an automatic close."
+          }
+        },
+        {
+          "id": "calmer-case-manager",
+          "kind": "improved",
+          "area": "cases",
+          "title": "A calmer Case Manager",
+          "summary": "One control band above the queue, two-line queue rows, and one primary action for the case's state beside Take action.",
+          "details": [
+            "The queue gains a Review scope with the number of reviews waiting."
+          ],
+          "requires": "cases:read",
+          "open": {"page": "case_manager"},
+          "help": "analyst/case-manager/",
+          "screenshot": {
+            "light": "calmer-case-manager.webp",
+            "alt": "Case Manager in Demo Mode with the Active, Mine, Review and All scopes above two-line queue rows, and an escalated case open with Mark resolved, Take action and five tabs, Investigation selected.",
+            "caption": "The Case Manager in this update."
+          }
+        },
+        {
+          "id": "close-case",
+          "kind": "improved",
+          "area": "cases",
+          "title": "A clearer close",
+          "summary": "Closing a case asks for the disposition once and can record the actions taken. Rate the AI starts collapsed.",
+          "details": [
+            "A note is asked for only when your classification overrides the AI."
+          ],
+          "requires": "cases:read",
+          "open": {"page": "case_manager"},
+          "help": "analyst/case-manager/#close-or-resolve-with-a-disposition",
+          "screenshot": {
+            "light": "close-case-light.webp",
+            "dark": "close-case-dark.webp",
+            "alt": "Close with a disposition dialog with the six dispositions, the AI's suggestion beside the heading, the Actions taken choices, an optional analyst note and screenshots, and the close buttons.",
+            "caption": "The close dialog."
+          }
+        },
+        {
+          "id": "rbac-switch",
+          "kind": "new",
+          "area": "administration",
+          "title": "A switch for role-based access",
+          "summary": "A Super admin turns role-based access on or off on Roles and permissions, after a fresh sign-in.",
+          "requires": "roles:manage",
+          "help": "administration/users-rbac/",
+          "screenshot": {
+            "light": "rbac-switch.webp",
+            "alt": "Roles and permissions section of Settings with the Role-based access group at the top: its Enforcement row reads Off, every signed-in account is treated as Super admin, and the Turn on role-based access button is outlined, above the table of six built-in roles.",
+            "caption": "The Role-based access group in this update."
+          }
+        },
+        {
+          "id": "setup-wording",
+          "kind": "improved",
+          "area": "administration",
+          "title": "Truthful setup wording",
+          "summary": "The setup wizard says Ready for live triage only when a source is connected and the investigation models can be called.",
+          "details": [
+            "Without a usable key it says so, and that new cases wait for a person."
+          ],
+          "help": "getting-started/first-run/",
+          "screenshot": {
+            "light": "setup-ai-runtime.webp",
+            "alt": "Setup wizard AI runtime stage with the amber notice No usable AI provider yet, which says you can continue without a key but new cases wait for a person as Needs human review, above empty OpenAI, Anthropic and Embedding API key fields marked not set, and a Skip for now button.",
+            "caption": "The setup wizard's AI runtime stage in this update."
+          }
+        },
+        {
+          "id": "super-admin-accounts",
+          "kind": "security",
+          "area": "security",
+          "title": "Only a Super admin manages Super admin accounts",
+          "summary": "Giving an account the Super admin role, or changing one that has it, needs a Super admin with a recent sign-in.",
+          "requires": "users:manage",
+          "help": "administration/users-rbac/"
+        },
+        {
+          "id": "keep-human-work",
+          "kind": "fixed",
+          "area": "cases",
+          "title": "Reinvestigation keeps people's work",
+          "summary": "Rebuilding a case keeps its owner, comments, grades, history and a disposition an analyst set."
+        }
+      ]
+    },
+    {
+      "id": "0.2.0.2026-11-13",
+      "date": "2026-11-13",
+      "title": "A step-by-step install guide with real screenshots",
+      "highlights": [
+        {
+          "id": "install-guide",
+          "kind": "new",
+          "area": "help",
+          "title": "A step-by-step install guide",
+          "summary": "The Install and First-run setup pages walk through every step with real screenshots of each first-run screen.",
+          "details": [
+            "The repository's install guide covers five paths: a workstation demo, the Compose stack, production hardening, an existing Elastic stack and running from source."
+          ],
+          "help": "getting-started/install/",
+          "screenshot": {
+            "light": "install-create-admin.webp",
+            "alt": "First-run screen titled Create your admin account, with the admin username, display name, password and confirm password fields filled and the Create admin and sign in button below.",
+            "caption": "One of the first-run screens the guide shows."
+          }
+        },
+        {
+          "id": "architecture-diagrams",
+          "kind": "new",
+          "area": "help",
+          "title": "Architecture diagrams",
+          "summary": "Light and dark diagrams show the system data flow and the Compose deployment.",
+          "help": "concepts/architecture/"
+        }
+      ]
+    },
+    {
+      "id": "0.2.0.2026-11-11",
+      "date": "2026-11-11",
+      "title": "Steadier runbook guidance and audit log fixes",
+      "highlights": [
+        {
+          "id": "fallback-guidance",
+          "kind": "fixed",
+          "area": "intelligence",
+          "title": "The fallback runbook no longer guides the AI",
+          "summary": "The Generic incident fallback runbook is still attached for people, but it no longer guides the investigator. A specific runbook still does.",
+          "details": [
+            "Guidance can change the verdict the AI returns, never the close decision."
+          ],
+          "requires": "runbooks:read",
+          "open": {"page": "runbooks"},
+          "help": "intelligence/runbooks/"
+        },
+        {
+          "id": "audit-control-characters",
+          "kind": "fixed",
+          "area": "administration",
+          "title": "The audit log reads every row on PostgreSQL",
+          "summary": "A stray control character in an audit row no longer breaks the Audit log, its count, its exports or chat's audit search.",
+          "requires": "audit:view",
+          "open": {"page": "audit"},
+          "help": "administration/audit-log/"
+        },
+        {
+          "id": "account-activity",
+          "kind": "fixed",
+          "area": "security",
+          "title": "Your account activity is back",
+          "summary": "Settings, Account, Sessions and activity shows your own events again.",
+          "screenshot": {
+            "light": "account-activity-light.webp",
+            "dark": "account-activity-dark.webp",
+            "alt": "Sessions and activity settings on the Activity tab, listing the signed-in person's own events, such as sign-ins, started sessions and preference changes, with where and when.",
+            "caption": "Your own activity in Settings."
+          }
+        },
+        {
+          "id": "rollback-safety",
+          "kind": "improved",
+          "area": "administration",
+          "title": "Safer rollbacks",
+          "summary": "This build keeps what a newer build writes, so a later release can roll back to it cleanly.",
+          "requires": "system_updates:read",
+          "help": "operations/upgrades/#rollback-forward-compatibility"
+        }
+      ]
+    },
+    {
+      "id": "0.2.0.2026-11-06",
+      "date": "2026-11-06",
+      "title": "A Dashboards library, a usable audit log, rule sheets and Runbooks",
+      "highlights": [
+        {
+          "id": "dashboards-library",
+          "kind": "new",
+          "area": "dashboards",
+          "title": "Dashboards library",
+          "summary": "The Overview row opens a library of four built-in dashboards and your own. The Cyber Defence Center stays the landing page.",
+          "details": [
+            "Built-in dashboards are read only. Duplicate one to change it."
+          ],
+          "requires": "metrics:view",
+          "open": {"page": "dashboards"},
+          "help": "analyst/dashboards/",
+          "screenshot": {
+            "light": "dashboards-library.webp",
+            "alt": "Dashboards library with four built-in dashboards, the Cyber Defence Center marked Default, and the user's own dashboards below.",
+            "caption": "The Dashboards library in this update."
+          }
+        },
+        {
+          "id": "audit-log",
+          "kind": "improved",
+          "area": "administration",
+          "title": "An audit log you can use",
+          "summary": "Search the audit log, choose a scope, open any record in a side sheet, and export CSV or JSON Lines.",
+          "details": [
+            "Export needs the `audit:export` permission and a fresh sign-in."
+          ],
+          "requires": "audit:view",
+          "open": {"page": "audit"},
+          "help": "administration/audit-log/",
+          "screenshot": {
+            "light": "audit-log.webp",
+            "alt": "Audit log page with time range, scope tabs, search and filters above a table of audited events with time, outcome, event, actor, target and summary.",
+            "caption": "The Audit log in this update."
+          }
+        },
+        {
+          "id": "rule-sheets",
+          "kind": "new",
+          "area": "detection",
+          "title": "A sheet for every rule",
+          "summary": "Press any rule name to see its alerts over time, its top sources and targets, and its latest alerts and cases, with Open all in Logs.",
+          "help": "automation/rules/",
+          "screenshot": {
+            "light": "rule-sheets-light.webp",
+            "dark": "rule-sheets-dark.webp",
+            "alt": "Rule sheet for LP-ES-RISK-1001 opened from a chat answer, with alerts, cases, still open and analyst outcome counts, Open all 6 in Logs, an alerts over time chart, top source IPs and targets, and the latest alerts.",
+            "caption": "The sheet for one rule."
+          }
+        },
+        {
+          "id": "runbooks",
+          "kind": "new",
+          "area": "intelligence",
+          "title": "One Runbooks feature",
+          "summary": "Phased procedures with matching that gives its reason, a run on each case with a Next step card, and reviewed versions.",
+          "details": [
+            "A library of 12 built-in runbooks.",
+            "The investigator reads only Published runbook text."
+          ],
+          "requires": "runbooks:read",
+          "open": {"page": "runbooks"},
+          "help": "intelligence/runbooks/",
+          "screenshot": {
+            "light": "runbooks-library.webp",
+            "alt": "Runbooks library with run statistics and a table of twelve published built-in runbooks such as Brute force and password spray.",
+            "caption": "The Runbooks library in this update."
+          }
+        },
+        {
+          "id": "permission-aware-console",
+          "kind": "improved",
+          "area": "security",
+          "title": "The Console offers only what your roles allow",
+          "summary": "Pages, panels and actions your roles cannot use are not offered, because the Console reads the server's own access check.",
+          "help": "reference/permissions/"
+        },
+        {
+          "id": "severity-levels",
+          "kind": "improved",
+          "area": "dashboards",
+          "title": "Named severity levels",
+          "summary": "Severity breakdowns use named levels, with the top rules and Split by.",
+          "screenshot": {
+            "light": "severity-levels-light.webp",
+            "dark": "severity-levels-dark.webp",
+            "alt": "New cases by severity block with the named levels Critical, High, Medium, Low and Info, their counts, shares and trends, the top rules for each level, and the Split by Rule control.",
+            "caption": "Severity by named level, with top rules."
+          }
+        },
+        {
+          "id": "docked-navigation",
+          "kind": "improved",
+          "area": "platform",
+          "title": "Docked navigation and grouped Settings",
+          "summary": "The navigation rail docks beside every page, and Settings is grouped.",
+          "screenshot": {
+            "light": "docked-navigation-light.webp",
+            "dark": "docked-navigation-dark.webp",
+            "alt": "Settings with the navigation rail docked and expanded on the left, and the settings sections grouped under Account, General and Integrations, open on Profile.",
+            "caption": "The docked navigation and grouped Settings."
+          }
+        },
+        {
+          "id": "chat-capacity",
+          "kind": "improved",
+          "area": "chat",
+          "title": "More room for chat",
+          "summary": "The default chat timeouts and capacity are three times larger.",
+          "screenshot": {
+            "light": "chat-capacity-light.webp",
+            "dark": "chat-capacity-dark.webp",
+            "alt": "Timeouts and capacity settings for chat: 12 lookups at once, a 45 second lookup timeout, a 900 second model call timeout, 12 questions at once per user and 48 in total, then the indicator lookup limits.",
+            "caption": "Chat timeouts and capacity in Settings."
+          }
+        }
+      ]
+    },
+    {
+      "id": "0.2.0.2026-10-24",
+      "date": "2026-10-24",
+      "title": "Suggested questions and a neater chat",
+      "highlights": [
+        {
+          "id": "chat-starters",
+          "kind": "new",
+          "area": "chat",
+          "title": "Suggested questions from your data",
+          "summary": "A new chat offers 3 or 4 questions built from your own cases and sources, with no model call.",
+          "details": [
+            "Each suggestion has a one-line reason, and a line says what changed since your last visit.",
+            "Hide a suggestion for a day, or turn suggestions off in the composer options."
+          ],
+          "open": {"page": "chat"},
+          "help": "analyst/chat/",
+          "screenshot": {
+            "light": "chat-starters-light.webp",
+            "dark": "chat-starters-dark.webp",
+            "alt": "New chat with a greeting, a line saying what changed since the last visit, four suggested questions built from the Demo's cases, each with a one-line reason, the prompt categories and the composer.",
+            "caption": "Suggested questions on a new chat."
+          }
+        },
+        {
+          "id": "chat-follow-ups",
+          "kind": "new",
+          "area": "chat",
+          "title": "Follow-up questions",
+          "summary": "After an answer, up to three follow-up questions appear, each naming something the answer shows.",
+          "open": {"page": "chat"},
+          "help": "analyst/chat/",
+          "screenshot": {
+            "light": "chat-follow-ups.webp",
+            "alt": "Workspace Chat at the end of an answer about new cases, showing a new-cases-by-severity table with top rules, the answer's lookups, time and simulated cost, and three suggested follow-up questions.",
+            "caption": "An answer with follow-up questions in this update."
+          }
+        },
+        {
+          "id": "chat-titles",
+          "kind": "improved",
+          "area": "chat",
+          "title": "Conversation titles",
+          "summary": "A conversation takes its title from the first answer.",
+          "screenshot": {
+            "light": "chat-titles-light.webp",
+            "dark": "chat-titles-dark.webp",
+            "alt": "Chat history with a conversation titled New cases to triage, the same title at the top of the conversation, and the first question with the start of its answer.",
+            "caption": "A conversation titled from its first answer."
+          }
+        },
+        {
+          "id": "chat-reading",
+          "kind": "improved",
+          "area": "chat",
+          "title": "A neater reading column",
+          "summary": "Answers sit in a narrower reading column, with quieter block headers and the cost on the meta row."
+        }
+      ]
+    },
+    {
+      "id": "0.2.0.2026-10-12",
+      "date": "2026-10-12",
+      "title": "Chat without limits, Remember me and report downloads",
+      "highlights": [
+        {
+          "id": "chat-unlimited",
+          "kind": "improved",
+          "area": "chat",
+          "title": "Chat without per-question caps",
+          "summary": "A question runs until it is answered, with loop guards instead of caps. Chat sits outside the daily and monthly AI budget.",
+          "details": [
+            "An optional chat-only daily cap is off by default.",
+            "Every chat call is still recorded in the cost ledger."
+          ],
+          "open": {"page": "chat"},
+          "help": "analyst/chat/",
+          "screenshot": {
+            "light": "chat-unlimited-light.webp",
+            "dark": "chat-unlimited-dark.webp",
+            "alt": "Chat assistant settings with Limits per question set to Unlimited and the loop guards that still apply, and the Daily chat spending limit switched off, under the note that chat is outside the daily AI budget.",
+            "caption": "Chat limits and spending in Settings."
+          }
+        },
+        {
+          "id": "chat-working",
+          "kind": "new",
+          "area": "chat",
+          "title": "A working indicator you can come back to",
+          "summary": "The navigation shows when chat is working. Leave the page and come back to the live answer."
+        },
+        {
+          "id": "remember-me",
+          "kind": "new",
+          "area": "security",
+          "title": "Remember me",
+          "summary": "Stay signed in on this device for a time your administrator bounds.",
+          "help": "administration/authentication/#remember-me",
+          "screenshot": {
+            "light": "remember-me-light.webp",
+            "dark": "remember-me-dark.webp",
+            "alt": "Sign-in page with the Stay signed in on this device dialog. It says who can use this browser, that the session still ends on the administrator's schedule, and offers Cancel and Keep me signed in.",
+            "caption": "The Remember me dialog."
+          }
+        },
+        {
+          "id": "report-downloads",
+          "kind": "improved",
+          "area": "chat",
+          "title": "Report downloads",
+          "summary": "Reports download reliably, now also as Word and Excel files.",
+          "requires": "cases:read",
+          "open": {"page": "reports"},
+          "screenshot": {
+            "light": "report-downloads-light.webp",
+            "dark": "report-downloads-dark.webp",
+            "alt": "Report panel with its Download as menu open: PDF, Word and Excel, then Markdown, HTML, CSV and JSON, and the Defang indicators option.",
+            "caption": "The report download menu."
+          }
+        },
+        {
+          "id": "exact-counts",
+          "kind": "improved",
+          "area": "dashboards",
+          "title": "Exact counts in chat and dashboards",
+          "summary": "Chat counts cases exactly over any window, all time and calendar periods included. Dashboards read exact totals."
+        },
+        {
+          "id": "overview-redesign",
+          "kind": "improved",
+          "area": "dashboards",
+          "title": "Overview and Case Manager redesigns",
+          "summary": "The Overview and the Case Manager were redesigned, and a closed case shows the analyst's classification first.",
+          "open": {"page": "overview"},
+          "help": "analyst/overview/",
+          "screenshot": {
+            "light": "overview-redesign-light.webp",
+            "dark": "overview-redesign-dark.webp",
+            "alt": "Cyber Defence Center dashboard with case KPIs, a noise reduction flow from alerts to cases, and a human versus AI chart.",
+            "caption": "The Cyber Defence Center after the redesign."
+          }
+        }
+      ]
+    },
+    {
+      "id": "0.2.0.2026-10-09",
+      "date": "2026-10-09",
+      "title": "A read-only analyst assistant",
+      "highlights": [
+        {
+          "id": "workspace-chat",
+          "kind": "new",
+          "area": "chat",
+          "title": "Workspace chat",
+          "summary": "A read-only assistant that looks things up for you and answers with blocks, citations and reports.",
+          "details": [
+            "One question can run several read-only lookups, and the page shows each one as it runs.",
+            "A live token meter shows what each answer costs."
+          ],
+          "open": {"page": "chat"},
+          "help": "analyst/chat/",
+          "screenshot": {
+            "light": "workspace-chat-light.webp",
+            "dark": "workspace-chat-dark.webp",
+            "alt": "Workspace chat with a question about new cases and its answer: a short summary, the cases that need attention first, and a New cases by risk table built from read-only lookups.",
+            "caption": "A chat answer with a table block."
+          }
+        },
+        {
+          "id": "reports",
+          "kind": "new",
+          "area": "chat",
+          "title": "Reports",
+          "summary": "Collect answers into a report with your notes and an optional AI summary. The Reports library lists them.",
+          "requires": "cases:read",
+          "open": {"page": "reports"},
+          "help": "analyst/chat/",
+          "screenshot": {
+            "light": "reports-light.webp",
+            "dark": "reports-dark.webp",
+            "alt": "Workspace chat with the report panel open: an AI-written summary marked to verify before acting, and two items added from the answer, each with a note field.",
+            "caption": "A report built from chat answers."
+          }
+        }
+      ]
+    },
+    {
+      "id": "0.2.0.2026-09-09",
+      "date": "2026-09-09",
+      "title": "KPI drill-downs, Agent health in the bell and a navy dark mode",
+      "highlights": [
+        {
+          "id": "kpi-drilldown",
+          "kind": "improved",
+          "area": "dashboards",
+          "title": "A drill-down behind every KPI",
+          "summary": "Press a KPI tile to see the cases behind the number. Switch metrics in place and download the rows as CSV.",
+          "requires": "metrics:view",
+          "open": {"page": "overview"},
+          "help": "analyst/overview/",
+          "screenshot": {
+            "light": "kpi-drilldown-light.webp",
+            "dark": "kpi-drilldown-dark.webp",
+            "alt": "Total critical details panel from the Cyber Defence Center, with the calculation, switches for the other KPIs, filters, counts over the listed cases and the six critical cases as rows, with Export listed and Open in Cases.",
+            "caption": "The drill-down behind a KPI."
+          }
+        },
+        {
+          "id": "auto-closed-tile",
+          "kind": "new",
+          "area": "dashboards",
+          "title": "An Auto-closed tile",
+          "summary": "A sixth KPI tile shows the cases the AI agent closed automatically, a part of Resolved or closed.",
+          "help": "analyst/kpi-glossary/#auto-closed",
+          "screenshot": {
+            "light": "auto-closed-tile-light.webp",
+            "dark": "auto-closed-tile-dark.webp",
+            "alt": "The six KPI tiles of the Cyber Defence Center, ending with Auto-closed: 31 cases, 94% of worked closes.",
+            "caption": "The Auto-closed tile."
+          }
+        },
+        {
+          "id": "agent-health-bell",
+          "kind": "improved",
+          "area": "platform",
+          "title": "Agent health in the notification bell",
+          "summary": "Agent health sits at the top of the notification bell, so a problem shows on every page."
+        },
+        {
+          "id": "navy-dark-mode",
+          "kind": "improved",
+          "area": "platform",
+          "title": "A deep navy dark mode",
+          "summary": "Dark mode moved to a deep navy palette, with every contrast pair measured again."
+        },
+        {
+          "id": "ground-truth",
+          "kind": "fixed",
+          "area": "cases",
+          "title": "A close records your classification",
+          "summary": "When you choose a disposition as you close a case, it counts as your classification. The AI's own label never counts as yours."
+        },
+        {
+          "id": "investigator-fields",
+          "kind": "fixed",
+          "area": "automation",
+          "title": "The investigator sees the fields that matter",
+          "summary": "The investigator now reads alert fields such as the URL path, the HTTP method and the user agent."
+        }
+      ]
+    },
+    {
+      "id": "0.2.0.2026-08-24",
+      "date": "2026-08-24",
+      "title": "Cyber Defence Center and required MFA",
+      "highlights": [
+        {
+          "id": "cyber-defence-center",
+          "kind": "improved",
+          "area": "dashboards",
+          "title": "Cyber Defence Center",
+          "summary": "The landing dashboard has a new name, and every metric shows a trendline on hover or focus.",
+          "open": {"page": "overview"},
+          "help": "analyst/overview/",
+          "screenshot": {
+            "light": "cyber-defence-center-light.webp",
+            "dark": "cyber-defence-center-dark.webp",
+            "alt": "Cyber Defence Center dashboard for the last 24 hours with the Total cases tile under the pointer. Its card says what the tile counts and shows a trend of new cases per hour. Below are the noise reduction flow and the Human vs AI card.",
+            "caption": "The Cyber Defence Center with a KPI trend open."
+          }
+        },
+        {
+          "id": "human-vs-ai",
+          "kind": "new",
+          "area": "dashboards",
+          "title": "Human vs AI",
+          "summary": "A Human vs AI card shows how many cases people and the AI agent closed over time.",
+          "open": {"page": "overview"},
+          "help": "analyst/kpi-glossary/#human-vs-ai",
+          "screenshot": {
+            "light": "human-vs-ai-light.webp",
+            "dark": "human-vs-ai-dark.webp",
+            "alt": "Human vs AI card with the AI agent, Human and System counts and shares for the last 24 hours, and a chart of closes per hour.",
+            "caption": "The Human vs AI card."
+          }
+        },
+        {
+          "id": "required-mfa",
+          "kind": "security",
+          "area": "security",
+          "title": "Multi-factor sign-in an administrator can require",
+          "summary": "An administrator can require multi-factor sign-in for an account. The person enrols while signing in.",
+          "help": "administration/authentication/#mfa",
+          "screenshot": {
+            "light": "required-mfa-light.webp",
+            "dark": "required-mfa-dark.webp",
+            "alt": "Add user dialog with the role and its grants and, under Security, Require multi-factor authentication switched on, so the person sets up an authenticator at their next sign-in.",
+            "caption": "Requiring multi-factor sign-in for a new account."
+          }
+        },
+        {
+          "id": "user-creation",
+          "kind": "improved",
+          "area": "administration",
+          "title": "Richer account creation",
+          "summary": "Set a display name, email, phone and custom roles when you create an account, with a live summary of the role.",
+          "requires": "users:manage",
+          "help": "administration/users-rbac/",
+          "screenshot": {
+            "light": "add-user.webp",
+            "alt": "Add user dialog with a username, full name, masked temporary password and the Analyst Tier 1 role with its permission summary.",
+            "caption": "The Add user dialog."
+          }
+        },
+        {
+          "id": "enrichment-providers",
+          "kind": "new",
+          "area": "intelligence",
+          "title": "38 enrichment providers",
+          "summary": "19 new enrichment providers, each with setup steps and an example on its card.",
+          "help": "intelligence/enrichment/",
+          "screenshot": {
+            "light": "enrichment-providers-light.webp",
+            "dark": "enrichment-providers-dark.webp",
+            "alt": "Enrichment settings with the Providers list, 11 of 38 on, each provider with a short description, a Free or Needs key label and its switch.",
+            "caption": "The enrichment providers."
+          }
+        },
+        {
+          "id": "authenticator-qr",
+          "kind": "fixed",
+          "area": "security",
+          "title": "Authenticator QR codes that scan",
+          "summary": "The QR code for authenticator setup now follows the standard, so every scanner reads it."
+        }
+      ]
+    },
+    {
+      "id": "0.2.0.2026-08-22",
+      "date": "2026-08-22",
+      "title": "Background jobs, a full data export and declared-benign rules",
+      "highlights": [
+        {
+          "id": "background-jobs",
+          "kind": "new",
+          "area": "platform",
+          "title": "Background jobs",
+          "summary": "Long work runs as a background job that keeps going when you leave the page. Analytics, Jobs shows its progress and lets you cancel it.",
+          "details": [
+            "A job's file downloads only after the server has verified it.",
+            "Inbox tells you when a job finishes."
+          ],
+          "open": {"page": "batchjobs"},
+          "help": "operations/background-jobs/",
+          "screenshot": {
+            "light": "background-jobs-light.webp",
+            "dark": "background-jobs-dark.webp",
+            "alt": "Jobs page with no application jobs, because Demo Mode runs none, the system workers with their schedules and states, and the related LLM Batch jobs counts.",
+            "caption": "Analytics, Jobs. Demo Mode runs no background jobs."
+          }
+        },
+        {
+          "id": "data-export",
+          "kind": "new",
+          "area": "administration",
+          "title": "A full data export",
+          "summary": "Settings, Organization, Data export builds one verified ZIP of the scopes you choose, on the server.",
+          "requires": "data_export:export",
+          "help": "administration/settings/#export-portable-application-state",
+          "screenshot": {
+            "light": "data-export-light.webp",
+            "dark": "data-export-dark.webp",
+            "alt": "Data export settings with the Archive and Segmented assembly choices and the scopes to include. The Build ZIP in background button is unavailable, with the note that exports are not available in Demo Mode.",
+            "caption": "Data export in Settings."
+          }
+        },
+        {
+          "id": "declared-benign",
+          "kind": "new",
+          "area": "automation",
+          "title": "Declare a rule benign",
+          "summary": "Declare a detection rule benign in your environment. Its alerts then close with no model call, within a risk ceiling, a scope and an expiry you set.",
+          "details": [
+            "Reinvestigating a case always overrides the declaration for that case, and a person's work is never closed over."
+          ],
+          "requires": "rules:manage",
+          "help": "automation/rules/#analyst-rule-policies",
+          "screenshot": {
+            "light": "declared-benign-light.webp",
+            "dark": "declared-benign-dark.webp",
+            "alt": "SLA, priority and suppression settings at Declared benign, with the warning that a declaration closes matching alerts with no model call and no human, no declarations yet and a Declare a rule benign button.",
+            "caption": "Declared benign rules in Settings."
+          }
+        },
+        {
+          "id": "precedent-promotion",
+          "kind": "new",
+          "area": "intelligence",
+          "title": "Analyst-confirmed precedent",
+          "summary": "When you turn it on, the investigator is told how many cases of the same rule analysts confirmed. The verdict stays the model's.",
+          "help": "intelligence/knowledge-memory/#precedent-by-detection-rule"
+        },
+        {
+          "id": "noise-flow-views",
+          "kind": "improved",
+          "area": "dashboards",
+          "title": "Simple and Detailed noise reduction views",
+          "summary": "The noise reduction flow has a Simple view of the whole alert-to-case flow and a Detailed view.",
+          "open": {"page": "overview"},
+          "help": "analyst/kpi-glossary/#noise-reduction-funnel",
+          "screenshot": {
+            "light": "noise-flow-views-light.webp",
+            "dark": "noise-flow-views-dark.webp",
+            "alt": "Noise reduction flow card in its Detailed view, with the Simple and Detailed switch, the flow from alerts ingested to closed by human, and a count and share for each stage. The reduction reads not measured because of partial coverage.",
+            "caption": "The Detailed view of the noise reduction flow."
+          }
+        },
+        {
+          "id": "corpus-guard",
+          "kind": "fixed",
+          "area": "intelligence",
+          "title": "A provider outage cannot empty the knowledge corpus",
+          "summary": "A rebuild that would empty the knowledge corpus is refused, and health reads Degraded while the corpus is empty."
+        }
+      ]
+    },
+    {
+      "id": "0.2.0.2026-08-05",
+      "date": "2026-08-05",
+      "title": "Signed, supervised updates for administrators",
+      "highlights": [
+        {
+          "id": "supervised-updates",
+          "kind": "new",
+          "area": "administration",
+          "title": "Signed, supervised updates",
+          "summary": "On the PostgreSQL Compose deployment, a Super admin installs a newer Stable release after a signed preflight that can roll back.",
+          "requires": "system_updates:read",
+          "help": "operations/upgrades/"
+        },
+        {
+          "id": "legacy-bootstrap",
+          "kind": "fixed",
+          "area": "administration",
+          "title": "Bootstrap from 0.1.1",
+          "summary": "Bootstrapping the updater from 0.1.1 no longer stops on application images that carry no state-schema label.",
+          "requires": "system_updates:read",
+          "help": "operations/upgrades/#the-unavoidable-first-bootstrap"
+        }
+      ]
+    }
+  ],
+  "records": [
+    {"version": "0.1.13", "date": "2026-08-05", "summary": "Unpublished candidate, folded into 0.2.0", "docs": "releases/0.1.13/"},
+    {"version": "0.1.12", "date": "2026-08-05", "summary": "Bootstrap blocked. Not a supported installation source; superseded by 0.2.0", "docs": "releases/0.1.12/"},
+    {"version": "0.1.11", "date": "2026-08-05", "summary": "Failed publication. Not installable; superseded by 0.2.0", "docs": "releases/0.1.11/"},
+    {"version": "0.1.10", "date": "2026-08-05", "summary": "Failed publication. Not installable; superseded by 0.2.0", "docs": "releases/0.1.10/"},
+    {"version": "0.1.9", "date": "2026-08-05", "summary": "Failed publication. Not installable; superseded by 0.2.0", "docs": "releases/0.1.9/"},
+    {"version": "0.1.8", "date": "2026-08-05", "summary": "Bootstrap blocked. Not a supported installation source; superseded by 0.2.0", "docs": "releases/0.1.8/"},
+    {"version": "0.1.7", "date": "2026-08-05", "summary": "Bootstrap blocked. Not a supported installation source; superseded by 0.2.0", "docs": "releases/0.1.7/"},
+    {"version": "0.1.6", "date": "2026-08-05", "summary": "Bootstrap blocked. Not a supported installation source; superseded by 0.2.0", "docs": "releases/0.1.6/"},
+    {"version": "0.1.5", "date": "2026-08-05", "summary": "Failed publication. Not installable; superseded by 0.2.0", "docs": "releases/0.1.5/"},
+    {"version": "0.1.4", "date": "2026-08-05", "summary": "Failed publication. Not installable; superseded by 0.2.0", "docs": "releases/0.1.4/"},
+    {"version": "0.1.3", "date": "2026-08-04", "summary": "Unpublished snapshot, folded into later releases", "docs": "releases/0.1.3/"},
+    {"version": "0.1.2", "date": "2026-08-03", "summary": "Unpublished snapshot, folded into later releases", "docs": "releases/0.1.2/"}
+  ]
+}

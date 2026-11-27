@@ -10,21 +10,25 @@
  * can show a meaningful error state.
  */
 import type {
+  AccountPermissions,
   AccountProfile,
   AccountProfileBody,
   ActivityResponse,
   AgentImprovementEvidence,
-  AuditQuery,
-  AuditResponse,
   AuthMe,
   AutoClosePolicy,
   BaselineConfig,
   BatchConfig,
+  BackgroundJob,
+  BackgroundJobKind,
+  BackgroundJobsResponse,
+  BackgroundJobSubmit,
   Branding,
   BulkResult,
   CampaignConfig,
   Case,
   CaseActionInput,
+  CaseClosedBy,
   CaseIdPreview,
   CaseRationale,
   CasesResponse,
@@ -53,9 +57,13 @@ import type {
   MemoryEntry,
   MemoryResponse,
   Metrics,
+  MetricsTrends,
   ModelsResponse,
   NoiseLineage,
   NoiseReduction,
+  AutoCloseHealth,
+  AnalystRulePolicyConfig,
+  DiagnosticsHealth,
   NotificationPreview,
   NotificationProviders,
   NotificationTemplate,
@@ -63,12 +71,6 @@ import type {
   NotifyCaseResult,
   OrgCustomization,
   PersonasResponse,
-  PlaybookDetail,
-  PlaybookDryRunInput,
-  PlaybookDryRunResponse,
-  PlaybookCoverageResponse,
-  PlaybookMutationResponse,
-  PlaybooksResponse,
   Preferences,
   AutomationRule,
   CorrelationRule,
@@ -83,15 +85,8 @@ import type {
   RagStats,
   ReauthResult,
   RolesResponse,
-  Runbook,
-  RunbookDeleteResponse,
-  RunbookDetail,
-  RunbookIndexResult,
-  RunbookMutationResponse,
-  RunbooksResponse,
   UpstreamReleasesResponse,
   SessionsResponse,
-  ScanNotifications,
   SearchResult,
   SecretsUpdate,
   SettingsResponse,
@@ -115,6 +110,7 @@ import type {
   ThresholdTuningConfig,
   UsageSummary,
   User,
+  UserCreateOptions,
   UserPrefs,
   UsersResponse,
 } from './types';
@@ -122,7 +118,8 @@ import type {
 /** Payload for POST /api/cases/{id}/feedback (analyst grading). */
 export interface CaseFeedbackInput {
   analyst?: string;
-  assessment: 'agree' | 'partial' | 'disagree';
+  /** Omitted when the grade states no agreement (the backend defaults it to empty). */
+  assessment?: 'agree' | 'partial' | 'disagree';
   accuracy?: number;
   reasoning_quality?: number;
   action_appropriateness?: number;
@@ -160,6 +157,13 @@ export interface AnalyzeSampleResult {
     rule_field: string;
   }> &
     Record<string, string>;
+  /**
+   * Which of the default case-evidence paths this sample record actually carries —
+   * the answer to "do MY alerts carry the fields that decide the case?". Every entry
+   * is one of the backend's own constants matched against the sample, never a path
+   * echoed back from the untrusted record.
+   */
+  suggested_evidence_fields?: string[];
   fields: string[];
 }
 
@@ -496,6 +500,22 @@ export class ApiError extends Error {
   }
 }
 
+/** A successful binary download plus the response metadata needed to name it safely. */
+export interface BlobDownload {
+  blob: Blob;
+  contentDisposition: string | null;
+  contentType: string | null;
+}
+
+/** Secret-free application-state scopes accepted by the portable archive endpoint. */
+export type DataExportScope =
+  | 'cases'
+  | 'audit'
+  | 'usage'
+  | 'configuration'
+  | 'automation'
+  | 'knowledge';
+
 /**
  * The single API prefix every request is built from. EXPORTED so co-located data
  * layers that hand-build a URL for a plain `<a href>` download (e.g. the ATT&CK
@@ -523,19 +543,29 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
  * retried ONCE) or `false` if they cancelled (the original 401 surfaces). When no
  * callback is registered (auth off, or before the provider mounts) the gate is
  * inert and the 401 surfaces unchanged — the no-auth path is untouched.
+ *
+ * The gate receives the request's `reauthPurpose`, the sentence the dialog shows
+ * (for example "Sign in again to export audit events." for a read that changes
+ * nothing); without one it says the sign-in confirms a change.
  */
-let reauthGate: (() => Promise<boolean>) | null = null;
-export function setReauthHandler(handler: (() => Promise<boolean>) | null): void {
+export type ReauthGate = (purpose?: string) => Promise<boolean>;
+let reauthGate: ReauthGate | null = null;
+export function setReauthHandler(handler: ReauthGate | null): void {
   reauthGate = handler;
 }
 
-/** Extract a backend error `code` (e.g. "reauth_required") from a parsed body. */
-function bodyCode(body: unknown): string | null {
+/**
+ * The step-up code of a parsed error body (e.g. "reauth_required"), or null. A
+ * `tv_mismatch` has none: "Sign out everywhere" (or a detected refresh-token reuse)
+ * ended every session and /auth/reauth answers the same 401, so no fresh sign-in can
+ * revive it; the request falls through to the lapsed-session bounce instead.
+ */
+function stepUpCode(body: unknown): string | null {
   if (body && typeof body === 'object') {
     const detail = (body as { detail?: unknown }).detail;
     if (detail && typeof detail === 'object' && 'code' in detail) {
-      const c = (detail as { code?: unknown }).code;
-      if (typeof c === 'string') return c;
+      const { code: c, reason } = detail as { code?: unknown; reason?: unknown };
+      if (typeof c === 'string') return reason === 'tv_mismatch' ? null : c;
     }
     if ('code' in body) {
       const c = (body as { code?: unknown }).code;
@@ -574,7 +604,7 @@ async function parseBody(res: Response): Promise<unknown> {
 /** Friendly labels for backend coded errors that carry no human `message` string. */
 const ERROR_CODE_LABELS: Record<string, string> = {
   session_invalid: 'Your session is no longer valid. Please sign in again.',
-  reauth_required: 'Please re-enter your password to continue.',
+  reauth_required: 'Sign in again to continue.',
   chat_history_unavailable: 'Conversation history is temporarily unavailable. Try again.',
   chat_request_in_progress: 'This request is still running. Wait a moment, then retry.',
   chat_request_capacity_busy: 'Too many chat requests are still running. Wait a moment, then retry.',
@@ -593,6 +623,9 @@ function extractMessage(status: number, body: unknown): string {
       const d = detail as Record<string, unknown>;
       if (typeof d.message === 'string' && d.message.trim()) return d.message;
       if (typeof d.detail === 'string' && d.detail.trim()) return d.detail;
+      // A wrong password at the fresh sign-in (`reauth_required`, reason `bad_password`)
+      // says so: the code's own label would tell someone already signing in to sign in.
+      if (d.reason === 'bad_password') return 'That password is not correct. Try again.';
       if (typeof d.code === 'string' && d.code.trim())
         return ERROR_CODE_LABELS[d.code] || `Request failed (${status})`;
       return JSON.stringify(detail);
@@ -603,17 +636,29 @@ function extractMessage(status: number, body: unknown): string {
   return `Request failed (${status})`;
 }
 
-async function request<T>(
+interface RequestOptions {
+  body?: unknown;
+  query?: Record<string, unknown>;
+  _retried?: boolean;
+  signal?: AbortSignal;
+  cache?: RequestCache;
+  /** What a fresh sign-in is for, when the server asks for one (see `setReauthHandler`). */
+  reauthPurpose?: string;
+}
+
+/**
+ * Fetch one authenticated response and apply the shared error/session/step-up flow.
+ * Keeping this below both JSON and Blob readers means binary downloads cannot bypass
+ * the exactly-once re-auth retry or accidentally turn an error response into a file.
+ * Exported (with {@link request}) for lazy data layers such as the chat module, whose
+ * NDJSON stream reader needs the raw Response but must keep the same 401 / step-up /
+ * error contract as every other call; the eager `api` object gains no methods for it.
+ */
+export async function requestResponse(
   method: string,
   path: string,
-  opts: {
-    body?: unknown;
-    query?: Record<string, unknown>;
-    _retried?: boolean;
-    signal?: AbortSignal;
-    cache?: RequestCache;
-  } = {},
-): Promise<T> {
+  opts: RequestOptions = {},
+): Promise<Response> {
   const clean = path.replace(/^\/+/, '');
   const url = `${API_BASE}/${clean}${buildQuery(opts.query)}`;
   let res: Response;
@@ -630,25 +675,29 @@ async function request<T>(
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   } catch (e) {
+    // Superseded parameter-keyed reads deliberately abort; preserve that control
+    // flow instead of disguising it as a backend outage.
+    if (opts.signal?.aborted) throw e;
     // Network-level failure (backend down, CORS, etc.)
     throw new ApiError(0, `Cannot reach backend: ${(e as Error).message}`);
   }
-  const body = await parseBody(res);
   if (!res.ok) {
+    const body = await parseBody(res);
     // A 401 with `code:'reauth_required'` is a STEP-UP gate (the session is valid
     // but the action needs fresh credentials). Open the re-auth modal; if the user
     // re-authenticates, retry the original request exactly ONCE. Never recurse on a
-    // retry, and never treat the /auth/reauth call itself as a gate trigger.
+    // retry, and never treat the /auth/reauth call itself as a gate trigger. An ended
+    // session (`tv_mismatch`) is no step-up (`stepUpCode`): it bounces to sign-in below.
     if (
       res.status === 401 &&
       reauthGate &&
       !opts._retried &&
-      bodyCode(body) === 'reauth_required' &&
+      stepUpCode(body) === 'reauth_required' &&
       clean !== 'auth/reauth'
     ) {
-      const ok = await reauthGate();
+      const ok = await reauthGate(opts.reauthPurpose);
       if (ok) {
-        return request<T>(method, path, { ...opts, _retried: true });
+        return requestResponse(method, path, { ...opts, _retried: true });
       }
       // User cancelled — surface the original 401.
       throw new ApiError(res.status, extractMessage(res.status, body), body);
@@ -661,76 +710,49 @@ async function request<T>(
     }
     throw new ApiError(res.status, extractMessage(res.status, body), body);
   }
-  return body as T;
+  return res;
+}
+
+export async function request<T>(
+  method: string,
+  path: string,
+  opts: RequestOptions = {},
+): Promise<T> {
+  const res = await requestResponse(method, path, opts);
+  return (await parseBody(res)) as T;
 }
 
 /**
- * Runbooks gained first-class management metadata after the original read-only
- * catalog shipped. Normalise responses here so a rolling frontend/backend upgrade
- * cannot crash the Intelligence page while an older worker still returns the
- * smaller catalog shape. The defaults deliberately keep legacy documents bundled
- * and immutable; they never manufacture operator write authority.
+ * `/api/account/me` (GET, PUT) and `PUT /api/me/avatar` nest the profile under `user`
+ * (`{authenticated, auth_enabled, env_managed, user}` and `{ok, user}`). Unwrapped once
+ * here, so every caller reads one flat {@link AccountProfile} with the route's
+ * `env_managed` on it. A flat body (a `username` at the top, or no `user` object)
+ * passes through as it is. Kept small: this module is on first paint.
  */
-function normalizeRunbook<T extends Runbook>(value: T): T {
-  const raw = value as unknown as Partial<Runbook> & Record<string, unknown>;
-  const strings = (candidate: unknown): string[] =>
-    Array.isArray(candidate)
-      ? candidate.filter((item): item is string => typeof item === 'string')
-      : [];
-  const sourceType = raw.source_type === 'operator' ? 'operator' : 'bundled';
-  const protectedRunbook =
-    typeof raw.protected === 'boolean' ? raw.protected : sourceType !== 'operator';
-
-  return {
-    ...value,
-    title: typeof raw.title === 'string' ? raw.title : String(raw.id || ''),
-    summary: typeof raw.summary === 'string' ? raw.summary : '',
-    persona: typeof raw.persona === 'string' ? raw.persona : '',
-    applies_to_rules: strings(raw.applies_to_rules),
-    applies_to_techniques: strings(raw.applies_to_techniques),
-    applies_to_entities: strings(raw.applies_to_entities),
-    keywords: strings(raw.keywords),
-    source_type: sourceType,
-    protected: protectedRunbook,
-    editable:
-      typeof raw.editable === 'boolean'
-        ? raw.editable && !protectedRunbook
-        : sourceType === 'operator' && !protectedRunbook,
-    revision: raw.revision ?? 1,
-    created_at: typeof raw.created_at === 'string' ? raw.created_at : null,
-    updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : null,
-    index_status: typeof raw.index_status === 'string' ? raw.index_status : 'unknown',
-    indexed_revision: raw.indexed_revision ?? null,
-    last_indexed_at:
-      typeof raw.last_indexed_at === 'string' ? raw.last_indexed_at : null,
-    index_error: typeof raw.index_error === 'string' ? raw.index_error : null,
-  } as T;
+function accountProfileOf(body: AccountProfile): AccountProfile {
+  const { user, env_managed } = body ?? {};
+  return user && typeof user === 'object' && typeof body.username !== 'string'
+    ? { ...(user as AccountProfile), env_managed }
+    : body;
 }
 
-function normalizeRunbooksResponse(value: RunbooksResponse): RunbooksResponse {
-  const raw = value as unknown as Partial<RunbooksResponse> & Record<string, unknown>;
-  const runbooks = Array.isArray(raw.runbooks)
-    ? raw.runbooks.map((runbook) => normalizeRunbook(runbook as Runbook))
-    : [];
-  const enabled = raw.enabled !== false;
-  const authoringStandard =
-    raw.authoring_standard && typeof raw.authoring_standard === 'object'
-      ? raw.authoring_standard
-      : undefined;
+async function requestBlob(
+  method: string,
+  path: string,
+  opts: RequestOptions = {},
+): Promise<BlobDownload> {
+  const res = await requestResponse(method, path, opts);
   return {
-    enabled,
-    retrieval_enabled:
-      typeof raw.retrieval_enabled === 'boolean' ? raw.retrieval_enabled : enabled,
-    authoring_standard: authoringStandard,
-    count: typeof raw.count === 'number' ? raw.count : runbooks.length,
-    runbooks,
+    blob: await res.blob(),
+    contentDisposition: res.headers.get('content-disposition'),
+    contentType: res.headers.get('content-type'),
   };
 }
 
 /** Generic verbs, for ad-hoc/endpoints not yet wrapped in a typed method. */
 export const api = {
-  get: <T = unknown>(path: string, query?: Record<string, unknown>) =>
-    request<T>('GET', path, { query }),
+  get: <T = unknown>(path: string, query?: Record<string, unknown>, signal?: AbortSignal) =>
+    request<T>('GET', path, { query, signal }),
   post: <T = unknown>(path: string, body?: unknown) => request<T>('POST', path, { body }),
   postAbortable: <T = unknown>(path: string, body: unknown, signal: AbortSignal) =>
     request<T>('POST', path, { body, signal }),
@@ -740,11 +762,42 @@ export const api = {
   patch: <T = unknown>(path: string, body?: unknown) => request<T>('PATCH', path, { body }),
   del: <T = unknown>(path: string) => request<T>('DELETE', path),
 
+  // ---- Secret-free application-state export --------------------------- //
+  // The archive endpoint returns binary data, so it cannot use the ordinary JSON
+  // reader. It still runs through requestResponse and therefore preserves cookies,
+  // session-lapse handling, AbortSignal, ApiError extraction and one re-auth retry.
+  dataExport: {
+    archive: (scopes: DataExportScope[], signal?: AbortSignal) =>
+      requestBlob('POST', 'admin/export/archive', { body: { scopes }, signal }),
+  },
+
+  // ---- Durable background jobs ---------------------------------------- //
+  // Ordinary application work, distinct from the separately hardened updater.
+  jobs: {
+    // A literal `kind` with a mirrored params model is checked against it (types.ts).
+    // `reauthPurpose` is what a fresh sign-in the job asks for says it is for; an export
+    // changes nothing, so it passes one (`setReauthHandler`).
+    submit: <K extends BackgroundJobKind>(input: BackgroundJobSubmit<K>, reauthPurpose?: string) =>
+      request<BackgroundJob>('POST', 'jobs', { body: input, reauthPurpose }),
+    list: (query?: { limit?: number; offset?: number }, signal?: AbortSignal) =>
+      request<BackgroundJobsResponse>('GET', 'jobs', { query, signal }),
+    get: (jobId: string, signal?: AbortSignal) =>
+      request<BackgroundJob>('GET', `jobs/${encodeURIComponent(jobId)}`, { signal }),
+    cancel: (jobId: string) =>
+      request<BackgroundJob>('POST', `jobs/${encodeURIComponent(jobId)}/cancel`),
+    artifact: (jobId: string, signal?: AbortSignal) =>
+      requestBlob('GET', `jobs/${encodeURIComponent(jobId)}/artifact`, { signal }),
+  },
+
   // ---- Auth (optional; OFF-safe) ---------------------------------------- //
   auth: {
     me: () => request<AuthMe>('GET', 'auth/me'),
-    login: (username: string, password: string) =>
-      request<LoginResult>('POST', 'auth/login', { body: { username, password } }),
+    // `remember` (Round 12) asks for a persistent, server-bounded session; the
+    // server decides and reports `remembered` / `remember_reason`.
+    login: (username: string, password: string, opts?: { remember?: boolean }) =>
+      request<LoginResult>('POST', 'auth/login', {
+        body: { username, password, ...(opts?.remember ? { remember: true } : {}) },
+      }),
     logout: () => request<{ ok: boolean }>('POST', 'auth/logout'),
     changePassword: (currentPassword: string, newPassword: string) =>
       request<{ ok: boolean }>('POST', 'auth/change-password', {
@@ -764,6 +817,23 @@ export const api = {
         request<LoginResult>('POST', 'auth/mfa/verify', {
           body: { pending_token: pendingToken, code },
         }),
+      // MANDATED enrollment DURING login (PUBLIC; gated by the pending_token from a
+      // login that returned `mfa_enrollment_required`). Byte-same payload shape as
+      // `setup` — recovery codes appear ONLY here, so display them at this step.
+      // Re-calling regenerates the pending secret. 401 = invalid/expired pending.
+      enrollSetup: (pendingToken: string) =>
+        request<MfaSetupResult>('POST', 'auth/mfa/enroll-setup', {
+          body: { pending_token: pendingToken },
+        }),
+      // Confirm mandated enrollment: verifies the TOTP against the pending secret,
+      // persists the factor, then mints the FULL session (cookie set server-side)
+      // and returns the exact /auth/mfa/verify success payload — treat success as
+      // login-complete (incl. `user.must_change_password`). 401 = wrong code
+      // (retry while the pending token lives) or invalid/expired pending.
+      enrollConfirm: (pendingToken: string, code: string) =>
+        request<LoginResult>('POST', 'auth/mfa/enroll-confirm', {
+          body: { pending_token: pendingToken, code },
+        }),
       // Disable MFA (self): requires a current TOTP or a recovery code.
       disable: (code: string) =>
         request<{ ok: boolean }>('POST', 'auth/mfa/disable', { body: { code } }),
@@ -774,8 +844,10 @@ export const api = {
       // PUBLIC: the enabled providers for the login screen.
       providers: () => request<SsoProvidersResponse>('GET', 'auth/sso/providers'),
       // PUBLIC: the IdP authorization URL to redirect the browser to.
-      authorize: (provider: string) =>
-        request<SsoAuthorizeResult>('GET', 'auth/sso/authorize', { query: { provider } }),
+      authorize: (provider: string, opts?: { remember?: boolean }) =>
+        request<SsoAuthorizeResult>('GET', 'auth/sso/authorize', {
+          query: { provider, ...(opts?.remember ? { remember: '1' } : {}) },
+        }),
       // Admin: set/clear a provider's OIDC client secret (write-only).
       setSecret: (providerId: string, clientSecret: string | null) =>
         request<{ ok: boolean; configured: boolean }>(
@@ -785,10 +857,7 @@ export const api = {
         ),
     },
 
-    // ---- Sessions: refresh + step-up re-auth (Round-2 Wave 3) ------------- //
-    // Rotate the access/refresh tokens (new HttpOnly cookie set server-side; no
-    // token is returned to JS). Used to recover from an idle/expired session.
-    refresh: () => request<ReauthResult>('POST', 'auth/refresh'),
+    // ---- Sessions: step-up re-auth (Round-2 Wave 3) ------------------------ //
     // Step-up ("sudo") re-auth — re-prove the password (and/or an MFA code) to
     // stamp `last_authn`, satisfying a `reauth_required` gate before a sensitive
     // action. The current session is NOT replaced; only freshness is bumped.
@@ -849,14 +918,18 @@ export const api = {
   // The signed-in user's OWN profile. Gated server-side by current_user (NOT
   // users:manage). Secrets are never returned; the avatar string is a tiny
   // data: URL the browser has already cropped/resized to 256x256 WebP.
+  // All three return the flat profile (see accountProfileOf).
   account: {
-    get: () => request<AccountProfile>('GET', 'account/me'),
+    get: () => request<AccountProfile>('GET', 'account/me').then(accountProfileOf),
     put: (patch: AccountProfileBody) =>
-      request<AccountProfile>('PUT', 'account/me', { body: patch }),
+      request<AccountProfile>('PUT', 'account/me', { body: patch }).then(accountProfileOf),
     // Thin set/clear of just the avatar. `value` null/"" clears it. The backend
     // validates the data: URL (png/webp/jpeg, magic-byte sniff, bounded length).
     avatar: (value: string | null) =>
-      request<AccountProfile>('PUT', 'me/avatar', { body: { avatar: value } }),
+      request<AccountProfile>('PUT', 'me/avatar', { body: { avatar: value } }).then(accountProfileOf),
+    // The signed-in person's effective grants, resolved by the server's own gate:
+    // the one source the Console's permission checks read (`soc/auth.tsx`).
+    permissions: () => request<AccountPermissions>('GET', 'account/permissions'),
   },
 
   // ---- OOBE first-run setup (PUBLIC status) ---------------------------- //
@@ -873,13 +946,28 @@ export const api = {
   },
   users: {
     list: () => request<UsersResponse>('GET', 'users'),
-    create: (username: string, password: string, role: string) =>
-      request<{ ok: boolean; user: User }>('POST', 'users', {
-        body: { username, password, role },
-      }),
+    // Create a user. Additive fields beyond username/password/role: full name /
+    // email / phone (plain-text contact metadata, #9), the `mfa_required` mandate
+    // (required ≠ enrolled — never mints a secret), and creation-time
+    // `custom_roles` (EXISTING custom roles, validated + persisted exactly like
+    // PUT /users/{username}/roles). The server stays authoritative for validation.
+    create: (options: UserCreateOptions) =>
+      request<{ ok: boolean; user: User }>('POST', 'users', { body: options }),
     update: (
       username: string,
-      patch: { role?: string; active?: boolean; password?: string },
+      patch: {
+        role?: string;
+        active?: boolean;
+        password?: string;
+        /** Only `false` is honored (admin force-disable); enabling stays self-service. */
+        mfa_enabled?: boolean;
+        /** Admin-editable contact metadata ("" clears; plain text, #9). */
+        display_name?: string;
+        email?: string;
+        phone?: string;
+        /** The MFA mandate — settable BOTH ways under users:manage. */
+        mfa_required?: boolean;
+      },
     ) =>
       request<{ ok: boolean; user: User }>('PUT', `users/${encodeURIComponent(username)}`, {
         body: patch,
@@ -926,14 +1014,6 @@ export const api = {
       request<NotifyCaseResult>('POST', `cases/${encodeURIComponent(caseId)}/notify`, {
         body: channelId ? { channel_id: channelId } : {},
       }),
-    // playbooks:run — CONTEXT-ONLY re-investigation with `playbookId` forced as the
-    // injected (recommend-only) operator procedure. The deterministic close/escalate
-    // decision is unchanged — decide() re-runs with the new context. Returns the
-    // updated Case (verdict/rationale may change; status is never set by the run).
-    runPlaybook: (caseId: string, playbookId: string) =>
-      request<Case>('POST', `cases/${encodeURIComponent(caseId)}/run-playbook`, {
-        body: { playbook_id: playbookId },
-      }),
     // cases:read — the assembled threat-context panel (IOC reputation, MITRE
     // techniques, related cases, asset context, evidence). Fail-open per section.
     threatContext: (caseId: string) =>
@@ -956,16 +1036,7 @@ export const api = {
   search: (q: string, limit?: number) =>
     request<SearchResult>('GET', 'search', { query: { q, limit } }),
 
-  // ---- Audit-log viewer (W7c) — read-only over the append-only audit (#2) - //
-  // Gated by audit:view server-side (admin/auditor/soc_manager). Filters are
-  // ANDed; the `action`/`from`/`to` params map to the audit `action_type`/ts
-  // bounds. Every field is rendered PLAIN (#9). No write/update/delete path exists.
-  audit: {
-    list: (params?: AuditQuery) =>
-      request<AuditResponse>('GET', 'audit', {
-        query: params as Record<string, unknown> | undefined,
-      }),
-  },
+  // ---- Audit log: read through the lazy `api-audit.ts` (Round 14), never here. //
 
   // ---- Threat-intel knowledge import (F11) ----------------------------- //
   // rag:manage — ingest a threat-intel document into the RAG corpus as
@@ -975,60 +1046,12 @@ export const api = {
       request<RagImportResult>('POST', 'threat-context/import', { body: input }),
   },
 
-  // ---- Personas + playbooks --------------------------------------------- //
+  // ---- Personas --------------------------------------------------------- //
+  // Runbooks (the one procedure feature since Round 14) live in the lazy
+  // `api-runbooks.ts`; the retired playbook and pre-Round 14 runbook calls are gone.
   getPersonas: () => request<PersonasResponse>('GET', 'personas'),
-  getPlaybooks: () => request<PlaybooksResponse>('GET', 'playbooks'),
-  getPlaybook: (playbookId: string) =>
-    request<PlaybookDetail>('GET', `playbooks/${encodeURIComponent(playbookId)}`),
-  getPlaybookCoverage: () =>
-    request<PlaybookCoverageResponse>('GET', 'playbooks/coverage'),
-  dryRunPlaybookSelection: (input: PlaybookDryRunInput) =>
-    request<PlaybookDryRunResponse>('POST', 'playbooks/dry-run', { body: input }),
   getSchedulerHealth: () =>
     request<SchedulerHealthResponse>('GET', 'schedulers/health'),
-  createPlaybook: (input: { id: string; content: string }) =>
-    request<PlaybookMutationResponse>('POST', 'playbooks', { body: input }),
-  updatePlaybook: (playbookId: string, content: string, expectedRevision: number) =>
-    request<PlaybookMutationResponse>('PUT', `playbooks/${encodeURIComponent(playbookId)}`, {
-      body: { content, expected_revision: expectedRevision },
-    }),
-
-  // ---- Runbooks ------------------------------------------------------- //
-  // Trusted RAG reference knowledge. Unlike playbooks, runbooks are never
-  // selected as executable procedures and never influence deterministic case
-  // authority. Bundled documents remain readable but immutable.
-  getRunbooks: () =>
-    request<RunbooksResponse>('GET', 'runbooks').then(normalizeRunbooksResponse),
-  getRunbook: (runbookId: string) =>
-    request<RunbookDetail>('GET', `runbooks/${encodeURIComponent(runbookId)}`).then(
-      normalizeRunbook,
-    ),
-  createRunbook: (input: { id: string; content: string }) =>
-    request<RunbookMutationResponse>('POST', 'runbooks', { body: input }).then((result) => ({
-      ...result,
-      runbook: normalizeRunbook(result.runbook),
-    })),
-  updateRunbook: (
-    runbookId: string,
-    content: string,
-    expectedRevision: string | number,
-  ) =>
-    request<RunbookMutationResponse>('PUT', `runbooks/${encodeURIComponent(runbookId)}`, {
-      body: { content, expected_revision: expectedRevision },
-    }).then((result) => ({
-      ...result,
-      runbook: normalizeRunbook(result.runbook),
-    })),
-  deleteRunbook: (runbookId: string, expectedRevision: string | number) =>
-    request<RunbookDeleteResponse>('DELETE', `runbooks/${encodeURIComponent(runbookId)}`, {
-      query: { expected_revision: expectedRevision },
-    }),
-  reindexRunbooks: () => request<RunbookIndexResult>('POST', 'runbooks/reindex'),
-  reindexRunbook: (runbookId: string) =>
-    request<RunbookIndexResult>(
-      'POST',
-      `runbooks/${encodeURIComponent(runbookId)}/reindex`,
-    ),
 
   // ---- Health + setup --------------------------------------------------- //
   health: (options?: { signal?: AbortSignal; cache?: RequestCache }) =>
@@ -1083,8 +1106,15 @@ export const api = {
       ),
   },
   setupStatus: () => request<SetupStatus>('GET', 'setup/status'),
+  // Round 15 (SPEC D2.2): the answer also says whether the default investigation models
+  // can now be called, and their provider family.
   updateSecrets: (secrets: SecretsUpdate) =>
-    request<{ ok: boolean; configured: Record<string, boolean> }>('POST', 'setup/secrets', {
+    request<{
+      ok: boolean;
+      configured: Record<string, boolean>;
+      ai_runtime_ready?: boolean;
+      ai_runtime_provider?: string;
+    }>('POST', 'setup/secrets', {
       body: secrets,
     }),
   completeSetup: () =>
@@ -1140,6 +1170,11 @@ export const api = {
     ),
   // Browse a window of normalised events from one source. `buildQuery` drops any
   // undefined / null / empty params, so blank query/from/to are not sent.
+  // BOUNDED, NOT COMPLETE: the server clamps limit to 1..200 with NO pagination, and
+  // echoes `limit` + `truncated` so the UI can say "most recent N". `mode` reports a
+  // volatile push live-tail ring ("buffer", from/to/query ignored) vs a real search.
+  // Every field on every row is source-controlled and UNTRUSTED (#9): plain text only,
+  // `_raw` inside a code block, never markup and never fed to a model.
   sourceLogs: (sourceId: string, params?: SourceLogsQuery) =>
     request<SourceLogsResponse>('GET', `sources/${encodeURIComponent(sourceId)}/logs`, {
       query: params as Record<string, unknown> | undefined,
@@ -1236,6 +1271,16 @@ export const api = {
   // ---- Metrics + feedback analytics ------------------------------------ //
   getMetrics: (windowHours = 24) =>
     request<Metrics>('GET', 'metrics', { query: { window_hours: windowHours } }),
+  // GET /api/metrics/trends?window_hours= — zero-filled, case-cohort-bucketed trend
+  // series (plus durable alert counters) powering the Overview hover trendlines.
+  // metrics:view server-side; aggregate counts only (#9); advisory only (#3). Kept
+  // typeof-guardable at the call site (mirrors `noiseReduction`/`sourcesCoverage`)
+  // so a minimal test/mock surface never has to stub it.
+  metricsTrends: (windowHours = 24, signal?: AbortSignal) =>
+    request<MetricsTrends>('GET', 'metrics/trends', {
+      query: { window_hours: windowHours },
+      signal,
+    }),
   getFeedbackStats: () => request<FeedbackStats>('GET', 'feedback/stats'),
   getAgentImprovement: (params?: {
     asOf?: string;
@@ -1268,9 +1313,69 @@ export const api = {
       query: { window_hours: windowHours, limit },
     }),
 
+  // ---- Operator diagnostics (the silent failures, made observable) ----- //
+  // GET /api/diagnostics/health — the precedent-corpus / schema-migration /
+  // auto-close roll-up. `settings:read` server-side, and deliberately NOT on the
+  // public /api/health. Read-only + seed-free: asking never triggers an embedding
+  // spend or a projection. Returns SEPARATE `alerts` and `unknowns` lists, so an
+  // empty `alerts` is never rendered as a clean bill of health.
+  // GET /api/metrics/auto-close-health — the rolling auto-close signal with an
+  // explicit `status` (`metrics:view` server-side). Both are typeof-guardable at the
+  // call site so a minimal test/mock surface never has to stub them.
+  diagnosticsHealth: (windowHours = 24, signal?: AbortSignal) =>
+    request<DiagnosticsHealth>('GET', 'diagnostics/health', {
+      query: { window_hours: windowHours },
+      signal,
+    }),
+  autoCloseHealth: (windowHours = 24, signal?: AbortSignal) =>
+    request<AutoCloseHealth>('GET', 'metrics/auto-close-health', {
+      query: { window_hours: windowHours },
+      signal,
+    }),
+
+  // ---- Analyst rule policies (Detection & Rules) ------------------------ //
+  // An operator's explicit, audited, revocable declaration that a detection is benign
+  // in THIS estate. Matching clusters close deterministically with NO model call, as
+  // `decision_by='analyst_policy'` — the exit from "confirm more cases" for a rule
+  // whose alerts carry no per-case evidence to confirm against. `rules:read` to list,
+  // `rules:manage` to mutate. Pass `'new'` as the id to let the server mint one.
+  listAnalystPolicies: () =>
+    request<{
+      policies: AnalystRulePolicyConfig[];
+      total: number;
+      live: number;
+      max_policies: number;
+    }>('GET', 'rules/analyst-policies'),
+  upsertAnalystPolicy: (policyId: string, body: Record<string, unknown>) =>
+    request<{ policy: AnalystRulePolicyConfig; created: boolean }>(
+      'PUT',
+      `rules/analyst-policies/${encodeURIComponent(policyId)}`,
+      { body },
+    ),
+  setAnalystPolicyEnabled: (policyId: string, enabled: boolean) =>
+    request<{ policy: AnalystRulePolicyConfig }>(
+      'POST',
+      `rules/analyst-policies/${encodeURIComponent(policyId)}/enabled`,
+      { body: { enabled } },
+    ),
+  deleteAnalystPolicy: (policyId: string) =>
+    request<{ deleted: number; id: string }>(
+      'DELETE',
+      `rules/analyst-policies/${encodeURIComponent(policyId)}`,
+    ),
+
   // ---- Analytics surfaces ---------------------------------------------- //
-  listCases: (query?: Record<string, unknown>) =>
-    request<CasesResponse>('GET', 'cases', { query }),
+  // Round 14 (SPEC §4.6.1): `rule` is an exact match on `Case.rule_ids` (sent as is,
+  // 1 to 256 characters on one line); `closed_by` filters terminal cases by who closed
+  // them, in the engine's `case_aggregate.closed_by` vocabulary (any other value is a
+  // 400); the `#/scans` redirect uses `agent`. Both are echoed as `rule_applied` and
+  // `closed_by_applied`.
+  listCases: (
+    query?: Record<string, unknown> & {
+      rule?: string;
+      closed_by?: CaseClosedBy;
+    },
+  ) => request<CasesResponse>('GET', 'cases', { query }),
   getCase: (caseId: string) =>
     request<Case>('GET', `cases/${encodeURIComponent(caseId)}`),
 
@@ -1348,13 +1453,6 @@ export const api = {
     ),
   investigate: (body: Record<string, unknown>) =>
     request<Case>('POST', 'investigate', { body }),
-  scans: (limit = 50) => request<CasesResponse>('GET', 'scans', { query: { limit } }),
-  // How many automated-scan cases are new since `since` (an ISO timestamp the
-  // caller persists in localStorage). `since` is only sent when set.
-  scanNotifications: (since?: string) =>
-    request<ScanNotifications>('GET', 'scans/notifications', {
-      query: since ? { since } : undefined,
-    }),
   standup: (windowHours?: number) =>
     request<StandupResponse>('GET', 'standup', { query: { window_hours: windowHours } }),
   usageSummary: (windowHours = 24) =>

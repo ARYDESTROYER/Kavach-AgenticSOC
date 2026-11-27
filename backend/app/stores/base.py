@@ -21,12 +21,32 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from pydantic import ValidationError
+
+from ..build_identity import stamp_new_record
 from ..config import Preferences
-from ..constants import ActionType
-from ..models import AuditDoc, Case, Cursor, UsageDoc
-from ..utils import truncate
+from ..constants import (
+    OPEN_CASE_STATUSES,
+    TERMINAL_CASE_STATUSES,
+    ActionType,
+)
+from ..models import (
+    AUDIT_ROUND14_FIELDS,
+    AuditChange,
+    AuditClient,
+    AuditDoc,
+    AuditRecordRef,
+    AuditTarget,
+    Case,
+    Cursor,
+    UsageDoc,
+)
+from ..stored_text import multi_line
+from ..utils import parse_millis_strict, relative_to_millis_strict, truncate
 
 logger = logging.getLogger("tlsoc.stores.base")
 
@@ -200,6 +220,168 @@ def _rev_of(value: Any) -> int:
             return 0
     return 0
 
+
+def _parse_iso_utc(ts: Any) -> datetime | None:
+    """Best-effort aware-UTC datetime for an ISO string (None when unparseable).
+
+    Used by the :meth:`CaseRepository.count_created_since` compatibility fallback so
+    the comparison is timestamp-correct across ``Z``/offset/naive formats rather than
+    a fragile lexicographic string compare."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+# How many rows the compatibility :meth:`CaseRepository.list_window` fallback scans
+# before filtering in Python. Same bound (and same honesty) as the
+# :meth:`CaseRepository.count_created_since` fallback: exact while the store holds
+# fewer rows than this, a lower bound beyond it — which is precisely why that path
+# reports ``exact=False``.
+WINDOW_FALLBACK_SCAN = 10000
+
+
+def case_in_created_window(case: Any, lo: int | None, hi: int | None) -> bool:
+    """Is this case inside the inclusive ``[lo, hi]`` epoch-millis window?
+
+    NEVER-DROP (#4): an empty, missing or UNPARSEABLE ``created_at`` returns ``True``.
+    A record we cannot place in time is surfaced, never silently deleted from the
+    operator's view of a window. "Unparseable" means exactly what
+    :func:`~app.utils.parse_millis_strict` says it means — this function is the ONE
+    definition of the contract, and both native push-downs are built to agree with it
+    (``tests/test_case_window_store.py`` pins that agreement over a grid of unreadable
+    spellings rather than one lucky literal)."""
+    ts = getattr(case, "created_at", "") or ""
+    if not ts:
+        return True
+    millis = parse_millis_strict(ts)
+    if millis is None:
+        return True
+    if lo is not None and millis < lo:
+        return False
+    if hi is not None and millis > hi:
+        return False
+    return True
+
+
+# A SCALAR name for a MULTI-status lifecycle set, resolved here from the product's own
+# status constants rather than sent as a list by the caller. Two reasons it is a scalar:
+#
+#   * the console's query helper stringifies an array into ONE comma-joined term, which a
+#     store applies as a single exact match and which therefore silently matches nothing —
+#     no error is raised at any layer, so a multi-value status filter fails invisibly; and
+#   * a set the SERVER owns cannot drift from the lifecycle taxonomy the rest of the suite
+#     decides with. The membership below is `constants.OPEN_CASE_STATUSES` /
+#     `constants.TERMINAL_CASE_STATUSES` verbatim, never a restated list.
+#
+# ``active`` rather than ``open`` deliberately: ``open`` is ALSO one concrete
+# ``CaseStatus`` value, and a group whose name collides with a member of the very
+# vocabulary it groups is a trap for both operators and readers.
+CASE_STATUS_GROUPS: dict[str, tuple[str, ...]] = {
+    "active": OPEN_CASE_STATUSES,
+    "terminal": TERMINAL_CASE_STATUSES,
+}
+
+
+def status_group_statuses(group: str | None) -> tuple[str, ...] | None:
+    """Resolve a status-group name to its statuses (``None`` when no group applies).
+
+    An UNKNOWN name also resolves to ``None`` here. That is deliberate: this helper is
+    the shared resolution step for the stores, and rejecting an unknown name is the
+    HTTP boundary's job (a store that silently applied "no filter" for a typo would
+    hand back the whole corpus and call it a lifecycle set)."""
+    if not group:
+        return None
+    return CASE_STATUS_GROUPS.get(str(group))
+
+
+def case_in_status_group(case: Any, statuses: tuple[str, ...] | None) -> bool:
+    """Is this case's status inside ``statuses``? ``None`` means "no group asked for".
+
+    The ONE in-Python definition of the group predicate, so the bundled push-downs have
+    something to be proven equal to rather than something to be assumed equal to."""
+    if statuses is None:
+        return True
+    value = getattr(case, "status", None)
+    value = getattr(value, "value", value)
+    return str(value or "") in statuses
+
+
+def window_bounds_proven(
+    created_from: Any, created_to: Any, lo: Any, hi: Any
+) -> bool:
+    """Did EVERY bound the caller actually asked for resolve to a usable value?
+
+    The ``exact`` flag of :meth:`CaseRepository.list_window` claims that ``total`` is
+    the PROVEN count for the REQUESTED window, so it may only be ``True`` when the
+    window the store applied IS the window that was requested. A bound that was
+    supplied but could not be read is dropped (never silently resolved to ``now()``,
+    which would empty the window) — the resulting answer is still useful, but it
+    answers a WIDER question than the caller asked, so it is not proof.
+
+    Without this the requested-but-unreadable case is indistinguishable from the
+    windowless one: both leave ``lo``/``hi`` at ``None``, and stamping that shared
+    branch ``True`` reported the WHOLE-CORPUS total as a proven windowed count."""
+    return (not created_from or lo is not None) and (not created_to or hi is not None)
+
+
+#: The ``awaiting_reason`` prefix of a candidate the per-tick cap deferred; the drain
+#: investigates exactly these (``engine.ingest._candidate_reason``).
+DEFERRED_REASON_PREFIX = "deferred:"
+
+
+#: ``decision_by`` of a case a person acted on; such a candidate is theirs and never
+#: drained (Round 16 B05).
+PERSON_DECIDER = "analyst"
+
+
+def is_deferred_candidate(case: Case, *, older_than: str) -> bool:
+    """Whether ``case`` is a cap-deferred candidate the drain may take now: OPEN, no
+    verdict, ``awaiting_reason`` starting with :data:`DEFERRED_REASON_PREFIX`, last
+    updated before ``older_than`` (ISO strings compared as the stores store them), and
+    not acted on by a person (``decision_by`` is not :data:`PERSON_DECIDER`). The
+    stores leave a person's candidates out of the query itself, so any number of them
+    can never fill the drain's page and hide the candidates behind them."""
+    status = getattr(case.status, "value", case.status)
+    decider = getattr(case.decision_by, "value", case.decision_by)
+    return (
+        str(status) == "open"
+        and case.verdict is None
+        and str(decider or "") != PERSON_DECIDER
+        and str(case.awaiting_reason or "").startswith(DEFERRED_REASON_PREFIX)
+        and str(case.updated_at or "") < str(older_than or "")
+    )
+
+
+class DeferredCandidates(list):
+    """One page of the deferred queue (Round 16 CDX1): a plain ``list`` of cases that
+    also carries ``next_after``, the store-private marker that continues the read
+    after this page's last row, or ``None`` at the end of the queue.
+
+    :meth:`CaseRepository.list_deferred_candidates` returns it; a caller passes
+    ``next_after`` back as ``after`` and treats it as opaque. A store that does not
+    page returns a plain list, which has no ``next_after``, so the drain reads it as
+    the whole answer for the tick (the old single page)."""
+
+    def __init__(self, cases: Any = (), next_after: Any = None) -> None:
+        super().__init__(cases)
+        self.next_after = next_after
+
+
+def _open_scan_offset(after: Any) -> int:
+    """The OPEN-listing offset in the base default's marker; ``0`` (the head of the
+    queue) for a marker it cannot read."""
+    if isinstance(after, dict):
+        try:
+            return max(0, int(after.get("open_offset", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
 class CaseRepository(ABC):
     """Persists :class:`Case` documents (Section 7.1).
 
@@ -239,6 +421,95 @@ class CaseRepository(ABC):
     async def count_new_scans(self, since_iso: str) -> int:
         """Count automated-scan cases created strictly after ``since_iso``."""
 
+    async def count_created_since(self, since_iso: str) -> int:
+        """Count cases created at/after ``since_iso`` (inclusive), across every
+        surface/status.
+
+        A pure COUNT push-down for callers that only need the number (e.g. the
+        sources-coverage "alerts triaged in 24h" tile) — fetching and validating
+        thousands of full Case documents just to ``len()`` a window is the exact
+        cost this avoids. Modeled on :meth:`count_new_scans`; the bundled ES/SQL
+        repositories override it with a native backend count.
+
+        This NON-abstract default keeps third-party repositories source-compatible:
+        it falls back to counting over one bounded ``list()`` page (a correct
+        lower bound; exact whenever the store holds fewer rows than the page)."""
+        floor = _parse_iso_utc(since_iso)
+        if floor is None:
+            return 0
+        cases, _total = await self.list(limit=10000)
+        count = 0
+        for case in cases:
+            created = _parse_iso_utc(getattr(case, "created_at", None))
+            if created is not None and created >= floor:
+                count += 1
+        return count
+
+    async def list_window(
+        self,
+        *,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        status_group: str | None = None,
+        **kw: Any,
+    ) -> tuple[list[Case], int, bool]:
+        """:meth:`list`, additionally windowed on ``created_at`` → (cases, total, exact).
+
+        ``created_from``/``created_to`` are OPTIONAL inclusive bounds accepting either an
+        absolute ISO timestamp or a relative ``now-24h`` expression (whatever the console
+        time-range picker emits). ``**kw`` is forwarded to :meth:`list` verbatim, so every
+        existing filter/sort/page argument keeps working.
+
+        ``total`` is the count of rows matching the filters AND the window across the WHOLE
+        corpus, and ``exact`` says whether the repository could prove that number FOR THE
+        REQUESTED WINDOW. The bundled Elasticsearch/SQL repositories push the window into
+        the backend and report ``exact=True`` whenever every supplied bound resolved; this
+        NON-abstract default keeps third-party repositories
+        source-compatible (adding a keyword to the abstract :meth:`list` would break them
+        with a ``TypeError``) by scanning one bounded :meth:`list` page and filtering in
+        Python, which is a correct lower bound — exact only when the store holds fewer rows
+        than the scan — so it honestly reports ``exact=False``. Modeled on
+        :meth:`count_created_since`.
+
+        NEVER-DROP (#4): a case whose ``created_at`` is empty, missing or UNPARSEABLE is
+        KEPT rather than silently excluded from every historical window. The parse uses
+        :func:`~app.utils.parse_millis_strict`, which REPORTS failure — the lenient
+        :func:`~app.utils.relative_to_millis` resolves an unreadable timestamp to ``now()``,
+        which looks like a successful parse and drops the row.
+
+        With no window requested this is exactly :meth:`list`, and ONLY that case reports
+        ``exact=True`` here. A bound that was requested but could not be read also leaves
+        both bounds ``None`` and falls into the same plain-:meth:`list` branch — but the
+        answer is then the whole corpus, not the requested window, so it reports
+        ``exact=False`` (see :func:`window_bounds_proven`).
+
+        ``status_group`` is an OPTIONAL scalar naming a multi-status lifecycle set
+        (:data:`CASE_STATUS_GROUPS`). It is an explicit NAMED parameter here and is
+        consumed here — deliberately never forwarded into ``**kw`` and never added to
+        the abstract :meth:`list`, because a new keyword on an abstract method breaks
+        every third-party repository with a ``TypeError``. A repository that implements
+        only the abstract surface therefore keeps working: it takes this same bounded
+        scan, filters the group in Python against the same constants the push-downs
+        use, and says so by reporting ``exact=False`` even when NO time window was
+        requested. "Windowless but not exact" is a real state a client must be able to
+        read; it must never be presented as a complete page."""
+        lo = relative_to_millis_strict(created_from) if created_from else None
+        hi = relative_to_millis_strict(created_to) if created_to else None
+        proven = window_bounds_proven(created_from, created_to, lo, hi)
+        group = status_group_statuses(status_group)
+        if lo is None and hi is None and group is None:
+            cases, total = await self.list(**kw)
+            return cases, total, proven
+        limit = max(0, int(kw.pop("limit", 50) or 0))
+        offset = max(0, int(kw.pop("offset", 0) or 0))
+        scanned, _total = await self.list(limit=WINDOW_FALLBACK_SCAN, offset=0, **kw)
+        kept = [
+            c for c in scanned
+            if case_in_created_window(c, lo, hi) and case_in_status_group(c, group)
+        ]
+        page = kept[offset: offset + limit] if limit else []
+        return page, len(kept), False
+
     async def export_page(
         self, *, limit: int = 1000, cursor: Any = None,
     ) -> tuple[list[Case], Any | None, int | None, str]:
@@ -270,6 +541,321 @@ class CaseRepository(ABC):
     async def close_export_cursor(self, cursor: Any) -> None:
         """Release an optional repository-owned export snapshot handle."""
         return None
+
+    # -- Round 12 exact aggregates (engine/case_aggregate.py) ----------------- #
+    async def aggregate(self, spec: Any) -> Any | None:
+        """Optional native push-down for :func:`app.engine.case_aggregate.aggregate_cases`.
+
+        Return an ``AggregateResult`` ONLY when the backend can answer ``spec`` with
+        exactly the fold's semantics; return ``None`` otherwise and the engine folds over
+        :meth:`scan_page`. This non-abstract default (``None``) keeps third-party
+        repositories source-compatible — they are aggregated by the fold, exactly, just
+        more slowly. Detected with ``getattr`` like ``PullConnector.aggregate``."""
+        return None
+
+    async def scan_page(
+        self,
+        *,
+        limit: int = 1000,
+        cursor: Any = None,
+        created_from: Any = None,
+        created_to: Any = None,
+        raw: bool = False,
+        statuses: Any = None,
+        fields: Any = None,
+    ) -> tuple[list[Case], Any | None, int | None, str]:
+        """One page of a full scan, optionally PRE-filtered to ``[created_from, created_to)``.
+
+        The streaming aggregate fold and the dashboards' population loader read the
+        corpus through this. Contract:
+
+        * ``created_from`` (inclusive) / ``created_to`` (EXCLUSIVE) are aware datetimes or
+          ISO strings; ``None`` means unbounded on that side.
+        * NEVER-DROP (#4): a case whose ``created_at`` cannot be placed in time is always
+          returned. A pre-filter may over-keep (the caller re-checks every row with its
+          own exact predicate), it must never under-keep.
+        * Returns ``(rows, next_cursor, total, consistency)``. ``next_cursor`` is ``None``
+          exactly when the scan is exhausted (a page may be EMPTY and still have a next
+          cursor). ``total`` is the number of rows the scan will visit when the backend
+          can prove it (for progress), else ``None``.
+        * The cursor is repository-private; an unfinished scan is released with
+          :meth:`close_export_cursor`.
+        * ``raw=True`` MAY return each case's stored JSON document instead of a validated
+          ``Case`` (the aggregate fold's fast path); callers must accept either.
+        * ``statuses`` (optional list of status values) MAY pre-filter to those statuses.
+        * ``fields`` (optional, raw pages only) names the stored fields the caller reads;
+          a repository MAY return only those (the Elasticsearch store filters
+          ``_source``). It is a transfer hint: returning whole documents is correct.
+        * A repository that can read NEWEST-FIRST by ``created_at`` (then ``case_id``)
+          declares a ``newest_first`` keyword (the bundled stores do; this default does
+          not, so callers know its order is the export order). The order is by the
+          real creation INSTANT, whatever spelling a row stores, with a ``created_at``
+          that cannot be placed in time last. The dashboards' bounded population read
+          relies on it to stop after the newest N rows.
+
+        This default wraps :meth:`export_page` (so every repository has it), applies the
+        window and statuses in Python and always returns ``Case`` objects; the bundled
+        stores push both into the backend. An unfinished scan's cursor is released with
+        :meth:`close_scan_cursor`."""
+        del raw, fields
+        inner = cursor.get("inner") if isinstance(cursor, dict) else None
+        rows, nxt, total, consistency = await self.export_page(limit=limit, cursor=inner)
+        lo = _bound_millis(created_from)
+        hi = _bound_millis(created_to)
+        wanted = {str(v) for v in statuses} if statuses is not None else None
+        kept = [
+            c for c in rows
+            if case_in_half_open_window(c, lo, hi)
+            and (wanted is None or _status_value(c) in wanted)
+        ]
+        exhausted = (not rows) or nxt is None
+        if exhausted and nxt is not None:
+            try:
+                await self.close_export_cursor(nxt)
+            except Exception:  # noqa: BLE001 — snapshots also expire on their own
+                pass
+        return kept, (None if exhausted else {"inner": nxt}), total, consistency
+
+    async def close_scan_cursor(self, cursor: Any) -> None:
+        """Release an unfinished :meth:`scan_page` cursor. The default unwraps the
+        ``{"inner": export cursor}`` this class's :meth:`scan_page` returns, so a
+        repository-owned export snapshot is released through
+        :meth:`close_export_cursor` (never handed the wrapper)."""
+        if isinstance(cursor, dict) and set(cursor) == {"inner"}:
+            cursor = cursor["inner"]
+        if cursor is None:
+            return
+        await self.close_export_cursor(cursor)
+
+    async def list_deferred_candidates(
+        self, *, older_than: str, limit: int, after: Any = None,
+    ) -> list[Case]:
+        """The cap-deferred candidates the deferred drain may investigate, oldest
+        created first, at most ``limit`` (Round 16 SPEC WP15B, B11).
+
+        A deferred candidate is an OPEN case with no verdict whose ``awaiting_reason``
+        starts with :data:`DEFERRED_REASON_PREFIX`, whose ``updated_at`` is before
+        ``older_than`` (a candidate deferred in this tick keeps the cap) and that no
+        person acted on (:func:`is_deferred_candidate`). The bundled
+        Elasticsearch and SQL repositories answer it with one query. This default
+        keeps the paged scan over OPEN cases for third-party repositories: correct,
+        but it reads every OPEN case before the first deferred one.
+
+        ``after`` (Round 16 CDX1, additive) continues the read after an earlier page:
+        pass the ``next_after`` of the :class:`DeferredCandidates` page a call
+        returned; ``None`` reads from the head of the queue, and a marker the store
+        cannot read does too. The drain reads past a page of candidates it cannot
+        rebuild this way. This default's marker is the offset in the OPEN listing
+        after the last row it examined; the bundled stores use a keyset on
+        ``created_at`` then ``case_id``."""
+        if limit <= 0:
+            return DeferredCandidates()
+        out: list[Case] = []
+        offset = _open_scan_offset(after)
+        page_size = max(50, int(limit))
+        more = True
+        while len(out) < limit:
+            page, total = await self.list(
+                status="open",
+                limit=page_size,
+                offset=offset,
+                sort_field="created_at",
+                sort_order="asc",
+            )
+            if not page:
+                more = False
+                break
+            examined = 0
+            for case in page:
+                examined += 1
+                if is_deferred_candidate(case, older_than=older_than):
+                    out.append(case)
+                    if len(out) >= limit:
+                        break
+            offset += examined
+            if offset >= total:
+                more = False
+                break
+        return DeferredCandidates(out, next_after={"open_offset": offset} if more else None)
+
+
+def _status_value(case: Any) -> str:
+    raw = case.get("status") if isinstance(case, dict) else getattr(case, "status", None)
+    return str(getattr(raw, "value", raw) or "")
+
+
+def _bound_millis(value: Any) -> int | None:
+    """Epoch millis of a scan bound (aware datetime or ISO/epoch), ``None`` = unbounded."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    return parse_millis_strict(value)
+
+
+def case_in_half_open_window(case: Any, lo: int | None, hi: int | None) -> bool:
+    """``lo <= created_at < hi`` in epoch millis — or ``True`` when ``created_at`` cannot
+    be placed in time (never-drop, #4). The half-open twin of
+    :func:`case_in_created_window` used by :meth:`CaseRepository.scan_page`."""
+    ts = getattr(case, "created_at", "") or ""
+    if not ts:
+        return True
+    millis = parse_millis_strict(ts)
+    if millis is None:
+        return True
+    if lo is not None and millis < lo:
+        return False
+    if hi is not None and millis >= hi:
+        return False
+    return True
+
+
+class AuditCursorExpired(Exception):
+    """A continuation cursor's store snapshot (an Elasticsearch point-in-time) has
+    expired. The read API answers ``409 audit_cursor_expired`` and the page reloads
+    from the top (SPEC §4.5.5)."""
+
+
+@dataclass(frozen=True)
+class AuditHit:
+    """One row of an audit read page.
+
+    ``store``/``ref``/``index`` identify the stored row (they build the E12
+    ``record_id`` through :func:`app.models.encode_audit_record_id`); ``doc`` is the
+    stored document as written; ``position`` is the JSON-safe store continuation that
+    resumes the read AFTER this row (the merged Demo read keeps one per store)."""
+
+    store: str
+    ref: str | int
+    index: str | None
+    doc: dict[str, Any]
+    position: Any
+
+
+@dataclass
+class AuditSearchPage:
+    """One page of matching rows in the requested order, plus an honest total:
+    exact when ``relation`` is ``eq``, a lower bound when it is ``gte``.
+    ``exhausted`` is True when no matching row follows the last hit. ``start`` is the
+    position BEFORE the first hit (it carries the snapshot the read opened: an
+    Elasticsearch point-in-time, a SQL high-water time), so a merged read that takes
+    no row from this store can resume it from the same place, and the page's per-run
+    totals are counted inside the same snapshot."""
+
+    hits: list[AuditHit] = field(default_factory=list)
+    total: int = 0
+    relation: str = "eq"
+    exhausted: bool = True
+    start: Any = None
+    # Round 15 (SPEC D3.6): the store stopped before the end of the matching rows: an
+    # Elasticsearch read paged by offset (no point-in-time) that reached its 10,000-row
+    # limit, or the bounded scan of a third-party repository that filled. A reader that
+    # folds every page (Team activity) then states its counts as lower bounds.
+    truncated: bool = False
+
+
+#: The generic (third-party repository) read scans at most this many newest rows.
+AUDIT_FALLBACK_SCAN = 10_000
+
+
+def build_audit_doc(
+    *,
+    action_type: ActionType,
+    event_id: str | None = None,
+    ts: str | None = None,
+    surface: str = "",
+    actor: str = "",
+    case_id: str | None = None,
+    source_id: str | None = None,
+    model: str | None = None,
+    prompt_excerpt: str | None = None,
+    query_text: str | None = None,
+    tool_name: str | None = None,
+    tool_input: Any = None,
+    tool_output_summary: str | None = None,
+    result_summary: str | None = None,
+    outcome: str | None = None,
+    actor_type: str | None = None,
+    action: str | None = None,
+    actor_role: str | None = None,
+    client: AuditClient | dict[str, Any] | None = None,
+    session_ref: str | None = None,
+    target: AuditTarget | dict[str, Any] | None = None,
+    changes: list[AuditChange | dict[str, Any]] | None = None,
+    request_id: str | None = None,
+    run_id: str | None = None,
+) -> AuditDoc:
+    """The one constructor of an append-only audit row (``record`` and
+    ``record_strict`` in every backend). The three free-text fields are capped at
+    1,000 characters as before, after NUL and lone surrogates are removed so the cap
+    stays exact; the Round 14 fields (SPEC §4.5.3) are optional, validated and bounded
+    by :class:`app.models.AuditDoc`, which also cleans every string of the row (see
+    ``app.stored_text``), and omitted from the stored document when unset, so a row
+    written without them keeps its pre-Round-14 shape."""
+    prompt_excerpt, tool_output_summary, result_summary = (
+        multi_line(prompt_excerpt), multi_line(tool_output_summary), multi_line(result_summary),
+    )
+    return AuditDoc(
+        event_id=event_id,
+        **({"ts": ts} if ts else {}),
+        action_type=action_type,
+        surface=surface,
+        actor=actor,
+        case_id=case_id,
+        source_id=source_id,
+        model=model,
+        prompt_excerpt=truncate(prompt_excerpt, 1000) if prompt_excerpt else None,
+        query_text=query_text,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        tool_output_summary=truncate(tool_output_summary, 1000) if tool_output_summary else None,
+        result_summary=truncate(result_summary, 1000) if result_summary else None,
+        outcome=outcome,
+        actor_type=actor_type,
+        action=action,
+        actor_role=actor_role,
+        client=client,
+        session_ref=session_ref,
+        target=target,
+        changes=changes,
+        request_id=request_id,
+        run_id=run_id,
+    )
+
+
+def build_audit_doc_best_effort(**fields: Any) -> AuditDoc:
+    """:func:`build_audit_doc` for a best-effort ``record`` (#2: the row is the
+    evidence). A Round 14 field that fails validation (an over-long ``run_id``, an
+    empty ``target.id``, a malformed ``action``) is left out and named in the log, and
+    the row is written with every other field, so a writer's mistake in the optional
+    enrichment never loses the action itself. A field rows carried before Round 14 that
+    is invalid still raises (the caller logs it), as it always did. ``record_strict``
+    keeps refusing the whole row: an audit-first caller must learn of the mistake."""
+    try:
+        return build_audit_doc(**fields)
+    except ValidationError as exc:
+        problems = [(err.get("loc") or ("",), str(err.get("type") or "")) for err in exc.errors()]
+        invalid = sorted({str(loc[0]) for loc, _kind in problems})
+        if not invalid or not set(invalid) <= set(AUDIT_ROUND14_FIELDS):
+            raise
+        # Field names and error kinds only: the values may be long or sensitive.
+        logger.error(
+            "AUDIT ROW WRITTEN WITHOUT INVALID FIELDS %s (action=%s case=%s): %s",
+            invalid, fields.get("action_type"), fields.get("case_id"),
+            "; ".join(f"{'.'.join(str(part) for part in loc)}: {kind}" for loc, kind in problems),
+        )
+        return build_audit_doc(**{**fields, **{name: None for name in invalid}})
+
+
+def _mem_record_number(doc: dict[str, Any]) -> int:
+    """A stable number for a row of a repository without native record ids: derived
+    from the row's content, so the same row has the same ``mem:<n>`` on every read."""
+    import hashlib
+    import json
+
+    raw = json.dumps(doc, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big") % 10**12
 
 
 class AuditRepository(ABC):
@@ -307,7 +893,19 @@ class AuditRepository(ABC):
         tool_input: Any = None,
         tool_output_summary: str | None = None,
         result_summary: str | None = None,
-    ) -> None: ...
+        outcome: str | None = None,
+        actor_type: str | None = None,
+        action: str | None = None,
+        actor_role: str | None = None,
+        client: AuditClient | dict[str, Any] | None = None,
+        session_ref: str | None = None,
+        target: AuditTarget | dict[str, Any] | None = None,
+        changes: list[AuditChange | dict[str, Any]] | None = None,
+        request_id: str | None = None,
+        run_id: str | None = None,
+    ) -> None:
+        """Best-effort append (never raises into the caller). The Round 14 keyword
+        arguments (SPEC §4.5.3) are optional; see :func:`build_audit_doc`."""
 
     async def record_strict(
         self,
@@ -326,28 +924,47 @@ class AuditRepository(ABC):
         tool_input: Any = None,
         tool_output_summary: str | None = None,
         result_summary: str | None = None,
+        outcome: str | None = None,
+        actor_type: str | None = None,
+        action: str | None = None,
+        actor_role: str | None = None,
+        client: AuditClient | dict[str, Any] | None = None,
+        session_ref: str | None = None,
+        target: AuditTarget | dict[str, Any] | None = None,
+        changes: list[AuditChange | dict[str, Any]] | None = None,
+        request_id: str | None = None,
+        run_id: str | None = None,
     ) -> None:
-        """Build and strictly persist one append-only audit document."""
+        """Build and strictly persist one append-only audit document (raises when
+        the append cannot be confirmed; the audit-first writers depend on it)."""
         await self.write_strict(
-            AuditDoc(
-                event_id=event_id,
-                **({"ts": ts} if ts else {}),
-                action_type=action_type,
-                surface=surface,
-                actor=actor,
-                case_id=case_id,
-                source_id=source_id,
-                model=model,
-                prompt_excerpt=truncate(prompt_excerpt, 1000) if prompt_excerpt else None,
-                query_text=query_text,
-                tool_name=tool_name,
-                tool_input=tool_input,
-                tool_output_summary=(
-                    truncate(tool_output_summary, 1000)
-                    if tool_output_summary
-                    else None
-                ),
-                result_summary=truncate(result_summary, 1000) if result_summary else None,
+            stamp_new_record(
+                build_audit_doc(
+                    action_type=action_type,
+                    event_id=event_id,
+                    ts=ts,
+                    surface=surface,
+                    actor=actor,
+                    case_id=case_id,
+                    source_id=source_id,
+                    model=model,
+                    prompt_excerpt=prompt_excerpt,
+                    query_text=query_text,
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    tool_output_summary=tool_output_summary,
+                    result_summary=result_summary,
+                    outcome=outcome,
+                    actor_type=actor_type,
+                    action=action,
+                    actor_role=actor_role,
+                    client=client,
+                    session_ref=session_ref,
+                    target=target,
+                    changes=changes,
+                    request_id=request_id,
+                    run_id=run_id,
+                )
             )
         )
 
@@ -359,7 +976,8 @@ class AuditRepository(ABC):
         """Recent audit rows attributed to ``actor`` (NEWEST first) — the per-user
         account-activity feed (Wave 3). NON-abstract with a safe default ([]) so a
         third-party AuditRepository keeps working; the bundled ES/SQL stores override
-        it. Never raises."""
+        it and RAISE when the read fails, so a failure is reported as unavailable and
+        never as an empty feed."""
         return []
 
     async def records(
@@ -377,9 +995,125 @@ class AuditRepository(ABC):
         """Filtered, bounded, read-only listing of the append-only audit (the admin
         audit viewer, W7c). NEWEST first. NON-abstract with a safe default ([]) so a
         third-party AuditRepository keeps working; the bundled ES/SQL stores override
-        it. Read-only (#2 — never mutates). Never raises. ``source_id`` (A5.3 coverage
-        observability) filters to a single source's poll history."""
+        it and RAISE when the read fails (every caller reports that as unavailable,
+        never as no rows). Read-only (#2: never mutates). ``source_id`` (A5.3
+        coverage observability) filters to a single source's poll history."""
         return []
+
+    # ------------------------------------------------------------------ #
+    # Round 14 read API (SPEC §4.5.5). Read-only (#2). The bundled Elasticsearch and
+    # SQL repositories page natively; the defaults below serve a third-party
+    # repository from a bounded scan of :meth:`records` and say so honestly.
+    # ------------------------------------------------------------------ #
+    async def _fallback_rows(self, predicate: Any, order: str) -> tuple[list[dict[str, Any]], bool]:
+        from ..audit.query import matches
+
+        rows = await self.records(limit=AUDIT_FALLBACK_SCAN)
+        capped = len(rows) >= AUDIT_FALLBACK_SCAN
+        matched = [dict(r) for r in rows if isinstance(r, dict) and matches(predicate, r)]
+        if order == "asc":
+            matched.reverse()
+        return matched, capped
+
+    async def search_page(
+        self,
+        predicate: Any,
+        *,
+        order: str = "desc",
+        limit: int = 50,
+        cursor: Any = None,
+        track_total: int = 10_000,
+        count: bool = True,
+    ) -> AuditSearchPage:
+        """One page of rows matching ``predicate`` (an :mod:`app.audit.query` tree),
+        newest first (``desc``) or oldest first (``asc``), after ``cursor`` (a
+        ``position`` from a previous page). Raises on a store failure and
+        :class:`AuditCursorExpired` when the cursor's snapshot is gone.
+
+        ``count=False`` (Round 15, SPEC D3.6) asks for the page without its total, for a
+        reader that streams every page and never shows one (Team activity): a store that
+        counts separately skips that count and answers the rows on the page as a lower
+        bound (``relation`` ``gte``). This bounded scan counts as it filters, so it keeps
+        its total; it marks the page ``truncated`` when the scan filled, since older
+        matching rows may lie beyond it."""
+        del count  # the scan counts as it filters; nothing to skip
+        matched, capped = await self._fallback_rows(predicate, order)
+        offset = 0
+        if isinstance(cursor, dict):
+            try:
+                offset = max(0, int(cursor.get("offset", 0)))
+            except (TypeError, ValueError):
+                offset = 0
+        size = max(1, int(limit))
+        window = matched[offset: offset + size]
+        hits = [
+            AuditHit("mem", _mem_record_number(doc), None, doc, {"offset": offset + i + 1})
+            for i, doc in enumerate(window)
+        ]
+        total = len(matched)
+        return AuditSearchPage(
+            hits=hits,
+            total=min(total, track_total) if track_total else total,
+            relation="gte" if capped or (track_total and total > track_total) else "eq",
+            exhausted=offset + size >= total,
+            start={"offset": offset},
+            truncated=capped,
+        )
+
+    async def count_matching(self, predicate: Any, *, cap: int) -> tuple[int, str]:
+        """``(count, relation)``: exact up to ``cap``, then ``(cap, "gte")``."""
+        matched, capped = await self._fallback_rows(predicate, "desc")
+        if len(matched) > cap:
+            return cap, "gte"
+        return len(matched), "gte" if capped else "eq"
+
+    async def count_for_case(self, case_id: str, *, cap: int) -> tuple[int, str]:
+        """``(count, relation)`` of a case's audit rows (Round 16 SPEC §4.3 WP01, [dv]
+        R14): exact up to ``cap`` (relation ``eq``), otherwise ``(cap, "gte")``, so a
+        trace that shows the newest :meth:`records_for_case` rows can say how many it
+        left out. Built on :meth:`count_matching`, so every audit store answers it the
+        way it counts any other filter. Raises when the store cannot count; a caller
+        then reports the total as unknown."""
+        from ..audit.query import Eq
+
+        if not case_id:
+            return 0, "eq"
+        return await self.count_matching(Eq("case_id", str(case_id)), cap=max(1, int(cap)))
+
+    async def run_totals(
+        self, predicate: Any, run_ids: list[str], *, snapshot: Any = None,
+    ) -> dict[str, int]:
+        """For each ``run_id``, how many rows match ``predicate`` and carry it.
+
+        ``snapshot`` is a position of the page being shown (its ``start``); a store
+        that pages inside a snapshot counts inside the same one, so a run's total never
+        includes rows "Load more" cannot reach. This generic read has no snapshot and
+        counts the rows it scans."""
+        del snapshot
+        wanted = {r for r in run_ids if r}
+        if not wanted:
+            return {}
+        matched, _capped = await self._fallback_rows(predicate, "desc")
+        totals: dict[str, int] = {}
+        for doc in matched:
+            run = doc.get("run_id")
+            if isinstance(run, str) and run in wanted:
+                totals[run] = totals.get(run, 0) + 1
+        return totals
+
+    async def get_record(self, ref: AuditRecordRef) -> AuditHit | None:
+        """The stored row ``ref`` names, or ``None`` when it is not in this store."""
+        if ref.store != "mem":
+            return None
+        rows = await self.records(limit=AUDIT_FALLBACK_SCAN)
+        for doc in rows:
+            if isinstance(doc, dict) and _mem_record_number(doc) == ref.ref:
+                return AuditHit("mem", ref.ref, None, dict(doc), None)
+        return None
+
+    async def close_search_cursor(self, cursor: Any) -> None:
+        """Release a store snapshot a cursor holds (an Elasticsearch point-in-time)."""
+        return None
 
     async def export_page(
         self, *, limit: int = 1000, cursor: Any = None,
@@ -438,6 +1172,17 @@ class UsageRepository(ABC):
         repositories source-compatible; bundled ES/SQL repositories override it."""
         return []
 
+    async def records_for_case(self, case_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        """One case's ledger rows, NEWEST first, at most ``limit`` (1 to 500) (Round 16
+        SPEC §4.3 WP01, [dv] R3): every call written with this ``case_id``, pipeline and
+        case chat alike. Read-only (#6: the gateway stays the only writer).
+
+        Raises when the ledger cannot be read, so a caller reports "unavailable" and
+        never "no spend". The bundled Elasticsearch and SQL repositories implement it;
+        a third-party repository must opt in, so this default raises
+        ``NotImplementedError``."""
+        raise NotImplementedError("usage repository does not implement per-case reads")
+
     async def records_strict(self, *, limit: int = 1000) -> list[dict[str, Any]]:
         """Newest-first bounded rows, raising when availability cannot be proven.
 
@@ -465,6 +1210,51 @@ class UsageRepository(ABC):
 
     async def close_export_cursor(self, cursor: Any) -> None:
         return None
+
+    async def aggregate_usage(self, spec: Any) -> Any | None:
+        """Optional native push-down for :func:`app.engine.case_aggregate.aggregate_usage`.
+
+        Return an ``AggregateResult`` only when the backend can answer ``spec`` exactly
+        as the fold would; ``None`` (this default) folds over :meth:`scan_page`."""
+        return None
+
+    async def scan_page(
+        self,
+        *,
+        limit: int = 1000,
+        cursor: Any = None,
+        ts_from: Any = None,
+        ts_to: Any = None,
+    ) -> tuple[list[dict[str, Any]], Any | None, int | None, str]:
+        """One page of a ledger scan PRE-filtered to ``[ts_from, ts_to)`` on ``ts``.
+
+        Same contract as :meth:`CaseRepository.scan_page`: a pre-filter may over-keep,
+        never under-keep; a row whose ``ts`` cannot be placed in time is always
+        returned; ``next_cursor`` is ``None`` exactly when exhausted. This default
+        wraps :meth:`export_page` and does not filter at all (every row is read and
+        returned; the caller applies the range) — the bundled stores push the range
+        into the backend so a 35-day report reads 35 days."""
+        del ts_from, ts_to
+        inner = cursor.get("inner") if isinstance(cursor, dict) else None
+        rows, nxt, total, consistency = await self.export_page(limit=limit, cursor=inner)
+        seen = (cursor.get("seen", 0) if isinstance(cursor, dict) else 0) + len(rows)
+        exhausted = (not rows) or nxt is None or (total is not None and seen >= int(total))
+        if exhausted and nxt is not None:
+            try:
+                await self.close_export_cursor(nxt)
+            except Exception:  # noqa: BLE001 — snapshots also expire on their own
+                pass
+        return (list(rows), None if exhausted else {"inner": nxt, "seen": seen},
+                total, consistency)
+
+    async def close_scan_cursor(self, cursor: Any) -> None:
+        """Release an unfinished :meth:`scan_page` cursor (unwrapping this class's
+        ``{"inner": export cursor}`` wrapper)."""
+        if isinstance(cursor, dict) and "inner" in cursor:
+            cursor = cursor["inner"]
+        if cursor is None:
+            return
+        await self.close_export_cursor(cursor)
 
 
 class KVStore(ABC):
@@ -500,6 +1290,16 @@ class KVStore(ABC):
             return False
         await self.put(namespace, key, value)
         return True
+
+    async def factory_purge_strict(self) -> int:
+        """Purge tenant KV state while retaining the factory-control anchors.
+
+        Bundled backends implement this as a fail-closed privacy boundary.  The
+        exact Jobs and Batch registry documents plus system-update operation rows
+        survive byte-for-byte; every other row must be absent on return.  Missing
+        protected registries and unsupported compatibility stores raise.
+        """
+        raise NotImplementedError("KV backend does not implement strict factory purge")
 
     # -- optimistic-concurrency read-modify-write -------------------------- #
     # The shared single-document KV stores route their load→mutate→save through

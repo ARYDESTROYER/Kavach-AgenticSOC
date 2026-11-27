@@ -19,7 +19,7 @@ import { LoadingState } from '@/design-system/loading';
 import { Button } from '@/ui/button';
 import { TooltipProvider } from '@/ui/tooltip';
 import { ThemeProvider } from './theme';
-import { PrefsProvider } from './prefs';
+import { PrefsProvider, usePrefs } from './prefs';
 import { AuthProvider, useAuth, useUnauthorizedRedirect } from './auth';
 import { DemoProvider } from './demo';
 import { RouterProvider, useRoute } from './router';
@@ -34,15 +34,22 @@ import { navLabel } from './nav';
 import Login from './pages/Login';
 import Wizard from './pages/Wizard';
 import { ReauthDialog } from './components/ReauthDialog';
+import { WHATS_NEW_LATEST, WhatsNewGate } from './whats-new/WhatsNewGate';
 import { ConfirmProvider } from './components/ConfirmDialog';
 import { PageSkeleton } from './components/PageSkeleton';
 
+/** The boot spinner's label, while the session or the setup state is read. */
+const BOOT_LABEL = 'Starting console…';
+
+// The boot and sign-in hand-off spinner. It fades in only after 300ms
+// (`login-delayed-reveal`, theme.css), so a fast load goes from the sign-in page to the
+// shell without a spinner flash; it sits on the same canvas as both, so no colour jumps.
 const CenterSpinner: React.FC<{ label: string }> = ({ label }) => (
   <LoadingState
     label={label}
     description="Preparing your secure workspace."
     layout="page"
-    className="min-h-dvh bg-canvas"
+    className="login-delayed-reveal min-h-dvh bg-canvas"
   />
 );
 
@@ -99,6 +106,7 @@ const Boot: React.FC = () => {
   // result with the fail-closed error screen.
   const setupRequestGeneration = React.useRef(0);
   const { page, opts, navigate } = useRoute();
+  const { patchMisc } = usePrefs();
 
   // Whether the gate currently shows the login screen: auth on + (no session OR a
   // forced-password-change that a mid-flow reload / deep-link must not escape). The
@@ -151,15 +159,20 @@ const Boot: React.FC = () => {
     navigate('overview');
   }, [logout, navigate]);
 
-  const onRerunWizard = React.useCallback(() => setForceWizard(true), []);
+  // The routed page, kept while its route stays: Boot reads the preferences context for
+  // the What's new stamp below, and a preference change must not re-render the page.
+  const routed = React.useMemo(
+    () => renderRoute(page, { opts, onRerunWizard: () => setForceWizard(true) }),
+    [page, opts],
+  );
 
-  if (authLoading) return <CenterSpinner label="Starting console…" />;
+  if (authLoading) return <CenterSpinner label={BOOT_LABEL} />;
   // A failed /api/auth/me must NOT collapse to "auth disabled" and render the console;
   // offer a retry instead (auth on/off is indistinguishable from a load failure once
   // `me` is null, so we key off the explicit loadError flag).
   if (loadError) return <BootError onRetry={() => void refresh()} />;
   if (showLogin) return <Login onAuthenticated={onAuthenticated} />;
-  if (!setupChecked) return <CenterSpinner label="Starting console…" />;
+  if (!setupChecked) return <CenterSpinner label={BOOT_LABEL} />;
   if (setupError) {
     return (
       <BootError
@@ -174,6 +187,9 @@ const Boot: React.FC = () => {
     return (
       <Wizard
         onComplete={() => {
+          // Round 16 (SPEC D7): a fresh install's first person starts with What's new
+          // seen (the audited preferences route records it).
+          if (!forceWizard) void patchMisc({ whats_new_seen: WHATS_NEW_LATEST });
           setForceWizard(false);
           setSetupComplete(true);
           navigate('overview');
@@ -198,12 +214,14 @@ const Boot: React.FC = () => {
               Keyed by `page` so each route shows its own fresh fallback. The route
               table (soc/registry.ts) maps the id → lazy chunk + config props. */}
           <React.Suspense key={page} fallback={<PageSkeleton label={navLabel(page)} />}>
-            {renderRoute(page, { opts, onRerunWizard })}
+            {routed}
           </React.Suspense>
         </ErrorBoundary>
       </AppShell>
       {/* Step-up re-auth modal: only armed when auth is enabled (back-compat). */}
       <ReauthDialog active={authEnabled} />
+      {/* What's new after an update: only ever once the shell shows (Round 16, D7). */}
+      <WhatsNewGate />
     </>
   );
 };

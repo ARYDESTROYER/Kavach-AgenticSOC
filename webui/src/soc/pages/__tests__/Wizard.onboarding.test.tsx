@@ -200,6 +200,8 @@ describe('Wizard onboarding fixes', () => {
     renderWizard(onComplete);
 
     await user.click(await screen.findByRole('button', { name: /Review & launch/i }));
+    // The review stage loads on demand (Round 15, SPEC §3.1): wait for it before launch.
+    await screen.findByRole('heading', { name: /Ready with limited capabilities/i });
     const launch = screen.getByRole('button', { name: /Launch Agentic SOC/i });
     const sourcesButton = screen.getByRole('button', { name: /Data sources/i });
     fireEvent.click(launch);
@@ -266,9 +268,12 @@ describe('Wizard onboarding fixes', () => {
   });
 
   it('treats configured-but-disabled sources as unavailable and reports them separately', async () => {
+    // Round 15: the AI runtime row is ready when the server says the default models can
+    // be called (`ai_runtime_ready`), so only the sources row needs attention here.
     setupStatusMock.mockResolvedValue({
       setup_complete: false,
       configured: { openai_api_key: true },
+      ai_runtime_ready: true,
     });
     listSourcesMock.mockResolvedValue({
       sources: [

@@ -98,11 +98,14 @@ const COVERAGE_CLEAN: SourceCoverage = {
 
 async function expandDeeperAnalytics() {
   const deeper = await screen.findByRole('button', { name: /Deeper analytics/i });
-  await userEvent.click(deeper);
+  // The open/closed choice is remembered (Round 12), so only open it when it is shut.
+  if (deeper.getAttribute('aria-expanded') !== 'true') await userEvent.click(deeper);
 }
 
 describe('Overview — ingest-coverage tile', () => {
   beforeEach(() => {
+    // Deeper analytics remembers its open state per browser; every case starts folded.
+    localStorage.removeItem('soc.overview.deeperOpen');
     fetchPostureMock.mockReset().mockResolvedValue(POSTURE);
     listCasesMock.mockReset().mockResolvedValue({ cases: CASES, total: CASES.length });
     getMetricsMock.mockReset().mockResolvedValue(METRICS);

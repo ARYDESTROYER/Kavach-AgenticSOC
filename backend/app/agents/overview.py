@@ -13,10 +13,11 @@ import logging
 from typing import Any
 
 from ..audit.audit_log import AuditLogger
+from ..audit.changes import redact_text
 from ..cache import Cache
 from ..config import Preferences, Secrets
 from ..constants import ActionType, Role
-from ..llm.gateway import GatewayError, LLMGateway
+from ..llm.gateway import BudgetBlocked, GatewayError, LLMGateway
 from ..tools.enrich import EnrichTool
 from ..utils import dotted_get, extract_json, truncate
 from .prompts import fence_block
@@ -81,6 +82,9 @@ class OverviewService:
         await self._audit.record(
             action_type=ActionType.PROMPT, surface=Role.OVERVIEW.value, actor=Role.OVERVIEW.value,
             model=prefs.overview_model.model, prompt_excerpt="<single event>",
+            # The prompt was handed to the gateway. A refused or failed call writes its
+            # own ERROR row below, as the router and the formatter do.
+            outcome="success", actor_type="agent",
         )
 
         try:
@@ -91,6 +95,20 @@ class OverviewService:
             obj = extract_json(res.text) or {}
         except GatewayError as exc:
             logger.info("overview model unavailable (%s); deterministic fallback", exc)
+            failure_class = getattr(exc, "failure_class", "") or ""
+            detail = f" [{failure_class}]" if failure_class else ""
+            # The model call did not answer: record it, so the audit log's Failed (or,
+            # for the AI budget's refusal, Denied) filter finds it (#2).
+            await self._audit.record(
+                action_type=ActionType.ERROR, surface=Role.OVERVIEW.value, actor=Role.OVERVIEW.value,
+                model=prefs.overview_model.model, actor_type="agent",
+                # The AI budget refusing the call is a policy refusal, not a fault.
+                outcome="denied" if isinstance(exc, BudgetBlocked) else "failure",
+                # A provider error's text can carry an address or a credential.
+                result_summary=truncate(redact_text(
+                    f"overview model unavailable{detail}: {exc}; the deterministic overview was used"
+                )[0], 1000),
+            )
             return _fallback(source, enrichment_summary, ip)
 
         return {

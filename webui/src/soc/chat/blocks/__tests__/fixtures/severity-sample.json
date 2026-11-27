@@ -1,0 +1,890 @@
+{
+ "_comment": "Round 14 (SPEC 4.6.7, 4.7.4): ONE bounded sample read by the backend's log_stats twice, grouped by severity and by rule, materialised by blocks.to_blocks (generated from backend code, not hand-written). Three sources on three scales: Wazuh prod 0 to 15, QRadar 0 to 10 (sampled: 5 of 40 rows), Elastic 0 to 100. Rule names keep spaces and non-ASCII letters. The web tests check that a rule's count in the rule table equals the sum of its counts across the severity levels.",
+ "severity": {
+  "type": "table",
+  "id": "b-severity",
+  "title": "Events by severity",
+  "caption": "13 of 48 events counted: 2 sources exactly, 1 sampled at the newest 200 each · last 3 days",
+  "provenance": "source",
+  "artifact_kind": "categories",
+  "allowed_views": [
+   "table",
+   "hbar",
+   "bar",
+   "donut"
+  ],
+  "untrusted": true,
+  "as_of": "2026-10-29T04:59:37.764677+00:00",
+  "columns": [
+   {
+    "key": "label",
+    "label": "Severity",
+    "type": "text"
+   },
+   {
+    "key": "value",
+    "label": "Events",
+    "type": "number",
+    "unit": "count",
+    "align": "right"
+   },
+   {
+    "key": "share",
+    "label": "Share",
+    "type": "number",
+    "unit": "percent",
+    "align": "right"
+   },
+   {
+    "key": "top",
+    "label": "Top rules",
+    "type": "text",
+    "untrusted": true
+   }
+  ],
+  "rows": [
+   [
+    "Critical (12, 80)",
+    4,
+    30.8,
+    "Fehlgeschlagene Anmeldung über SSH (3); web_scan (1)"
+   ],
+   [
+    "High (8, 7, 55)",
+    7,
+    53.8,
+    "Web scanner user agent detected (5); Fehlgeschlagene Anmeldung über SSH (2)"
+   ],
+   [
+    "Medium",
+    0,
+    0.0,
+    "None"
+   ],
+   [
+    "Low (3, 1)",
+    2,
+    15.4,
+    "dns_tunnel (1); web_scan (1)"
+   ],
+   [
+    "Info",
+    0,
+    0.0,
+    "None"
+   ]
+  ],
+  "drill": [
+   {
+    "page": "logs",
+    "opts": {
+     "severity": "critical",
+     "from": "2026-10-26T04:59:37.763Z",
+     "to": "2026-10-29T04:59:37.762Z"
+    }
+   },
+   {
+    "page": "logs",
+    "opts": {
+     "severity": "high",
+     "from": "2026-10-26T04:59:37.763Z",
+     "to": "2026-10-29T04:59:37.762Z"
+    }
+   },
+   {
+    "page": "logs",
+    "opts": {
+     "severity": "medium",
+     "from": "2026-10-26T04:59:37.763Z",
+     "to": "2026-10-29T04:59:37.762Z"
+    }
+   },
+   {
+    "page": "logs",
+    "opts": {
+     "severity": "low",
+     "from": "2026-10-26T04:59:37.763Z",
+     "to": "2026-10-29T04:59:37.762Z"
+    }
+   },
+   {
+    "page": "logs",
+    "opts": {
+     "severity": "info",
+     "from": "2026-10-26T04:59:37.763Z",
+     "to": "2026-10-29T04:59:37.762Z"
+    }
+   }
+  ],
+  "trend": [
+   [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    4
+   ],
+   [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    7
+   ],
+   [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    2
+   ],
+   [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  ],
+  "severity": {
+   "subject": "events",
+   "levels": [
+    {
+     "level": "critical",
+     "count": 4,
+     "share": 30.8,
+     "raw_values": [
+      {
+       "value": 12.0,
+       "scale_max": 15.0
+      },
+      {
+       "value": 80.0,
+       "scale_max": 100.0
+      }
+     ],
+     "trend": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      4
+     ],
+     "rules": [
+      {
+       "key": "Fehlgeschlagene Anmeldung über SSH",
+       "count": 3,
+       "drill": {
+        "page": "rule",
+        "opts": {
+         "from": "2026-10-26T04:59:37.763Z",
+         "to": "2026-10-29T04:59:37.762Z",
+         "rule": "Fehlgeschlagene Anmeldung über SSH"
+        }
+       }
+      },
+      {
+       "key": "web_scan",
+       "count": 1,
+       "drill": {
+        "page": "rule",
+        "opts": {
+         "from": "2026-10-26T04:59:37.763Z",
+         "to": "2026-10-29T04:59:37.762Z",
+         "rule": "web_scan"
+        }
+       }
+      }
+     ],
+     "rules_total": 2,
+     "drill": {
+      "page": "logs",
+      "opts": {
+       "severity": "critical",
+       "from": "2026-10-26T04:59:37.763Z",
+       "to": "2026-10-29T04:59:37.762Z"
+      }
+     }
+    },
+    {
+     "level": "high",
+     "count": 7,
+     "share": 53.8,
+     "raw_values": [
+      {
+       "value": 8.0,
+       "scale_max": 15.0
+      },
+      {
+       "value": 7.0,
+       "scale_max": 10.0
+      },
+      {
+       "value": 55.0,
+       "scale_max": 100.0
+      }
+     ],
+     "trend": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      7
+     ],
+     "rules": [
+      {
+       "key": "Web scanner user agent detected",
+       "count": 5,
+       "drill": {
+        "page": "rule",
+        "opts": {
+         "from": "2026-10-26T04:59:37.763Z",
+         "to": "2026-10-29T04:59:37.762Z",
+         "rule": "Web scanner user agent detected"
+        }
+       }
+      },
+      {
+       "key": "Fehlgeschlagene Anmeldung über SSH",
+       "count": 2,
+       "drill": {
+        "page": "rule",
+        "opts": {
+         "from": "2026-10-26T04:59:37.763Z",
+         "to": "2026-10-29T04:59:37.762Z",
+         "rule": "Fehlgeschlagene Anmeldung über SSH"
+        }
+       }
+      }
+     ],
+     "rules_total": 2,
+     "drill": {
+      "page": "logs",
+      "opts": {
+       "severity": "high",
+       "from": "2026-10-26T04:59:37.763Z",
+       "to": "2026-10-29T04:59:37.762Z"
+      }
+     }
+    },
+    {
+     "level": "medium",
+     "count": 0,
+     "share": 0.0,
+     "raw_values": [],
+     "trend": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "rules": [],
+     "rules_total": 0,
+     "drill": {
+      "page": "logs",
+      "opts": {
+       "severity": "medium",
+       "from": "2026-10-26T04:59:37.763Z",
+       "to": "2026-10-29T04:59:37.762Z"
+      }
+     }
+    },
+    {
+     "level": "low",
+     "count": 2,
+     "share": 15.4,
+     "raw_values": [
+      {
+       "value": 3.0,
+       "scale_max": 15.0
+      },
+      {
+       "value": 1.0,
+       "scale_max": 10.0
+      }
+     ],
+     "trend": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      2
+     ],
+     "rules": [
+      {
+       "key": "dns_tunnel",
+       "count": 1,
+       "drill": {
+        "page": "rule",
+        "opts": {
+         "from": "2026-10-26T04:59:37.763Z",
+         "to": "2026-10-29T04:59:37.762Z",
+         "rule": "dns_tunnel"
+        }
+       }
+      },
+      {
+       "key": "web_scan",
+       "count": 1,
+       "drill": {
+        "page": "rule",
+        "opts": {
+         "from": "2026-10-26T04:59:37.763Z",
+         "to": "2026-10-29T04:59:37.762Z",
+         "rule": "web_scan"
+        }
+       }
+      }
+     ],
+     "rules_total": 2,
+     "drill": {
+      "page": "logs",
+      "opts": {
+       "severity": "low",
+       "from": "2026-10-26T04:59:37.763Z",
+       "to": "2026-10-29T04:59:37.762Z"
+      }
+     }
+    },
+    {
+     "level": "info",
+     "count": 0,
+     "share": 0.0,
+     "raw_values": [],
+     "trend": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "rules": [],
+     "rules_total": 0,
+     "drill": {
+      "page": "logs",
+      "opts": {
+       "severity": "info",
+       "from": "2026-10-26T04:59:37.763Z",
+       "to": "2026-10-29T04:59:37.762Z"
+      }
+     }
+    }
+   ],
+   "splits": {
+    "rule": {
+     "critical": {
+      "top": [
+       {
+        "key": "Fehlgeschlagene Anmeldung über SSH",
+        "count": 3,
+        "drill": {
+         "page": "rule",
+         "opts": {
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "rule": "Fehlgeschlagene Anmeldung über SSH"
+         }
+        }
+       },
+       {
+        "key": "web_scan",
+        "count": 1,
+        "drill": {
+         "page": "rule",
+         "opts": {
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "rule": "web_scan"
+         }
+        }
+       }
+      ],
+      "other": 0
+     },
+     "high": {
+      "top": [
+       {
+        "key": "Web scanner user agent detected",
+        "count": 5,
+        "drill": {
+         "page": "rule",
+         "opts": {
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "rule": "Web scanner user agent detected"
+         }
+        }
+       },
+       {
+        "key": "Fehlgeschlagene Anmeldung über SSH",
+        "count": 2,
+        "drill": {
+         "page": "rule",
+         "opts": {
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "rule": "Fehlgeschlagene Anmeldung über SSH"
+         }
+        }
+       }
+      ],
+      "other": 0
+     },
+     "low": {
+      "top": [
+       {
+        "key": "dns_tunnel",
+        "count": 1,
+        "drill": {
+         "page": "rule",
+         "opts": {
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "rule": "dns_tunnel"
+         }
+        }
+       },
+       {
+        "key": "web_scan",
+        "count": 1,
+        "drill": {
+         "page": "rule",
+         "opts": {
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "rule": "web_scan"
+         }
+        }
+       }
+      ],
+      "other": 0
+     }
+    },
+    "source": {
+     "critical": {
+      "top": [
+       {
+        "key": "Wazuh prod",
+        "count": 3,
+        "drill": {
+         "page": "logs",
+         "opts": {
+          "severity": "critical",
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "sourceId": "wazuh-prod"
+         }
+        }
+       },
+       {
+        "key": "Elastic",
+        "count": 1,
+        "drill": {
+         "page": "logs",
+         "opts": {
+          "severity": "critical",
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "sourceId": "elastic"
+         }
+        }
+       }
+      ],
+      "other": 0
+     },
+     "high": {
+      "top": [
+       {
+        "key": "QRadar",
+        "count": 4,
+        "drill": {
+         "page": "logs",
+         "opts": {
+          "severity": "high",
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "sourceId": "qradar"
+         }
+        }
+       },
+       {
+        "key": "Wazuh prod",
+        "count": 2,
+        "drill": {
+         "page": "logs",
+         "opts": {
+          "severity": "high",
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "sourceId": "wazuh-prod"
+         }
+        }
+       },
+       {
+        "key": "Elastic",
+        "count": 1,
+        "drill": {
+         "page": "logs",
+         "opts": {
+          "severity": "high",
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "sourceId": "elastic"
+         }
+        }
+       }
+      ],
+      "other": 0
+     },
+     "low": {
+      "top": [
+       {
+        "key": "QRadar",
+        "count": 1,
+        "drill": {
+         "page": "logs",
+         "opts": {
+          "severity": "low",
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "sourceId": "qradar"
+         }
+        }
+       },
+       {
+        "key": "Wazuh prod",
+        "count": 1,
+        "drill": {
+         "page": "logs",
+         "opts": {
+          "severity": "low",
+          "from": "2026-10-26T04:59:37.763Z",
+          "to": "2026-10-29T04:59:37.762Z",
+          "sourceId": "wazuh-prod"
+         }
+        }
+       }
+      ],
+      "other": 0
+     }
+    }
+   },
+   "sample": {
+    "counted": 13,
+    "total": 48,
+    "per_source_cap": 200,
+    "exact": false,
+    "sources_exact": 2,
+    "sources_sampled": 1
+   },
+   "multi_level_rules": 2
+  }
+ },
+ "rules_table": {
+  "type": "table",
+  "id": "b-rules-table",
+  "title": "Top rules",
+  "caption": "Sampled from the newest events · last 3 days",
+  "provenance": "source",
+  "artifact_kind": "categories",
+  "allowed_views": [
+   "hbar",
+   "bar",
+   "donut",
+   "table"
+  ],
+  "untrusted": true,
+  "as_of": "2026-10-29T04:59:37.767797+00:00",
+  "columns": [
+   {
+    "key": "label",
+    "label": "Rule",
+    "type": "text",
+    "untrusted": true
+   },
+   {
+    "key": "value",
+    "label": "Count",
+    "type": "number",
+    "unit": "count",
+    "align": "right"
+   }
+  ],
+  "rows": [
+   [
+    "Fehlgeschlagene Anmeldung über SSH",
+    5
+   ],
+   [
+    "Web scanner user agent detected",
+    5
+   ],
+   [
+    "web_scan",
+    2
+   ],
+   [
+    "dns_tunnel",
+    1
+   ]
+  ],
+  "drill": [
+   {
+    "page": "rule",
+    "opts": {
+     "from": "2026-10-26T04:59:37.767Z",
+     "to": "2026-10-29T04:59:37.766Z",
+     "rule": "Fehlgeschlagene Anmeldung über SSH"
+    }
+   },
+   {
+    "page": "rule",
+    "opts": {
+     "from": "2026-10-26T04:59:37.767Z",
+     "to": "2026-10-29T04:59:37.766Z",
+     "rule": "Web scanner user agent detected"
+    }
+   },
+   {
+    "page": "rule",
+    "opts": {
+     "from": "2026-10-26T04:59:37.767Z",
+     "to": "2026-10-29T04:59:37.766Z",
+     "rule": "web_scan"
+    }
+   },
+   {
+    "page": "rule",
+    "opts": {
+     "from": "2026-10-26T04:59:37.767Z",
+     "to": "2026-10-29T04:59:37.766Z",
+     "rule": "dns_tunnel"
+    }
+   }
+  ],
+  "trend": [
+   [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    5
+   ],
+   [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    5
+   ],
+   [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    2
+   ],
+   [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1
+   ]
+  ]
+ },
+ "rules_chart": {
+  "type": "chart",
+  "id": "b-rules",
+  "title": "Top rules",
+  "caption": "Sampled from the newest events · last 3 days",
+  "provenance": "source",
+  "artifact_kind": "categories",
+  "allowed_views": [
+   "hbar",
+   "bar",
+   "donut",
+   "table"
+  ],
+  "untrusted": true,
+  "as_of": "2026-10-29T04:59:37.767797+00:00",
+  "kind": "hbar",
+  "unit": "count",
+  "x": {
+   "kind": "category",
+   "values": [
+    "Fehlgeschlagene Anmeldung über SSH",
+    "Web scanner user agent detected",
+    "web_scan",
+    "dns_tunnel"
+   ],
+   "label": "Rule"
+  },
+  "series": [
+   {
+    "key": "value",
+    "label": "Count",
+    "values": [
+     5,
+     5,
+     2,
+     1
+    ]
+   }
+  ],
+  "drill": [
+   {
+    "page": "rule",
+    "opts": {
+     "from": "2026-10-26T04:59:37.767Z",
+     "to": "2026-10-29T04:59:37.766Z",
+     "rule": "Fehlgeschlagene Anmeldung über SSH"
+    }
+   },
+   {
+    "page": "rule",
+    "opts": {
+     "from": "2026-10-26T04:59:37.767Z",
+     "to": "2026-10-29T04:59:37.766Z",
+     "rule": "Web scanner user agent detected"
+    }
+   },
+   {
+    "page": "rule",
+    "opts": {
+     "from": "2026-10-26T04:59:37.767Z",
+     "to": "2026-10-29T04:59:37.766Z",
+     "rule": "web_scan"
+    }
+   },
+   {
+    "page": "rule",
+    "opts": {
+     "from": "2026-10-26T04:59:37.767Z",
+     "to": "2026-10-29T04:59:37.766Z",
+     "rule": "dns_tunnel"
+    }
+   }
+  ]
+ }
+}

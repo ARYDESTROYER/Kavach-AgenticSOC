@@ -8,7 +8,11 @@
  *     (GET /api/notifications/inbox), each rendered as PLAIN text;
  *   - offers "Mark all read" (POST …/read-all) and a "View all" link that routes to
  *     the in-app Inbox page (PageId 'inbox') — NOT to any item's source-controlled
- *     `url` (#9: never follow attacker-influenceable hrefs).
+ *     `url` (#9: never follow attacker-influenceable hrefs);
+ *   - pins the shell-derived Agent-health degradations above the inbox list (Round-12),
+ *     replacing the Cyber Defence Center's dashboard warning strip. The bell does NOT
+ *     fetch them: the shell owns the hook and passes the result down, so the bell stays
+ *     provider-free and no new backend call or permission is introduced.
  *
  * SECURITY (#9): item `title`/`body`/`category`/`severity` originate from
  * cases/sources/operator text and are UNTRUSTED — they are rendered as plain text,
@@ -26,18 +30,35 @@
  */
 import * as React from 'react';
 import { useEventStream } from '@/lib/useEventStream';
-import { Bell, CheckCheck, Inbox as InboxIcon, AlertTriangle } from 'lucide-react';
+import {
+  Bell,
+  CheckCheck,
+  Inbox as InboxIcon,
+  AlertTriangle,
+  ArrowRight,
+  LoaderCircle,
+} from 'lucide-react';
 import { Button } from '@/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
 import { ScrollArea } from '@/ui/scroll-area';
 import { Separator } from '@/ui/separator';
+import { Progress } from '@/ui/progress';
 import { cn } from '@/lib/cn';
-import { humanizeAge } from '@/lib/format';
+import { humanizeAge, humanizeToken } from '@/lib/format';
 import { ApiError } from '@/lib/api';
 import { LoadingState } from '@/design-system';
 import { semanticIcon, type SeverityKey } from './palette';
+// TYPE-ONLY (elided at build): importing the VALUE side of health-diagnostics-state would
+// drag `useCan` -> `useAuth` into the bell, and the bell is rendered provider-free by its
+// own specs. The shell owns the hook; the bell only receives its result.
+import type { HealthDegradation } from './health-diagnostics-state';
 import type { Navigate } from '../router';
+
+/** Stable empty default so a bell with no degradations never re-renders on identity. */
+const EMPTY_DEGRADATIONS: HealthDegradation[] = [];
+import { isActiveJobStatus, JOBS_CHANGED_EVENT } from '../jobs/jobs';
 import {
+  fetchActiveJobCount,
   fetchInbox,
   fetchUnreadCount,
   markAllRead,
@@ -60,7 +81,7 @@ const RECENT_LIMIT = 8;
  * the dispatcher) and case-mention nudges (`inbox`/`inapp` from collaboration). Both
  * deliver the `inapp` event channel; any frame on either topic triggers a re-sync.
  */
-const BELL_TOPICS = ['notifications', 'inbox'];
+const BELL_TOPICS = ['notifications', 'inbox', 'jobs'];
 
 /**
  * Poll the unread count. Pauses while the tab is hidden; refetches immediately when
@@ -71,15 +92,31 @@ const BELL_TOPICS = ['notifications', 'inbox'];
  * When the stream is healthy (`live`) the bell refreshes on every frame and drops to
  * a slow safety-net poll; when realtime is disabled/unavailable it polls normally.
  */
-function useUnreadCount(): { unread: number; refresh: () => void } {
+function useUnreadCount(onNudge?: () => void): {
+  unread: number;
+  activeJobs: number;
+  refresh: () => void;
+} {
   const [unread, setUnread] = React.useState(0);
+  const [activeJobs, setActiveJobs] = React.useState(0);
+  const seqRef = React.useRef(0);
   const refresh = React.useCallback(() => {
-    void fetchUnreadCount()
-      .then((r) => setUnread(Math.max(0, r.unread | 0)))
-      .catch((e) => {
-        // A lapsed/disabled inbox or auth bounce → stay quiet, don't surface.
-        if (e instanceof ApiError) setUnread(0);
-      });
+    const seq = ++seqRef.current;
+    void Promise.allSettled([fetchUnreadCount(), fetchActiveJobCount()]).then(
+      ([unreadResult, activeResult]) => {
+        if (seq !== seqRef.current) return;
+        if (unreadResult.status === 'fulfilled') {
+          setUnread(Math.max(0, unreadResult.value.unread | 0));
+        } else if (unreadResult.reason instanceof ApiError) {
+          setUnread(0);
+        }
+        if (activeResult.status === 'fulfilled') {
+          setActiveJobs(Math.max(0, activeResult.value | 0));
+        } else if (activeResult.reason instanceof ApiError) {
+          setActiveJobs(0);
+        }
+      },
+    );
   }, []);
 
   // Live updates: a fresh `inapp` frame means the unread count likely changed; refetch
@@ -87,7 +124,8 @@ function useUnreadCount(): { unread: number; refresh: () => void } {
   const onEvent = React.useCallback(() => {
     if (typeof document !== 'undefined' && document.hidden) return;
     refresh();
-  }, [refresh]);
+    onNudge?.();
+  }, [onNudge, refresh]);
   const { live } = useEventStream(BELL_TOPICS, { enabled: true, onEvent });
 
   React.useEffect(() => {
@@ -110,7 +148,7 @@ function useUnreadCount(): { unread: number; refresh: () => void } {
     };
   }, [refresh, live]);
 
-  return { unread, refresh };
+  return { unread, activeJobs, refresh };
 }
 
 /** Compact "9+" formatting for the numeric badge. */
@@ -157,6 +195,10 @@ export const SEVERITY_TEXT: Record<SeverityKey, string> = {
 /** One row in the bell dropdown. All text is UNTRUSTED → rendered PLAIN. */
 const InboxRow: React.FC<{ item: InboxItem }> = ({ item }) => {
   const unread = item.state === 'unseen' || item.state === 'seen';
+  const activeJob = Boolean(item.job_id && isActiveJobStatus(item.job_status));
+  const done = Math.max(0, Number(item.progress?.done || 0));
+  const total = Math.max(0, Number(item.progress?.total || 0));
+  const progress = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
   // Severity: not color-only (WCAG 1.4.1). For a known severity we render the shared
   // SEMANTIC_ICON glyph (shape = colorblind-safe redundancy) tinted by the AA `-text`
   // token, plus an sr-only label so AT announces it; unknown severities keep the dot.
@@ -197,49 +239,128 @@ const InboxRow: React.FC<{ item: InboxItem }> = ({ item }) => {
             {item.body}
           </span>
         ) : null}
+        {item.job_id && item.progress ? (
+          <span
+            className="mt-1.5 block space-y-1"
+            role={activeJob ? 'status' : undefined}
+            aria-label={`${done} of ${total} ${item.progress.unit} complete`}
+          >
+            <span className="flex items-center justify-between gap-2 text-2xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1">
+                {activeJob ? <LoaderCircle className="size-3 animate-spin" aria-hidden /> : null}
+                {humanizeToken(item.job_status || 'completed')}
+              </span>
+              <span className="tabular-nums">{done.toLocaleString()} / {total.toLocaleString()}</span>
+            </span>
+            <Progress value={progress} className="h-1" />
+          </span>
+        ) : null}
       </span>
     </li>
   );
 };
 
+/**
+ * One Agent-health degradation, rendered as a pinned row above the inbox.
+ *
+ * Shape-not-colour (see SEVERITY_TEXT above): the warning triangle plus an sr-only
+ * severity word carry the state, so the row never depends on the tint alone. The
+ * backend-supplied `label`/`detail` are UNTRUSTED (#9) and are rendered as PLAIN text
+ * nodes — never into an `href`/`src`.
+ */
+const HealthRow: React.FC<{ signal: HealthDegradation }> = ({ signal }) => (
+  <li className="flex min-w-0 items-start gap-2" data-testid={`health-degradation-${signal.id}`}>
+    <AlertTriangle
+      className={cn(
+        'mt-0.5 size-3.5 shrink-0',
+        signal.severity === 'critical' ? 'text-critical-text' : 'text-warning-text',
+      )}
+      aria-hidden
+    />
+    <span className="sr-only">{signal.severity === 'critical' ? 'Critical' : 'Warning'}: </span>
+    <span className="min-w-0 flex-1">
+      <span className="block text-xs font-medium text-foreground">{signal.label}</span>
+      {signal.detail ? (
+        <span className="mt-0.5 block text-2xs text-muted-foreground">{signal.detail}</span>
+      ) : null}
+    </span>
+  </li>
+);
+
 export interface NotificationBellProps {
   /** Navigate to a page (the bell routes to the Inbox page id). */
   onNavigate: Navigate;
   className?: string;
+  /**
+   * Client-derived Agent-health degradations, hoisted into the SHELL so the bell stays
+   * provider-free (it is rendered in isolation by its own specs, where `useAuth` — and
+   * therefore the RBAC self-gate inside `useHealthDiagnosticsData` — would throw).
+   * Degradations only: an unknown/unmeasured signal must never reach the badge.
+   */
+  healthDegradations?: HealthDegradation[];
 }
 
 /**
  * The mounted-once top-bar bell. Owns its own poll + dropdown state. Safe when auth
  * is off / the inbox is unavailable: it shows a clean, empty, quiet bell.
+ *
+ * AGENT HEALTH (Round-12): the Cyber Defence Center's degradation strip moved here, so a
+ * healthy deployment spends ZERO dashboard pixels on it and a degraded one is visible from
+ * every route rather than only from Overview. The section is PINNED outside the inbox
+ * `ScrollArea` so a degradation can never scroll away behind the notification list, and the
+ * trigger's `aria-label` carries the state because the badges are `aria-hidden`.
  */
-export function NotificationBell({ onNavigate, className }: NotificationBellProps) {
-  const { unread, refresh } = useUnreadCount();
+export function NotificationBell({
+  onNavigate,
+  className,
+  healthDegradations = EMPTY_DEGRADATIONS,
+}: NotificationBellProps) {
   const [open, setOpen] = React.useState(false);
   const [items, setItems] = React.useState<InboxItem[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [failed, setFailed] = React.useState(false);
+  const recentSeqRef = React.useRef(0);
 
-  // Load the recent window each time the dropdown opens.
-  React.useEffect(() => {
-    if (!open) return undefined;
-    let alive = true;
+  const loadRecent = React.useCallback(() => {
+    if (!open) return;
+    const seq = ++recentSeqRef.current;
     setLoading(true);
     setFailed(false);
     void fetchInbox(RECENT_LIMIT)
       .then((r) => {
-        if (!alive) return;
+        if (seq !== recentSeqRef.current) return;
         setItems(Array.isArray(r.items) ? r.items : []);
       })
       .catch(() => {
-        if (alive) setFailed(true);
+        if (seq !== recentSeqRef.current) return;
+        setFailed(true);
       })
       .finally(() => {
-        if (alive) setLoading(false);
+        if (seq !== recentSeqRef.current) return;
+        setLoading(false);
       });
-    return () => {
-      alive = false;
-    };
   }, [open]);
+
+  const { unread, activeJobs, refresh } = useUnreadCount(loadRecent);
+
+  React.useEffect(() => {
+    if (open) loadRecent();
+    else {
+      recentSeqRef.current += 1;
+      setLoading(false);
+    }
+  }, [loadRecent, open]);
+  React.useEffect(() => () => {
+    recentSeqRef.current += 1;
+  }, []);
+  React.useEffect(() => {
+    const onJobsChanged = () => {
+      refresh();
+      loadRecent();
+    };
+    window.addEventListener(JOBS_CHANGED_EVENT, onJobsChanged);
+    return () => window.removeEventListener(JOBS_CHANGED_EVENT, onJobsChanged);
+  }, [loadRecent, refresh]);
 
   const onMarkAll = React.useCallback(() => {
     // Optimistic: clear the unread styling immediately, then persist + re-sync.
@@ -254,7 +375,13 @@ export function NotificationBell({ onNavigate, className }: NotificationBellProp
     onNavigate('inbox');
   }, [onNavigate]);
 
+  const goEffectiveness = React.useCallback(() => {
+    setOpen(false);
+    onNavigate('effectiveness');
+  }, [onNavigate]);
+
   const badge = badgeText(unread);
+  const degraded = healthDegradations.length > 0;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -263,16 +390,20 @@ export function NotificationBell({ onNavigate, className }: NotificationBellProp
           variant="ghost"
           size="icon"
           className={cn('relative h-8 w-8', className)}
+          // Every badge below is `aria-hidden` (the label carries the state), so the
+          // health marker MUST be spelled out here too — otherwise a screen-reader user
+          // gets nothing at all for a safety state (WCAG 4.1.2).
           aria-label={
-            unread > 0 ? `Notifications, ${unread} unread` : 'Notifications, none unread'
+            `Notifications, ${unread > 0 ? `${unread} unread` : 'none unread'}, ${activeJobs} active job${activeJobs === 1 ? '' : 's'}${degraded ? ', agent health needs attention' : ''}`
           }
         >
           <Bell className="h-4 w-4" aria-hidden />
           {unread > 0 ? (
             <span
+              // 11 px (`text-2xs`), the type floor, like the jobs badge beside it.
               className={cn(
                 'absolute -right-0.5 -top-0.5 flex min-w-[15px] items-center justify-center rounded-full',
-                'border border-surface bg-critical px-[3px] text-[9px] font-semibold leading-none text-critical-foreground',
+                'border border-surface bg-critical px-[3px] text-2xs font-semibold leading-none text-critical-foreground',
                 'h-[15px]',
               )}
               aria-hidden
@@ -280,9 +411,32 @@ export function NotificationBell({ onNavigate, className }: NotificationBellProp
               {badge}
             </span>
           ) : null}
+          {activeJobs > 0 ? (
+            <span
+              className="absolute -bottom-0.5 -left-0.5 inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full border border-surface bg-info px-[3px] text-2xs font-semibold leading-none text-info-foreground"
+              title={`${activeJobs} active background job${activeJobs === 1 ? '' : 's'}`}
+              aria-hidden
+            >
+              {badgeText(activeJobs)}
+            </span>
+          ) : null}
+          {/* Third trigger marker (unread = top-right, jobs = bottom-left, health =
+              bottom-right). Same chip geometry as the jobs badge, warning tint, and a
+              GLYPH rather than a count: the number of degraded signals is not a quantity
+              an operator acts on. `aria-hidden` like its siblings — the trigger's
+              `aria-label` above carries the state. */}
+          {degraded ? (
+            <span
+              className="absolute -bottom-0.5 -right-0.5 inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full border border-surface bg-warning px-[3px] text-2xs font-semibold leading-none text-warning-foreground"
+              data-testid="notification-bell-health-marker"
+              aria-hidden
+            >
+              <AlertTriangle className="size-2.5" />
+            </span>
+          ) : null}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 p-0" sideOffset={8}>
+      <PopoverContent align="end" aria-label="Notifications" className="w-80 p-0" sideOffset={8}>
         <div className="flex items-center justify-between gap-2 px-3 py-2.5">
           <p className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
             <Bell className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
@@ -303,6 +457,42 @@ export function NotificationBell({ onNavigate, className }: NotificationBellProp
           </button>
         </div>
         <Separator />
+
+        {/* PINNED — a sibling of the inbox scroller, never a child of it, so a degradation
+            can never scroll away behind the notification list. The window is FIXED at 24h
+            because the shell (unlike the old dashboard host) has no time range of its own,
+            and the auto-close verdict this reads IS window-scoped — so the header states
+            the window rather than implying the operator's current one. */}
+        {degraded ? (
+          <section
+            aria-labelledby="notification-bell-health-title"
+            data-testid="health-degradation-section"
+            className="shrink-0 border-b border-warning/30 bg-warning/5 px-3 py-2"
+          >
+            <h3
+              id="notification-bell-health-title"
+              className="flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-warning-text"
+            >
+              <AlertTriangle className="size-3" aria-hidden />
+              Agent health · last 24 hours
+            </h3>
+            <ul className="mt-1.5 space-y-1.5">
+              {healthDegradations.map((signal) => (
+                <HealthRow key={signal.id} signal={signal} />
+              ))}
+            </ul>
+            {/* The one canonical drill-through, kept verbatim from the retired dashboard
+                strip; it additionally closes the popover, as every other bell action does. */}
+            <button
+              type="button"
+              onClick={goEffectiveness}
+              className="mt-1.5 inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-warning-text underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              View effectiveness
+              <ArrowRight className="size-3.5" aria-hidden />
+            </button>
+          </section>
+        ) : null}
 
         <ScrollArea className="max-h-80">
           <div className="p-1.5">

@@ -111,20 +111,58 @@ describe('R1 — auto-close editor writes prefs.auto_close (the field decide() r
     expect('fp_auto_close' in patch).toBe(false);
   });
 
-  it('NEEDS_HUMAN is a locked, read-only row — no editable toggle for it', () => {
+  it('NEEDS_HUMAN is a locked, read-only row, with no editable toggle for it', () => {
     renderSection();
-    // There is a labelled locked region…
-    const locked = screen.getByLabelText(/needs human: never auto-closes/i);
-    expect(locked).toBeInTheDocument();
-    expect(within(locked).getByText(/locked/i)).toBeInTheDocument();
+    // There is a locked status row in its own Needs human group (named by its h3, with no
+    // aria-label on a generic div, which assistive technology ignores)…
+    const locked = screen.getByRole('group', { name: 'Needs human' });
+    expect(within(locked).getByText('Cases that need a person')).toBeInTheDocument();
+    expect(within(locked).getByText(/locked: never auto-closes/i)).toBeInTheDocument();
+    expect(document.querySelector('div[aria-label]:not([role])')).toBeNull();
     // …and there is NO switch offering to auto-close needs-human.
     expect(
       screen.queryByRole('switch', { name: /auto-close confident needs.?human/i }),
     ).toBeNull();
     // Exactly two auto-close switches exist (FP + TP) — never a third for needs_human.
-    const switches = screen
-      .getAllByRole('switch')
-      .filter((el) => /auto-close confident/i.test(el.getAttribute('aria-label') || ''));
+    // (Round 14: each switch is named by its row label, not an aria-label.)
+    const switches = screen.getAllByRole('switch', { name: /auto-close confident/i });
     expect(switches).toHaveLength(2);
   });
 });
+
+describe('auto-close fields: an emptied field is no value (empty="keep")', () => {
+  // Committing the field's minimum instead would silently loosen the policy: a bar of 0%
+  // auto-closes at any confidence, and an objection window of 0 closes at once.
+  const enabledPrefs = (): Preferences =>
+    ({
+      auto_close: {
+        false_positive: { enabled: true, min_confidence: 0.85, max_risk_score: 30, objection_window_minutes: 1440 },
+        true_positive: { enabled: false, min_confidence: 0.95, max_risk_score: 10, objection_window_minutes: 4320 },
+      },
+    }) as unknown as Preferences;
+
+  it.each([
+    ['Minimum confidence to auto-close', '85'],
+    ['Maximum risk score to auto-close', '30'],
+    ['Objection window', '1440'],
+  ])('clearing "%s" and leaving it commits nothing and shows %s again', (label, shown) => {
+    const { update } = renderSection(enabledPrefs());
+    const group = screen.getByRole('group', { name: 'False positive auto-close' });
+    const field = within(group).getByLabelText(label) as HTMLInputElement;
+    expect(field.value).toBe(shown);
+    fireEvent.focus(field);
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.blur(field);
+    expect(update).not.toHaveBeenCalled();
+    expect(field.value).toBe(shown);
+  });
+
+  it('reads the objection window in hours or days', () => {
+    renderSection(enabledPrefs());
+    const fp = screen.getByRole('group', { name: 'False positive auto-close' });
+    expect(within(fp).getByLabelText('Objection window')).toHaveAccessibleDescription(/\(24 hours\)\.$/);
+    const tp = screen.getByRole('group', { name: 'True positive auto-close' });
+    expect(within(tp).getByLabelText('Objection window')).toHaveAccessibleDescription(/\(3 days\)\.$/);
+  });
+});
+

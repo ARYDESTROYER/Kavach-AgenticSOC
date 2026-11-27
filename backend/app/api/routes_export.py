@@ -3,8 +3,9 @@
 The export is intentionally selected APPLICATION state, not a backup of credentials
 or raw upstream logs. The legacy endpoint returns one bounded canonical JSON file;
 the v2 endpoint walks every record in one supported safe scope through resumable,
-response-bounded segments. Environment secrets, connector credentials, auth
-users/sessions, password/MFA material and raw log payloads are never traversed. A
+response-bounded segments; and the archive endpoint walks those same bounded pages
+into one disk-backed ZIP before serving it. Environment secrets, connector credentials,
+auth users/sessions, password/MFA material and raw log payloads are never traversed. A
 final recursive guard omits credential-named keys and redacts common bearer/API-key/
 private-key patterns from free text.
 
@@ -16,28 +17,39 @@ authority (#3).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets as stdlib_secrets
+import shutil
+import tempfile
+import threading
+import zipfile
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ..audit.context import audit_context
+from ..build_identity import current_record_provenance
 from ..constants import ActionType
-from ..engine.runbooks import parse_runbook_document
-from ..playbooks.loader import parse_playbook
-from ..playbooks.manifest import MAX_PLAYBOOK_PROMPT_CHARS, render_playbook_prompt
+from ..models import AuditTarget
 from ..state import AppState
 from .deps import current_username, get_state, require_fresh_auth, require_permission
 
 router = APIRouter(prefix="/api")
+
+_ARCHIVE_PERMISSION_DEP = require_permission("data_export", "export")
+_ARCHIVE_FRESH_DEP = require_fresh_auth()
 
 ExportScope = Literal[
     "all", "cases", "audit", "usage", "configuration", "automation", "knowledge"
@@ -54,6 +66,13 @@ _MAX_EXPORT_BYTES = 25 * 1024 * 1024
 _MAX_TEXT_CHARS = 250_000
 _MAX_CURSOR_CHARS = 32_768
 _MAX_PIT_CHARS = 24_000
+_ARCHIVE_STREAM_CHUNK_BYTES = 1024 * 1024
+_ARCHIVE_DISK_RESERVE_BYTES = 64 * 1024 * 1024
+
+# A single process assembles/serves at most one temporary archive at a time. This is
+# deliberately non-blocking: privileged callers receive 409 instead of queueing a
+# second potentially large disk artifact until their fresh-auth window has expired.
+_ARCHIVE_SLOT = threading.Lock()
 
 # Exact/suffix checks avoid stripping harmless usage fields such as prompt_tokens.
 _SENSITIVE_KEYS = {
@@ -80,6 +99,8 @@ _EXCLUDED = [
     "user and session registries",
     "browser cookies and bearer tokens",
     "upstream raw log payloads",
+    # Round 15 WP4 (SPEC D5.9): screenshot bytes never enter an export.
+    "case screenshot image contents (metadata and SHA-256 are included)",
 ]
 
 
@@ -102,11 +123,203 @@ class DataExportSegmentRequest(BaseModel):
     page_size: int = Field(default=1000, ge=1, le=_MAX_ITEMS_PER_SCOPE)
 
 
+class DataExportArchiveRequest(BaseModel):
+    """Selected safe scopes for one server-assembled full-history ZIP."""
+
+    scopes: list[ExportScope] = Field(default_factory=lambda: ["all"], min_length=1)
+
+
 class DataExportSegmentCancelRequest(BaseModel):
     """Release a still-open point-in-time cursor after operator cancellation."""
 
     scope: SegmentExportScope
     cursor: str = Field(min_length=1, max_length=_MAX_CURSOR_CHARS)
+
+
+class _ArchiveArtifact:
+    """Idempotent temp-file and global-slot cleanup for every response path."""
+
+    def __init__(self) -> None:
+        self.path: str | None = None
+        self._done = False
+
+    async def cleanup(self) -> None:
+        if self._done:
+            return
+        self._done = True
+        try:
+            if self.path:
+                await _run_blocking(_unlink_archive, self.path)
+        finally:
+            _ARCHIVE_SLOT.release()
+
+
+class _ArchiveStreamingResponse(StreamingResponse):
+    """Streaming response whose outer ASGI boundary always deletes the artifact.
+
+    Starlette's background callback is not reached when ``send`` raises. Wrapping the
+    complete response call in ``finally`` covers disconnects before the body iterator
+    starts as well as failures during a chunk, while the iterator keeps its own finally
+    as defense in depth.
+    """
+
+    def __init__(
+        self,
+        content: AsyncIterator[bytes],
+        *,
+        cleanup: Callable[[], Awaitable[None]],
+        headers: dict[str, str],
+    ) -> None:
+        super().__init__(content, media_type="application/zip", headers=headers)
+        self._archive_cleanup = cleanup
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._archive_cleanup()
+
+
+def _unlink_archive(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def _new_archive_path() -> str:
+    descriptor, path = tempfile.mkstemp(
+        prefix="agentic-soc-export-",
+        suffix=".zip",
+    )
+    os.close(descriptor)
+    return path
+
+
+async def _run_blocking(
+    function: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Finish an in-flight filesystem call before propagating cancellation.
+
+    Cancelling ``asyncio.to_thread`` does not stop its worker. Waiting for that worker
+    prevents ZIP writes racing the close/unlink cleanup path after a client abort.
+    """
+    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await task
+        except Exception:  # noqa: BLE001 — cancellation remains authoritative
+            pass
+        raise
+
+
+def _ensure_archive_capacity(path: str, required_bytes: int) -> None:
+    free = shutil.disk_usage(os.path.dirname(path) or ".").free
+    needed = max(0, int(required_bytes)) + _ARCHIVE_DISK_RESERVE_BYTES
+    if free < needed:
+        raise HTTPException(
+            status_code=507,
+            detail=(
+                "temporary storage is too full to assemble this export safely; "
+                "free space or use the resumable segment export"
+            ),
+        )
+
+
+def _write_ndjson_page(
+    entry: Any,
+    records: list[Any],
+    digest: Any,
+) -> int:
+    written = 0
+    for record in records:
+        line = (
+            json.dumps(
+                record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            + b"\n"
+        )
+        entry.write(line)
+        digest.update(line)
+        written += len(line)
+    return written
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _verify_archive(
+    path: str,
+    scopes: list[str],
+    expected_manifest: dict[str, Any],
+) -> None:
+    expected_names = [*(f"{scope}.ndjson" for scope in scopes), "manifest.json"]
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            if archive.namelist() != expected_names:
+                raise ValueError("archive entries do not match the selected scopes")
+            for scope in scopes:
+                metadata = expected_manifest["scopes"][scope]
+                entry_name = str(metadata["entry"])
+                digest = hashlib.sha256()
+                uncompressed_bytes = 0
+                line_count = 0
+                final_byte = b""
+                with archive.open(entry_name, "r") as entry:
+                    while True:
+                        chunk = entry.read(_ARCHIVE_STREAM_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        uncompressed_bytes += len(chunk)
+                        line_count += chunk.count(b"\n")
+                        final_byte = chunk[-1:]
+                if uncompressed_bytes and final_byte != b"\n":
+                    raise ValueError(f"{entry_name} is not complete NDJSON")
+                if uncompressed_bytes != int(metadata["uncompressed_bytes"]):
+                    raise ValueError(f"{entry_name} byte count does not match manifest")
+                if digest.hexdigest() != str(metadata["sha256"]):
+                    raise ValueError(f"{entry_name} digest does not match manifest")
+                if line_count != int(metadata["exported"]):
+                    raise ValueError(f"{entry_name} record count does not match manifest")
+                if archive.getinfo(entry_name).file_size != uncompressed_bytes:
+                    raise ValueError(f"{entry_name} ZIP size does not match its contents")
+            stored_manifest = json.loads(archive.read("manifest.json"))
+            if stored_manifest != expected_manifest:
+                raise ValueError("archive manifest does not match assembled state")
+    except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="the completed export archive failed integrity verification",
+        ) from exc
+
+
+async def _stream_archive(
+    path: str,
+    cleanup: Callable[[], Awaitable[None]],
+) -> AsyncIterator[bytes]:
+    handle = None
+    try:
+        handle = await _run_blocking(open, path, "rb")
+        while True:
+            chunk = await _run_blocking(handle.read, _ARCHIVE_STREAM_CHUNK_BYTES)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        if handle is not None:
+            await _run_blocking(handle.close)
+        await cleanup()
 
 
 def _redact_text(value: str, *, max_characters: int = _MAX_TEXT_CHARS) -> str:
@@ -126,8 +339,8 @@ def _plain(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, _AuthoritativeCatalogText):
-        # Operator runbooks/playbooks are individually and aggregately bounded by
-        # their owning stores. Preserve the complete source document; the 25 MiB
+        # Operator runbooks (and the retired procedure documents) are individually and
+        # aggregately bounded by their owning stores. Preserve the complete source document; the 25 MiB
         # response cap and adaptive segmented paging remain the outer safety bound.
         return _redact_text(value, max_characters=len(value))
     if isinstance(value, str):
@@ -335,212 +548,195 @@ def _limit_grouped_rows(
     return bounded
 
 
-def _playbook_catalog_record(
-    playbook: Any,
-    metadata: dict[str, Any],
-    *,
-    content: str | None = None,
-) -> dict[str, Any]:
-    """Return a filesystem-path-free playbook manifest for portable export."""
-    manifest = playbook.manifest
+#: The knowledge catalog manifest's schema (Round 14 SPEC §4.10.18 moved it from 1 to
+#: 2: the runbook library groups, the legacy groups read from the retired namespaces,
+#: and the two removed bundled groups that now export empty).
+KNOWLEDGE_CATALOG_SCHEMA_VERSION = 2
+_REMOVED_BUNDLED_NOTE = "Removed in Round 14; see bundled_runbook_library"
+
+
+def _legacy_catalog_record(namespace: str, legacy_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    """One document of a retired procedure namespace, exported exactly as stored (its
+    Markdown is authoritative and stays untouched for one release, §4.10.16)."""
+    content = str(row.get("content") or "")
     record: dict[str, Any] = {
-        "id": playbook.id,
-        "name": playbook.name,
-        "version": playbook.version,
-        "description": manifest.description,
-        "priority": manifest.priority,
-        "match": {
-            "rule_ids": list(manifest.match.rule_ids),
-            "entity_types": list(manifest.match.entity_types),
-            "mitre": list(manifest.match.mitre),
-            "min_event_count": manifest.match.min_event_count,
-            "any_tags": list(manifest.match.any_tags),
-        },
-        "suggested_tools": list(manifest.suggested_tools),
-        "rag_queries": list(manifest.rag_queries),
-        "escalate_if": manifest.escalate_if,
-        "suggested_verdict_bias": manifest.suggested_verdict_bias,
-        "valid": True,
-        **metadata,
+        "id": legacy_id,
+        "namespace": namespace,
+        "source_type": "operator",
+        "file_name": f"{legacy_id}.md",
+        "revision": int(row.get("revision", 1) or 1),
+        "created_at": str(row.get("created_at") or ""),
+        "updated_at": str(row.get("updated_at") or ""),
+        "created_by": str(row.get("created_by") or ""),
+        "updated_by": str(row.get("updated_by") or ""),
+        "content": _AuthoritativeCatalogText(content),
+        "content_included": True,
+        "read_only": True,
     }
-    if content is not None:
-        # The complete operator-authored Markdown is authoritative. It is emitted
-        # once (rather than duplicating the parsed body), then recursively secret-
-        # redacted together with the rest of the export envelope.
-        record["content"] = _AuthoritativeCatalogText(content)
-        record["content_included"] = True
-    else:
-        record["content_included"] = False
+    for key in ("index_status", "indexed_revision", "last_indexed_at", "index_error"):
+        if key in row:
+            record[key] = row[key]
     return record
+
+
+def _operator_runbook_record(doc: Any, revision: int) -> dict[str, Any]:
+    """One operator runbook with EVERY version (Round 14 SPEC §4.10.18): the library
+    metadata, and per version its state, governance stamps and authoritative Markdown
+    source (the definition is that source parsed, so it is not repeated)."""
+    versions: list[dict[str, Any]] = []
+    for version in sorted(doc.versions, key=lambda v: v.version):
+        entry = version.model_dump(mode="json", exclude={"definition", "source"})
+        entry["title"] = version.definition.title
+        entry["source"] = _AuthoritativeCatalogText(str(version.source or ""))
+        versions.append(entry)
+    live = doc.live
+    return {
+        "id": doc.id,
+        "origin": doc.origin,
+        "revision": int(revision),
+        "live_version": live.version if live is not None else None,
+        "retired": bool(doc.retired),
+        "replaces": doc.replaces,
+        "derived_from": doc.derived_from.model_dump(mode="json") if doc.derived_from else None,
+        "review_due_at": doc.review_due_at,
+        "last_reviewed_at": doc.last_reviewed_at,
+        "last_reviewed_by": doc.last_reviewed_by,
+        "migrated_from": doc.migrated_from.model_dump(mode="json") if doc.migrated_from else None,
+        "created_at": doc.created_at,
+        "created_by": doc.created_by,
+        "updated_at": doc.updated_at,
+        "updated_by": doc.updated_by,
+        "versions": versions,
+        "content_included": True,
+        "valid": True,
+    }
+
+
+async def _damaged_runbook_record(library: Any, runbook_id: str) -> dict[str, Any]:
+    """A library document that cannot be decoded, exported with its stored text (a
+    strict read: a storage failure fails the scope)."""
+    from ..constants import RUNBOOK_LIBRARY_NS
+    from ..stores.runbook_library import DOC_FIELD, doc_key
+
+    kv = library.kv
+    getter = getattr(kv, "get_strict", None)
+    raw = await (getter(RUNBOOK_LIBRARY_NS, doc_key(runbook_id)) if callable(getter)
+                 else kv.get(RUNBOOK_LIBRARY_NS, doc_key(runbook_id)))
+    stored = raw.get(DOC_FIELD) if isinstance(raw, dict) else None
+    return {
+        "id": runbook_id,
+        "content": _AuthoritativeCatalogText(stored if isinstance(stored, str) else json.dumps(stored)),
+        "content_included": True,
+        "valid": False,
+        "validation_status": "stored_unparseable",
+    }
+
+
+def _bundled_runbook_record(builtin: Any) -> dict[str, Any]:
+    """A built-in runbook as a safe, versioned reference (package data, never its
+    content: the release that ships it is the source)."""
+    defn = builtin.definition
+    return {
+        "id": builtin.id,
+        "title": defn.title,
+        "version": int(builtin.version),
+        "content_hash": builtin.content_hash,
+        "file_name": builtin.file_name,
+        "phases": list(defn.phases),
+        "steps": len(defn.steps),
+        "rule_ids": list(defn.applies_when.rule_ids),
+        "mitre": list(dict.fromkeys([*defn.applies_when.mitre, *defn.mitre])),
+        "prompt_chars": int(builtin.prompt_chars),
+        "source_type": "bundled",
+        "content_included": False,
+    }
 
 
 async def _knowledge_catalog_groups(state: AppState) -> dict[str, list[Any]]:
     """Collect the complete safe Intelligence catalog from owning stores.
 
-    Operator runbooks/playbooks are application state and therefore include their
-    sanitized source document. Packaged procedures are versioned application
-    assets; references and manifests are sufficient and avoid duplicating package
-    content in every support export. Invalid but durably stored operator documents
-    are retained with an explicit validation status so backup completeness never
-    depends on whether the live parser can currently load them.
+    Round 14 (SPEC §4.10.18): ``operator_runbook_library`` holds every operator
+    runbook with every version and its Markdown source, and ``bundled_runbook_library``
+    the built-ins as versioned references. The retired ``operator_runbooks`` and
+    ``operator_playbooks`` groups keep exporting the untouched legacy documents for one
+    release, read only through ``stores.legacy_procedures`` (strict: a damaged legacy
+    catalog fails the scope rather than export part of it). ``bundled_runbooks`` and
+    ``bundled_playbooks`` export empty; the manifest says why. Every read is strict:
+    an unreadable store fails the scope (503), never an empty complete export.
     """
-    runbook_rows = await state.runbooks.store.list_strict()
-    runbook_catalog = await state.runbooks.list()
-    bundled_runbooks = [
-        {
-            **record.payload(include_content=False),
-            "valid": True,
-            "content_included": False,
-        }
-        for record in runbook_catalog
-        if record.source_type == "bundled"
-    ]
+    from ..engine.runbook_model import load_builtin_runbooks
 
-    operator_runbooks: list[dict[str, Any]] = []
-    for runbook_id, row in sorted(runbook_rows.items()):
-        content = str(row.get("content") or "")
-        record: dict[str, Any] = {
-            "id": runbook_id,
-            "source_type": "operator",
-            "protected": False,
-            "editable": True,
-            "file_name": f"{runbook_id}.md",
-            "revision": int(row.get("revision", 1) or 1),
-            "created_at": str(row.get("created_at") or ""),
-            "updated_at": str(row.get("updated_at") or ""),
-            "created_by": str(row.get("created_by") or ""),
-            "updated_by": str(row.get("updated_by") or ""),
-            "index_status": str(row.get("index_status") or "pending"),
-            "indexed_revision": int(row.get("indexed_revision", 0) or 0),
-            "last_indexed_at": str(row.get("last_indexed_at") or ""),
-            "index_error": str(row.get("index_error") or ""),
-            "content": _AuthoritativeCatalogText(content),
-            "content_included": True,
-        }
+    from ..stores.runbook_library import RunbookDocumentDamaged
+
+    library = state.runbook_library
+    operator_runbook_library: list[dict[str, Any]] = []
+    versions_total = 0
+    for row in await library.verified_rows():
         try:
-            parsed = parse_runbook_document(
-                content,
-                expected_id=runbook_id,
-                enforce_authoring_standard=False,
-            )
-            record.update({
-                "title": parsed.title,
-                "summary": parsed.summary,
-                "persona": parsed.persona,
-                "applies_to_rules": list(parsed.applies_to_rules),
-                "applies_to_techniques": list(parsed.applies_to_techniques),
-                "applies_to_entities": list(parsed.applies_to_entities),
-                "keywords": list(parsed.keywords),
-                "body_characters": len(parsed.body),
-                "valid": True,
-                "validation_status": "valid",
-            })
-        except Exception:  # noqa: BLE001 — retain malformed authoritative state
-            record.update({
-                "valid": False,
-                "validation_status": "stored_unparseable",
-            })
-        operator_runbooks.append(record)
+            record = await library.get(row.id)
+        except RunbookDocumentDamaged:
+            # A stored runbook that can no longer be decoded is still application
+            # state: it is exported as stored, marked, never dropped from a backup.
+            operator_runbook_library.append(await _damaged_runbook_record(library, row.id))
+            continue
+        if record is None:
+            continue
+        exported = _operator_runbook_record(record.runbook, record.revision)
+        versions_total += len(exported["versions"])
+        operator_runbook_library.append(exported)
+    operator_runbook_library.sort(key=lambda item: item["id"])
+    bundled_runbook_library = [_bundled_runbook_record(b) for b in load_builtin_runbooks()]
 
-    playbook_store = getattr(state.playbooks, "store", None)
-    operator_playbooks: list[dict[str, Any]] = []
-    bundled_playbooks: list[dict[str, Any]] = []
-    if playbook_store is not None:
-        # Read the durable operator layer once. The packaged registry is immutable;
-        # its currently loaded bundled manifests are sufficient safe references.
-        playbook_rows = await playbook_store.list_strict()
-        for playbook in state.playbooks.all():
-            metadata = dict(state.playbooks.metadata(playbook))
-            if metadata.get("source_type") == "bundled":
-                bundled_playbooks.append(
-                    _playbook_catalog_record(playbook, metadata)
-                )
-        for playbook_id, row in sorted(playbook_rows.items()):
-            content = str(row.get("content") or "")
-            metadata = {
-                "source_type": "operator",
-                "protected": False,
-                "editable": True,
-                "file_name": f"{playbook_id}.md",
-                "revision": int(row.get("revision", 1) or 1),
-                "created_at": str(row.get("created_at") or ""),
-                "updated_at": str(row.get("updated_at") or ""),
-                "created_by": str(row.get("created_by") or ""),
-                "updated_by": str(row.get("updated_by") or ""),
-                "storage": "state",
-            }
-            parsed = parse_playbook(
-                content,
-                fallback_id=playbook_id,
-                source_path=f"state:{playbook_id}",
-            )
-            if (
-                parsed is not None
-                and parsed.id == playbook_id
-                and len(render_playbook_prompt(parsed)) <= MAX_PLAYBOOK_PROMPT_CHARS
-            ):
-                operator_playbooks.append(
-                    _playbook_catalog_record(parsed, metadata, content=content)
-                )
-            else:
-                operator_playbooks.append({
-                    "id": playbook_id,
-                    **metadata,
-                    "content": _AuthoritativeCatalogText(content),
-                    "content_included": True,
-                    "valid": False,
-                    "validation_status": "stored_unparseable",
-                })
-    else:
-        # A deliberate directory override is operator-managed application state.
-        # Refresh once, then export each validated document from the same registry.
-        refresh = await state.refresh_playbooks()
-        if refresh.get("skipped"):
-            raise ValueError("operator playbook directory contains invalid documents")
-        for playbook in state.playbooks.all():
-            metadata = dict(state.playbooks.metadata(playbook))
-            if metadata.get("source_type") == "operator":
-                _loaded, content = state.playbooks.read_document(playbook.id)
-                operator_playbooks.append(
-                    _playbook_catalog_record(playbook, metadata, content=content)
-                )
-            else:
-                bundled_playbooks.append(
-                    _playbook_catalog_record(playbook, metadata)
-                )
+    legacy = state.legacy_procedures
+    operator_playbooks = [
+        _legacy_catalog_record("playbooks", legacy_id, row)
+        for legacy_id, row in sorted((await legacy.list_procedures_strict()).items())
+    ]
+    operator_runbooks = [
+        _legacy_catalog_record("runbooks", legacy_id, row)
+        for legacy_id, row in sorted((await legacy.list_runbooks_strict()).items())
+    ]
 
     memories = list(await state.memory.list_strict(active_only=False))
     documents = list(await state.rag_service.snapshot_documents_strict())
     custom_models = list(await state.custom_models.list_models_strict())
     catalog_manifest = {
-        "schema_version": 1,
-        "runbooks": {
-            "total": len(operator_runbooks) + len(bundled_runbooks),
-            "operator": len(operator_runbooks),
-            "bundled": len(bundled_runbooks),
-            "operator_content_included": len(operator_runbooks),
+        "schema_version": KNOWLEDGE_CATALOG_SCHEMA_VERSION,
+        "runbook_library": {
+            "total": len(operator_runbook_library) + len(bundled_runbook_library),
+            "operator": len(operator_runbook_library),
+            "operator_versions": versions_total,
+            "bundled": len(bundled_runbook_library),
+            "operator_content_included": len(operator_runbook_library),
             "bundled_content_included": 0,
         },
-        "playbooks": {
-            "total": len(operator_playbooks) + len(bundled_playbooks),
-            "operator": len(operator_playbooks),
-            "bundled": len(bundled_playbooks),
-            "operator_content_included": len(operator_playbooks),
-            "bundled_content_included": 0,
+        "legacy": {
+            "operator_runbooks": len(operator_runbooks),
+            "operator_playbooks": len(operator_playbooks),
+            "note": (
+                "The stored documents of the retired procedure catalogs, read-only for "
+                "one release and exported exactly as stored."
+            ),
+        },
+        "removed": {
+            "bundled_runbooks": _REMOVED_BUNDLED_NOTE,
+            "bundled_playbooks": _REMOVED_BUNDLED_NOTE,
         },
         "policy": (
-            "operator documents include sanitized authoritative Markdown; "
-            "bundled procedures include safe versioned references/manifests only"
+            "operator runbooks include every version with its sanitized authoritative "
+            "Markdown; built-in runbooks are safe versioned references only"
         ),
     }
     return {
         # Keep the exact count manifest first so even a very small legacy bounded
         # export explicitly discloses what exists and whether catalog rows truncated.
         "catalog_manifests": [catalog_manifest],
+        "operator_runbook_library": operator_runbook_library,
+        "bundled_runbook_library": bundled_runbook_library,
         "operator_runbooks": operator_runbooks,
         "operator_playbooks": operator_playbooks,
-        "bundled_runbooks": bundled_runbooks,
-        "bundled_playbooks": bundled_playbooks,
+        "bundled_runbooks": [],
+        "bundled_playbooks": [],
         "memory": memories,
         # Metadata only: corpus chunks can contain upstream/log or operator-pasted
         # secrets and remain deliberately excluded from portable export.
@@ -549,12 +745,183 @@ async def _knowledge_catalog_groups(state: AppState) -> dict[str, list[Any]]:
     }
 
 
+#: How ``case_runbook_runs`` is read and shaped, stated beside it in a cases export
+#: (the legacy manifest and every segment that carries runs).
+CASE_RUNBOOK_RUNS_STEPS_SHAPE = "list"
+CASE_RUNBOOK_RUNS_CONSISTENCY: dict[str, Any] = {
+    "mode": "live_values_at_read",
+    "exact": False,
+    "detail": (
+        "Runbook runs are read live for each page and may reflect updates made "
+        "during the export."
+    ),
+}
+
+
+def export_runbook_run(run: Any) -> dict[str, Any]:
+    """One runbook run as an export carries it (Round 14 SPEC §4.10.18): everything
+    the run holds, except the rows of a ``table_kind="rows"`` lookup table (raw
+    ``log_search`` rows), which are dropped. The lookup's count, relation, facts,
+    parameters and window stay, as do aggregate tables, so the manifest's exclusion of
+    upstream raw log payloads stays true. The table keeps its column names and says
+    how many rows were dropped.
+
+    ``steps`` is a list of step states, each with its ``step_id``, in the runbook's
+    step order (:data:`CASE_RUNBOOK_RUNS_STEPS_SHAPE`), never a mapping keyed by step
+    id: step ids are operator slugs, and the export's secret filter drops any mapping
+    key that reads like a credential (``reset-password``, ``rotate-api-key``), which
+    would silently drop that step's state."""
+    data = run.model_dump(mode="json") if hasattr(run, "model_dump") else dict(run)
+    steps = data.get("steps") if isinstance(data.get("steps"), dict) else {}
+    snapshot = data.get("snapshot") if isinstance(data.get("snapshot"), dict) else {}
+    order = {
+        str(step.get("id")): index
+        for index, step in enumerate(snapshot.get("steps") or [])
+        if isinstance(step, dict)
+    }
+    data["steps"] = [
+        {**(state if isinstance(state, dict) else {}), "step_id": str(step_id)}
+        for step_id, state in sorted(
+            steps.items(), key=lambda item: (order.get(str(item[0]), len(order)), str(item[0])),
+        )
+    ]
+    for state in data["steps"]:
+        for evidence in state.get("evidence") or []:
+            lookup = evidence.get("lookup") if isinstance(evidence, dict) else None
+            if not isinstance(lookup, dict) or lookup.get("table_kind") != "rows":
+                continue
+            table = lookup.get("table") if isinstance(lookup.get("table"), dict) else {}
+            rows = table.get("rows") if isinstance(table.get("rows"), list) else []
+            lookup["table"] = {"columns": list(table.get("columns") or []), "rows": []}
+            lookup["rows_dropped"] = len(rows)
+    return data
+
+
+async def _case_runbook_runs(state: AppState, case_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """``case_id -> exported runs`` for the cases of one page, from the active run
+    store (at most 8 reads at once). A case without runs is absent. A store failure
+    raises: the cases scope then fails rather than export cases without their runs."""
+    store = getattr(state, "runbook_runs", None)
+    ids = [cid for cid in dict.fromkeys(case_ids) if cid]
+    if store is None or not ids:
+        return {}
+    found = await store.get_many(ids, concurrency=8)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for case_id, case_runs in found.items():
+        runs = [export_runbook_run(run) for run in getattr(case_runs, "runs", ())]
+        if runs:
+            out[str(case_id)] = runs
+    return out
+
+
+async def _auto_close_review_group(state: AppState) -> dict[str, list[Any]]:
+    """Round 15 (SPEC D6.4): the auto-close review ledger as the ``auto_close_review``
+    group of the automation scope: one row per sampled case (ids, the rule, times,
+    states and the review's codes; the note stays on the case's grade). Absent when the
+    state has no ledger; a ledger outage raises so the scope fails rather than export
+    without it."""
+    store = getattr(state, "auto_close_review", None)
+    if store is None:
+        return {}
+    return {"auto_close_review": await store.export_rows()}
+
+# --------------------------------------------------------------------------- #
+# Round 15 WP4 (SPEC D5.9): case screenshots in a cases export. Metadata only (id,
+# type, size, dimensions, SHA-256, caption, filename, who and when, deletion); the
+# image bytes are excluded (``_EXCLUDED``) and never pass through ``_plain``.
+# --------------------------------------------------------------------------- #
+CASE_FILES_CONSISTENCY: dict[str, Any] = {
+    "mode": "live_values_at_read",
+    "exact": False,
+    "detail": (
+        "Screenshot metadata is read live for each page and may reflect uploads or "
+        "deletions made during the export. Image contents are not exported."
+    ),
+}
+
+
+def export_case_file(record: Any) -> dict[str, Any]:
+    """One screenshot's metadata as an export carries it (never its bytes)."""
+    data = record.model_dump(mode="json") if hasattr(record, "model_dump") else dict(record)
+    thumb = data.get("thumb") if isinstance(data.get("thumb"), dict) else None
+    return {
+        "id": data.get("id"),
+        "type": data.get("type"),
+        "bytes": data.get("bytes"),
+        "width": data.get("width"),
+        "height": data.get("height"),
+        "sha256": data.get("sha256"),
+        "caption": data.get("caption") or "",
+        "filename": data.get("filename") or "",
+        "uploaded_by": data.get("uploaded_by") or "",
+        "uploaded_at": data.get("uploaded_at") or "",
+        "thumbnail_bytes": thumb.get("bytes") if thumb else None,
+        "deleted_at": data.get("deleted_at"),
+        "deleted_by": data.get("deleted_by"),
+    }
+
+
+async def _case_files_metadata(state: AppState, case_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """``case_id -> screenshot metadata`` (live and deleted entries) for the cases of
+    one page, from the active screenshot store. A case without screenshots is absent.
+    A store failure raises: the cases scope then fails rather than export cases
+    without their screenshot record."""
+    store = getattr(state, "case_files", None)
+    ids = [cid for cid in dict.fromkeys(case_ids) if cid]
+    if store is None or not ids:
+        return {}
+    found = await store.get_many(ids, concurrency=8)
+    return {
+        str(case_id): [export_case_file(entry) for entry in index.entries]
+        for case_id, index in found.items()
+        if index.entries
+    }
+
+
+def _attach_case_files(plain: Any, files: list[dict[str, Any]] | None) -> None:
+    if files and isinstance(plain, dict):
+        plain["case_files"] = _plain(files)
+
+
+def _case_files_manifest(meta: dict[str, Any], files: dict[str, list[dict[str, Any]]]) -> None:
+    if files:
+        meta["case_files"] = sum(len(entries) for entries in files.values())
+        meta["case_files_consistency"] = dict(CASE_FILES_CONSISTENCY)
+
+
+def _case_id_of(row: Any) -> str:
+    value = getattr(row, "case_id", None)
+    if value is None and isinstance(row, dict):
+        value = row.get("case_id")
+    return str(value or "")
+
+
 async def _collect_scope(
     scope: str, state: AppState, limit: int,
 ) -> tuple[Any, dict[str, Any]]:
     if scope == "cases":
         rows, total = await state.cases.list(limit=limit, offset=0)
-        return rows, _manifest(len(rows), total)
+        runs = await _case_runbook_runs(state, [_case_id_of(row) for row in rows])
+        files = await _case_files_metadata(state, [_case_id_of(row) for row in rows])
+        if not runs and not files:
+            return rows, _manifest(len(rows), total)
+        # Round 14 (SPEC §4.10.18): each case carries its runbook runs as
+        # ``case_runbook_runs`` (raw log rows dropped, ``export_runbook_run``).
+        out = []
+        for row in rows:
+            plain = _plain(row)
+            case_runs = runs.get(_case_id_of(row))
+            if case_runs and isinstance(plain, dict):
+                plain["case_runbook_runs"] = case_runs
+            _attach_case_files(plain, files.get(_case_id_of(row)))
+            out.append(plain)
+        meta = _manifest(len(rows), total)
+        if runs:
+            meta["case_runbook_runs"] = sum(len(r) for r in runs.values())
+            meta["case_runbook_runs_steps"] = CASE_RUNBOOK_RUNS_STEPS_SHAPE
+            meta["case_runbook_runs_consistency"] = dict(CASE_RUNBOOK_RUNS_CONSISTENCY)
+        _case_files_manifest(meta, files)
+        return out, meta
 
     if scope == "audit":
         rows = await state.audit.records(limit=limit)
@@ -586,17 +953,16 @@ async def _collect_scope(
             key=lambda job: str(getattr(job, "id", "")),
         )
         rule_versions = list(await state.rule_versions.list_strict())
-        groups = _limit_grouped_rows({
+        grouped_rows = {
             "proposals": proposals,
             "tuning": tuning,
             "campaigns": list(campaigns),
             "batch_jobs": batch_jobs,
             "rule_versions": rule_versions,
-        }, limit)
-        total = (
-            len(proposals) + len(tuning) + int(campaign_total) + len(batch_jobs)
-            + len(rule_versions)
-        )
+        }
+        grouped_rows.update(await _auto_close_review_group(state))
+        groups = _limit_grouped_rows(grouped_rows, limit)
+        total = sum(len(rows) for rows in grouped_rows.values()) - len(campaigns) + int(campaign_total)
         count = sum(len(rows) for rows in groups.values())
         return groups, _manifest(count, total)
 
@@ -621,7 +987,17 @@ async def _collect_segment_page(
         rows, next_position, total, consistency = await state.cases.export_page(
             limit=limit, cursor=position,
         )
-        return [{"record": row} for row in rows], next_position, total, consistency
+        # Round 14 (SPEC §4.10.18): a case with runbook runs carries them beside its
+        # record as ``case_runbook_runs`` (raw log rows dropped).
+        runs = await _case_runbook_runs(state, [_case_id_of(row) for row in rows])
+        # Round 15 WP4 (SPEC D5.9): screenshot metadata beside the record, bytes never.
+        files = await _case_files_metadata(state, [_case_id_of(row) for row in rows])
+        return [
+            {"record": row,
+             **({"case_runbook_runs": runs[_case_id_of(row)]} if _case_id_of(row) in runs else {}),
+             **({"case_files": files[_case_id_of(row)]} if _case_id_of(row) in files else {})}
+            for row in rows
+        ], next_position, total, consistency
 
     if scope == "audit":
         rows, next_position, total, consistency = await state.audit.export_page(
@@ -658,6 +1034,7 @@ async def _collect_segment_page(
             ),
             "rule_versions": list(await state.rule_versions.list_strict()),
         }
+        grouped.update(await _auto_close_review_group(state))
     elif scope == "knowledge":
         grouped = await _knowledge_catalog_groups(state)
     else:
@@ -812,11 +1189,16 @@ async def _segment_envelope(
                 "actual_page_size": page_size,
             },
             "excluded": _EXCLUDED,
-            "records": _plain(records),
+            "records": await _run_blocking(_plain, records),
         }
-        payload = json.dumps(
-            envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        if any(isinstance(r, dict) and "case_files" in r for r in records):
+            envelope["case_files_consistency"] = dict(CASE_FILES_CONSISTENCY)
+        if any(isinstance(r, dict) and "case_runbook_runs" in r for r in records):
+            # The case records follow the scope's consistency above; the runs beside
+            # them are read live for this page (SPEC §4.10.18).
+            envelope["case_runbook_runs_steps"] = CASE_RUNBOOK_RUNS_STEPS_SHAPE
+            envelope["case_runbook_runs_consistency"] = dict(CASE_RUNBOOK_RUNS_CONSISTENCY)
+        payload = await _run_blocking(_canonical_json_bytes, envelope)
         if len(payload) <= _MAX_EXPORT_BYTES:
             if complete or not continuation_available:
                 await _close_export_position(scope, state, next_position or position)
@@ -845,9 +1227,298 @@ async def _segment_envelope(
             }
 
 
+async def _close_archive_cursor(
+    scope: str,
+    cursor: str | None,
+    state: AppState,
+    actor: str,
+) -> None:
+    if not cursor:
+        return
+    try:
+        cursor_state = _decode_cursor(
+            scope,
+            cursor,
+            actor=actor,
+            signing_key=state.export_cursor_signing_key,
+        )
+    except HTTPException:
+        return
+    await _close_export_position(
+        scope,
+        state,
+        cursor_state.get("position") if cursor_state else None,
+    )
+
+
+async def _assemble_archive(
+    path: str,
+    scopes: list[str],
+    state: AppState,
+    actor: str,
+    disconnected: Callable[[], Awaitable[bool]] | None = None,
+    progressed: Callable[[str, int, int], Awaitable[None]] | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Write every selected scope incrementally and add the manifest last."""
+    archive = await _run_blocking(
+        zipfile.ZipFile,
+        path,
+        "w",
+        zipfile.ZIP_DEFLATED,
+        True,
+    )
+    active_entry: Any | None = None
+    active_scope = ""
+    active_cursor: str | None = None
+    scope_manifest: dict[str, dict[str, Any]] = {}
+    assembly_succeeded = False
+    try:
+        for scope in scopes:
+            active_scope = scope
+            active_cursor = None
+            entry_name = f"{scope}.ndjson"
+            active_entry = await _run_blocking(
+                archive.open,
+                entry_name,
+                "w",
+                force_zip64=True,
+            )
+            first_consistency: dict[str, Any] | None = None
+            snapshot_total: int | None = None
+            exported = 0
+            uncompressed_bytes = 0
+            digest = hashlib.sha256()
+            seen_cursors: set[str] = set()
+            while True:
+                if disconnected is not None and await disconnected():
+                    raise asyncio.CancelledError
+                body = DataExportSegmentRequest(
+                    scope=scope,  # type: ignore[arg-type]
+                    cursor=active_cursor,
+                    page_size=_MAX_ITEMS_PER_SCOPE,
+                )
+                envelope, _bounded_payload = await _segment_envelope(
+                    body,
+                    state,
+                    actor,
+                )
+                consistency = dict(envelope.get("consistency") or {})
+                segment = dict(envelope.get("segment") or {})
+                returned_cursor = segment.get("next_cursor")
+                active_cursor = str(returned_cursor) if returned_cursor else None
+                # Take ownership of the returned continuation/PIT before observing
+                # disconnect, so cancellation always closes the newest live cursor.
+                if disconnected is not None and await disconnected():
+                    raise asyncio.CancelledError
+                if consistency.get("mode") == "unverified":
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export repository cannot verify its "
+                            "consistency; no archive was produced"
+                        ),
+                    )
+                if first_consistency is None:
+                    first_consistency = consistency
+                elif (
+                    consistency.get("mode") != first_consistency.get("mode")
+                    or consistency.get("exact") != first_consistency.get("exact")
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export consistency changed during assembly; "
+                            "no archive was produced"
+                        ),
+                    )
+                observed_total = segment.get("snapshot_total")
+                if not isinstance(observed_total, int) or isinstance(observed_total, bool):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export could not prove its starting record "
+                            "count; no archive was produced"
+                        ),
+                    )
+                if snapshot_total is None:
+                    snapshot_total = observed_total
+                elif observed_total != snapshot_total:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export count changed during assembly; "
+                            "no archive was produced"
+                        ),
+                    )
+                records = envelope.get("records")
+                if not isinstance(records, list):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"the {scope} export returned malformed records",
+                    )
+                await _run_blocking(
+                    _ensure_archive_capacity,
+                    path,
+                    len(_bounded_payload) + len(records) + 1024 * 1024,
+                )
+                uncompressed_bytes += int(
+                    await _run_blocking(
+                        _write_ndjson_page,
+                        active_entry,
+                        records,
+                        digest,
+                    )
+                )
+                exported = int(segment.get("cumulative_count") or 0)
+                if progressed is not None:
+                    await progressed(scope, exported, int(snapshot_total or 0))
+                status = str(segment.get("status") or "unverified")
+                complete = bool(segment.get("complete"))
+                if complete and status == "complete":
+                    if exported != snapshot_total:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"the {scope} export ended before its starting count "
+                                "was emitted; no archive was produced"
+                            ),
+                        )
+                    active_cursor = None
+                    break
+                if status in {"incomplete", "unverified"}:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export stopped with status={status}; "
+                            "no archive was produced"
+                        ),
+                    )
+                if (
+                    status != "partial"
+                    or not active_cursor
+                    or not records
+                    or active_cursor in seen_cursors
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export made no verifiable forward progress; "
+                            "no archive was produced"
+                        ),
+                    )
+                seen_cursors.add(active_cursor)
+
+            await _run_blocking(active_entry.close)
+            active_entry = None
+            consistency = first_consistency or _consistency_manifest("unverified")
+            scope_manifest[scope] = {
+                "snapshot_total": snapshot_total,
+                "exported": exported,
+                "status": "complete",
+                "pit_consistent": bool(
+                    consistency.get("mode") == "point_in_time"
+                    and consistency.get("exact") is True
+                ),
+                "consistency": consistency,
+                "entry": entry_name,
+                "uncompressed_bytes": uncompressed_bytes,
+                "sha256": digest.hexdigest(),
+            }
+
+        if disconnected is not None and await disconnected():
+            raise asyncio.CancelledError
+        generated = datetime.now(timezone.utc).replace(microsecond=0)
+        generated_at = generated.isoformat().replace("+00:00", "Z")
+        manifest = {
+            "format": "agentic-soc-portable-export-archive",
+            "format_version": 1,
+            "generated_at": generated_at,
+            "generated_by": actor,
+            "provenance": current_record_provenance(),
+            "selection": {"scopes": scopes},
+            "limits": {
+                "max_items_per_internal_page": _MAX_ITEMS_PER_SCOPE,
+                "max_bytes_per_internal_page": _MAX_EXPORT_BYTES,
+                "temporary_disk_reserve_bytes": _ARCHIVE_DISK_RESERVE_BYTES,
+            },
+            "semantics": {
+                "delivery": "the complete ZIP is verified before the response starts",
+                "scope_consistency": (
+                    "each scope is captured independently; this is not one cross-scope "
+                    "database transaction"
+                ),
+                "complete": (
+                    "each scope emitted the record count fixed at that scope's start; "
+                    "only consistency.exact=true proves fixed membership and values"
+                ),
+            },
+            "excluded": _EXCLUDED,
+            "scopes": scope_manifest,
+            "complete": True,
+        }
+        manifest_payload = json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        await _run_blocking(
+            archive.writestr,
+            "manifest.json",
+            manifest_payload,
+        )
+        filename = f"agentic-soc-export-{generated.strftime('%Y%m%dT%H%M%SZ')}.zip"
+        assembly_succeeded = True
+        return manifest, filename
+    finally:
+        if active_entry is not None:
+            try:
+                await _run_blocking(active_entry.close)
+            except Exception:  # noqa: BLE001 — preserve the primary assembly error
+                pass
+        if active_cursor:
+            await _close_archive_cursor(active_scope, active_cursor, state, actor)
+        try:
+            await _run_blocking(archive.close)
+        except Exception:  # noqa: BLE001 — incomplete archives are deleted by caller
+            if assembly_succeeded:
+                raise
+
+
+def export_audit_target(scopes: list[str]) -> AuditTarget:
+    """The ``export`` target of an application data export row: the exported scopes
+    (``cases,audit``), named in plain words."""
+    ordered = [scope for scope in _SCOPE_ORDER if scope in scopes] or list(scopes)
+    return AuditTarget(
+        type="export", id=",".join(ordered) or "all",
+        label="Application data: " + ", ".join(ordered or ["all"]),
+    )
+
+
+def _export_audit_fields(
+    request: Request, *, action: str, scopes: list[str], details: dict[str, Any],
+) -> dict[str, Any]:
+    """The Round 14 record fields (SPEC §4.5.3) of an export delivery row: the action
+    and outcome, the requester's context (client, session, role, request id), the
+    exported scopes as target, and the delivery's details (format, file name, counts,
+    bytes) as ``tool_input``, which is stored but never indexed. A delivery row is
+    appended before the response exists, so its outcome is ``success``: a refused or
+    failed delivery never reaches this row (it fails closed with ``503``)."""
+    context = audit_context(request)
+    return {
+        "action": action,
+        "outcome": "success",
+        "actor_type": "human",
+        "target": export_audit_target(scopes),
+        "tool_input": details,
+        **context.record_fields(),
+    }
+
+
 @router.post("/admin/export")
 async def export_application_data(
     body: DataExportRequest,
+    request: Request,
     state: AppState = Depends(get_state),
     actor: str = Depends(current_username),
     _=Depends(require_permission("data_export", "export")),
@@ -892,13 +1563,26 @@ async def export_application_data(
         )
 
     # Append-only audit AFTER capture so this download does not unexpectedly add
-    # itself to its own audit scope. A future export will include the event.
+    # itself to its own audit scope. A future export will include the event. The row
+    # is appended before the response is created (audit before visible, Round 14 SPEC
+    # §3.6) with the Round 14 record fields (§4.5.3).
     try:
         await state.control_audit.record_strict(
             action_type=ActionType.DATA_EXPORT,
             surface="settings",
             actor=actor or "local-operator",
             result_summary=f"exported scopes={','.join(scopes)} bytes={len(payload)}",
+            **_export_audit_fields(
+                request, action="export.downloaded", scopes=scopes,
+                details={
+                    "format": "json", "filename": "agentic-soc-export.json",
+                    "bytes": len(payload), "limit_per_scope": int(body.limit_per_scope),
+                    "records": {
+                        scope: int((manifest.get(scope) or {}).get("count") or 0)
+                        for scope in scopes
+                    },
+                },
+            ),
         )
     except Exception as exc:  # noqa: BLE001 — privileged delivery fails closed
         raise HTTPException(
@@ -916,15 +1600,144 @@ async def export_application_data(
     )
 
 
-@router.post("/admin/export/segment")
+@router.post(
+    "/admin/export/archive",
+    deprecated=True,
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "One complete server-assembled portable export archive.",
+            "content": {
+                "application/zip": {
+                    "schema": {"type": "string", "format": "binary"},
+                },
+            },
+        },
+    },
+)
+async def export_application_data_archive(
+    body: DataExportArchiveRequest,
+    request: Request,
+    state: AppState = Depends(get_state),
+    actor: str = Depends(current_username),
+    _permission: Any = Depends(_ARCHIVE_PERMISSION_DEP),
+    _fresh: Any = Depends(_ARCHIVE_FRESH_DEP),
+) -> Response:
+    """Deprecated request-bound compatibility export.
+
+    New operator workflows submit ``data_export_archive`` through ``POST /api/jobs``
+    so assembly survives navigation, reports durable progress, and produces a
+    permission-rechecked artifact. This route remains for existing API integrations.
+
+    Every NDJSON member is written one bounded segment page at a time. The terminal
+    manifest is added only after every selected repository emitted its starting count;
+    no response begins before the ZIP is complete, freshly authorized, and audited.
+    """
+    if not _ARCHIVE_SLOT.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "another archive export is already being assembled or served; "
+                "retry after it finishes or use the resumable segment export"
+            ),
+        )
+
+    artifact = _ArchiveArtifact()
+    effective_actor = actor or "local-operator"
+    try:
+        artifact.path = await _run_blocking(_new_archive_path)
+        await _run_blocking(
+            _ensure_archive_capacity,
+            artifact.path,
+            _MAX_EXPORT_BYTES,
+        )
+        scopes = _select_scopes([str(scope) for scope in body.scopes])
+        manifest, filename = await _assemble_archive(
+            artifact.path,
+            scopes,
+            state,
+            effective_actor,
+            request.is_disconnected,
+        )
+        await _run_blocking(_verify_archive, artifact.path, scopes, manifest)
+
+        # Assembly can outlive a short sudo window or an operator's grant. Re-run both
+        # gates against the same request immediately before audit and response creation.
+        await _ARCHIVE_PERMISSION_DEP(request)
+        await _ARCHIVE_FRESH_DEP(request)
+
+        archive_size = await _run_blocking(os.path.getsize, artifact.path)
+        counts = ",".join(
+            f"{scope}={int(meta['exported'])}"
+            for scope, meta in manifest["scopes"].items()
+        )
+        try:
+            await state.control_audit.record_strict(
+                action_type=ActionType.DATA_EXPORT,
+                surface="settings",
+                actor=effective_actor,
+                result_summary=(
+                    f"prepared archive scopes={','.join(scopes)} records={counts} "
+                    f"complete=true bytes={archive_size}"
+                ),
+                **_export_audit_fields(
+                    request, action="export.downloaded", scopes=scopes,
+                    details={
+                        "format": "zip", "filename": filename, "bytes": archive_size,
+                        "records": {
+                            scope: int(meta.get("exported") or 0)
+                            for scope, meta in manifest["scopes"].items()
+                        },
+                    },
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — privileged delivery fails closed
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "the export audit trail is unavailable; no archive was delivered"
+                ),
+            ) from exc
+
+        return _ArchiveStreamingResponse(
+            _stream_archive(artifact.path, artifact.cleanup),
+            cleanup=artifact.cleanup,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(archive_size),
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except HTTPException:
+        await artifact.cleanup()
+        raise
+    except asyncio.CancelledError:
+        await artifact.cleanup()
+        raise
+    except Exception as exc:  # noqa: BLE001 — hide filesystem/backend internals
+        await artifact.cleanup()
+        raise HTTPException(
+            status_code=503,
+            detail="the export archive could not be assembled; no archive was delivered",
+        ) from exc
+
+
+@router.post("/admin/export/segment", deprecated=True)
 async def export_application_data_segment(
     body: DataExportSegmentRequest,
+    request: Request,
     state: AppState = Depends(get_state),
     actor: str = Depends(current_username),
     _permission=Depends(require_permission("data_export", "export")),
     _fresh=Depends(require_fresh_auth()),
 ) -> Response:
-    """Download one resumable segment of a scope's complete history.
+    """Deprecated request-bound compatibility segment.
+
+    New operator workflows submit ``data_export_segment`` through ``POST /api/jobs``;
+    that worker owns the complete cursor loop and returns one verified artifact. This
+    one-page primitive remains for existing integrations and explicit cursor recovery.
 
     The 5,000-record setting is deliberately a per-segment memory/response bound,
     not a lifetime ceiling. The Console follows ``next_cursor`` until ``complete``;
@@ -961,6 +1774,7 @@ async def export_application_data_segment(
             detail=f"the {body.scope} export scope is temporarily unavailable",
         ) from exc
     segment = envelope["segment"]
+    filename = f"agentic-soc-{body.scope}-part-{int(segment['number']):05d}.json"
     try:
         await state.control_audit.record_strict(
             action_type=ActionType.DATA_EXPORT,
@@ -970,6 +1784,15 @@ async def export_application_data_segment(
                 f"exported segment scope={body.scope} part={segment['number']} "
                 f"records={segment['count']} cumulative={segment['cumulative_count']} "
                 f"status={segment['status']} bytes={len(payload)}"
+            ),
+            **_export_audit_fields(
+                request, action="export.segment_downloaded", scopes=[str(body.scope)],
+                details={
+                    "format": "json", "filename": filename, "bytes": len(payload),
+                    "part": int(segment["number"]), "records": int(segment["count"]),
+                    "cumulative": int(segment["cumulative_count"]),
+                    "status": str(segment["status"]),
+                },
             ),
         )
     except Exception as exc:  # noqa: BLE001 — privileged delivery fails closed
@@ -992,7 +1815,6 @@ async def export_application_data_segment(
             ),
         ) from exc
 
-    filename = f"agentic-soc-{body.scope}-part-{int(segment['number']):05d}.json"
     return Response(
         content=payload,
         media_type="application/json",

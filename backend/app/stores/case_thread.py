@@ -9,54 +9,138 @@ render-escaped user input (never an unfenced prompt instruction, #9).
 
 Backend-agnostic by construction (the SAME single-KV-document pattern as
 :mod:`app.stores.memory` / :mod:`app.stores.user_prefs`): the WHOLE thread set is
-ONE KV document (``ns=CASE_THREAD_NS``, ``key=CASE_THREAD_KEY``) whose value is
-``{"threads": {"<case_id>": [<CaseMessage json>, ...], ...}}`` — so it needs NO new
-ES index / SQL table / migration. The SQL backend uses ``SqlKVStore`` (the shared
-KV table); the ES backend uses the thin :class:`app.stores.memory.EsKVStore`
+ONE KV document (``ns=CASE_THREAD_NS``, ``key=CASE_THREAD_KEY``) — so it needs NO
+new ES index / SQL table / migration. The SQL backend uses ``SqlKVStore`` (the
+shared KV table); the ES backend uses the thin :class:`app.stores.memory.EsKVStore`
 adapter (a doc in the existing config index).
+
+Storage forms, chosen per backend by :func:`opaque_rows_for` (both are always READ):
+
+* **Keyed** ``{"threads": {"<case_id>": [...]}}`` — written on the SQL backend
+  (``SqlKVStore``: PostgreSQL / SQLite). It is the form every released build reads,
+  so the supported image-only rollback of the PostgreSQL Compose profile (which never
+  rewrites state) keeps every thread readable AND writable by the previous build. A
+  previous build rewrites the whole document in this form; had it found opaque rows
+  it would have read an empty set and its next comment would have erased them.
+* **Opaque rows** ``{"thread_rows": ["<canonical JSON {case_id, messages}>", ...]}``
+  — written everywhere else, i.e. the Elasticsearch KV adapter. The config index maps
+  every KV document with ONE shared dynamic mapping (default limit 1,000 fields); the
+  keyed form mints ~20 mapped fields per case id (and ``ai_meta`` keys per message),
+  so threads on a few dozen cases would make every KV write in the index fail. This
+  form is ONE-WAY: a build released before it reads an empty thread set and its next
+  write drops the rows, so an image rollback on the Elasticsearch backend after this
+  build has written loses the threads written since (that backend has no supervised
+  rollback; the trade is a bounded mapping vs. failing every KV write).
 
 Reads + writes are read-modify-write over the single dict — fine at our scale
 (operator collaboration, not log volume). The store NEVER raises: a load/save
 failure degrades to an empty thread / best-effort write and is logged, so a thread
-glitch can never drop an alert or break a case page.
+glitch can never drop an alert or break a case page. The one exception is
+:meth:`CaseThreadStore.append_if_absent`, which exists to REPORT whether a keyed
+chat turn was written, so it confirms its write and raises
+:class:`CaseThreadWriteFailed` instead of returning an optimistic result.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import sys
 from typing import Any, Callable, TypeVar
 
 from ..constants import CASE_THREAD_KEY, CASE_THREAD_NS
 from ..models import CaseMessage
 from ..utils import iso_now
-from .base import KVStore, kv_mutate
+from .base import KVStore, kv_mutate, kv_mutate_strict
 
 _T = TypeVar("_T")
 
 logger = logging.getLogger("tlsoc.stores.case_thread")
+
+# One opaque JSON string per case (see the module docstring); ``threads`` is the
+# keyed form (written on SQL, read everywhere).
+THREAD_ROWS_KEY = "thread_rows"
+KEYED_THREADS_KEY = "threads"
+_LEGACY_THREADS_KEY = KEYED_THREADS_KEY
+# Looked up, never imported: a SqlKVStore can only exist once its module is loaded, and
+# an eager import here would tie this light store to SQLAlchemy and risk import cycles.
+_SQL_KV_MODULE = f"{__package__}.sql.repositories"
+
+
+def opaque_rows_for(kv: Any) -> bool:
+    """Whether stores sharing the KV config document pattern write the mapping-safe
+    OPAQUE-row form on ``kv`` (True) or the keyed form released builds read (False).
+
+    Only the SQL KV store gets the keyed form: it has no field mapping to protect, and
+    it backs the only profile with a supported image-only rollback (the previous build
+    must keep reading and writing what this build wrote). Every other backend, which in
+    production is the Elasticsearch adapter, gets opaque rows — unbounded mapping growth
+    there fails every KV write in the shared index, so an unrecognised backend errs on
+    that side. Shared by :mod:`app.stores.chat_conversations`."""
+    module = sys.modules.get(_SQL_KV_MODULE)
+    sql_kv = getattr(module, "SqlKVStore", None)
+    # The class can only have instances once its module is loaded.
+    return not (isinstance(sql_kv, type) and isinstance(kv, sql_kv))
+
+
+def _thread_row(case_id: str, messages: list[dict[str, Any]]) -> str:
+    return json.dumps({"case_id": case_id, "messages": messages}, ensure_ascii=False,
+                      sort_keys=True, separators=(",", ":"), default=str)
+
+
+def stored_threads(doc: Any) -> dict[str, list[Any]]:
+    """The raw stored messages by case id, in either storage form (an unreadable
+    row is skipped; the opaque rows win when present — a writer only ever produces
+    one form, as every write replaces the whole document)."""
+    if not isinstance(doc, dict):
+        return {}
+    rows = doc.get(THREAD_ROWS_KEY)
+    if isinstance(rows, list):
+        out: dict[str, list[Any]] = {}
+        for item in rows:
+            try:
+                row = json.loads(item) if isinstance(item, str) else item
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            cid = row.get("case_id")
+            messages = row.get("messages")
+            if isinstance(cid, str) and cid and isinstance(messages, list) and cid not in out:
+                out[cid] = messages
+        return out
+    legacy = doc.get(_LEGACY_THREADS_KEY)
+    return {str(k): v for k, v in legacy.items() if isinstance(v, list)} if isinstance(legacy, dict) else {}
 
 
 def _norm_case_id(case_id: str | None) -> str:
     return (case_id or "").strip()
 
 
+class CaseThreadWriteFailed(RuntimeError):
+    """A confirmed thread write could not be proven durable (backend error or
+    exhausted compare-and-set retries); nothing can be assumed written."""
+
+
 class CaseThreadStore:
     """CRUD over per-case message threads, persisted as one KV document.
 
-    The KV value is ``{"threads": {"<case_id>": [<CaseMessage json>, ...]}}``.
-    Methods are read-modify-write; none raises (a failure logs + returns a safe
-    default). Messages within a case keep insertion order (chronological)."""
+    The KV value is ``{"threads": {case_id: [...]}}`` on SQL and
+    ``{"thread_rows": ["<JSON {case_id, messages}>", ...]}`` elsewhere (see the module
+    docstring; ``opaque_rows`` overrides the per-backend choice, for tests). Methods
+    are read-modify-write; none raises (a failure logs + returns a safe default).
+    Messages within a case keep insertion order (chronological)."""
 
-    def __init__(self, kv: KVStore) -> None:
+    def __init__(self, kv: KVStore, *, opaque_rows: bool | None = None) -> None:
         self._kv = kv
         self._lock = asyncio.Lock()
+        self._opaque_rows = opaque_rows_for(kv) if opaque_rows is None else bool(opaque_rows)
 
     @staticmethod
     def _decode(doc: dict | None) -> dict[str, list[CaseMessage]]:
-        raw = doc.get("threads", {}) if isinstance(doc, dict) else {}
         out: dict[str, list[CaseMessage]] = {}
-        for cid, items in (raw or {}).items():
+        for cid, items in stored_threads(doc).items():
             msgs: list[CaseMessage] = []
             for item in items or []:
                 try:
@@ -66,10 +150,14 @@ class CaseThreadStore:
             out[str(cid)] = msgs
         return out
 
-    @staticmethod
-    def _encode(threads: dict[str, list[CaseMessage]]) -> dict:
-        return {"threads": {cid: [m.model_dump(mode="json") for m in msgs]
-                            for cid, msgs in threads.items()}}
+    def _encode(self, threads: dict[str, list[CaseMessage]]) -> dict:
+        dumped = {cid: [m.model_dump(mode="json") for m in msgs] for cid, msgs in threads.items()}
+        if not self._opaque_rows:
+            # Exactly the released keyed form, so a rolled-back build reads it in full.
+            return {KEYED_THREADS_KEY: dumped}
+        # One opaque string per case: the document's mapped field paths never depend
+        # on case ids or message contents (see the module docstring).
+        return {THREAD_ROWS_KEY: [_thread_row(cid, msgs) for cid, msgs in dumped.items()]}
 
     async def _load_all(self) -> dict[str, list[CaseMessage]]:
         try:
@@ -122,6 +210,45 @@ class CaseThreadStore:
 
         await self._mutate(_change)
         return message
+
+    async def append_if_absent(self, message: CaseMessage) -> tuple[CaseMessage, bool]:
+        """Append ``message`` unless its case thread already holds a message with the
+        same id, as ONE confirmed compare-and-set mutation. Returns ``(stored,
+        appended)``: the existing message and False when the id was already there.
+
+        A retried case-scoped chat turn derives deterministic message ids from its
+        idempotency key (chat revamp SPEC §4.6); a check-then-append outside the CAS
+        would let two simultaneous retries both see "absent" and duplicate the turn.
+
+        Unlike the other methods this one is STRICT: the best-effort ``kv_mutate``
+        returns its computed value even when nothing was stored, which would report
+        ``appended=True`` for a lost write and leave the caller unable to tell
+        "already appended" from "never written". A write that cannot be confirmed
+        raises :class:`CaseThreadWriteFailed` (the engine maps it to a retryable
+        ``not_saved`` notice)."""
+        cid = _norm_case_id(message.case_id)
+        if not cid:
+            raise ValueError("message.case_id is required")
+        box: dict[str, tuple[CaseMessage, bool]] = {}
+
+        def _mutator(current: dict | None) -> dict:
+            # Pure in its snapshot: a CAS retry re-runs it on the fresh document.
+            threads = self._decode(current)
+            msgs = list(threads.get(cid, []))
+            existing = next((m for m in msgs if m.id == message.id), None)
+            if existing is not None:
+                box["r"] = (existing, False)
+            else:
+                threads[cid] = [*msgs, message]
+                box["r"] = (message, True)
+            return self._encode(threads)
+
+        try:
+            await kv_mutate_strict(self._kv, CASE_THREAD_NS, CASE_THREAD_KEY, _mutator, lock=self._lock)
+        except Exception as exc:  # noqa: BLE001 -- any failure means "not proven written"
+            logger.warning("Confirmed case-thread append failed (%s)", type(exc).__name__)
+            raise CaseThreadWriteFailed("The case thread could not be saved.") from exc
+        return box["r"]
 
     async def edit(self, case_id: str | None, message_id: str, body: str,
                    *, editor: str = "") -> CaseMessage | None:

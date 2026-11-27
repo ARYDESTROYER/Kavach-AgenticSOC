@@ -1,6 +1,6 @@
 ---
 title: Console development
-description: Agentic SOC Console architecture, design system, API contracts, accessibility, and development workflow for version 0.1.
+description: Agentic SOC Console architecture, design system, API contracts, accessibility, and development workflow for version 0.2.
 ---
 
 # Console development
@@ -125,6 +125,13 @@ boundaries, and other repository-wide UI constraints.
 Use `npm test -- <file-or-pattern>` while iterating. `npm run test:strict` is the
 release/CI gate: it runs the full suite and also rejects any stderr byte or
 Vitest-captured console stdout block.
+
+The first-paint bundle checks in `src/soc/__tests__/bundle-first-paint.test.ts` (entry
+size budget, lazy chunks kept off first paint) read the built `dist/`. Without a build,
+`test:strict` skips them and runs only their source guards. CI's production-build lane
+runs the file again after `npm run build` with `REQUIRE_DIST_BUILD=1`, where a missing
+build fails instead of skipping. Run the same check locally after a build:
+`REQUIRE_DIST_BUILD=1 npx vitest run src/soc/__tests__/bundle-first-paint.test.ts`.
 
 See [Testing](testing.md) for the full cross-stack gate and
 [API reference](../reference/api.md) for the runtime surface.

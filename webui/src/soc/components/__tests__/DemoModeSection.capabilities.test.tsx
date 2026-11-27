@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
 import type { DemoStatus } from '@/lib/types';
+import { DASH } from '@/lib/format';
 
 const FULL: DemoStatus = {
   mode: 'live',
@@ -85,7 +86,54 @@ describe('DemoModeSection capabilities (demo overhaul)', () => {
     // A stale/partial status without the capability fields must not crash — tiles dash.
     h.status = { mode: 'seeded', active: true, seed: 1, case_count: 5 };
     renderDemo();
-    expect(tileValue('HITL approvals')).toBe('—');
-    expect(tileValue('RAG corpus')).toBe('—');
+    expect(tileValue('HITL approvals')).toBe(DASH);
+    expect(tileValue('RAG corpus')).toBe(DASH);
+  });
+});
+
+describe('DemoModeSection copy and semantics (Round 14)', () => {
+  beforeEach(() => {
+    h.status = { ...FULL, source_activity: [...FULL.source_activity!, { source_id: 'demo-wazuh', display_name: 'Wazuh', healthy: false }] };
+  });
+
+  it('shows a degraded source in words beside its dot, and a healthy one calmly', () => {
+    renderDemo();
+    // Status never by colour alone: the exception is visible text, its dot decorative.
+    const degraded = screen.getByText('Degraded');
+    expect(degraded).toBeVisible();
+    const status = degraded.closest('[data-status-tone]') as HTMLElement;
+    expect(status).toHaveAttribute('data-status-tone', 'critical');
+    expect(status.querySelector('[aria-hidden="true"]')).not.toBeNull();
+    // A healthy source carries no status at all (the healthy default reads calm).
+    expect(screen.queryByText('Healthy')).toBeNull();
+    expect(screen.queryByRole('img', { name: /healthy|degraded/i })).toBeNull();
+  });
+
+  it('prints each source count with thousands separators', () => {
+    h.status = {
+      ...FULL,
+      source_activity: [
+        {
+          source_id: 'demo-splunk', display_name: 'Splunk Enterprise', protocol: 'HEC / HTTPS',
+          healthy: true, events_total: 12345, alerts_total: 1200, system_detections_total: 4567,
+        },
+      ],
+    };
+    renderDemo();
+    expect(screen.getByText(/12,345 events · 1,200 native alerts · 4,567 Agentic SOC detections/)).toBeInTheDocument();
+  });
+
+  it('uses sentence-case labels, never tracked capitals', () => {
+    renderDemo();
+    for (const label of ['Capabilities live', 'Native source activity']) {
+      const el = screen.getByText(label);
+      expect(el.className).not.toMatch(/\buppercase\b|\btracking-/);
+    }
+  });
+
+  it('writes no dash as punctuation in its own copy (only the missing-value dash)', () => {
+    renderDemo();
+    const text = (document.body.textContent ?? '').replaceAll(DASH, '');
+    expect(text).not.toMatch(/[\u2013\u2014]/);
   });
 });

@@ -24,6 +24,7 @@ so a dashboard query can't fail and a poll tick can't break on the counters.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from ..constants import (
@@ -34,11 +35,11 @@ from ..constants import (
     Verdict,
 )
 from ..models import Case
-from .metrics import DASH, _window_filter, truncation_marker
+from .metrics import DASH, _created_dt, _window_filter, truncation_marker
 from .priority import (
     _normalise_severity,
     _severity_band_from_magnitude,
-    severity_band_from_events,
+    band_of_case,
     severity_scale_for_source,  # re-exported: callers band by the source's scale
 )
 
@@ -220,6 +221,11 @@ def _is_auto_cleared(case: Case) -> bool:
     )
 
 
+def _is_policy_closed(case: Case) -> bool:
+    """Closed by an operator's analyst RULE POLICY — neither AI nor human case work."""
+    return getattr(case, "decision_by", None) == DecisionBy.ANALYST_POLICY
+
+
 def _is_human_closed(case: Case) -> bool:
     """The last stage of the funnel: a case that reached a TERMINAL state (resolved/
     closed) with explicit ANALYST decision authority. This intentionally excludes
@@ -235,17 +241,14 @@ def _is_human_closed(case: Case) -> bool:
 
 
 def _band_of_case(case: Case, prefs: Any) -> str:
-    """The advisory severity band for a case (prefer a persisted band; else derive)."""
-    band = getattr(case, "severity_band", None)
-    if band in SEVERITY_BANDS:
-        return band
-    try:
-        derived = severity_band_from_events(case, prefs).get("band")
-        if derived in SEVERITY_BANDS:
-            return derived
-    except Exception:  # noqa: BLE001 — advisory only; never raise on a bad case
-        pass
-    return _INFO
+    """The advisory severity band for a case — a thin alias of the ONE public helper.
+
+    The prefer-persisted-then-derive-then-``info`` logic moved to
+    :func:`app.engine.priority.band_of_case` so the six other consumers that read
+    ``Case.severity_band`` directly (and therefore saw ``None`` on every real case) share
+    exactly this resolution. Kept as a module-local name so this file's call site is
+    unchanged."""
+    return band_of_case(case, prefs)
 
 
 def _stage(key: str, label: str, *, source: str, deterministic: bool,
@@ -270,6 +273,52 @@ def _reduction(numer: int, denom: int) -> Any:
     return round(max(0.0, 1.0 - (numer / denom)) * 100, 1)
 
 
+# How far before the counters' first covered hour a case may be opened and still count
+# as covered. A poll or ingest tick opens its cases (and runs up to the per-tick cap of
+# sequential investigations) BEFORE it records that tick's alert delta, and the delta's
+# write time is what stamps ``since``. When the very first tick crosses an hour
+# boundary its cases fall in the hour before ``since``'s hour, and since ``since`` never
+# moves, an hour-only tolerance would flag every later lifetime funnel as partial for
+# good. One full counter hour of grace covers any first tick shorter than an hour.
+_FIRST_TICK_GRACE_SECONDS = 3600
+
+
+def _cases_predate_counters(cases: list[Case], coverage_start: Any) -> bool:
+    """True when a counted case was opened before the alert counters began covering.
+
+    The counters are hourly buckets, and a poll tick records its alerts AFTER it opens
+    that tick's cases (and after that tick's investigations), so the tick's cases can
+    sit earlier in the counters' first covered hour or, when the tick crossed an hour
+    boundary, in the hour before it. The comparison is therefore against the start of
+    the first covered hour minus one full counter hour
+    (:data:`_FIRST_TICK_GRACE_SECONDS`). A case opened before that is genuinely older
+    than the counters (a store older than its counters); the retention-pruned case is
+    flagged by the store itself (``read_window``'s ``incomplete``). A case with no
+    usable timestamp cannot be shown to predate anything and is not counted here.
+    Never raises."""
+    if not isinstance(coverage_start, str) or not coverage_start:
+        return False
+    try:
+        start = datetime.fromisoformat(coverage_start.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    try:
+        first_hour = int(start.timestamp() // 3600) * 3600
+    except (OverflowError, OSError, ValueError):
+        return False
+    cutoff = first_hour - _FIRST_TICK_GRACE_SECONDS
+    for case in cases:
+        try:
+            created = _created_dt(case)
+        except Exception:  # noqa: BLE001 — a malformed case never breaks the rollup
+            continue
+        if created is not None and created.timestamp() < cutoff:
+            return True
+    return False
+
+
 def build_noise_reduction(
     cases: list[Case],
     counters: dict[str, Any],
@@ -290,13 +339,27 @@ def build_noise_reduction(
     analyst-attributed subset of Escalated and is therefore not added to that partition.
     When the counters are still warming up
     (``available: false``) the ingested/clustered totals are ``null`` and ``overall_pct``
-    is DASH, so the UI degrades to a case-only funnel. Never raises."""
+    is DASH, so the UI degrades to a case-only funnel.
+
+    ``counters.incomplete`` is the store's flag OR'd with the population check: when a
+    windowed case was opened before the counters' ``coverage_start`` (an all-time
+    window over a store older than its counters, or than their 90-day retention), the
+    alert stages and the case stages cover different spans, so the funnel is a partial
+    view and every alert-based reduction must be withheld or disclosed by the reader.
+    ``counters.coverage_start`` (additive) says from when the alert stages count.
+    Never raises."""
     counters = counters or {}
     available = bool(counters.get("available"))
 
     fetched = int(fetched_count) if fetched_count is not None else len(cases)
     window_cases = _window_filter(list(cases), window_hours=max(0, int(window_hours or 0)), now=now)
     cases_total = len(window_cases)
+    # A reader that predates ``coverage_start`` reports only ``since`` (the first
+    # observation, never later than the retained floor): the weaker, still honest bound.
+    coverage_start = (counters.get("coverage_start") or counters.get("since")) if available else None
+    incomplete = bool(counters.get("incomplete")) or (
+        available and _cases_predate_counters(window_cases, coverage_start)
+    )
 
     # Internal mutually exclusive disposition tally (each case in exactly one bucket,
     # priority order). ``closed`` is a SEPARATE, OVERLAPPING view: terminal cases
@@ -307,10 +370,19 @@ def build_noise_reduction(
     esc_bands = zero_bands()
     ac_bands = zero_bands()
     closed_bands = zero_bands()
-    nh = esc = ac = closed = 0
+    policy_bands = zero_bands()
+    nh = esc = ac = closed = policy = 0
     for c in window_cases:
         band = _band_of_case(c, prefs)
         cases_bands[band] = cases_bands.get(band, 0) + 1
+        if _is_policy_closed(c):
+            # Closed by an operator's analyst RULE POLICY. Its OWN mutually exclusive
+            # bucket: it is not an AI auto-clear (no model ran) and not human case work
+            # (nobody worked this case), and without this branch it would silently land
+            # in the Escalated residual fold below and be rendered as escalated volume.
+            policy += 1
+            policy_bands[band] = policy_bands.get(band, 0) + 1
+            continue
         if _is_human_closed(c):
             closed += 1
             closed_bands[band] = closed_bands.get(band, 0) + 1
@@ -335,7 +407,9 @@ def build_noise_reduction(
     # the nh-based reduction headline below are left unchanged (kept for other
     # consumers); only THIS stage folds the otherwise-invisible buckets in. Advisory
     # only (#3) — nothing here is read by ``decide()``.
-    esc_stage_total = esc + nh + max(0, cases_total - nh - esc - ac)  # == cases_total − ac
+    # ``policy`` is subtracted alongside ``ac``: a declared-benign close is not work
+    # raised for a human, so folding it into Escalated would overstate human load.
+    esc_stage_total = esc + nh + max(0, cases_total - nh - esc - ac - policy)
     esc_stage_bands = zero_bands()
     for band in SEVERITY_BANDS:
         band_residual = max(
@@ -343,7 +417,8 @@ def build_noise_reduction(
             cases_bands.get(band, 0)
             - nh_bands.get(band, 0)
             - esc_bands.get(band, 0)
-            - ac_bands.get(band, 0),
+            - ac_bands.get(band, 0)
+            - policy_bands.get(band, 0),
         )
         esc_stage_bands[band] = nh_bands.get(band, 0) + esc_bands.get(band, 0) + band_residual
 
@@ -382,6 +457,12 @@ def build_noise_reduction(
         # decision authority, not deterministic auto-close.
         _stage("closed", "Closed by human", source="cases", deterministic=False,
                total=closed, by_severity=closed_bands),
+        # Mutually exclusive with Auto-cleared and Escalated (subtracted from the
+        # residual fold above), so the three terminal nodes still account for every
+        # windowed case. ``deterministic=True`` — it IS a deterministic close, just an
+        # operator's rather than the agent's.
+        _stage("policy_closed", "Closed by analyst policy", source="cases",
+               deterministic=True, total=policy, by_severity=policy_bands),
     ]
 
     overall = _reduction(nh, ingested_total) if (available and isinstance(ingested_total, int)) else DASH
@@ -403,7 +484,8 @@ def build_noise_reduction(
         "counters": {
             "available": available,
             "since": counters.get("since"),
-            "incomplete": bool(counters.get("incomplete")),
+            "coverage_start": coverage_start if isinstance(coverage_start, str) else None,
+            "incomplete": incomplete,
         },
         "cases_meta": truncation_marker(fetched, store_total),
     }

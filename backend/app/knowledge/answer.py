@@ -1,0 +1,665 @@
+"""Deterministic product help at $0 (chat revamp SPEC §5.4.1).
+
+"How do I configure a model?" is asked precisely when no model works. When the first
+model call of a turn cannot run — no provider (or only the legacy mock), the budget
+gate blocked it, the breaker is open, the key was rejected — and the message is a
+product question, the engine answers extractively instead of failing:
+
+    From the Help Center (0.1): <the top section's first sentences> [D1]
+
+with ``D*`` citations, console links (``allowed`` from the caller's grants), a guide
+block of where to go (the numbered steps stay in the Markdown answer, once),
+``answer_kind="product_help"``, zero usage and a notice naming why the AI was not used.
+The lead is never empty while the top section has prose or a list (Round 14, see
+:func:`_lead`): when the best-matching chunk is a later part of its section with no
+sentence of its own (a bare bullet list), the section's opening chunk leads instead,
+under the same citation; a section that opens with a list leads with its first three
+items. Only a section that is nothing but a table leads with its title alone. The
+console links are the destinations the lead section names; when the best match names
+none, a close match on the same page whose heading names more of the question leads
+instead (see :func:`_lead_hit`), and only then do the console labels decide.
+A message is a product question only with a product cue and no data signal (a case id,
+an address, a time window, "how many", "show me", …; see :func:`classify_intent`): a
+data question asked while the AI is unavailable gets the plain notice, never docs. A question naming a settings key (``poll_batch_size``, ``rag.top_k``) is answered
+from the code-derived ``settings_schema()`` defaults and the section that owns the key.
+
+Nothing here calls a model, writes, or reads tenant data; it is pure over the bundled
+corpus, so it behaves the same in Demo Mode and with no LLM configured.
+"""
+
+from __future__ import annotations
+
+import functools
+import re
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Literal
+
+from ..agents.blocks import validate_blocks
+from ..models import ChatResponse, Citation, ConsoleLink, TurnNotice, TurnUsage
+from .corpus import AppKnowledge, ConsoleTarget, DocChunk, get_app_knowledge
+from .index import content_terms
+from .render import (
+    chunk_title,
+    console_link,
+    doc_citation,
+    doc_href,
+    first_sentences,
+    list_points,
+    split_procedure,
+    target_allowed,
+)
+
+# --------------------------------------------------------------------------- #
+# Routing: is this message a product question? (§5.4.1)
+# --------------------------------------------------------------------------- #
+# Without a model, a misrouted DATA question would get an irrelevant Help Center answer
+# labelled "Product help" in place of the plain notice that the AI is unavailable, which
+# misleads more than it helps. So routing needs positive product intent AND no data
+# intent: the BM25F score alone cannot decide, because data questions share nouns
+# ("cases", "auto-close", "false positive rate") with product prose and reach 8-17.
+#
+# Strong cues ask how to operate the product or what a term means; they outweigh the
+# soft data signals below ("what does the Open Cases KPI count?" is a product question)
+# but never a hard one ("how can I see failed logins from the last hour?" wants data).
+_STRONG_CUE_RE = re.compile(
+    r"^\s*/help\b"
+    r"|\bhow\s+(?:do|can|could|should|would|will|may|might)\s+"
+    r"(?:i|we|you|one|someone|an?\s+(?:admin|administrator|analyst|operator|user))\b"
+    r"|\bhow\s+to\b|\bis\s+there\s+a\s+way\s+to\b"
+    r"|\bwhere\s+(?:do|can|could|should|would|will)\s+(?:i|we|you|one)\b"
+    r"|\b(?:help\s+center|documentation|docs)\b"
+    r"|\bwhat\s+(?:does|do)\b[^?]*?\b(?:mean|stand\s+for|measure|represent|control)\b"
+    # "show", "count", "include" also describe data ("what do the logs show?"), so they
+    # are a definition only after a product noun ("what does the Open Cases KPI count?").
+    r"|\bwhat\s+(?:does|do)\b[^?]*?\b(?:kpi|tile|card|metric|chart|column|field|setting|badge|status"
+    r"|label|widget|funnel|gauge|button|toggle|switch|option|page|tab|role|permission|panel|filter"
+    r"|view|score|index|rate|timing)s?\s+(?:show|count|include|cover|indicate|do)\b"
+    r"|\bhow\s+(?:does|do|is|are)\b[^?]*?\b(?:work|calculated|computed|measured|derived|decided"
+    r"|determined|scored|attribute|attributed|counted|defined|enforced|limited|relate|differ)\b"
+    r"|\b(?:what\s+is\s+meant\s+by|meaning\s+of|definition\s+of|define|differences?\s+between"
+    r"|what's\s+the\s+difference)\b",
+    re.IGNORECASE,
+)
+# Product cues: a product noun or an imperative about configuring the product. They
+# make a message eligible but never outweigh a data signal.
+_PRODUCT_CUE_RE = re.compile(
+    r"\b(?:settings?|preferences?|permissions?|roles?|rbac|menus?|pages?|tabs?|buttons?|wizard"
+    r"|sidebar|navigation|console|options?|toggles?|features?)\b"
+    r"|^\s*(?:please\s+)?(?:(?:help\s+me|i\s+(?:want|need|would\s+like)\s+to|i'd\s+like\s+to)\s+)?"
+    r"(?:configure|set\s*up|setup|enable|disable|turn\s+(?:on|off)|install|upgrade|add|connect"
+    r"|integrate|invite|rotate|reset|change|create|rename|import|export|customi[sz]e|onboard"
+    r"|register|revoke|grant|switch)\b",
+    re.IGNORECASE,
+)
+# Weak cues: question shapes shared with data questions ("what is…", "why was…").
+_WEAK_CUE_RE = re.compile(
+    r"\b(?:what\s+(?:is|are|was|were|happens|does|do)|what's|whats|where\s+(?:is|are)"
+    r"|why\s+(?:did|does|do|was|is|are|would|can't|cannot)|explain|tell\s+me\s+about"
+    r"|is\s+there|can\s+i|which|how\s+(?:does|do|is|are))\b"
+    r"|^\s*help\b",
+    re.IGNORECASE,
+)
+# Hard data signals: the message names a specific case, address, hash or domain, or
+# points at the object in view ("this alert"). No cue outweighs them: the user wants
+# that object's data, not the manual.
+_ENTITY_RE = re.compile(
+    r"\b(?:case|inc|incident|alert|ticket|cluster|campaign)[-_ #]?\d+\b"
+    r"|#\d{2,}\b"
+    r"|\b(?:\d{1,3}\.){3}\d{1,3}\b"
+    r"|\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}\b"
+    r"|\b(?:[a-f0-9]{32}|[a-f0-9]{40}|[a-f0-9]{64})\b"
+    r"|\bhttps?://"
+    r"|\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b"
+    r"|\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|info|biz|xyz|top|ru|cn|co"
+    r"|uk|de|fr|in|us|gov|edu|mil|local|internal|corp|lan|onion|online|site|cloud)\b"
+    r"|\b(?:this|that|these|those)\s+(?:case|alert|incident|event|host|ip|user|account|cluster"
+    r"|entity|detection|log|finding|campaign|ticket|ioc|indicator|attack|activity|spike)s?\b",
+    re.IGNORECASE,
+)
+# Data signals: a time window, a listing or aggregation request, or activity words. No
+# cue outweighs them either.
+_DATA_SIGNAL_RE = re.compile(
+    r"\b(?:last|past|previous)\s+(?:\d+\s*)?(?:minutes?|mins?|hours?|hrs?|h|days?|d|weeks?|wks?|w"
+    r"|months?|night|shift|quarter|year)\b"
+    r"|\b\d+\s*(?:mins?|minutes?|h|hrs?|hours?|d|days?|w|wks?|weeks?)\s+ago\b"
+    r"|\b(?:today|tonight|yesterday|overnight)\b"
+    r"|\bthis\s+(?:morning|afternoon|evening|week|month|quarter|year|shift)\b"
+    r"|\bsince\s+(?:yesterday|last|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d)"
+    r"|^\s*(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:show|list|find|get|give|fetch|pull|display"
+    r"|summari[sz]e|count|investigate|triage|analy[sz]e|hunt|search|look\s*up|check|query"
+    r"|correlate|enrich|block|isolate|quarantine)\b"
+    r"|\bshow\s+me\b|\bhow\s+many\b"
+    r"|\b(?:top|bottom)\s+(?:\d+|source|destination|talkers?|users?|hosts?|ips?|ip\s+addresses"
+    r"|rules?|alerts?|countries|domains?|ports?|entities|accounts?|attackers?|offenders?"
+    r"|signatures?|events?|cases?)\b"
+    r"|\bmost\s+(?:common|frequent|active|targeted|critical|noisy|seen|affected)\b"
+    r"|\b(?:latest|recent|newest|currently|right\s+now|so\s+far)\b"
+    r"|\bany\s+(?:[\w-]+\s+){0,3}?(?:activity|alerts?|events?|attempts?|incidents?|detections?"
+    r"|hits?|traffic|log-?ins?|cases?|threats?|attacks?|malware|phishing|anomal(?:y|ies))\b"
+    r"|\b(?:were|are)\s+there\s+any\b"
+    r"|\b(?:did|have|has)\s+(?:we|you|the\s+agent|anyone|someone|anybody|it)\s+(?:see|seen|get|got"
+    r"|had|have|detect(?:ed)?|find|found|close[ds]?|escalated?|investigated?|block(?:ed)?"
+    r"|receive[ds]?)\b"
+    r"|\bwho\s+(?:closed|opened|assigned|escalated|changed|acknowledged|approved|resolved|owns"
+    r"|is\s+assigned|logged|accessed|deleted|edited)\b"
+    r"|\bwhat\s+happened\b|\b(?:so|too)\s+(?:many|much|high|low|few|slow)\b"
+    r"|\b(?:spikes?|surges?|bursts?|failed\s+log-?ins?|log-?in\s+(?:failures|attempts?))\b",
+    re.IGNORECASE,
+)
+# "Explain" about listed records is a data signal too, never a term: "… and explain
+# each", "explain why each one is critical", "explain each of the open critical cases",
+# "explain them", "explain the top 3", "explain each escalated case". A console noun
+# after the record ("explain each case status", "explain the top 3 tabs in case
+# detail") or no record at all ("explain each of the verdicts", "explain the first 3
+# steps of onboarding") keeps it a product question, and so does a defining word
+# (:data:`_DEFINES_RE`): "explain what each case status means".
+#: Parts of the console a record noun can qualify ("each case action", "each alert
+#: icon"): the same list as the Demo planner's (``engine/demo_chat._CONSOLE_PARTS``).
+_CONSOLE_PARTS = (r"actions?|chips?|badges?|permissions?|roles?|shortcuts?|icons?|colou?rs?|options?|sections?|"
+                  r"screens?|dialogs?|modals?|toolbars?|tooltips?|glyphs?|toggles?|switches|controls?|headers?|"
+                  r"layouts?|themes?|links?")
+_NOT_CONSOLE = (
+    r"(?!\s+(?:kpis?|tiles?|cards?|metrics?|charts?|columns?|pages?|tabs?|views?|filters?|settings?|widgets?"
+    r"|panels?|rates?|counts?|queues?|polic(?:y|ies)|lifecycles?|workflows?|menus?|buttons?|status(?:es)?"
+    r"|severit(?:y|ies)|priorit(?:y|ies)|fields?|types?|states?|ids?|numbers?|titles?|formats?|templates?"
+    r"|decisions?|models?|verdicts?|outcomes?|dispositions?|levels?|labels?|categor(?:y|ies)|kinds?|class(?:es)?"
+    r"|stages?|steps?|phases?|rules?|roles?|permissions?|attributes?|" + _CONSOLE_PARTS + r")\b)"
+)
+_RECORDS = (r"(?:cases|incidents|tickets|investigations|escalations|alerts|detections|findings|results|rows"
+            r"|matches|ones|(?:true|false)[- ]positives)\b" + _NOT_CONSOLE)
+_RECORD_ONE = r"(?:case|incident|ticket|alert|detection|finding|result|row|match)\b" + _NOT_CONSOLE
+# A few qualifiers before a record noun ("the open critical cases"), never a preposition.
+_QUALIFIERS = r"(?:(?!(?:in|on|of|for|from|to|at|about|with|into|across)\b)[\w'-]+\s+){0,3}?"
+# Where a bare "each" or "the top 3" ends: it points back at records already listed.
+_CLAUSE_END = (r"(?=\s*(?:[,.?!;:]|$)|\s+(?:and\b(?!\s+every\b)|then\b|with\b|by\b|briefly\b|please\b"
+               r"|for\s+me\b|in\s+turn\b|in\s+detail\b))")
+_EXPLAIN_RECORDS_RE = re.compile(
+    r"\bexplain\w*(?:\s+(?:why|how|what))?(?:\s+[a-z']+){0,3}?\s+(?:"
+    r"(?:each|every)(?:\s+one)?(?:" + _CLAUSE_END + r"|\s+(?:is|was|has|had|got|were)\b"
+    r"|\s+of\s+(?:them\b|(?:the|these|those|our|my|all|today's)\s+" + _QUALIFIERS + _RECORDS + r"))"
+    r"|(?:each|every)\s+(?:[\w-]+\s+){0,2}?" + _RECORD_ONE
+    + r"|them\b|they\b(?!\s+(?:mean|means|meant|stand|stands)\b)"
+    r"|(?:the\s+)?(?:top|first)\s+\d{1,3}(?:" + _CLAUSE_END + r"|\s+" + _QUALIFIERS + _RECORDS + r"))",
+    re.IGNORECASE,
+)
+# Defining words: with one of them an "explain" asks what something means, unless the
+# word points back at the listed records ("explain what each one means", "what they
+# mean for us"; the Demo planner's ``_MEANS_THE_RECORDS_RE``).
+_DEFINES_RE = re.compile(r"\b(?:mean|means|meant|meaning|defin(?:e|es|ed|ition)|stands?\s+for)\b", re.IGNORECASE)
+_MEANS_THE_RECORDS_RE = re.compile(
+    r"\b(?:each(?:\s+one)?(?:\s+of\s+(?:them|these|those))?|every\s+one|they|them|these|those)\s+"
+    r"(?:means?|meant|stands?\s+for)\b", re.IGNORECASE)
+# Soft data signals: a filtered set of cases or a metric of "our"/"my" estate. A strong
+# cue outweighs them, because KPI and glossary questions name the same sets.
+_SOFT_DATA_RE = re.compile(
+    r"\b(?:open|closed|critical|high|medium|low|new|unassigned|escalated|pending|active|assigned"
+    r"|resolved|unresolved|stale|overdue)\s+(?:severity\s+)?(?:cases|alerts|incidents|events"
+    r"|detections|tickets|findings)\b"
+    r"|\b(?:our|my)\s+(?:[\w-]+\s+){0,2}?(?:rates?|scores?|mttd|mtta|mttr|dwell|spend(?:ing)?|costs?"
+    r"|posture|coverage|backlog|queue|volume|numbers|trends?|exposure|alerts|cases|incidents"
+    r"|detections|tickets|tasks|workload|sla|performance|stats|statistics|metrics)\b"
+    # "Explain" with records as its object: "explain the highest risk cases". A console
+    # noun after them ("explain the cases view") keeps the product cue.
+    r"|\bexplain\w*\s+(?:the|our|my|all)\s+(?:[\w-]+\s+){0,3}?(?:cases|incidents|alerts|tickets|detections"
+    r"|escalations)\b(?!\s+(?:kpis?|tiles?|cards?|metrics?|charts?|columns?|pages?|tabs?|views?|filters?"
+    r"|settings?|widgets?|panels?|rates?|counts?|queues?|polic(?:y|ies))\b)",
+    re.IGNORECASE,
+)
+
+IntentClass = Literal["data", "settings_key", "strong", "product", "weak", "none"]
+# The BM25F floor each class must clear. A strong or product cue needs only a modest
+# match (the cue already says "product"); a weak cue needs a clearer one. A message with
+# no cue never routes: a bare noun phrase is as likely to be a data request. A product
+# or weak cue also needs every word of the message to occur somewhere in the Help
+# Center: "tell me about jdoe" or "add user jdoe" names something the manual never
+# mentions (an account, a host), so it is about data or an action, not the product.
+ROUTE_FLOORS: dict[str, float] = {"strong": 4.0, "product": 4.0, "weak": 5.0}
+# Prose that scores below this beside an answered settings key only shares a word with it.
+SETTINGS_PROSE_FLOOR = 12.0
+# A Preferences key mentioned in prose: ``poll_batch_size``, ``rag.top_k``, ``chat_model``.
+_SETTING_KEY_RE = re.compile(r"`?\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+|[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)\b`?")
+
+UnavailableReason = Literal["not_configured", "unauthenticated", "budget", "breaker", "quota", "unavailable"]
+
+_NOTICES: dict[str, tuple[str, str, bool]] = {
+    "not_configured": ("provider", "AI answers are unavailable: no model is configured or its key was rejected. This answer comes from the Help Center at no cost.", False),
+    "unauthenticated": ("provider", "AI answers are unavailable: no model is configured or its key was rejected. This answer comes from the Help Center at no cost.", False),
+    "budget": ("budget", "AI answers are paused until the AI budget resets. This answer comes from the Help Center at no cost.", False),
+    "breaker": ("breaker", "AI answers are paused while the model provider is failing. This answer comes from the Help Center at no cost.", True),
+    "quota": ("provider", "AI answers are unavailable: the model provider is not accepting requests right now. This answer comes from the Help Center at no cost.", True),
+    "unavailable": ("provider", "AI answers are unavailable: the model provider is not accepting requests right now. This answer comes from the Help Center at no cost.", True),
+}
+
+MAX_CITATIONS = 3
+MAX_LINKS = 4
+SECONDARY_RATIO = 0.8
+
+
+@dataclass(frozen=True)
+class AppHelpAnswer:
+    """A complete $0 product-help answer. :meth:`to_response` builds the
+    ``ChatResponse`` (zero usage); the engine adds its turn ids and stream mode."""
+
+    answer: str
+    citations: list[Citation] = field(default_factory=list)
+    console_links: list[ConsoleLink] = field(default_factory=list)
+    blocks: list[dict[str, Any]] = field(default_factory=list)
+    notice: TurnNotice | None = None
+    follow_ups: list[str] = field(default_factory=list)
+
+    def to_response(self, **updates: Any) -> ChatResponse:
+        data: dict[str, Any] = {
+            "answer": self.answer,
+            "citations": [c.model_dump(mode="json") for c in self.citations],
+            "console_links": [c.model_dump(mode="json") for c in self.console_links],
+            "blocks": self.blocks,
+            "answer_kind": "product_help",
+            "notice": self.notice.model_dump(mode="json") if self.notice else None,
+            "follow_ups": list(self.follow_ups),
+            "usage": TurnUsage().model_dump(mode="json"),
+            "cost": 0.0,
+        }
+        data.update(updates)
+        return ChatResponse.model_validate(data)
+
+
+# --------------------------------------------------------------------------- #
+# Routing and retrieval.
+# --------------------------------------------------------------------------- #
+def search_docs(query: str, k: int = 4, *, knowledge: AppKnowledge | None = None) -> list[tuple[DocChunk, float]]:
+    """The top Help Center sections for ``query`` (best first; ``[]`` = not covered)."""
+    knowledge = knowledge or get_app_knowledge()
+    return [(knowledge.chunks_by_id[hit.key], hit.score) for hit in knowledge.index.search(query, k)]
+
+
+def search_targets(
+    query: str, k: int = 2, *, floor: float = 9.0, relative: float = 0.75,
+    knowledge: AppKnowledge | None = None,
+) -> list[ConsoleTarget]:
+    """Console destinations whose labels, keywords or owned settings keys match: none
+    when the best is below ``floor``, else the hits scoring at least ``relative`` of the
+    best (a lone strong match does not drag weak neighbours along)."""
+    knowledge = knowledge or get_app_knowledge()
+    hits = knowledge.target_index.search(query, k, floor=floor)
+    if not hits:
+        return []
+    return [knowledge.targets[h.key] for h in hits if h.score >= relative * hits[0].score]
+
+
+def classify_intent(message: str) -> IntentClass:
+    """How ``message`` reads before any retrieval. ``"data"`` when it names a specific
+    object, a time window or a data request, or a filtered set without a strong cue;
+    ``"settings_key"`` when it names a Preferences key; otherwise the strongest cue
+    class present (``"strong"``, ``"product"``, ``"weak"``) or ``"none"``."""
+    text = message if isinstance(message, str) else ""
+    if _ENTITY_RE.search(text):
+        return "data"
+    if _settings_keys(text):
+        return "settings_key"
+    if _DATA_SIGNAL_RE.search(text):
+        return "data"
+    if _EXPLAIN_RECORDS_RE.search(text) and not _DEFINES_RE.search(_MEANS_THE_RECORDS_RE.sub(" ", text)):
+        return "data"
+    if _STRONG_CUE_RE.search(text):
+        return "strong"
+    if _SOFT_DATA_RE.search(text):
+        return "data"
+    if _PRODUCT_CUE_RE.search(text):
+        return "product"
+    if _WEAK_CUE_RE.search(text):
+        return "weak"
+    return "none"
+
+
+def routes_to_app_help(message: str, *, knowledge: AppKnowledge | None = None) -> bool:
+    """True when ``message`` is a product question the Help Center covers: it names a
+    settings key, or it carries a product cue, no data signal (see
+    :func:`classify_intent`) and a BM25F match above that cue class's floor (plus, for
+    product and weak cues, no word the corpus never uses). ``False`` whenever the
+    corpus is unavailable."""
+    if not isinstance(message, str) or not message.strip():
+        return False
+    try:
+        knowledge = knowledge or get_app_knowledge()
+    except Exception:  # noqa: BLE001
+        return False
+    intent = classify_intent(message)
+    if intent == "settings_key":
+        return True
+    floor = ROUTE_FLOORS.get(intent)
+    if floor is None:
+        return False
+    if intent in ("product", "weak") and knowledge.index.unknown_terms(message):
+        return False
+    return knowledge.index.best_score(message) >= floor
+
+
+# --------------------------------------------------------------------------- #
+# Settings keys (code-derived defaults; values never read).
+# --------------------------------------------------------------------------- #
+@functools.lru_cache(maxsize=1)
+def _settings_index() -> dict[str, dict[str, Any]]:
+    """Dotted settings key → its schema field (defaults only; computed once)."""
+    from ..api.settings_schema import settings_schema  # lazy: pure, imports config only
+
+    out: dict[str, dict[str, Any]] = {}
+    for section in settings_schema().get("sections", []):
+        key = section.get("key")
+        for item in section.get("fields", []):
+            name = item.get("name")
+            if not isinstance(name, str):
+                continue
+            dotted = name if key == "general" else f"{key}.{name}"
+            out[dotted] = {**item, "top": name if key == "general" else key}
+        if key != "general" and isinstance(key, str):
+            out.setdefault(key, {"name": key, "type": "object", "default": None, "top": key, "section": True})
+            out[f"__fields__:{key}"] = {"fields": [f for f in section.get("fields", []) if isinstance(f, dict)]}
+    return out
+
+
+def _settings_keys(message: str) -> list[str]:
+    candidates = [m.group(1) for m in _SETTING_KEY_RE.finditer(message or "")]
+    if not candidates:
+        return []
+    index = _settings_index()
+    return [c for c in dict.fromkeys(candidates) if c in index and not c.startswith("__")]
+
+
+def _owner_target(top_key: str, knowledge: AppKnowledge) -> ConsoleTarget | None:
+    owners = [t for t in knowledge.targets.values() if t.kind == "settings" and top_key in t.owned_keys]
+    return owners[0] if owners else knowledge.targets.get("settings:advanced_all")
+
+
+def _describe_default(value: Any) -> str:
+    if value is None:
+        return "no default"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, (int, float, str)):
+        return f"`{value}`"
+    return "a structured default"
+
+
+def settings_key_answer(
+    message: str, grants: Iterable[tuple[str, str]], *, knowledge: AppKnowledge | None = None,
+) -> tuple[str, list[ConsoleLink]] | None:
+    """Answer a question naming settings keys from ``settings_schema()`` defaults and
+    the owning Settings section. ``None`` when no known key is named."""
+    keys = _settings_keys(message)
+    if not keys:
+        return None
+    knowledge = knowledge or get_app_knowledge()
+    index = _settings_index()
+    held = frozenset(grants)
+    lines: list[str] = []
+    links: list[ConsoleLink] = []
+    for key in keys[:3]:
+        item = index[key]
+        owner = _owner_target(str(item.get("top")), knowledge)
+        if item.get("section"):
+            sentence = f"`{key}` is a group of settings."
+            fields = [f.get("name") for f in index.get(f"__fields__:{key}", {}).get("fields", [])]
+            if fields:
+                sentence = f"`{key}` is a group of settings ({', '.join(f'`{f}`' for f in fields[:6])})."
+        else:
+            kind = str(item.get("type") or "value")
+            article = "an" if kind[:1] in "aeiou" else "a"
+            sentence = f"`{key}` is {article} {kind} setting (default {_describe_default(item.get('default'))})."
+            choices = item.get("choices")
+            if isinstance(choices, list) and choices:
+                sentence += " Choices: " + ", ".join(f"`{c}`" for c in choices[:8]) + "."
+            description = item.get("description")
+            if isinstance(description, str) and description.strip():
+                sentence += f" {description.strip().rstrip('.')}."
+        if owner is not None:
+            sentence += f" Change it in {owner.breadcrumb}."
+            link = console_link(owner, held)
+            if link.id not in {l.id for l in links}:
+                links.append(link)
+        lines.append(sentence)
+    return " ".join(lines), links
+
+
+# --------------------------------------------------------------------------- #
+# The extractive answer.
+# --------------------------------------------------------------------------- #
+def _procedure(text: str) -> tuple[str, list[str], str]:
+    """``(intro, steps, outro)`` of a section: up to three sentences of prose before its
+    first numbered list, the list's steps, and up to two sentences after it."""
+    before, steps, after = split_procedure(text)
+    if not steps:
+        return first_sentences(text, 3), [], ""
+    return first_sentences(before, 3), steps, first_sentences(after, 2)
+
+
+def _section_opening(chunk: DocChunk, knowledge: AppKnowledge) -> DocChunk:
+    """The first chunk of ``chunk``'s section (``chunk`` itself when it is the first)."""
+    return next(
+        (c for c in knowledge.chunks if c.page == chunk.page and c.anchor == chunk.anchor),
+        chunk,
+    )
+
+
+def _lead(chunk: DocChunk, knowledge: AppKnowledge) -> tuple[str, list[str], str, list[str]]:
+    """``(intro, steps, outro, points)`` for the answer's top section, never empty when
+    the section has prose or a list. A long section is split into several chunks, and a
+    later part can be a bare bullet list with no sentence of its own ("How do I export
+    audit events to CSV?" matches the list of export rules best): the section's opening
+    part then leads (same section, same citation), and a section that opens with a list
+    leads with its first items (``points``)."""
+    intro, steps, outro = _procedure(chunk.text)
+    if intro or steps:
+        return intro, steps, outro, []
+    opening = _section_opening(chunk, knowledge)
+    if opening.id != chunk.id:
+        intro, steps, outro = _procedure(opening.text)
+        if intro or steps:
+            return intro, steps, outro, []
+    return "", [], "", list_points(chunk.text, 3)
+
+
+def _section_destinations(chunk: DocChunk, knowledge: AppKnowledge) -> list[str]:
+    """The console target ids ``chunk``'s Help Center section names: its own bold
+    breadcrumbs, then the page of any "Ask about this" topic that cites the section."""
+    ref = f"{knowledge.pages[chunk.page].path}#{chunk.anchor}"
+    return [*chunk.console, *(t.console for t in knowledge.topics.values() if t.console and ref in t.docs)]
+
+
+def _heading_terms(heading: str, terms: frozenset[str]) -> int:
+    """How many of the question's ``terms`` a section heading names. A heading word
+    counts when it is the term or, for a term of four letters or more, starts with it:
+    the index matches whole words only, so "export" misses the heading "Exporting"."""
+    words = content_terms(heading)
+    return sum(1 for term in terms
+               if any(word == term or (len(term) >= 4 and word.startswith(term)) for word in words))
+
+
+def _lead_hit(
+    message: str, hits: list[tuple[DocChunk, float]], knowledge: AppKnowledge,
+) -> tuple[int, DocChunk, list[str]]:
+    """``(index, lead chunk, destinations)``: which hit the answer leads with.
+
+    The best match leads, with the destinations its section names. One exception: when
+    the best match names no destination, a section of the SAME page that does, scores
+    within :data:`SECONDARY_RATIO` of the best and names more of the question's words in
+    its heading than the best match's heading does leads instead, from its opening.
+    "How do I export the audit log?" matches the audit log's short Personal data section
+    ("they are in every export") a little better than the section headed Exporting,
+    because the index does not stem "export"; only Exporting says where the Export menu
+    is. The heading test keeps a neighbour from taking the lead merely for naming a
+    page: "Where is MFA?" stays on the MFA section, not on the Remember me section
+    beside it, and "How do reports work?" does not move from "Work a case" to "Find the
+    work that matters"."""
+    top, top_score = hits[0]
+    destinations = _section_destinations(top, knowledge)
+    if destinations:
+        return 0, top, destinations
+    terms = frozenset(content_terms(message))
+    top_named = _heading_terms(top.heading, terms)
+    for index, (chunk, score) in enumerate(hits[1:], start=1):
+        if score < SECONDARY_RATIO * top_score:
+            break
+        if chunk.page != top.page or _heading_terms(chunk.heading, terms) <= top_named:
+            continue
+        if named := _section_destinations(chunk, knowledge):
+            return index, _section_opening(chunk, knowledge), named
+    return 0, top, []
+
+
+def unavailable_notice(reason: str) -> TurnNotice:
+    kind, message, retryable = _NOTICES.get(reason, _NOTICES["unavailable"])
+    return TurnNotice(kind=kind, message=message, retryable=retryable)
+
+
+def _guide_block(links: list[ConsoleLink], citations: list[Citation]) -> list[dict[str, Any]]:
+    """The answer's guide block: where to go, never the steps. The numbered steps are
+    already in the answer prose (rendered as Markdown, with their bold breadcrumbs);
+    repeating them in a plain-text guide would show every step twice."""
+    guide_links: list[dict[str, Any]] = []
+    for link in links:
+        if link.allowed:
+            guide_links.append({"label": f"Open {link.label}", "ref": {"page": link.page, "opts": link.opts or None}})
+    # A Help Center link's label is the section title alone: the client adds the
+    # presentation prefix ("Read: …") to doc links. A title or link already listed is
+    # not repeated (two sections of one page can share both).
+    read = {link["label"] for link in guide_links}
+    for citation in citations[:2]:
+        if citation.doc and citation.title not in read and all(
+                link["ref"].get("doc") != citation.doc for link in guide_links):
+            read.add(citation.title)
+            guide_links.append({"label": citation.title, "ref": {"doc": citation.doc}})
+    if not guide_links:
+        return []
+    raw = {
+        "type": "guide", "id": "b1", "title": "From the Help Center", "provenance": "code",
+        "artifact_kind": "guide", "allowed_views": ["guide"], "steps": [],
+        "links": guide_links[:6],
+    }
+    blocks, _ = validate_blocks([raw])
+    return blocks
+
+
+def answer_app_question(
+    message: str,
+    *,
+    grants: Iterable[tuple[str, str]] = (),
+    reason: str = "not_configured",
+    knowledge: AppKnowledge | None = None,
+) -> AppHelpAnswer | None:
+    """The deterministic $0 answer for a product question, or ``None`` when the message
+    does not route to app help (the engine then reports the failure as usual) or the
+    corpus is unavailable. ``grants`` is the caller's resolved ``(resource, action)``
+    set; ``reason`` names why the model could not run (see :data:`UnavailableReason`)."""
+    try:
+        knowledge = knowledge or get_app_knowledge()
+    except Exception:  # noqa: BLE001 - no corpus, no deterministic answer
+        return None
+    if not routes_to_app_help(message, knowledge=knowledge):
+        return None
+    held = frozenset(grants)
+    notice = unavailable_notice(reason)
+    settings_answer = settings_key_answer(message, held, knowledge=knowledge)
+    hits = search_docs(message, 4, knowledge=knowledge)
+    if settings_answer and hits and hits[0][1] < SETTINGS_PROSE_FLOOR:
+        # The key itself is answered from the schema; prose that only shares a word
+        # with "rag.top_k" would be noise beside it.
+        hits = []
+
+    # Secondary sections are cited only when they score close to the best one; a
+    # distant runner-up is usually a different topic that shares a word.
+    top_score = hits[0][1] if hits else 0.0
+    link_ids: list[str] = []
+    lead_chunk: DocChunk | None = None
+    if hits:
+        # The lead section's bold breadcrumbs (and the page of an "Ask about this" topic
+        # that cites it) are the answer's destinations; the lead section is cited first.
+        index, lead_chunk, link_ids = _lead_hit(message, hits, knowledge)
+        if index:
+            hits = [hits[index], *hits[:index], *hits[index + 1:]]
+    citations: list[Citation] = []
+    for chunk, score in hits:
+        if len(citations) >= MAX_CITATIONS or (citations and score < SECONDARY_RATIO * top_score):
+            continue
+        citation = doc_citation(chunk, f"D{len(citations) + 1}", knowledge)
+        if citation is not None and citation.doc not in {c.doc for c in citations}:
+            citations.append(citation)
+
+    if not link_ids:
+        # Only when the cited prose names no destination: the label search is noisier
+        # than a breadcrumb the docs wrote down ("active" also matches Active sessions).
+        link_ids.extend(t.id for t in search_targets(message, knowledge=knowledge))
+    links: list[ConsoleLink] = list(settings_answer[1]) if settings_answer else []
+    for target_id in dict.fromkeys(link_ids):
+        if len(links) >= MAX_LINKS:
+            break
+        target = knowledge.targets.get(target_id)
+        if target is not None and target_id not in {l.id for l in links}:
+            links.append(console_link(target, held))
+
+    parts: list[str] = []
+    if settings_answer:
+        parts.append(settings_answer[0])
+    if lead_chunk is not None:
+        intro, steps, outro, points = _lead(lead_chunk, knowledge)
+        cited_first = bool(citations) and citations[0].doc == doc_href(lead_chunk, knowledge)
+        ref = f" [{citations[0].id}]" if cited_first else ""
+        prefix = f"From the Help Center ({knowledge.docs_version}), {chunk_title(lead_chunk, knowledge)}:"
+        parts.append(f"{prefix} {intro}{ref}" if intro else f"{prefix}{ref}")
+        if steps:
+            parts.append("\n".join(f"{n}. {step}" for n, step in enumerate(steps, start=1)))
+            if outro and not intro:
+                parts.append(outro)
+        elif points:
+            parts.append("\n".join(f"- {point}" for point in points))
+        more = citations[1:]
+        if more:
+            parts.append("See also: " + "; ".join(f"{c.title} [{c.id}]" for c in more) + ".")
+    if not parts:
+        return None
+    open_links = [l for l in links if l.allowed]
+    if open_links:
+        parts.append("Open: " + "; ".join(l.label for l in open_links) + ".")
+    blocked = [l for l in links if not l.allowed]
+    if blocked:
+        parts.append(
+            "You need additional access for: "
+            + "; ".join(f"{l.label} ({l.requires})" for l in blocked)
+            + ". Ask an administrator."
+        )
+    blocks = _guide_block(links, citations)
+    return AppHelpAnswer(
+        answer="\n\n".join(parts),
+        citations=citations,
+        console_links=links,
+        blocks=blocks,
+        notice=notice,
+    )
+
+
+def topic_question(topic_id: str, *, knowledge: AppKnowledge | None = None) -> str | None:
+    """The fixed question for an "Ask about this" topic id (``kpi:mtta``,
+    ``settings:models``); ``None`` for an unknown id. Client text never reaches a prompt
+    through this path: only the server's own template does."""
+    try:
+        knowledge = knowledge or get_app_knowledge()
+    except Exception:  # noqa: BLE001
+        return None
+    topic = knowledge.topics.get(topic_id) if isinstance(topic_id, str) else None
+    return topic.question if topic else None
+
+
+__all__ = [
+    "AppHelpAnswer",
+    "IntentClass",
+    "ROUTE_FLOORS",
+    "UnavailableReason",
+    "answer_app_question",
+    "classify_intent",
+    "routes_to_app_help",
+    "search_docs",
+    "search_targets",
+    "settings_key_answer",
+    "target_allowed",
+    "topic_question",
+    "unavailable_notice",
+]

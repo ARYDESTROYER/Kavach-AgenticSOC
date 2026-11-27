@@ -29,6 +29,21 @@ class Cache:
         # LRU-ordered: key -> (expiry_epoch, value). Bounded by _MEM_MAX_ENTRIES.
         self._mem: OrderedDict[str, tuple[float, str]] = OrderedDict()
         self._warned = False
+        # Persisted factory-reset receipt ids become cache namespaces. This makes all
+        # old enrichment/notification keys unreachable after a tenant reset without a
+        # Redis-wide scan/delete and survives process restarts.
+        self._tenant_epoch = "legacy"
+
+    def set_tenant_epoch(self, epoch: str) -> None:
+        normalized = str(epoch or "legacy").strip() or "legacy"
+        if normalized == self._tenant_epoch:
+            return
+        self._tenant_epoch = normalized
+        self._mem.clear()
+        self._warned = False
+
+    def _qualified(self, key: str) -> str:
+        return f"agentic-soc:tenant:{self._tenant_epoch}:{key}"
 
     async def connect(self) -> None:
         if not self._url:
@@ -45,6 +60,7 @@ class Cache:
             self._redis = None
 
     async def get(self, key: str) -> str | None:
+        key = self._qualified(key)
         if self._redis is not None:
             try:
                 return await self._redis.get(key)
@@ -53,6 +69,7 @@ class Cache:
         return self._mem_get(key)
 
     async def set(self, key: str, value: str, ttl_seconds: int) -> None:
+        key = self._qualified(key)
         if self._redis is not None:
             try:
                 await self._redis.set(key, value, ex=ttl_seconds)

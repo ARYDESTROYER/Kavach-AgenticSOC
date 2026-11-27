@@ -20,6 +20,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 from ..audit.audit_log import AuditLogger
+from ..audit.changes import redact_text
 from ..config import Preferences
 from ..connectors.base import PullConnector
 from ..connectors.elastic import ElasticConnector
@@ -46,7 +47,7 @@ from ..es.querybuilder import (
 )
 from ..models import Cursor, RawEvent
 from ..stores.cursor_store import CursorStore
-from ..utils import now_utc, to_millis
+from ..utils import now_utc, to_millis, truncate
 from ..agents.pipeline import InvestigationPipeline
 
 if TYPE_CHECKING:
@@ -254,10 +255,12 @@ class Poller:
         WIDEST configured rule window (never less than one poll interval) plus a
         small safety margin, so a slow-burn burst is seen whole. The cursor still
         governs what is "new" for de-dup of investigation/attach (Non-negotiable #4).
+
+        The widest window includes every enabled rule-catalog definition's own window
+        (Round 16 B07, :meth:`Preferences.widest_correlation_window_seconds`); the
+        caller still clamps the look-back to the cold-start window.
         """
-        windows = [prefs.default_correlation.window_seconds]
-        windows += [r.window_seconds for r in prefs.correlation_rules.values()]
-        widest = max(windows) if windows else prefs.default_correlation.window_seconds
+        widest = prefs.widest_correlation_window_seconds()
         interval = max(1, prefs.poll_interval_seconds)
         # +2 poll intervals of slack absorbs poll jitter / a late-arriving event at
         # the trailing edge of the window without re-scanning unboundedly.
@@ -414,6 +417,37 @@ class Poller:
         *,
         investigation_budget: InvestigationBudget | None = None,
     ) -> dict[str, Any]:
+        """One poll tick. Every tick leaves one system ``poll`` row in the audit log
+        (Round 14 SPEC §4.5.3: ``actor_type`` and ``outcome`` on every new row): the
+        tick's own row on return, or a ``failure`` row when the tick raised, so the
+        audit log's Failed filter finds a source that cannot be read. The exception
+        still propagates unchanged to the loop or the caller."""
+        try:
+            return await self._poll_once(prefs, investigation_budget=investigation_budget)
+        except Exception as exc:  # noqa: BLE001 (recorded, then re-raised unchanged)
+            try:
+                # A connector's error text is source-controlled and can carry its
+                # address with ``user:password@`` or a credential header: the export's
+                # secret patterns, a basic credential and any userinfo are removed
+                # before the text reaches the durable, exportable record (and before
+                # it is cut, so a cut can never leave half a credential behind).
+                summary, _removed = redact_text(f"poll failed: {type(exc).__name__}: {exc}")
+                await self._audit.record(
+                    action_type=ActionType.POLL, surface="poller", actor="poller",
+                    actor_type="system", outcome="failure",
+                    source_id=(getattr(self._source, "connector_id", None) or None),
+                    result_summary=truncate(summary, 500),
+                )
+            except Exception as audit_exc:  # noqa: BLE001 (the poll error is what propagates)
+                logger.warning("poll failure audit failed: %s", audit_exc)
+            raise
+
+    async def _poll_once(
+        self,
+        prefs: Preferences | None = None,
+        *,
+        investigation_budget: InvestigationBudget | None = None,
+    ) -> dict[str, Any]:
         prefs = prefs or self._get_prefs()
         cold_from = to_millis(now_utc()) - prefs.cold_start_lookback_minutes * 60 * 1000
 
@@ -456,6 +490,9 @@ class Poller:
         # only; never feeds ``decide()`` (#3). The un-fed path leaves this empty → byte-
         # identical ``ok=True``.
         feed_failures: list[tuple[str, str]] = []
+        # How many feeds could not be read this tick (``feed_failures`` also holds a
+        # funnel rejection): every feed failing makes the tick's audit row ``failure``.
+        feed_read_failures = 0
         if feeds:
             for feed in feeds:
                 # Per-feed exception isolation (#4): a single feed whose operator
@@ -477,6 +514,7 @@ class Poller:
                     # (silent-vs-broken fix) — the cursor stays untouched, healthy feeds
                     # proceed, and the events that DID arrive are still processed.
                     feed_failures.append((str(getattr(feed, "id", "?")), str(exc)))
+                    feed_read_failures += 1
                     continue
                 fbatch = scan.events
                 # Advance over the full scanned watermark, not just the kept batch (#4).
@@ -701,8 +739,10 @@ class Poller:
                 from ..engine.ingest import link_cross_source
 
                 try:
+                    # ``pipeline``: each link is written to the case as stored now,
+                    # under its case write lock (Round 16 B09, the cross-cutting review).
                     stats["cross_source_linked"] = await link_cross_source(
-                        clusters, prefs, cases=self._cases
+                        clusters, prefs, cases=self._cases, pipeline=self._pipeline
                     )
                 except Exception as exc:  # noqa: BLE001 — never break the poll loop
                     logger.warning("cross-source correlation failed: %s", exc)
@@ -716,11 +756,13 @@ class Poller:
         # fail-open, using ONLY the pre-computed dict (never the if-block locals).
         if self._noise_sink is not None:
             noise_ingested = zero_bands()
+            noise_scale_max = None
             try:
                 _ns_source = prefs.source_by_id(getattr(self._source, "connector_id", None))
+                noise_scale_max = severity_scale_for_source(_ns_source)
                 noise_ingested = count_events_by_band(
                     new_events + accepted_funnel_events,
-                    severity_scale_for_source(_ns_source),
+                    noise_scale_max,
                 )
             except Exception:  # noqa: BLE001 — counters are advisory, never break a poll
                 pass
@@ -737,6 +779,12 @@ class Poller:
                     # (state._observe_tick_volume) can attribute the volume. Additive — a
                     # None source_id folds into the pooled totals only (byte-identical).
                     "source_id": getattr(self._source, "connector_id", None),
+                    # The severity CEILING these bands were projected against. Stamped on
+                    # the per-source sub-block ONLY, so a later reader can tell whether two
+                    # windows' band splits describe one ladder — the tallies are bucketed
+                    # by band at write time and can never be re-projected. None when it
+                    # could not be resolved (the store then records "not provable").
+                    "severity_scale_max": noise_scale_max,
                 })
             except Exception as exc:  # noqa: BLE001 — the sink must never break a poll cycle
                 logger.debug("noise-counter sink failed: %s", exc)
@@ -753,12 +801,24 @@ class Poller:
             if new_cursor != fcursor:
                 await self._cursor_store.save_keyed(key, new_cursor)
 
+        # The tick's outcome (SPEC §4.5.3): ``partial`` when a feed (or the event
+        # funnel) failed while the rest proceeded, ``failure`` when no feed could be
+        # read. Only the count of failures is appended, after the existing tokens:
+        # each feed's error text stays on the source health surface (``record_tick``).
+        if feeds and feed_read_failures >= len(feeds):
+            poll_outcome = "failure"
+        elif feed_failures:
+            poll_outcome = "partial"
+        else:
+            poll_outcome = "success"
         await self._audit.record(
             action_type=ActionType.POLL, surface="poller", actor="poller",
+            actor_type="system", outcome=poll_outcome,
             source_id=(getattr(self._source, "connector_id", None) or None),
             result_summary=(f"polled={stats['polled']} new={stats['new']} "
                             f"clusters={stats['clusters']} investigated={stats['investigated']} "
-                            f"candidates={stats['candidates']} attached={stats['attached']}"),
+                            f"candidates={stats['candidates']} attached={stats['attached']}"
+                            + (f" failed={len(feed_failures)}" if feed_failures else "")),
         )
         # Coverage observability (A5.1): record this tick's in-memory snapshot AFTER the
         # durable audit write, so the "last poll attempt" wall-clock + ok/error + events/min
@@ -779,8 +839,9 @@ class Poller:
         return stats
 
     async def _attach(self, existing, cluster) -> None:
-        """Merge a cluster's new events into an open case (shared ingest logic)."""
-        await attach_cluster(self._cases, existing, cluster)
+        """Merge a cluster's new events into an open case (shared ingest logic), on the
+        case as stored now (the pipeline's case lock, Round 16 WP08)."""
+        await attach_cluster(self._cases, existing, cluster, pipeline=self._pipeline)
 
     # --- background loop ---
     async def _run(self) -> None:

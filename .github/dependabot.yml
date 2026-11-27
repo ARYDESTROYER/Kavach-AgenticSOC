@@ -7,6 +7,7 @@ updates:
       day: monday
       time: "03:00"
       timezone: Etc/UTC
+    target-branch: Testing
     open-pull-requests-limit: 5
     labels:
       - dependencies
@@ -18,10 +19,16 @@ updates:
       day: monday
       time: "03:15"
       timezone: Etc/UTC
+    target-branch: Testing
     open-pull-requests-limit: 3
     labels:
       - dependencies
       - ci
+    ignore:
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
   - package-ecosystem: docker
     directory: /webui
     schedule:
@@ -29,10 +36,16 @@ updates:
       day: monday
       time: "03:30"
       timezone: Etc/UTC
+    target-branch: Testing
     open-pull-requests-limit: 3
     labels:
       - dependencies
       - ci
+    ignore:
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
   - package-ecosystem: docker
     directory: /updater
     schedule:
@@ -40,6 +53,7 @@ updates:
       day: monday
       time: "03:45"
       timezone: Etc/UTC
+    target-branch: Testing
     open-pull-requests-limit: 3
     labels:
       - dependencies

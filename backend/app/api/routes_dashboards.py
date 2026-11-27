@@ -32,6 +32,19 @@ dashboards — the store keys every read/write on the normalised username.
   but never leak an internal error body verbatim.
 * **bounded** — caps on dashboards/user + widgets/dashboard so a single principal can't
   grow the shared KV document without bound (the store keeps its own last-line backstop).
+* **#2, audit before visible (Round 14, SPEC §3.6)**: every create, update, delete and
+  duplicate appends its ``dashboard.*`` row (the board as target, its shape before and
+  after as ``changes``) to the real audit log BEFORE the board is saved; a failed append
+  answers ``503 audit_unavailable`` and nothing changes.
+* **reserved ids (Round 14, SPEC §2.2 item 4)**: creating a personal board whose id is
+  ``new`` or starts with ``builtin:`` or ``u:`` is refused (``400 dashboard_id_reserved``):
+  ``new`` is the builder's unsaved draft, ``builtin:*`` are the code-defined built-in
+  boards and ``u:*`` the Console's alias for an older stored id it cannot link to.
+  Only a CREATE is refused (``POST`` of a new id, or create-by-``PUT``); a board stored
+  before Round 14 under such an id is still read, updated, renamed, cloned and deleted.
+* **request bodies (Round 14)**: create and update take :class:`DashboardLayoutIn`, so a
+  ``default_window`` outside the four presets or a malformed ``derived_from`` is refused
+  (422) instead of silently dropped; the stored shape stays :class:`DashboardLayout`.
 
 Debounce (one PUT per drag/resize settle rather than per pixel) is a CLIENT concern
 (RGL ``onLayoutChange`` → ~500ms debounce); the server just persists whatever it is
@@ -42,12 +55,21 @@ from __future__ import annotations
 
 import logging
 import unicodedata
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from ..audit.changes import count_changes, diff_changes
+from ..audit.context import audit_context
+from ..audit.write import audited_write
 from ..constants import ActionType
-from ..models import DashboardLayout, DashboardWidget
+from ..models import (
+    AuditTarget,
+    DashboardLayout,
+    DashboardLayoutIn,
+    DashboardWidget,
+    is_reserved_dashboard_id,
+)
 from ..state import AppState
 from ..utils import new_id
 from .deps import current_username, get_state, require_permission
@@ -77,6 +99,12 @@ WIDGET_TYPES: frozenset[str] = frozenset({
     "table.connector_health", "table.recent_cases",
     # Coverage / gauge
     "mitre.heatmap", "gauge.active_risk",
+    # Round 14 (SPEC §4.4.3): the built-in boards' modules, also offered in the builder.
+    "kpi.strip", "kpi.auto_close_health", "kpi.agent_quality",
+    "chart.case_trend", "chart.case_breakdown", "chart.severity_trend",
+    "chart.backlog_aging", "chart.noise_funnel",
+    "table.attention_queue", "table.workload", "table.sla_breaches", "table.top_rules",
+    "table.noisy_rules", "table.top_techniques", "table.campaigns", "table.telemetry_gaps",
 })
 
 # Bounds (the API policy; the store keeps its own looser last-line backstop). MVP is a
@@ -94,6 +122,15 @@ _MAX_BREAKPOINT_KEYS = 8       # lg/md/sm/xs/xxs + a little headroom
 def _reject(detail: str) -> HTTPException:
     """A plain, bounded 400 (#9): the body is short, escaped-by-the-client text."""
     return HTTPException(status_code=400, detail=str(detail)[:300])
+
+
+def _reject_reserved_id() -> HTTPException:
+    """``400 dashboard_id_reserved`` (SPEC §2.2 item 4): a coded refusal whose message
+    names the rule and never echoes the submitted id."""
+    return HTTPException(status_code=400, detail={
+        "code": "dashboard_id_reserved",
+        "message": "That dashboard id is reserved. Leave the id out and one is created for you.",
+    })
 
 
 def _clean_name(raw: Any, *, field: str = "name") -> str:
@@ -214,25 +251,88 @@ def _sanitize_layout(
     return DashboardLayout(
         id=did, name=name, schema_version=int(body.schema_version or 1),
         columns=columns, widgets=clean_widgets, layouts=layouts,
+        # Round 14 (SPEC §4.4.1): plain, already validated data (the request model is
+        # strict and the stored model reads an unknown value as ``None``), kept as is.
+        default_window=body.default_window,
+        derived_from=body.derived_from,
     )
 
 
-async def _audit(state: AppState, request: Request, event: str, detail: str) -> None:
-    """Best-effort append-only audit of a dashboard mutation (#2). Never raises."""
-    audit = getattr(state, "_real_audit", None) or getattr(state, "audit", None)
-    if audit is None:
-        return
-    try:
-        await audit.record(
-            # A dashboard write is ADVISORY presentation state — audited with the
-            # additive CONTEXT type (never DECISION/STATUS; it never feeds decide(), #3).
-            action_type=ActionType.CONTEXT,
-            surface="dashboards",
-            actor=current_username(request) or "",
-            result_summary=f"{event}: {detail}"[:500],
-        )
-    except Exception:  # noqa: BLE001 — audit is best-effort, never breaks the write
-        pass
+def _refuse_reserved_create(layout_id: str, existing_ids: set[str]) -> None:
+    """Refuse to CREATE a board under a reserved id (SPEC §2.2 item 4, E4). A board
+    already stored under that id is an update, which stays allowed whatever its id."""
+    if layout_id not in existing_ids and is_reserved_dashboard_id(layout_id):
+        raise _reject_reserved_id()
+
+
+def _widget_text(widget: DashboardWidget) -> str:
+    """One widget as a dashboard row records it: its type and placement in one value
+    (``kpi.needs_human at 0,0 size 3x2``)."""
+    return f"{widget.type} at {widget.x},{widget.y} size {widget.w}x{widget.h}"
+
+
+def _board_doc(layout: DashboardLayout | None) -> dict[str, Any]:
+    """What a dashboard row records of a board: its name, grid, default window, the
+    built-in it was duplicated from, and each widget keyed by its id as one value (its
+    type and placement), so a moved or resized widget shows as one change of that
+    widget and a board at the widget cap (40) records every widget within the row's
+    50 changes. Option values are left out: they are free-form presentation data, not
+    the board's shape."""
+    if layout is None:
+        return {}
+    return {
+        "name": layout.name,
+        "columns": layout.columns,
+        "default_window": layout.default_window,
+        "derived_from": layout.derived_from,
+        "widgets": {str(w.i): _widget_text(w) for w in (layout.widgets or [])},
+    }
+
+
+async def _audited_board_write(
+    state: AppState,
+    request: Request,
+    *,
+    action: str,
+    board: DashboardLayout,
+    prior: DashboardLayout | None,
+    write: Callable[[], Awaitable[Any]],
+    summary: str,
+    tool_input: Any = None,
+) -> Any:
+    """Run one personal-dashboard write audit-first (#2, Round 14 SPEC §3.6).
+
+    The ``dashboard.*`` row (target the board, ``changes`` its shape before and after)
+    is appended to the real audit log before the board is saved, so a failed append
+    answers ``503 audit_unavailable`` and nothing changes; a failed save appends
+    ``dashboard.<verb>_failed``. Personal dashboards are real state in Demo Mode too,
+    so the row always goes to the real audit log (SPEC §3.5). A dashboard write is
+    ADVISORY presentation state, audited with the additive CONTEXT type (never
+    DECISION/STATUS; it never feeds ``decide()``, #3)."""
+    after = None if action == "dashboard.deleted" else board
+    before_doc, after_doc = _board_doc(prior), _board_doc(after)
+    changes = diff_changes(before_doc, after_doc)
+    total = count_changes(before_doc, after_doc)
+    if total > len(changes):  # the row says when its change list is cut
+        summary = f"{summary} ({total} fields changed; the first {len(changes)} are recorded)"
+    return await audited_write(
+        state, sink="control", action=action,
+        target=AuditTarget(type="dashboard", id=board.id, label=board.name or board.id),
+        expected_revision=None,
+        changes=changes,
+        write=write, action_type=ActionType.CONTEXT, actor=current_username(request) or "",
+        surface="dashboards", context=audit_context(request),
+        result_summary=summary[:500], tool_input=tool_input,
+    )
+
+
+def _save_action(layout: DashboardLayout, prior: DashboardLayout | None) -> str:
+    """``dashboard.updated`` for a board the caller already has; for a new board,
+    ``dashboard.duplicated`` when it is a copy of a built-in (Duplicate to customise
+    sends ``derived_from``), else ``dashboard.created``."""
+    if prior is not None:
+        return "dashboard.updated"
+    return "dashboard.duplicated" if layout.derived_from else "dashboard.created"
 
 
 def _dash_json(layout: DashboardLayout) -> dict[str, Any]:
@@ -278,14 +378,17 @@ async def dashboard_widget_types(
 # --------------------------------------------------------------------------- #
 @router.post("/dashboards")
 async def create_dashboard(
-    body: DashboardLayout,
+    body: DashboardLayoutIn,
     request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("metrics", "view")),
 ) -> dict[str, Any]:
     """Create one dashboard for the caller (id minted if absent). Allowlist-validates
     every widget type, clamps coords, validates the name, and enforces the per-user cap
-    (#9/#10). Returns the stored dashboard."""
+    (#9/#10). A new id that is reserved (``new``, ``builtin:*``, ``u:*``) is refused with
+    ``400 dashboard_id_reserved``; replacing an already stored board keeps working
+    whatever its id. ``default_window`` and ``derived_from`` are validated strictly and
+    stored as sent. Returns the stored dashboard."""
     user = current_username(request)
     layout = _sanitize_layout(body)
 
@@ -296,11 +399,16 @@ async def create_dashboard(
     except Exception:  # noqa: BLE001 — a read glitch shouldn't block a create
         existing = []
     existing_ids = {b.id for b in existing}
+    _refuse_reserved_create(layout.id, existing_ids)
     if layout.id not in existing_ids and len(existing_ids) >= _MAX_DASHBOARDS_PER_USER:
         raise _reject(f"dashboard limit reached (max {_MAX_DASHBOARDS_PER_USER})")
 
-    stored = await state.dashboards.save(user, layout)
-    await _audit(state, request, "dashboard_create", f"id={stored.id} widgets={len(stored.widgets)}")
+    prior = next((b for b in existing if b.id == layout.id), None)
+    stored = await _audited_board_write(
+        state, request, action=_save_action(layout, prior), board=layout, prior=prior,
+        write=lambda: state.dashboards.save(user, layout),
+        summary=f"dashboard_create: id={layout.id} widgets={len(layout.widgets)}",
+    )
     return _dash_json(stored)
 
 
@@ -310,7 +418,7 @@ async def create_dashboard(
 @router.put("/dashboards/{dashboard_id}")
 async def update_dashboard(
     dashboard_id: str,
-    body: DashboardLayout,
+    body: DashboardLayoutIn,
     request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("metrics", "view")),
@@ -318,7 +426,8 @@ async def update_dashboard(
     """Replace the dashboard at ``dashboard_id`` (the PATH id is authoritative and
     overrides any id in the body). Allowlist-validates widget types + clamps coords +
     validates the name (#9). Creating-by-PUT is allowed but still honours the per-user
-    cap when the id is new."""
+    cap when the id is new, and is refused for a reserved id (``400
+    dashboard_id_reserved``); updating a board stored under a reserved id is allowed."""
     did = (dashboard_id or "").strip()
     if not did:
         raise _reject("dashboard id is required")
@@ -330,11 +439,16 @@ async def update_dashboard(
     except Exception:  # noqa: BLE001
         existing = []
     existing_ids = {b.id for b in existing}
+    _refuse_reserved_create(layout.id, existing_ids)
     if layout.id not in existing_ids and len(existing_ids) >= _MAX_DASHBOARDS_PER_USER:
         raise _reject(f"dashboard limit reached (max {_MAX_DASHBOARDS_PER_USER})")
 
-    stored = await state.dashboards.save(user, layout)
-    await _audit(state, request, "dashboard_update", f"id={stored.id} widgets={len(stored.widgets)}")
+    prior = next((b for b in existing if b.id == layout.id), None)
+    stored = await _audited_board_write(
+        state, request, action=_save_action(layout, prior), board=layout, prior=prior,
+        write=lambda: state.dashboards.save(user, layout),
+        summary=f"dashboard_update: id={layout.id} widgets={len(layout.widgets)}",
+    )
     return _dash_json(stored)
 
 
@@ -355,13 +469,28 @@ async def delete_dashboard(
         raise _reject("dashboard id is required")
     user = current_username(request)
     try:
-        removed = await state.dashboards.delete(user, did)
+        prior = await state.dashboards.get(user, did)
     except Exception as exc:  # noqa: BLE001 — a store glitch is a 500, not a crash
         logger.warning("delete dashboard %s soft-failed (%s)", did, exc)
         raise HTTPException(status_code=500, detail="delete failed") from exc
-    if not removed:
+    if prior is None:
         raise HTTPException(status_code=404, detail=f"no dashboard {str(did)[:80]}")
-    await _audit(state, request, "dashboard_delete", f"id={did}")
+
+    async def _delete() -> bool:
+        try:
+            removed = await state.dashboards.delete(user, did)
+        except Exception as exc:  # noqa: BLE001 (a store glitch is a 500, not a crash)
+            logger.warning("delete dashboard %s soft-failed (%s)", did, exc)
+            raise HTTPException(status_code=500, detail="delete failed") from exc
+        if not removed:
+            # Deleted by a racing request after the read above: nothing was removed here.
+            raise HTTPException(status_code=404, detail=f"no dashboard {str(did)[:80]}")
+        return removed
+
+    await _audited_board_write(
+        state, request, action="dashboard.deleted", board=prior, prior=prior,
+        write=_delete, summary=f"dashboard_delete: id={did}",
+    )
     return {"ok": True, "id": did}
 
 
@@ -410,8 +539,12 @@ async def clone_dashboard(
     clone = _sanitize_layout(
         source.model_copy(update={"id": new_id("dash-"), "name": clone_name})
     )
-    stored = await state.dashboards.save(user, clone)
-    await _audit(state, request, "dashboard_clone", f"from={src_id} id={stored.id}")
+    stored = await _audited_board_write(
+        state, request, action="dashboard.duplicated", board=clone, prior=None,
+        write=lambda: state.dashboards.save(user, clone),
+        summary=f"dashboard_clone: from={src_id} id={clone.id}",
+        tool_input={"duplicated_from": src_id[:128]},
+    )
     return _dash_json(stored)
 
 

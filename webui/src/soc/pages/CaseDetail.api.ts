@@ -18,6 +18,7 @@
  * case's status/verdict/disposition (the backend enforces this).
  */
 import { api } from '@/lib/api';
+import type { TraceSpanCostBasis, TraceSpanDetail } from '@/lib/types';
 
 /* ------------------------------------------------------------- triage chips -- */
 
@@ -28,7 +29,11 @@ export type TriageBand = 'high' | 'medium' | 'low';
 export interface RiskChip {
   value: number;
   band: TriageBand | string;
+  /** The shown integer, rounded half up (WP10). */
+  display?: number;
   breakdown: Record<string, number | undefined>;
+  /** Whether the case recorded its scoring inputs (WP10); absent from an older build. */
+  inputs_status?: 'recorded' | 'not_recorded' | string;
   inputs: { definition?: string } & Record<string, unknown>;
 }
 
@@ -79,6 +84,14 @@ export interface TriageResponse {
   case_id: string;
   found: boolean;
   chips: TriageChips;
+  /**
+   * WP10 read-time additions, each read defensively (`casedetail/triageReads.ts`): the
+   * auto-close entry for the case's verdict, the per-case SLA reading, and, for a
+   * `settings:read` holder only, today's internal network range that holds the entity.
+   */
+  auto_close_policy?: Record<string, unknown> | null;
+  sla?: Record<string, unknown> | null;
+  asset_cidr?: Record<string, unknown> | null;
 }
 
 /** GET /api/cases/{id}/triage — the four honest advisory chips. */
@@ -105,13 +118,22 @@ export interface TraceSpan {
   trusted: boolean;
   summary: string;
   payload_ref: Record<string, unknown>;
+  /** Round 16 (WP10): the bounded audit record behind the span; absent on an older server. */
+  detail?: TraceSpanDetail | null;
+  /** Round 16 (WP10): how `cost` and `latency_ms` were found; null on a span with no cost. */
+  cost_basis?: TraceSpanCostBasis | null;
 }
 
 export interface TimelineResponse {
   case_id: string;
   spans: TraceSpan[];
   total: number;
-  totals: { cost: number; tokens: number };
+  /**
+   * The run's recorded AI cost and tokens. Both are `null` for a caller without
+   * `cost:view` (the server does not read the usage ledger for them), and so is every
+   * span's `cost` and `tokens`; the trace then shows no cost at all.
+   */
+  totals: { cost: number | null; tokens: number | null };
 }
 
 /** The exact decision clause carried on a terminal `decision` span's payload_ref. */
@@ -133,6 +155,22 @@ export interface DecisionPayload {
     objection_window_minutes?: number;
     note?: string;
   };
+  /**
+   * WP10 (B63): `recorded` when the span reports the decision recorded at the time,
+   * `rederived_current_policy` for a case that recorded none. Every field below is read
+   * defensively by `readDecision` (`lib/explain/decision.ts`).
+   */
+  source?: 'recorded' | 'rederived_current_policy' | string;
+  /** The gate recorded on the decision's audit row, or null. */
+  gate?: Record<string, unknown> | null;
+  gate_source?: 'recorded' | 'rederived_current_policy' | string | null;
+  run_id?: string | null;
+  /** True when the newest run failed, so code routed the case without a policy check. */
+  run_failed?: boolean;
+  /** Today's clause with what today's policy decides for the same inputs. */
+  current_policy?: Record<string, unknown> | null;
+  policy_changed?: boolean | null;
+  ts?: string | null;
 }
 
 /** GET /api/cases/{id}/timeline — the typed span timeline + a terminal decision span. */

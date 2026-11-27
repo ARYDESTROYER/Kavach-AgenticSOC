@@ -1,24 +1,27 @@
 /**
- * CollaborationPanel — assignee Select value binding (Round-6 finding #11).
+ * CollaborationPanel, the Activity tab (Round 16, SPEC D8; Round 15 D8.3): Discussion,
+ * Files (a slot the WP4 kit fills) and History, with no owner picker (the owner's one home
+ * is the header) and no tasks (they are on the Response tab since Round 16).
  *
- * The picker must reflect the ACTUAL assignee, not a false "Unassigned", when the case
- * is assigned to someone outside the pickable user list (a free-text / deleted / display
- * -name assignee). It must also normalise a case-mismatched known user to the canonical
- * username so the trigger matches a real SelectItem.
+ * The assignee Select value binding (Round-6 finding #11) is kept with the picker, which
+ * now lives in the header's owner popover: it must reflect the ACTUAL assignee, not a
+ * false "Unassigned", when the case is assigned to someone outside the pickable user
+ * list, and normalise a case-mismatched known user to the canonical username.
  */
+import type * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 const { useEventStreamMock } = vi.hoisted(() => ({ useEventStreamMock: vi.fn() }));
 
 vi.mock('@/lib/useEventStream', () => ({ useEventStream: useEventStreamMock }));
 
-import { assigneeSelectValue, CollaborationThreadTab } from '../CollaborationPanel';
+import { CollaborationThreadTab } from '../CollaborationPanel';
+import { assigneeSelectValue } from '../AssigneePicker';
 import type {
   CaseActivityItem,
   CaseMessage,
-  CaseTask,
   PickableUser,
 } from '@/soc/pages/CaseDetail.api';
 import type { Case } from '@/lib/types';
@@ -30,6 +33,19 @@ const USERS: PickableUser[] = [{ username: 'alice' }, { username: 'bob' }];
 const CASE = {
   case_id: 'case-2026-00892',
   assignee: 'alice',
+  history: [
+    { event: 'decision', ts: '2026-07-20T10:40:00Z', status: 'needs_human', decision_by: 'system' },
+    { event: 'analyst_action', ts: '2026-07-20T10:45:00Z', action: 'acknowledge', analyst: 'alice', note: '' },
+    {
+      event: 'analyst_action',
+      ts: '2026-07-20T11:00:00Z',
+      action: 'close',
+      analyst: 'alice',
+      note: 'Confirmed with the owner.',
+      classified_disposition: 'true_positive',
+      actions_taken: ['blocked_indicator', 'reset_credentials'],
+    },
+  ],
 } as unknown as Case;
 
 const THREAD: CaseMessage[] = [
@@ -65,19 +81,6 @@ const THREAD: CaseMessage[] = [
   },
 ];
 
-const TASKS: CaseTask[] = [
-  {
-    id: 'task-1',
-    case_id: CASE.case_id,
-    title: 'Revoke the IAM sessions and block the source IP',
-    assignee: 'alice',
-    status: 'in_progress',
-    order: 0,
-    created_at: '2026-07-20T10:47:15Z',
-    logs: [],
-  },
-];
-
 const ACTIVITY: CaseActivityItem[] = [
   {
     id: 'activity-1',
@@ -96,29 +99,19 @@ const PANEL_PROPS = {
   threadLoading: false,
   threadError: null,
   threadBusyId: null,
-  tasks: TASKS,
-  tasksLoading: false,
-  tasksError: null,
-  tasksBusyId: null,
   activity: ACTIVITY,
   activityLoading: false,
   activityError: null,
   users: USERS,
   currentUser: 'alice',
   canComment: false,
-  canWrite: false,
   onRetryThread: vi.fn(),
-  onRetryTasks: vi.fn(),
   onRetryActivity: vi.fn(),
   onPost: vi.fn(),
   onReply: vi.fn(),
   onEdit: vi.fn(),
   onDelete: vi.fn(),
   onReact: vi.fn(),
-  onAddTask: vi.fn(),
-  onTaskStatus: vi.fn(),
-  onTaskLog: vi.fn(),
-  onAssigned: vi.fn(),
   liveCaseId: CASE.case_id,
   onLiveThread: vi.fn(),
   onLiveActivity: vi.fn(),
@@ -139,56 +132,97 @@ describe('assigneeSelectValue (#11)', () => {
   });
 });
 
-describe('CollaborationThreadTab — Case Manager presentation', () => {
+/** Open the full activity feed under History. */
+function openAllActivity() {
+  fireEvent.click(screen.getByRole('button', { name: /show all activity/i }));
+}
+
+describe('CollaborationThreadTab: Discussion, Files, History (Round 16, D8)', () => {
   beforeEach(() => useEventStreamMock.mockClear());
 
-  it('uses the compact two-lane layout without dropping discussion, ownership, tasks, activity, or live wiring', () => {
-    const { container } = render(
-      <CollaborationThreadTab {...PANEL_PROPS} presentation="case-manager" />,
-    );
+  it('lays out the discussion beside the history, with no owner picker and no tasks', () => {
+    const { container } = render(<CollaborationThreadTab {...PANEL_PROPS} />);
 
-    const panel = container.querySelector(
-      '[data-case-panel="collaboration"][data-presentation="case-manager"]',
-    );
+    const panel = container.querySelector('[data-case-panel="collaboration"][data-presentation="case-manager"]');
     expect(panel).not.toBeNull();
-    expect(panel).toHaveClass('grid', 'lg:grid-cols-[minmax(0,1fr)_18rem]');
-
-    const discussion = container.querySelector('[data-collaboration-surface="discussion-canvas"]');
-    expect(discussion).toHaveClass(
-      'rounded-none',
-      'border-0',
-      'bg-transparent',
-      'p-0',
-      'shadow-none',
-    );
-    const rail = container.querySelector('[data-collaboration-surface="context-rail"]');
-    expect(rail).toHaveClass('space-y-0', 'bg-muted/20');
-    const railSections = container.querySelectorAll('[data-collaboration-rail-section]');
-    expect(railSections).toHaveLength(3);
-    railSections.forEach((section) => {
-      expect(section).toHaveClass('rounded-none', 'bg-transparent', 'shadow-none');
-    });
+    // The columns follow the PANE (a container query), never the viewport.
+    expect(panel?.className).toContain('@container/collab');
+    expect(panel?.querySelector('.grid')?.className).toContain('@[52rem]/collab:grid-cols-[minmax(0,1fr)_18rem]');
 
     expect(screen.getByRole('heading', { name: 'Discussion' })).toBeInTheDocument();
-    expect(screen.getByText('I am validating the affected IAM role now.')).toBeInTheDocument();
-    expect(
-      screen.getByText('I correlated the source IP with a known Tor exit node.'),
-    ).toBeInTheDocument();
-    expect(screen.getByText('AI')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Ownership' })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Assignee' })).toHaveTextContent('alice');
-    expect(
-      screen.getByText('Revoke the IAM sessions and block the source IP'),
-    ).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Activity' })).toBeInTheDocument();
-    expect(
-      screen.getByText('Escalated for analyst review; containment initiated.'),
-    ).toBeInTheDocument();
+    const discussion = container.querySelector('[data-collaboration-surface="discussion-canvas"]') as HTMLElement;
+    expect(within(discussion).getByText('I am validating the affected IAM role now.')).toBeInTheDocument();
+    expect(within(discussion).getByText('I correlated the source IP with a known Tor exit node.')).toBeInTheDocument();
+    // The AI author badge lives in the discussion.
+    expect(within(discussion).getByText('AI')).toBeInTheDocument();
+    expect(screen.getByText('2 messages')).toBeInTheDocument();
 
+    // D8.3: no owner picker on this tab (the header owns it).
+    expect(screen.queryByRole('heading', { name: 'Ownership' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Assignee' })).toBeNull();
+
+    // Round 16 (D8): the case's tasks are on the Response tab, so this tab has no Tasks
+    // section and no pointer to one.
+    expect(screen.queryByRole('heading', { name: 'Tasks' })).toBeNull();
+    expect(screen.queryByText(/Case tasks are in the Runbook tab/)).toBeNull();
+    expect(screen.queryByTestId('collaboration-tasks')).toBeNull();
+    expect(screen.getByRole('region', { name: 'History' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'History' })).toBeInTheDocument();
+    // The geometry is measured at the tab's first block, the two-column grid.
+    expect(panel?.firstElementChild).toHaveAttribute('data-testid', 'case-tab-first');
+
+    // No Files section until the caller fills the slot.
+    expect(screen.queryByRole('heading', { name: 'Files' })).toBeNull();
+
+    // The thread keeps its live wiring.
     expect(useEventStreamMock).toHaveBeenCalledWith(
       [`cases:${CASE.case_id}`],
       expect.objectContaining({ enabled: true, onEvent: expect.any(Function) }),
     );
+  });
+
+  it('shows the lifecycle with who, when and the actions taken (D4.2)', () => {
+    render(<CollaborationThreadTab {...PANEL_PROPS} />);
+    const history = screen.getByTestId('case-history');
+    const items = within(history).getAllByTestId('case-history-item');
+    // Newest first.
+    expect(items[0]).toHaveTextContent('Closed as true positive');
+    expect(items[0]).toHaveTextContent('alice');
+    expect(within(items[0]).getByTestId('case-history-actions')).toHaveTextContent(
+      'Actions taken: Blocked an indicator, Reset credentials',
+    );
+    expect(items[0]).toHaveTextContent('Confirmed with the owner.');
+    expect(items[1]).toHaveTextContent('Acknowledged');
+    expect(items[2]).toHaveTextContent('Sent to an analyst');
+    expect(items[2]).toHaveTextContent('Case manager');
+  });
+
+  it('fills the Files slot with the tab as its paste scope (D5.12)', () => {
+    let scope: React.RefObject<HTMLElement | null> | null = null;
+    const { container } = render(
+      <CollaborationThreadTab
+        {...PANEL_PROPS}
+        renderFiles={(pasteScope) => {
+          scope = pasteScope;
+          return <p>Screenshot gallery</p>;
+        }}
+      />,
+    );
+    const files = screen.getByTestId('collaboration-files');
+    expect(within(files).getByRole('heading', { name: 'Files' })).toBeInTheDocument();
+    expect(within(files).getByText('Screenshot gallery')).toBeInTheDocument();
+    expect(files).toHaveAttribute('data-section', 'files');
+    expect((scope as React.RefObject<HTMLElement | null> | null)?.current).toBe(
+      container.querySelector('[data-case-panel="collaboration"]'),
+    );
+  });
+
+  it('keeps the full activity feed one click away, with its live wiring', () => {
+    render(<CollaborationThreadTab {...PANEL_PROPS} />);
+    expect(screen.queryByText('Escalated for analyst review; containment initiated.')).toBeNull();
+    openAllActivity();
+    expect(screen.getByText('Escalated for analyst review; containment initiated.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /hide all activity/i })).toBeInTheDocument();
   });
 
   it('pins the empty-thread composer to a single quiet boundary instead of nesting another card', () => {
@@ -197,7 +231,6 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
         {...PANEL_PROPS}
         thread={[]}
         canComment
-        presentation="case-manager"
       />,
     );
 
@@ -217,35 +250,29 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
     ).toContainElement(threadSurface as HTMLElement);
   });
 
-  it('renders truthful independent task/activity failures and preserves last good data', () => {
-    const onRetryTasks = vi.fn();
+  it('renders a truthful activity failure and preserves last good data', () => {
     const onRetryActivity = vi.fn();
     render(
       <CollaborationThreadTab
         {...PANEL_PROPS}
-        tasksError={new Error('tasks endpoint unavailable')}
         activityError={new Error('activity endpoint unavailable')}
-        onRetryTasks={onRetryTasks}
         onRetryActivity={onRetryActivity}
-        presentation="case-manager"
       />,
     );
 
-    expect(screen.getByText('Could not refresh tasks')).toBeInTheDocument();
-    expect(screen.getByText('tasks endpoint unavailable')).toBeInTheDocument();
-    expect(
-      screen.getByText('Revoke the IAM sessions and block the source IP'),
-    ).toBeInTheDocument();
+    // The failure is named on the collapsed control too.
+    expect(screen.getByRole('button', { name: /show all activity/i })).toHaveTextContent('could not load');
+    openAllActivity();
     expect(screen.getByText('Could not refresh activity')).toBeInTheDocument();
     expect(screen.getByText('activity endpoint unavailable')).toBeInTheDocument();
     expect(
       screen.getByText('Escalated for analyst review; containment initiated.'),
     ).toBeInTheDocument();
 
-    screen.getByRole('button', { name: 'Retry tasks' }).click();
+    const opened = onRetryActivity.mock.calls.length;
     screen.getByRole('button', { name: 'Retry activity' }).click();
-    expect(onRetryTasks).toHaveBeenCalledTimes(1);
-    expect(onRetryActivity).toHaveBeenCalledTimes(1);
+    expect(onRetryActivity).toHaveBeenCalledTimes(opened + 1);
+    expect(screen.queryByRole('button', { name: 'Open the Runbook tab' })).toBeNull();
   });
 
   it('keeps the last good discussion visible beside a retryable refresh failure', () => {
@@ -255,7 +282,6 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
         {...PANEL_PROPS}
         threadError={new Error('discussion endpoint unavailable')}
         onRetryThread={onRetryThread}
-        presentation="case-manager"
       />,
     );
 
@@ -286,26 +312,17 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
   });
 
   it('uses canonical named loading states without inventing successful empty states', () => {
-    render(
-      <CollaborationThreadTab
-        {...PANEL_PROPS}
-        tasks={null}
-        tasksLoading
-        activity={null}
-        activityLoading
-      />,
-    );
-
-    expect(screen.getByRole('status', { name: 'Loading case tasks' })).toBeInTheDocument();
+    render(<CollaborationThreadTab {...PANEL_PROPS} activity={null} activityLoading />);
+    openAllActivity();
     expect(screen.getByRole('status', { name: 'Loading case activity' })).toBeInTheDocument();
-    expect(screen.queryByText('No tasks yet')).not.toBeInTheDocument();
     expect(screen.queryByText('No activity yet')).not.toBeInTheDocument();
   });
 
   it('has no axe violations with live collaboration content', async () => {
     const { container } = render(
-      <CollaborationThreadTab {...PANEL_PROPS} presentation="case-manager" />,
+      <CollaborationThreadTab {...PANEL_PROPS} />,
     );
+    openAllActivity();
     expect(await axe(container)).toHaveNoViolations();
   });
 });

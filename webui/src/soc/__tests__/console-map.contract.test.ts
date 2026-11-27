@@ -1,0 +1,453 @@
+/**
+ * Console-map contract (chat revamp SPEC §5.4, §3.5, §10.7).
+ *
+ * Chat answers "where do I change X?" with CONSOLE LINKS the server resolves from an
+ * allowlist — never with a model-written URL. That allowlist is
+ * `backend/app/knowledge/console_map.json`: every navigable console destination (page,
+ * Settings section, Settings card), its breadcrumb, the grant it needs, and the topics
+ * table behind "Ask about this" (KPI help and Settings section headers send a topic id,
+ * never free text).
+ *
+ * The destinations live in TypeScript (`FEATURES`, `SETTINGS_SECTIONS_META`,
+ * `SETTING_ANCHORS`), and regex-scraping TS from Python would be fragile, so this test
+ * DERIVES the map from the real registries and requires the committed JSON to be
+ * byte-identical. A renamed page, a moved section or a new card therefore fails here
+ * until the map is regenerated:
+ *
+ *     npm run gen:console-map            # rewrites the JSON (write mode)
+ *     python scripts/build_app_knowledge.py   # then refresh the corpus manifest
+ *
+ * The corpus manifest pins the console map's sha256, so the backend loader refuses a
+ * map that was edited without regenerating the corpus (it fails closed). Line endings
+ * are compared as LF, like the loader's hash, so a CRLF checkout does not read as stale.
+ */
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+import { FEATURES, FEATURE_GROUPS, type FeatureChild, type FeatureNode, type NavPerm } from '@/soc/registry';
+import { SETTINGS_REDIRECTS } from '@/soc/router';
+import {
+  SECTION_GROUP_ORDER,
+  SECTION_META_BY_ID,
+  SETTING_ANCHORS,
+  SETTINGS_SECTIONS_META,
+  searchJumpTargets,
+} from '@/soc/pages/settings/settings-sections-meta';
+
+const MAP_PATH = path.resolve(process.cwd(), '..', 'backend', 'app', 'knowledge', 'console_map.json');
+
+/** Write mode: `npm run gen:console-map` (vitest `--mode console-map-write`). */
+const WRITE_MODE = import.meta.env.MODE === 'console-map-write';
+
+/* ------------------------------------------------------------------ shapes -- */
+
+type TargetKind = 'page' | 'settings' | 'settings_card';
+
+interface ConsoleTarget {
+  /** `page:<pageId>`, `settings:<sectionId>` or `settings:<sectionId>.<anchor>`. */
+  id: string;
+  kind: TargetKind;
+  label: string;
+  /** Breadcrumb as the console shows it, e.g. ["Settings", "Security & access", "Users"]. */
+  crumb: string[];
+  page: string;
+  /** Validated NavOpts subset (`section`/`anchor` for Settings targets). */
+  opts: Record<string, string>;
+  /** The `resource:action` grant the destination needs, or null when ungated. */
+  requires: string | null;
+  blurb: string;
+  keywords: string[];
+  /** Preferences keys a Settings section owns ("where do I change chat_model?"). */
+  owned_keys: string[];
+}
+
+interface Topic {
+  id: string;
+  kind: 'kpi' | 'settings';
+  label: string;
+  /** The fixed question chat asks for this topic (the page never sends free text). */
+  question: string;
+  /** Help Center refs `<path>#<anchor>` the answer should cite (checked by the corpus build). */
+  docs: string[];
+  /** The console target the answer should link, or null. */
+  console: string | null;
+}
+
+interface ConsoleMap {
+  schema: 1;
+  generated_by: string;
+  nav_groups: { id: string; label: string }[];
+  settings_groups: { id: string; label: string }[];
+  targets: ConsoleTarget[];
+  topics: Topic[];
+}
+
+/* --------------------------------------------------------- curated overlays -- */
+
+/**
+ * Search keywords for PAGE targets. The registry carries none (Settings sections do),
+ * and without them "connect a source" or "token spend" cannot find a page. Keys must be
+ * real page ids; a stale key fails the test below.
+ */
+const PAGE_KEYWORDS: Record<string, string[]> = {
+  overview: ['home', 'landing page', 'posture', 'cyber defence center', 'kpi', 'active risk', 'noise reduction'],
+  dashboards: [
+    'dashboard',
+    'dashboards library',
+    'built-in dashboards',
+    'soc operations',
+    'detection and data health',
+    'executive summary',
+    'custom dashboard',
+    'widgets',
+    'layout',
+  ],
+  standup: ['shift', 'handoff', 'daily summary', 'attention queue', 'shift brief'],
+  // Round 14: Cases has an exact Rule filter ("the cases one rule opened").
+  cases: ['triage', 'queue', 'alerts', 'incidents', 'rule filter', 'cases for a rule'],
+  // Round 14: Start runbook lives in a case's Take action menu and its Runbook tab, so
+  // "start a runbook on a case" lands here, never on the Runbooks settings section. Keep
+  // 'runbook' to these two: every repeat lowers the word's weight across the index, and
+  // the Runbooks settings targets ("require a distinct approver") would lose their match.
+  case_manager: ['split pane', 'queue', 'bulk', 'case detail', 'start runbook', 'runbook tab', 'take action'],
+  campaigns: ['campaign', 'related cases', 'shared entity'],
+  // Round 14: a rule's sheet opens Logs filtered to that rule ("Open all in Logs"). No
+  // 'filter' or 'rule' words here: the Audit log's label holds "log" too, so a Logs
+  // 'filter' would pull every "filter the audit log by ..." question to Logs. The rule
+  // filter's own destination comes from the Help Center section that documents it.
+  logs: ['log search', 'events', 'telemetry', 'unified logs', 'open all in logs'],
+  chat: ['assistant', 'ask', 'question', 'conversation', 'reports', 'prompt library', 'saved prompts', 'promptbook', 'suggestions', 'suggested questions', 'follow-ups', 'catch-up'],
+  investigate: ['entity', 'hunt', 'ip', 'host', 'user'],
+  approvals: ['proposals', 'pending', 'approve', 'human in the loop'],
+  intelligence: ['knowledge', 'runbooks', 'memory'],
+  knowledge: ['rag', 'corpus', 'documents', 'import'],
+  // "playbook" stays a search alias so an operator coming from an earlier version finds
+  // the one Runbooks feature (search keywords are never rendered as Console copy).
+  runbooks: ['runbook', 'procedure', 'guidance', 'checklist', 'response', 'playbook'],
+  memory: ['operator memory', 'facts', 'remember'],
+  personas: ['agents', 'roster', 'personas'],
+  metrics: ['analytics', 'posture', 'mttr', 'mtta', 'false positive rate', 'mitre coverage'],
+  // Round 15 (SPEC D3.1): per-person work counts. 'who did what' stays the Audit log's
+  // (a record of every action); these words name the team's daily work.
+  team: ['team activity', 'analyst work', 'work done', 'daily work', 'per person', 'what each analyst did', 'track the team'],
+  effectiveness: ['agent health', 'precedent', 'auto-close health', 'agent improvement'],
+  cost: ['spend', 'tokens', 'budget', 'usage', 'ledger', 'price'],
+  models: ['llm', 'model catalog', 'providers', 'pricing'],
+  baseline: ['baseline', 'anomaly', 'silent source'],
+  batchjobs: ['jobs', 'background jobs', 'export download', 'batch'],
+  inbox: ['notifications', 'alerts', 'mentions'],
+  // Round 16 (SPEC D5): the release tracker. Not 'updates': installing an update is the
+  // Settings release section's task, and the word would pull those questions here.
+  whats_new: ["what's new", 'release notes', 'changelog', 'new features', 'release tracker', 'what changed'],
+  sources: ['connectors', 'siem', 'edr', 'ingest', 'data source', 'connect', 'coverage'],
+  // Round 14: the Audit log's own Export menu (CSV or JSON Lines, `audit:export`) is where
+  // audit events are exported; the whole-application Data export is a different task. The
+  // words name the audit log itself, never a format or a verb: a bare 'export' ("Kill the
+  // export job") names Jobs or Data export, and a bare 'csv' or 'json lines' would send
+  // "How do I ingest CSV logs?" or a chart's CSV download here. The Exporting section's
+  // breadcrumb carries the formats.
+  audit: ['audit log', 'activity', 'who did what', 'audit events', 'audit record'],
+  tuning: ['auto-tuning', 'threshold', 'false positives', 'rule tuning'],
+  settings: ['preferences', 'configuration'],
+  docs: ['help', 'documentation', 'help center', 'manual'],
+};
+
+/**
+ * "Ask about this" KPI topics. Each id is the stable key a KPI HelpTip sends; the
+ * question is the ONLY text that reaches chat for it; `docs` must resolve to anchors in
+ * the KPI glossary (the corpus build fails otherwise).
+ */
+const GLOSSARY = 'analyst/kpi-glossary/';
+const KPI_TOPICS: readonly Topic[] = [
+  kpi('active_risk_index', 'Active Risk Index', 'What is the Active Risk Index and how is it calculated?', ['active-risk-index'], 'page:overview'),
+  kpi('risk_score', 'Risk score', 'How is the deterministic risk score of a case calculated?', ['risk-score'], 'settings:detection.detection-risk'),
+  kpi('total_cases', 'Total cases', 'What does the Total cases KPI count?', ['total-cases'], 'page:overview'),
+  kpi('total_critical', 'Total critical', 'What does the Total critical KPI count?', ['total-critical'], 'page:overview'),
+  kpi('open_cases', 'Open cases', 'What does the Open cases KPI count, and why is it not filtered by the time window?', ['open-cases'], 'page:cases'),
+  kpi('false_positive_rate', 'AI-verdict FP rate', 'How is the AI-verdict FP rate calculated?', ['false-positive-rate'], 'page:metrics'),
+  kpi('resolved_closed', 'Resolved or closed', 'What does the Resolved or closed KPI count?', ['resolved-closed'], 'page:overview'),
+  kpi('auto_closed', 'Auto-closed', 'What does Auto-closed count, and how does it relate to Resolved or closed?', ['auto-closed'], 'settings:detection.detection-autoclose'),
+  kpi('human_vs_ai', 'Human vs AI', 'How does the Human vs AI card attribute closed cases?', ['human-vs-ai'], 'page:overview'),
+  kpi('mttd', 'MTTD', 'What does MTTD measure and how is it calculated?', ['mttd'], 'page:overview'),
+  kpi('respond', 'Respond', 'What does the Respond timing measure?', ['respond'], 'page:overview'),
+  kpi('mtta', 'MTTA', 'What does MTTA measure and how is it calculated?', ['mtta'], 'page:metrics'),
+  kpi('mttr', 'MTTR', 'What does MTTR measure and how is it calculated?', ['mttr'], 'page:metrics'),
+  kpi('dwell', 'Dwell', 'What does the Dwell time measure?', ['dwell'], 'page:metrics'),
+  kpi('noise_reduction', 'Noise Reduction', 'How should I read the Noise Reduction funnel and its stages?', ['noise-reduction-funnel'], 'page:overview'),
+  kpi('llm_spend', 'LLM spend', 'How is AI model spend measured and limited?', ['llm-spend'], 'page:cost'),
+];
+
+/**
+ * Keywords a Settings section offers to its own search that chat's console map leaves
+ * out. The Settings search and the console map read the same `keywords`, but a word that
+ * helps one can mislead the other: 'audit' finds Data export in the Settings search (it
+ * exports an Audit scope), while in chat it would send "How do I export the audit log?"
+ * to the whole-application export (`data_export:export`, which auditors lack) instead of
+ * the Audit log's own Export menu (`audit:export`). The bare 'export', 'download' and
+ * 'cases' do the same to "How do I export a chart as CSV?", which is done in Workspace
+ * Chat; Data export keeps its label, 'backup', 'portable' and 'analysis bundle' for the
+ * questions about exporting application state. Keys must be real target ids.
+ */
+const CONSOLE_KEYWORD_DROP: Record<string, readonly string[]> = {
+  'settings:data_export': ['audit', 'export', 'download', 'cases'],
+};
+
+const consoleKeywords = (id: string, keywords: readonly string[]): string[] =>
+  keywords.filter((keyword) => !(CONSOLE_KEYWORD_DROP[id] ?? []).includes(keyword));
+
+function kpi(id: string, label: string, question: string, anchors: string[], consoleId: string): Topic {
+  return { id: `kpi:${id}`, kind: 'kpi', label, question, docs: anchors.map((a) => `${GLOSSARY}#${a}`), console: consoleId };
+}
+
+/* --------------------------------------------------------------- derivation -- */
+
+const permText = (perm: NavPerm | undefined): string | null =>
+  perm ? `${perm.resource}:${perm.action}` : null;
+
+/** Drop consecutive duplicates ("Analytics › Analytics › Metrics" → "Analytics › Metrics"). */
+function crumb(parts: string[]): string[] {
+  return parts.filter((part, index) => part && part !== parts[index - 1]);
+}
+
+function pageTargets(): ConsoleTarget[] {
+  const groupLabel = new Map(FEATURE_GROUPS.map((g) => [g.id, g.label]));
+  const out = new Map<string, ConsoleTarget>();
+  const add = (page: string, label: string, parts: string[], perm: NavPerm | undefined) => {
+    // A retired standalone route (users/roles/…) lands inside Settings; its Settings
+    // section target is the destination, so the redirect id is never a page target.
+    if (Object.prototype.hasOwnProperty.call(SETTINGS_REDIRECTS, page)) return;
+    if (out.has(page)) return;
+    out.set(page, {
+      id: `page:${page}`,
+      kind: 'page',
+      label,
+      crumb: crumb(parts),
+      page,
+      opts: {},
+      requires: permText(perm),
+      blurb: '',
+      keywords: PAGE_KEYWORDS[page] ?? [],
+      owned_keys: [],
+    });
+  };
+  const visible: FeatureNode[] = FEATURES.filter((f) => !f.hidden);
+  for (const feature of visible) {
+    const group = groupLabel.get(feature.group) ?? '';
+    const childPages = new Set((feature.children ?? []).map(pageOf));
+    // A host whose page is also one of its children's pages is reached through that child
+    // (Workspace > Chat, and the Overview row, whose target is Overview > Dashboards).
+    if (!childPages.has(pageOf(feature))) add(pageOf(feature), feature.label, [group, feature.label], feature.perm);
+    for (const child of feature.children ?? []) {
+      // A child is named by the page it opens: "Overview > Cyber Defence Center" opens
+      // the landing page `overview` (SPEC §2.2 item 13), as the navigation does.
+      add(pageOf(child), child.label, [group, feature.label, child.label], child.perm ?? feature.perm);
+    }
+  }
+  return [...out.values()];
+}
+
+/** The page a navigation entry opens: its `target`, else its id (Round 14, SPEC §2.2). */
+function pageOf(entry: FeatureNode | FeatureChild): string {
+  return entry.target ?? entry.id;
+}
+
+function settingsTargets(): ConsoleTarget[] {
+  const groupLabel = new Map(SECTION_GROUP_ORDER.map((g) => [g.id, g.label]));
+  const sections: ConsoleTarget[] = SETTINGS_SECTIONS_META.map((s) => ({
+    id: `settings:${s.id}`,
+    kind: 'settings',
+    label: s.title,
+    crumb: ['Settings', groupLabel.get(s.group) ?? s.group, s.title],
+    page: 'settings',
+    opts: { section: s.id },
+    requires: permText(s.perm),
+    blurb: s.blurb,
+    keywords: consoleKeywords(`settings:${s.id}`, s.keywords ?? []),
+    owned_keys: [...(s.ownedKeys ?? [])],
+  }));
+  const cards: ConsoleTarget[] = SETTING_ANCHORS.map((a) => {
+    const section = SECTION_META_BY_ID[a.section];
+    return {
+      id: `settings:${a.section}.${a.anchor}`,
+      kind: 'settings_card',
+      label: a.label,
+      crumb: ['Settings', groupLabel.get(section.group) ?? section.group, section.title, a.label],
+      page: 'settings',
+      opts: { section: a.section, anchor: a.anchor },
+      requires: permText(section.perm),
+      blurb: '',
+      keywords: consoleKeywords(`settings:${a.section}.${a.anchor}`, a.keywords),
+      owned_keys: [],
+    };
+  });
+  return [...sections, ...cards];
+}
+
+function settingsTopics(): Topic[] {
+  const groupLabel = new Map(SECTION_GROUP_ORDER.map((g) => [g.id, g.label]));
+  return SETTINGS_SECTIONS_META.map((s) => ({
+    id: `settings:${s.id}`,
+    kind: 'settings',
+    label: s.title,
+    question: `What does Settings › ${groupLabel.get(s.group) ?? s.group} › ${s.title} control, and who can change it?`,
+    docs: [],
+    console: `settings:${s.id}`,
+  }));
+}
+
+function buildConsoleMap(): ConsoleMap {
+  return {
+    schema: 1,
+    generated_by: 'webui/src/soc/__tests__/console-map.contract.test.ts (npm run gen:console-map)',
+    nav_groups: FEATURE_GROUPS.map((g) => ({ id: g.id, label: g.label })),
+    settings_groups: SECTION_GROUP_ORDER.map((g) => ({ id: g.id, label: g.label })),
+    targets: [...pageTargets(), ...settingsTargets()],
+    topics: [...KPI_TOPICS, ...settingsTopics()],
+  };
+}
+
+const serialise = (map: ConsoleMap): string => `${JSON.stringify(map, null, 2)}\n`;
+
+/* -------------------------------------------------------------------- tests -- */
+
+// Mirrors of the backend wire patterns (models.ConsoleLink, blocks.NavRefOpts): a target
+// the server could not turn into a ConsoleLink would be silently dropped there.
+const LINK_ID = /^[a-z0-9_]{1,40}:[a-z0-9_.-]{1,80}$/;
+const GRANT = /^[a-z_]{1,40}:[a-z_]{1,40}$/;
+const PAGE = /^[a-z][a-z_]{0,39}$/;
+const ROUTE_TOKEN = /^[A-Za-z0-9_.:@ -]{1,128}$/;
+
+describe('console map contract (SPEC §5.4)', () => {
+  const expected = buildConsoleMap();
+
+  it('the committed console_map.json is byte-identical to the registry derivation', () => {
+    const text = serialise(expected);
+    if (WRITE_MODE) writeFileSync(MAP_PATH, text, 'utf8');
+    let committed = '';
+    try {
+      committed = readFileSync(MAP_PATH, 'utf8').replace(/\r\n/g, '\n');
+    } catch {
+      committed = '';
+    }
+    expect(
+      committed === text,
+      'backend/app/knowledge/console_map.json is stale: run `npm run gen:console-map`, then ' +
+        '`python scripts/build_app_knowledge.py` to refresh the corpus manifest',
+    ).toBe(true);
+  });
+
+  it('every target is a valid ConsoleLink on the wire', () => {
+    const ids = expected.targets.map((t) => t.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const target of expected.targets) {
+      expect(LINK_ID.test(target.id), target.id).toBe(true);
+      expect(PAGE.test(target.page), target.id).toBe(true);
+      expect(target.label.length > 0 && target.label.length <= 80, target.id).toBe(true);
+      if (target.requires !== null) expect(GRANT.test(target.requires), target.id).toBe(true);
+      for (const value of Object.values(target.opts)) {
+        expect(ROUTE_TOKEN.test(value), `${target.id} opts`).toBe(true);
+      }
+    }
+  });
+
+  it('settings targets mirror the section registry (perm, owned keys, cards)', () => {
+    const byId = new Map(expected.targets.map((t) => [t.id, t]));
+    for (const section of SETTINGS_SECTIONS_META) {
+      const target = byId.get(`settings:${section.id}`);
+      expect(target?.requires ?? null).toBe(permText(section.perm));
+      expect(target?.owned_keys).toEqual([...(section.ownedKeys ?? [])]);
+    }
+    for (const anchor of SETTING_ANCHORS) {
+      expect(byId.get(`settings:${anchor.section}.${anchor.anchor}`)?.opts).toEqual({
+        section: anchor.section,
+        anchor: anchor.anchor,
+      });
+    }
+    // "Where do I change the chat model?" resolves through ownedKeys.
+    expect(byId.get('settings:models')?.owned_keys).toContain('chat_model');
+    expect(byId.get('settings:admin_users')?.crumb).toEqual(['Settings', 'Security & access', 'Users']);
+  });
+
+  it('page targets cover every visible feature and never a Settings redirect', () => {
+    const pages = new Set(expected.targets.filter((t) => t.kind === 'page').map((t) => t.page));
+    for (const feature of FEATURES.filter((f) => !f.hidden)) {
+      for (const id of [pageOf(feature), ...(feature.children ?? []).map(pageOf)]) {
+        if (Object.prototype.hasOwnProperty.call(SETTINGS_REDIRECTS, id)) {
+          expect(pages.has(id), id).toBe(false);
+        } else {
+          expect(pages.has(id), id).toBe(true);
+        }
+      }
+    }
+    expect(expected.targets.find((t) => t.id === 'page:chat')?.crumb).toEqual(['Triage', 'Workspace', 'Chat']);
+  });
+
+  it('names the destinations the navigation actually opens (Round 14, SPEC §2.2 item 13)', () => {
+    const byId = new Map(expected.targets.map((t) => [t.id, t]));
+    // The landing page is "Overview > Cyber Defence Center"; the library is "Overview > Dashboards".
+    expect(byId.get('page:overview')).toMatchObject({ label: 'Cyber Defence Center', crumb: ['Overview', 'Cyber Defence Center'] });
+    expect(byId.get('page:dashboards')).toMatchObject({ label: 'Dashboards', crumb: ['Overview', 'Dashboards'], requires: 'metrics:view' });
+    // The aliases are not destinations of their own.
+    for (const alias of ['page:dashboard', 'page:playbooks', 'page:catalog', 'page:scans']) expect(byId.has(alias), alias).toBe(false);
+    expect(byId.get('page:runbooks')).toMatchObject({ label: 'Runbooks', crumb: ['Intelligence', 'Runbooks'] });
+    expect(byId.get('page:docs')).toMatchObject({ label: 'Help Center' });
+    // No target label is Console copy with the retired word.
+    for (const target of expected.targets) expect(target.label, target.id).not.toMatch(/playbook/i);
+  });
+
+  it('sends Round 14 tasks to the page that does them, not to a Settings section (integ-01)', () => {
+    const byId = new Map(expected.targets.map((t) => [t.id, t]));
+    const words = (id: string) => (byId.get(id)?.keywords ?? []).flatMap((k) => k.toLowerCase().split(/\W+/));
+    // Audit events are exported from the Audit log's own Export menu (`audit:export`, which
+    // auditors hold); the whole-application Data export (`data_export:export`) is another task.
+    expect(byId.get('page:audit')?.keywords).toEqual(expect.arrayContaining(['audit events', 'audit record']));
+    expect(byId.get('settings:data_export')?.keywords).not.toContain('audit');
+    // "export" alone ("Kill the export job") is not an audit-log word, and neither is a file
+    // format: "How do I ingest CSV logs?" and a chart's CSV download are other tasks.
+    for (const word of ['export', 'csv', 'json', 'lines']) expect(words('page:audit'), word).not.toContain(word);
+    // Start runbook is in a case's Take action menu and its Runbook tab (SPEC §11.1), with
+    // 'runbook' at most twice so "require a distinct approver for runbooks" still finds
+    // the Runbooks publishing settings.
+    expect(byId.get('page:case_manager')?.keywords).toEqual(expect.arrayContaining(['start runbook', 'runbook tab', 'take action']));
+    expect(words('page:case_manager').filter((w) => w === 'runbook').length).toBeLessThanOrEqual(2);
+    expect(byId.get('settings:runbooks.runbooks-publishing')?.keywords).toContain('distinct approver');
+    // The Runbooks on cases card holds the fallback (generic incident) switch: what a case
+    // with no matching runbook gets.
+    expect(byId.get('settings:runbooks.runbooks-cases')?.keywords).toEqual(expect.arrayContaining(['no runbook', 'fallback runbook']));
+    // A rule's sheet opens Logs filtered to the rule; the Cases list has the same Rule filter.
+    // Logs carries no 'filter' or 'rule' word: "filter the audit log by actor" must not
+    // reach Logs through them.
+    expect(byId.get('page:logs')?.keywords).toContain('open all in logs');
+    expect(words('page:logs')).not.toContain('filter');
+    expect(words('page:logs')).not.toContain('rule');
+    expect(byId.get('page:cases')?.keywords).toEqual(expect.arrayContaining(['rule filter', 'cases for a rule']));
+  });
+
+  it('a keyword chat drops still finds its section in the Settings search', () => {
+    // The overlay applies to the console map only: the Settings rail filter and the
+    // command palette read the section's own keywords (Data export exports an Audit scope).
+    expect(SECTION_META_BY_ID.data_export.keywords).toContain('audit');
+    expect(searchJumpTargets('audit', () => true).filter((t) => !t.anchor).map((t) => t.section)).toContain('data_export');
+    const targetIds = new Set(expected.targets.map((t) => t.id));
+    for (const [id, dropped] of Object.entries(CONSOLE_KEYWORD_DROP)) {
+      expect(targetIds.has(id), id).toBe(true);
+      const target = expected.targets.find((t) => t.id === id);
+      for (const keyword of dropped) expect(target?.keywords, `${id} ${keyword}`).not.toContain(keyword);
+    }
+  });
+
+  it('curated overlays reference real ids', () => {
+    const pages = new Set(expected.targets.filter((t) => t.kind === 'page').map((t) => t.page));
+    expect(Object.keys(PAGE_KEYWORDS).filter((id) => !pages.has(id))).toEqual([]);
+    const targetIds = new Set(expected.targets.map((t) => t.id));
+    const topicIds = expected.topics.map((t) => t.id);
+    expect(new Set(topicIds).size).toBe(topicIds.length);
+    for (const topic of expected.topics) {
+      expect(LINK_ID.test(topic.id), topic.id).toBe(true);
+      if (topic.console !== null) expect(targetIds.has(topic.console), topic.id).toBe(true);
+      expect(topic.question.length > 0 && topic.question.length <= 200, topic.id).toBe(true);
+      for (const doc of topic.docs) expect(/^[a-z0-9/_-]+\/#[a-z0-9_-]+$/.test(doc), doc).toBe(true);
+    }
+  });
+});

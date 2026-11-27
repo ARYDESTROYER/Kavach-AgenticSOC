@@ -161,7 +161,7 @@ describe('useAutoRefresh', () => {
     expect(tick).toHaveBeenCalledTimes(2);
   });
 
-  it('runs LIVE as a visibility-aware five-second dashboard cadence', () => {
+  it('runs Live as a visibility-aware five-second dashboard cadence', () => {
     vi.useFakeTimers();
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
     const tick = vi.fn();
@@ -189,14 +189,14 @@ describe('<TimeRangePicker/> render', () => {
     const range: TimeRange = PRESETS[2]; // Last 24 hours
     render(<TimeRangePicker value={range} onChange={() => {}} />);
     expect(
-      screen.getByRole('button', { name: /Time range: Last 24 hours/i }),
+      screen.getByRole('button', { name: 'Last 24 hours, time range' }),
     ).toBeInTheDocument();
   });
 
   it('emits the picked preset from the popover', () => {
     const onChange = vi.fn();
     render(<TimeRangePicker value={PRESETS[2]} onChange={onChange} />);
-    fireEvent.click(screen.getByRole('button', { name: /Time range:/i }));
+    fireEvent.click(screen.getByRole('button', { name: /, time range$/ }));
     // Presets render as a labelled GROUP of plain buttons (NOT a listbox/option
     // composite — see the a11y fix), with the active range marked via aria-current.
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
@@ -276,7 +276,7 @@ describe('<TimeRangePicker/> render', () => {
     },
   );
 
-  it('offers LIVE directly below Off with one pulse and no duplicate refresh glyph', () => {
+  it('offers Live directly below Off with one pulse and no duplicate refresh glyph', () => {
     const onRefreshChange = vi.fn();
     const { rerender, container } = render(
       <TimeRangePicker
@@ -288,10 +288,10 @@ describe('<TimeRangePicker/> render', () => {
     );
 
     fireEvent.click(screen.getByRole('combobox', { name: 'Auto-refresh interval: Off' }));
-    const live = screen.getByRole('option', { name: 'LIVE' });
+    const live = screen.getByRole('option', { name: 'Live' });
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
       'Off',
-      'LIVE',
+      'Live',
       '5 seconds',
       '30 seconds',
       '1 minute',
@@ -310,7 +310,7 @@ describe('<TimeRangePicker/> render', () => {
         onRefreshChange={onRefreshChange}
       />,
     );
-    const trigger = screen.getByRole('combobox', { name: 'Auto-refresh interval: LIVE' });
+    const trigger = screen.getByRole('combobox', { name: 'Auto-refresh interval: Live' });
     expect(trigger).toBeInTheDocument();
     const pulse = trigger.querySelector('.animate-pulse.bg-success');
     expect(pulse).toHaveClass('block', 'size-2');

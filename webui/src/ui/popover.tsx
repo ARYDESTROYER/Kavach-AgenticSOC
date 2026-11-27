@@ -19,6 +19,8 @@ const PopoverContent = React.forwardRef<
       sideOffset={sideOffset}
       className={cn(
         'z-50 w-72 p-4 outline-none',
+        // Grows out of the control that opened it (Apple spatial consistency): the popper
+        // origin rule in theme.css.
         overlaySurface,
         'data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1',
         'data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1',

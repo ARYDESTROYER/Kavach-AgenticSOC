@@ -31,8 +31,12 @@ from app.stores.chat_conversations import (
     ChatConversationStore,
     normalize_user_id,
     partition_key_for_user,
+    stored_conversation_rows,
+    stored_request_rows,
+    with_stored_rows,
 )
 from app.stores.base import KVStore
+from tests._auth_helpers import ready_user
 
 
 async def _append(
@@ -105,12 +109,17 @@ async def test_store_pagination_concurrency_and_bounds(app_state: AppState) -> N
     assert total == 4 and len(rows) == 2
     assert {item.id for item in rows}.issubset({item.id for item in created})
 
-    # Transcript cap keeps complete exchanges.
+    # Round 12: no transcript window any more — every exchange is kept, in order.
     current = await _append(store, "dave", "turn 0")
     for index in range(1, MAX_MESSAGES_PER_CONVERSATION // 2 + 8):
         current = await _append(store, "dave", f"turn {index}", conversation_id=current.id)
-    assert len(current.messages) == MAX_MESSAGES_PER_CONVERSATION
+    # The default read is the newest window (the rest is counted and paged).
+    assert len(current.messages) == 100 and current.earlier_message_count == 16
+    current = await store.get("dave", current.id, window=None)
+    assert len(current.messages) == MAX_MESSAGES_PER_CONVERSATION + 16
+    assert current.messages[0].content == "turn 0" and current.messages[1].content == "answer to turn 0"
     assert current.messages[0].role == "user" and current.messages[-1].role == "assistant"
+    assert current.total_message_count == current.message_count == len(current.messages)
 
     # Per-user conversation cap trims old rows but always keeps the newest write.
     newest = None
@@ -132,7 +141,7 @@ async def test_store_pagination_concurrency_and_bounds(app_state: AppState) -> N
 
 
 async def test_store_skips_corrupt_rows_and_persists_on_sqlite(app_state: AppState) -> None:
-    from app.constants import CHAT_CONVERSATIONS_KEY, CHAT_CONVERSATIONS_NS
+    from app.constants import CHAT_CONVERSATIONS_NS
     from app.stores.sql import SqlKVStore, build_async_engine, create_all
 
     store = app_state.chat_conversations
@@ -140,7 +149,10 @@ async def test_store_skips_corrupt_rows_and_persists_on_sqlite(app_state: AppSta
     partition_key = partition_key_for_user("frank")
     doc = await app_state.kv.get(CHAT_CONVERSATIONS_NS, partition_key)
     assert doc is not None
-    doc["conversations"]["broken"] = {"messages": "not-a-list"}
+    rows = stored_conversation_rows(doc)
+    rows["broken"] = {"messages": "not-a-list"}
+    doc = with_stored_rows(doc, conversations=rows)
+    doc["chat_conversation_rows"].append("{not json")                # an unreadable row
     await app_state.kv.put(CHAT_CONVERSATIONS_NS, partition_key, doc)
     rows, total = await store.list_for_user("frank")
     assert total == 1 and [item.id for item in rows] == [good.id]
@@ -181,7 +193,7 @@ async def test_legacy_shared_document_migrates_one_hashed_user_partition(
     partition = await app_state.kv.get(
         CHAT_CONVERSATIONS_NS, partition_key_for_user("legacy-user")
     )
-    assert partition is not None and legacy.id in partition["conversations"]
+    assert partition is not None and legacy.id in stored_conversation_rows(partition)
     root = await app_state.kv.get(CHAT_CONVERSATIONS_NS, CHAT_CONVERSATIONS_KEY)
     assert "legacy-user" not in (root or {}).get("conversations", {})
 
@@ -323,6 +335,7 @@ def test_history_routes_are_isolated_by_authenticated_principal() -> None:
             "role": "analyst_tier1",
         })
         assert analyst.status_code == 200, analyst.text
+        ready_user(client, "analyst", "analyst-pass-12345")
         client.cookies.clear()
         login = client.post(
             "/api/auth/login",
@@ -386,8 +399,9 @@ async def test_concurrent_reservation_and_stale_recovery(app_state: AppState) ->
     key = partition_key_for_user("race-user")
     doc = await app_state.kv.get(CHAT_CONVERSATIONS_NS, key)
     assert doc is not None
-    doc["requests"][kwargs["idempotency_key"]]["updated_at"] = "2000-01-01T00:00:00Z"
-    await app_state.kv.put(CHAT_CONVERSATIONS_NS, key, doc)
+    requests = stored_request_rows(doc)
+    requests[kwargs["idempotency_key"]]["updated_at"] = "2000-01-01T00:00:00Z"
+    await app_state.kv.put(CHAT_CONVERSATIONS_NS, key, with_stored_rows(doc, requests=requests))
     reclaimed = await store.reserve_exchange("race-user", **kwargs)
     assert reclaimed.status == "reserved"
     assert reclaimed.conversation_id == reserved.conversation_id
@@ -400,6 +414,37 @@ async def test_concurrent_reservation_and_stale_recovery(app_state: AppState) ->
     )
     with pytest.raises(ChatRequestInProgress):
         await store.reserve_exchange("race-user", **kwargs)
+
+
+async def test_a_reservation_keeps_its_requested_lease(app_state: AppState) -> None:
+    """A turn configured to run longer than the default lease asks for a longer one;
+    a same-key retry inside it is still told the request is in progress."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.constants import CHAT_CONVERSATIONS_NS
+
+    store = app_state.chat_conversations
+    kwargs = {
+        "idempotency_key": "chat-long-lease-0001",
+        "request_fingerprint": "c" * 64,
+        "conversation_id": None,
+    }
+    await store.reserve_exchange("lease-user", lease_seconds=1_320, **kwargs)
+    key = partition_key_for_user("lease-user")
+
+    async def age(seconds: int) -> None:
+        doc = await app_state.kv.get(CHAT_CONVERSATIONS_NS, key)
+        rows = stored_request_rows(doc)
+        stamp = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+        rows[kwargs["idempotency_key"]]["updated_at"] = stamp.isoformat().replace("+00:00", "Z")
+        await app_state.kv.put(CHAT_CONVERSATIONS_NS, key, with_stored_rows(doc, requests=rows))
+
+    await age(700)                              # past the 10-minute default, inside 22 min
+    with pytest.raises(ChatRequestInProgress):
+        await store.reserve_exchange("lease-user", **kwargs)
+    await age(1_400)                            # past the requested lease: reclaimable
+    reclaimed = await store.reserve_exchange("lease-user", **kwargs)
+    assert reclaimed.status == "reserved"
 
 
 async def test_completed_receipt_survives_transcript_retention(app_state: AppState) -> None:
@@ -433,7 +478,9 @@ async def test_completed_receipt_survives_transcript_retention(app_state: AppSta
         current = await _append(
             store, "retention-user", f"later turn {index}", conversation_id=current.id
         )
-    assert first_assistant_id not in {item.id for item in current.messages}
+    # Round 12: nothing is removed — the first answer is still in the thread.
+    whole = await store.get("retention-user", current.id, window=None)
+    assert first_assistant_id in {item.id for item in whole.messages}
 
     replay = await store.reserve_exchange(
         "retention-user",
@@ -485,8 +532,8 @@ async def test_stale_in_progress_receipts_are_bounded(app_state: AppState) -> No
     )
     stored = await app_state.kv.get(CHAT_CONVERSATIONS_NS, partition_key)
     assert stored is not None
-    assert len(stored["requests"]) == MAX_IDEMPOTENCY_RECORDS
-    assert "chat-current-live-request-001" in stored["requests"]
+    assert len(stored_request_rows(stored)) == MAX_IDEMPOTENCY_RECORDS
+    assert "chat-current-live-request-001" in stored_request_rows(stored)
 
 
 async def test_live_request_limit_rejects_without_persisting_overflow(
@@ -530,8 +577,8 @@ async def test_live_request_limit_rejects_without_persisting_overflow(
         )
     stored = await app_state.kv.get(CHAT_CONVERSATIONS_NS, partition_key)
     assert stored is not None
-    assert len(stored["requests"]) == MAX_IDEMPOTENCY_RECORDS
-    assert "chat-overflow-request-001" not in stored["requests"]
+    assert len(stored_request_rows(stored)) == MAX_IDEMPOTENCY_RECORDS
+    assert "chat-overflow-request-001" not in stored_request_rows(stored)
 
     # Completing one live lease makes one receipt safely evictable, so a new request
     # can reserve capacity without touching any of the other live lease tokens.
@@ -560,15 +607,16 @@ async def test_live_request_limit_rejects_without_persisting_overflow(
     assert after_completion.status == "reserved"
     stored = await app_state.kv.get(CHAT_CONVERSATIONS_NS, partition_key)
     assert stored is not None
-    assert len(stored["requests"]) == MAX_IDEMPOTENCY_RECORDS
-    assert completed_key not in stored["requests"]
-    assert "chat-after-completion-001" in stored["requests"]
+    assert len(stored_request_rows(stored)) == MAX_IDEMPOTENCY_RECORDS
+    assert completed_key not in stored_request_rows(stored)
+    assert "chat-after-completion-001" in stored_request_rows(stored)
 
     # An expired lease is likewise evictable. The other still-live leases remain and
     # the next reservation succeeds at, never above, the documented bound.
     expired_key = "chat-live-0001"
-    stored["requests"][expired_key]["updated_at"] = "2000-01-01T00:00:00Z"
-    await app_state.kv.put(CHAT_CONVERSATIONS_NS, partition_key, stored)
+    requests_now = stored_request_rows(stored)
+    requests_now[expired_key]["updated_at"] = "2000-01-01T00:00:00Z"
+    await app_state.kv.put(CHAT_CONVERSATIONS_NS, partition_key, with_stored_rows(stored, requests=requests_now))
     after_expiry = await store.reserve_exchange(
         user,
         idempotency_key="chat-after-expiry-001",
@@ -578,9 +626,9 @@ async def test_live_request_limit_rejects_without_persisting_overflow(
     assert after_expiry.status == "reserved"
     stored = await app_state.kv.get(CHAT_CONVERSATIONS_NS, partition_key)
     assert stored is not None
-    assert len(stored["requests"]) == MAX_IDEMPOTENCY_RECORDS
-    assert expired_key not in stored["requests"]
-    assert "chat-after-expiry-001" in stored["requests"]
+    assert len(stored_request_rows(stored)) == MAX_IDEMPOTENCY_RECORDS
+    assert expired_key not in stored_request_rows(stored)
+    assert "chat-after-expiry-001" in stored_request_rows(stored)
 
 
 class _CapacityBusyChatStore:

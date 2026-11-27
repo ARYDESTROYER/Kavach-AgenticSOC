@@ -1,29 +1,17 @@
 /**
- * StageTimeline — the six-stage narrative of how one alert became a case.
+ * StageTimeline: the six-stage narrative of how one alert became a case.
  *
  * Consumes `GET /api/cases/{id}/stages` (the `TimelineStage` shape) and renders it as
  * a vertical, chronological story: input → correlate → risk → triage → investigate →
  * decide. Each stage shows a one-line TRUSTED headline + state chips at a glance, and
  * expands to its chronological steps. Deterministic stages (correlate/risk/decide)
- * carry a "deterministic" badge — the trust signal (#3 made visible).
+ * carry a "deterministic" badge: the trust signal (#3 made visible).
  *
  * SECURITY (#9): a step with `trusted === false` (raw source/log/tool payload) renders
  * its body ONLY inside an escaped <CodeBlock>; trusted prose renders as plain text.
  */
 import * as React from 'react';
-import {
-  ArrowRight,
-  Calculator,
-  ChevronDown,
-  Compass,
-  Gauge,
-  GitBranch,
-  GitMerge,
-  Inbox,
-  Lock,
-  Search,
-  ShieldCheck,
-} from 'lucide-react';
+import { ArrowRight, ChevronDown, GitBranch, Lock } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { DASH, formatTimestamp, humanizeToken } from '@/lib/format';
@@ -33,55 +21,23 @@ import { Button } from '@/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 import { LoadingState } from '@/design-system';
 import { CodeBlock } from '@/soc/components/CodeBlock';
-import { Markdown } from '@/soc/components/Markdown';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
+import type { ScoreBand } from '@/soc/components/palette';
+import { displayBand, displayScore } from '@/lib/explain/rounding';
 
 import type {
-  StageRiskFactor,
   StageState,
   StageStep,
   TimelineStage,
   TimelineStagesResponse,
 } from '@/soc/pages/CaseDetail.api';
-import type { CasePanelPresentation } from './shared';
 
-/* ------------------------------------------------------------------ meta -- */
-
-type Tone = 'info' | 'medium' | 'low' | 'high';
-
-const TONE_TEXT: Record<Tone, string> = {
-  info: 'text-info',
-  medium: 'text-medium',
-  low: 'text-low',
-  high: 'text-high',
-};
-const TONE_RING: Record<Tone, string> = {
-  info: 'border-info/40 bg-info/10',
-  medium: 'border-medium/40 bg-medium/10',
-  low: 'border-low/40 bg-low/10',
-  high: 'border-high/40 bg-high/10',
-};
-
-interface StageMeta {
-  icon: React.ComponentType<{ className?: string }>;
-  tone: Tone;
-}
-const STAGE_META: Record<string, StageMeta> = {
-  input: { icon: Inbox, tone: 'info' },
-  correlate: { icon: GitMerge, tone: 'info' },
-  risk: { icon: Gauge, tone: 'medium' },
-  triage: { icon: Compass, tone: 'info' },
-  investigate: { icon: Search, tone: 'info' },
-  decide: { icon: ShieldCheck, tone: 'low' },
-};
-function stageMeta(kind: string): StageMeta {
-  return STAGE_META[kind] || { icon: GitBranch, tone: 'info' };
-}
+import { RiskDerivation } from './explain/RiskDerivation';
 
 /* --------------------------------------------------------------- state chips -- */
 
-const StateChips: React.FC<{ state: StageState }> = ({ state }) => {
+const StateChips: React.FC<{ state: StageState; omitRisk?: boolean }> = ({ state, omitRisk = false }) => {
   const chips: React.ReactNode[] = [];
   if (state.severity_band) {
     const src = state.severity_source === 'source_asserted' ? 'SIEM' : state.severity_source === 'derived' ? 'derived' : '';
@@ -92,8 +48,9 @@ const StateChips: React.FC<{ state: StageState }> = ({ state }) => {
       </Badge>,
     );
   }
-  if (typeof state.risk_score === 'number') {
-    chips.push(<Badge key="risk" variant="medium">risk {Math.round(state.risk_score)}/100</Badge>);
+  // Neutral chip: a fixed amber here read as "medium" for every score (CM-6).
+  if (typeof state.risk_score === 'number' && !omitRisk) {
+    chips.push(<Badge key="risk" variant="outline">risk {displayScore(state.risk_score)}/100</Badge>);
   }
   if (state.verdict) {
     chips.push(<Badge key="verdict" variant="info">{humanizeToken(state.verdict)}</Badge>);
@@ -103,119 +60,6 @@ const StateChips: React.FC<{ state: StageState }> = ({ state }) => {
   }
   if (!chips.length) return null;
   return <div className="mt-2 flex flex-wrap gap-1.5">{chips}</div>;
-};
-
-/* ----------------------------------------------------------------- one step -- */
-
-/** A trusted prose body longer than this gets clamped to a few lines + "Show more". */
-const CLAMP_CHARS = 320;
-
-const StepItem: React.FC<{ step: StageStep }> = ({ step }) => {
-  const [open, setOpen] = React.useState(false);
-  const isLong = step.trusted && step.body.length > CLAMP_CHARS;
-  return (
-    <div className="rounded-md border border-border bg-muted/30 p-3">
-      <div className="mb-1.5 flex items-center gap-1.5">
-        <Badge variant={step.trusted ? 'info' : 'medium'} className="gap-1">
-          {step.trusted ? null : <Lock className="h-3 w-3" />}
-          {step.label || humanizeToken(step.kind) || 'Step'}
-        </Badge>
-        {step.trusted ? null : (
-          <span className="text-2xs uppercase tracking-wide text-muted-foreground">untrusted</span>
-        )}
-      </div>
-      {step.body ? (
-        step.trusted ? (
-
-          <>
-            <div className={cn('text-foreground/90', isLong && !open && 'max-h-28 overflow-hidden')}>
-              <Markdown text={step.body} className="space-y-1 text-sm leading-relaxed" />
-            </div>
-            {isLong ? (
-              <button
-                type="button"
-                onClick={() => setOpen((o) => !o)}
-                className="mt-1 rounded text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {open ? 'Show less' : 'Show more'}
-              </button>
-            ) : null}
-          </>
-        ) : (
-          <CodeBlock value={step.body} wrap copyable maxHeightClassName="max-h-40" />
-        )
-      ) : null}
-    </div>
-  );
-};
-
-/* ---------------------------------------------------------------- one stage -- */
-
-const StageRow: React.FC<{ stage: TimelineStage; last: boolean }> = ({ stage, last }) => {
-  const meta = stageMeta(stage.kind);
-  const Icon = meta.icon;
-  const skipped = stage.status === 'skipped';
-  const pending = stage.status === 'pending';
-  const muted = skipped || pending;
-  const hasSteps = stage.steps.length > 0;
-  const [open, setOpen] = React.useState(false);
-
-  return (
-    <li className="relative pl-10">
-      {last ? null : (
-        <span
-          className={cn('absolute left-[15px] top-7 bottom-0 w-px', muted ? 'bg-border/50' : 'bg-border')}
-          aria-hidden
-        />
-      )}
-      <span
-        className={cn(
-          'absolute left-2 top-1 flex h-6 w-6 items-center justify-center rounded-full border',
-          muted
-            ? 'border-dashed border-border bg-muted text-muted-foreground'
-            : cn('bg-card', TONE_RING[meta.tone], TONE_TEXT[meta.tone]),
-        )}
-      >
-        <Icon className="h-3.5 w-3.5" />
-      </span>
-
-      <div className={cn('pb-6', muted && 'opacity-70')}>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-semibold text-foreground">{stage.label}</span>
-          {stage.deterministic ? (
-            <Badge variant="outline" className="gap-1">
-              <GitBranch className="h-3 w-3" />
-              deterministic
-            </Badge>
-          ) : null}
-          {skipped ? <Badge variant="outline">skipped</Badge> : null}
-          {pending ? <Badge variant="outline">pending</Badge> : null}
-          {stage.ts ? (
-            <span className="text-2xs text-muted-foreground">{formatTimestamp(stage.ts)}</span>
-          ) : null}
-        </div>
-
-        {/* headline — always our TRUSTED prose */}
-        <p className="mt-0.5 text-sm text-foreground/90">{stage.headline || DASH}</p>
-
-        <StateChips state={stage.state} />
-
-        {hasSteps ? (
-          <Collapsible open={open} onOpenChange={setOpen} className="mt-2">
-            <CollapsibleTrigger className="inline-flex items-center gap-1 rounded text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
-              {open ? 'Hide' : 'Show'} {stage.steps.length} step{stage.steps.length === 1 ? '' : 's'}
-            </CollapsibleTrigger>
-            <CollapsibleContent className="mt-2 space-y-2">
-              {stage.steps.map((st, i) => (
-                <StepItem key={i} step={st} />
-              ))}
-            </CollapsibleContent>
-          </Collapsible>
-        ) : null}
-      </div>
-    </li>
-  );
 };
 
 /* -------------------------------------------- Case Manager story treatment -- */
@@ -238,44 +82,57 @@ function storyTime(ts?: string | null): string {
   }
 }
 
-const STORY_TONE: Record<string, { dot: string; title: string }> = {
-  input: { dot: 'bg-primary shadow-glow', title: 'text-primary' },
-  correlate: { dot: 'bg-muted-foreground', title: 'text-foreground' },
-  risk: { dot: 'bg-critical shadow-[0_0_12px_hsl(var(--critical)/0.45)]', title: 'text-critical-text' },
-  triage: { dot: 'bg-medium', title: 'text-medium-text' },
-  investigate: { dot: 'bg-info', title: 'text-info-text' },
-  decide: { dot: 'bg-primary shadow-glow', title: 'text-primary' },
+// Colour carries VALUE, never the stage kind (CM-6): every stage marker is neutral except
+// the risk stage, which takes the band of its own score: so a Risk 7 case is never red.
+// No glow shadows; sentence-case titles in the foreground colour.
+const BAND_DOT: Record<ScoreBand, string> = {
+  low: 'bg-low',
+  medium: 'bg-medium',
+  high: 'bg-high',
+  critical: 'bg-critical',
+};
+const BAND_SEGMENT: Record<ScoreBand, { on: string; last: string }> = {
+  low: { on: 'bg-low/60', last: 'bg-low' },
+  medium: { on: 'bg-medium/60', last: 'bg-medium' },
+  high: { on: 'bg-high/60', last: 'bg-high' },
+  critical: { on: 'bg-critical/70', last: 'bg-critical' },
 };
 
 function storyTone(stage: TimelineStage): { dot: string; title: string } {
   if (stage.status === 'skipped' || stage.status === 'pending') {
     return { dot: 'bg-muted-foreground/60', title: 'text-muted-foreground' };
   }
-  return STORY_TONE[stage.kind] || STORY_TONE.correlate;
+  if (stage.kind === 'risk' && typeof stage.state.risk_score === 'number') {
+    return { dot: BAND_DOT[displayBand(stage.state.risk_score)], title: 'text-foreground' };
+  }
+  if (stage.kind === 'decide') return { dot: 'bg-primary', title: 'text-foreground' };
+  return { dot: 'bg-muted-foreground', title: 'text-foreground' };
 }
 
 const RiskMicrochart: React.FC<{ score: number }> = ({ score }) => {
-  const bounded = Math.max(0, Math.min(100, score));
+  // The shown integer (rounded half up) and ITS band, the one rule for every score (D4).
+  const bounded = displayScore(score) ?? 0;
   const segments = 7;
   const active = Math.round((bounded / 100) * segments);
+  const band = displayBand(score);
   return (
-    <figure className="mt-3 w-48">
-      <figcaption className="mb-1 flex items-center justify-between font-mono text-2xs uppercase tracking-wider text-muted-foreground">
+    <figure className="mt-3 w-48" data-risk-band={band}>
+      <figcaption className="mb-1 flex items-center justify-between text-xs font-medium text-muted-foreground">
         <span>Risk score</span>
-        <span>{Math.round(bounded)}/100</span>
+        <span className="tabular-nums">{bounded}/100</span>
       </figcaption>
       <div
         className="flex h-12 items-stretch gap-1 border border-border bg-surface-sunken p-1"
         role="img"
-        aria-label={`Risk score ${Math.round(bounded)} out of 100`}
+        aria-label={`Risk score ${bounded} out of 100`}
       >
         {Array.from({ length: segments }).map((_, index) => (
           <span
             key={index}
             className={cn(
               'min-w-0 flex-1',
-              index < active ? 'bg-critical/75' : 'bg-primary/15',
-              index === active - 1 && 'bg-critical',
+              index < active ? BAND_SEGMENT[band].on : 'bg-muted',
+              index === active - 1 && BAND_SEGMENT[band].last,
             )}
             aria-hidden
           />
@@ -285,171 +142,51 @@ const RiskMicrochart: React.FC<{ score: number }> = ({ score }) => {
   );
 };
 
-const RISK_FACTOR_LABELS: Record<string, string> = {
-  volume: 'Volume',
-  velocity: 'Velocity',
-  reputation: 'Reputation',
-  diversity: 'Diversity',
-  asset_criticality: 'Asset criticality',
-};
-
-function preciseNumber(value: number, digits = 4): string {
-  if (!Number.isFinite(value)) return DASH;
-  return String(Number(value.toFixed(digits)));
-}
-
-/** Backward-compatible extraction for stage payloads created before risk_calculation. */
-function legacyRiskFactors(steps: StageStep[]): StageRiskFactor[] {
-  const found = new Map<string, StageRiskFactor>();
-  const pattern = /(asset[_ ]criticality|volume|velocity|reputation|diversity)\s*[:=]?\s*(-?\d+(?:\.\d+)?)/gi;
-  for (const step of steps) {
-    if (!step.trusted || !/risk\s+factors?/i.test(step.label)) continue;
-    for (const match of step.body.matchAll(pattern)) {
-      const factor = match[1].toLowerCase().replace(' ', '_');
-      const value = Number(match[2]);
-      if (!Number.isFinite(value) || found.has(factor)) continue;
-      found.set(factor, {
-        factor,
-        label: RISK_FACTOR_LABELS[factor] || humanizeToken(factor),
-        value,
-        weight: Number.NaN,
-        weighted_value: Number.NaN,
-        contribution: Number.NaN,
-      });
-    }
-  }
-  return [...found.values()];
-}
-
-const RiskDerivation: React.FC<{ stage: TimelineStage }> = ({ stage }) => {
-  const calculation = stage.state.risk_calculation;
-  const factors = calculation?.factors?.length
-    ? calculation.factors
-    : legacyRiskFactors(stage.steps);
-  const displayed = Math.round(
-    calculation?.displayed_score
-      ?? calculation?.recorded_score
-      ?? stage.state.risk_score
-      ?? 0,
-  );
-  const derivationTitle = calculation?.matches_displayed_score
-    ? `How ${displayed}/100 was derived`
-    : `Risk score details · ${displayed}/100`;
-
-  return (
-    <section
-      className="mt-3 max-w-4xl border border-border bg-surface-sunken p-4"
-      aria-labelledby={`risk-derivation-${stage.id || 'stage'}`}
-      data-testid="risk-derivation"
-    >
-      <div className="flex items-center gap-2">
-        <Calculator className="h-4 w-4 text-medium-text" aria-hidden />
-        <h4
-          id={`risk-derivation-${stage.id || 'stage'}`}
-          className="text-sm font-semibold text-foreground"
-        >
-          {derivationTitle}
-        </h4>
+/**
+ * One evidence step under a stage. Untrusted source/log material stays FENCED in a
+ * CodeBlock (#9), whose own header carries the step label, the untrusted marker and the
+ * copy control: one flat block, never a box inside a box with an empty header bar (CM-8).
+ */
+const StoryStep: React.FC<{ step: StageStep }> = ({ step }) => {
+  const label = step.label || humanizeToken(step.kind) || 'Detail';
+  if (step.body && !step.trusted) {
+    return (
+      <div className="mt-3 max-w-3xl" data-story-step="untrusted">
+        <CodeBlock
+          value={step.body}
+          wrap
+          copyable
+          maxHeightClassName="max-h-36"
+          caption={
+            // B80: the trust marker wraps to a second line as one unit at a narrow width
+            // instead of being cut mid-word.
+            <span
+              className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 whitespace-normal font-sans"
+              data-untrusted-caption=""
+            >
+              <span>{label}</span>
+              <span aria-hidden>·</span>
+              <span className="inline-flex items-center gap-1 whitespace-nowrap" data-untrusted-marker="">
+                <Lock className="h-3 w-3" aria-hidden />
+                Untrusted source data
+              </span>
+            </span>
+          }
+        />
       </div>
-      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-        Each factor is a persisted 0–100 input. Contribution = value × configured
-        weight ÷ the total configured weight.
-      </p>
-
-      {factors.length ? (
-        <div className="mt-3 overflow-x-auto">
-          <table className="w-full border-collapse text-left text-xs">
-            <caption className="sr-only">Risk score factor calculation</caption>
-            <thead>
-              <tr className="border-b border-border font-mono uppercase tracking-wider text-muted-foreground">
-                <th scope="col" className="px-2 py-2 font-medium">Factor</th>
-                <th scope="col" className="px-2 py-2 font-medium">Value</th>
-                <th scope="col" className="px-2 py-2 font-medium">Weight</th>
-                <th scope="col" className="px-2 py-2 font-medium">Contribution</th>
-              </tr>
-            </thead>
-            <tbody>
-              {factors.map((factor) => {
-                const share = calculation && calculation.denominator
-                  ? (factor.weight / calculation.denominator) * 100
-                  : Number.NaN;
-                return (
-                  <tr key={factor.factor} className="border-b border-border/70 last:border-0">
-                    <th scope="row" className="px-2 py-2 font-medium text-foreground">
-                      {factor.label || RISK_FACTOR_LABELS[factor.factor] || humanizeToken(factor.factor)}
-                    </th>
-                    <td className="px-2 py-2 font-mono tabular-nums text-foreground/90">
-                      {preciseNumber(factor.value, 2)}/100
-                    </td>
-                    <td className="px-2 py-2 font-mono tabular-nums text-foreground/90">
-                      {Number.isFinite(factor.weight)
-                        ? `${preciseNumber(factor.weight)} (${preciseNumber(share, 2)}%)`
-                        : DASH}
-                    </td>
-                    <td className="px-2 py-2 font-mono tabular-nums text-foreground/90">
-                      {Number.isFinite(factor.contribution)
-                        ? `${preciseNumber(factor.contribution)} pts`
-                        : DASH}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-
-      {calculation ? (
-        <div className="mt-3 space-y-1.5 border-t border-border pt-3 text-xs leading-relaxed">
-          <p className="font-mono text-foreground/90" data-testid="risk-formula">
-            Σ(value × weight) = {preciseNumber(calculation.numerator)};{' '}
-            {preciseNumber(calculation.numerator)} ÷ {preciseNumber(calculation.denominator)} ={' '}
-            {preciseNumber(calculation.calculated_score)}/100 → displayed as{' '}
-            {calculation.displayed_score}/100.
-          </p>
-          <p className="text-muted-foreground">
-            Weights shown are the current configured weights used by this read-time
-            reconstruction.
-          </p>
-          {!calculation.matches_displayed_score ? (
-            <p className="text-warning-text" role="note">
-              The current weights calculate {preciseNumber(calculation.calculated_score)}/100,
-              while this case records {preciseNumber(calculation.recorded_score)}/100. This
-              timeline does not contain a historical weight snapshot, so the difference cannot
-              be attributed exactly; the configuration or legacy factor representation may
-              differ from the one used when the case was scored. The recorded score has not
-              been rewritten.
-            </p>
-          ) : null}
-        </div>
-      ) : (
-        <p className="mt-3 border-t border-border pt-3 text-xs leading-relaxed text-muted-foreground" role="note">
-          {factors.length
-            ? 'This older timeline payload supplies factor values and the final score, but not the configured weights or weighted contributions. Exact arithmetic cannot be reconstructed from the available data.'
-            : 'This older timeline payload supplies the final score, but no factor values, configured weights, or weighted contributions. Exact arithmetic cannot be reconstructed from the available data.'}
-        </p>
-      )}
-    </section>
-  );
-};
-
-/** Keep source/log material fenced while reproducing the prototype's recessed block. */
-const StoryStep: React.FC<{ step: StageStep }> = ({ step }) => (
-  <div className="mt-3 max-w-3xl border border-border bg-surface-sunken p-3">
-    <div className="mb-1 font-mono text-2xs uppercase tracking-wider text-muted-foreground">
-      {step.label || humanizeToken(step.kind) || 'Detail'}
-    </div>
-    {step.body ? (
-      step.trusted ? (
+    );
+  }
+  return (
+    <div className="mt-3 max-w-3xl" data-story-step="trusted">
+      <div className="mb-1 text-xs font-medium text-muted-foreground">{label}</div>
+      {step.body ? (
         <p className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-foreground/85">
           {step.body}
         </p>
-      ) : (
-        <CodeBlock value={step.body} wrap copyable maxHeightClassName="max-h-36" />
-      )
-    ) : null}
-  </div>
-);
+      ) : null}
+    </div>
+  );
+};
 
 function storyStageTitle(stage: TimelineStage): string {
   const supplied = stage.label.trim();
@@ -522,12 +259,27 @@ const StoryStageRow: React.FC<{
         aria-hidden
       />
       <div className="flex min-w-0 flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-4">
-        <time className="w-24 shrink-0 font-mono text-xs text-muted-foreground">
+        <time
+          className="w-24 shrink-0 font-mono text-xs text-muted-foreground"
+          dateTime={stage.ts || undefined}
+          title={stage.ts ? formatTimestamp(stage.ts) : undefined}
+        >
           {storyTime(stage.ts)}
         </time>
-        <h3 className={cn('text-sm font-semibold uppercase tracking-wider', tone.title)}>
+        <h3 className={cn('text-sm font-semibold', tone.title)}>
           {storyStageTitle(stage)}
         </h3>
+        {/* The stage's provenance and state, kept from the full layout. */}
+        <span className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          {stage.deterministic ? (
+            <span className="inline-flex items-center gap-1" data-testid="story-stage-deterministic">
+              <GitBranch className="h-3 w-3" aria-hidden />
+              Deterministic
+            </span>
+          ) : null}
+          {stage.status === 'skipped' ? <span>Skipped</span> : null}
+          {stage.status === 'pending' ? <span>Pending</span> : null}
+        </span>
       </div>
       <div className="mt-1 sm:ml-28">
         {showHeadline ? (
@@ -535,7 +287,11 @@ const StoryStageRow: React.FC<{
             {stage.headline || DASH}
           </p>
         ) : null}
-        <StateChips state={stage.state} />
+        {/* The risk stage shows its score ONCE, as the meter below. */}
+        <StateChips
+          state={stage.state}
+          omitRisk={stage.kind === 'risk' && typeof stage.state.risk_score === 'number'}
+        />
 
         {stage.kind === 'risk' && typeof stage.state.risk_score === 'number' ? (
           <RiskMicrochart score={stage.state.risk_score} />
@@ -568,7 +324,7 @@ const StoryStageRow: React.FC<{
             type="button"
             size="sm"
             variant="outline"
-            className="mt-3 h-8 rounded-full border-primary/40 bg-primary/10 px-3 text-xs text-primary hover:bg-primary/15"
+            className="mt-3 h-8 px-3 text-xs"
             onClick={onOpenInvestigation}
           >
             View deterministic trace <ArrowRight className="h-3.5 w-3.5" />
@@ -586,7 +342,6 @@ export interface StageTimelineProps {
   loading?: boolean;
   error?: unknown;
   onRetry?: () => void;
-  presentation?: CasePanelPresentation;
   onOpenInvestigation?: () => void;
 }
 
@@ -595,12 +350,11 @@ export const StageTimeline: React.FC<StageTimelineProps> = ({
   loading,
   error,
   onRetry,
-  presentation = 'default',
   onOpenInvestigation,
 }) => {
   if (loading) {
     return (
-      <div className={cn(presentation === 'default' && 'p-6')}>
+      <div>
         <LoadingState
           label="Loading timeline"
           description="Preparing the case journey from ingestion through decision."
@@ -613,7 +367,7 @@ export const StageTimeline: React.FC<StageTimelineProps> = ({
   }
   if (error) {
     return (
-      <div className={cn(presentation === 'default' && 'p-6')}>
+      <div>
         <LoadError error={error} title="Could not load the timeline" onRetry={onRetry} />
       </div>
     );
@@ -621,7 +375,7 @@ export const StageTimeline: React.FC<StageTimelineProps> = ({
   const stages = data?.stages ?? [];
   if (!stages.length) {
     return (
-      <div className={cn(presentation === 'default' && 'p-6')}>
+      <div>
         <EmptyState
           icon={GitBranch}
           title="No timeline yet"
@@ -630,28 +384,17 @@ export const StageTimeline: React.FC<StageTimelineProps> = ({
       </div>
     );
   }
-  if (presentation === 'case-manager') {
-    return (
-      <ol className="relative max-w-5xl py-1">
-        {stages.map((stage, index) => (
-          <StoryStageRow
-            key={stage.id || stage.kind}
-            stage={stage}
-            terminal={index === stages.length - 1}
-            onOpenInvestigation={onOpenInvestigation}
-          />
-        ))}
-      </ol>
-    );
-  }
   return (
-    <div className="p-6">
-      <ol className="relative">
-        {stages.map((s, i) => (
-          <StageRow key={s.id || s.kind} stage={s} last={i === stages.length - 1} />
-        ))}
-      </ol>
-    </div>
+    <ol className="relative max-w-5xl py-1">
+      {stages.map((stage, index) => (
+        <StoryStageRow
+          key={stage.id || stage.kind}
+          stage={stage}
+          terminal={index === stages.length - 1}
+          onOpenInvestigation={onOpenInvestigation}
+        />
+      ))}
+    </ol>
   );
 };
 

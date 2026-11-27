@@ -22,6 +22,17 @@ if [[ ! -f "${environment_file}" ]]; then
   exit 2
 fi
 
+# Build provenance. Compose expands TLSOC_BUILD_SHA/TLSOC_BUILD_DATE into the
+# backend/webui/updater build arguments with a `:-unknown` fallback, so a wrapper
+# that never derives them stamps every source-built image `revision=unknown` and
+# leaves each persisted record's `build_sha` unknown. The shared helper derives them
+# ONLY when nothing else already did: a supplied release identity (the supervised
+# bootstrap) and a non-empty, non-`unknown` operator pin in the --env-file both win.
+# shellcheck source=scripts/lib/build-identity.sh
+. "${repo_root}/scripts/lib/build-identity.sh"
+tlsoc_derive_build_identity "${repo_root}" "${environment_file}"
+tlsoc_report_build_identity "Agentic SOC"
+
 compose=(
   docker compose
   --project-name tlsoc-agentic-soc

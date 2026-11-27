@@ -135,9 +135,12 @@ def test_enroll_then_login_two_phase(client):
     assert me.json()["user"]["mfa_enabled"] is True
 
     # Phase 1: password returns a pending token + requires_mfa, NO session token.
+    # An ENROLLED user gets the code challenge — never the enrollment-required flag
+    # (that flag is only for required-but-NOT-enrolled accounts).
     p1 = _login(client, "alice", "alice-password").json()
     assert p1["requires_mfa"] is True and p1["pending_token"]
     assert "token" not in p1
+    assert "mfa_enrollment_required" not in p1
 
     # The pending token must NOT work as a session (deny-by-default). Clear the
     # cookie jar first so the earlier enroll session's cookie doesn't mask this.
@@ -277,3 +280,59 @@ def test_admin_cannot_enable_mfa_for_user(client, auth_state):
         "/api/users/alice", json={"mfa_enabled": True}, headers=_bearer(login["token"])
     )
     assert resp.status_code == 400
+
+
+def test_admin_can_set_mfa_required_mandate(client, auth_state):
+    # The MANDATE flag (required ≠ enrolled) is admin-settable and must NOT trip the
+    # mfa_enabled=True guard above. It flips alice's next login into the
+    # enrollment-required phase (covered end-to-end in
+    # tests/test_mfa_mandate_and_user_fields.py).
+    login = _login(client, "alice", "alice-password").json()
+    resp = client.put(
+        "/api/users/alice", json={"mfa_required": True}, headers=_bearer(login["token"])
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user"]["mfa_required"] is True
+    assert resp.json()["user"]["mfa_enabled"] is False
+    p1 = _login(client, "alice", "alice-password").json()
+    assert p1["requires_mfa"] is True
+    assert p1["mfa_enrollment_required"] is True
+    assert "token" not in p1
+
+
+# --------------------------------------------------------------------------- #
+# Pending-token hard guards on the login-phase enrollment surface
+# --------------------------------------------------------------------------- #
+def test_pending_token_cannot_reach_session_authed_mfa_setup(client):
+    login = _login(client, "alice", "alice-password").json()
+    _enroll_mfa(client, login["token"])
+    p1 = _login(client, "alice", "alice-password").json()
+    client.cookies.clear()
+    # The pending half-session is NOT a full session: the session-authed setup and
+    # confirm routes reject it outright.
+    assert client.post(
+        "/api/auth/mfa/setup", headers=_bearer(p1["pending_token"])
+    ).status_code == 401
+    assert client.post(
+        "/api/auth/mfa/confirm", json={"code": "000000"},
+        headers=_bearer(p1["pending_token"]),
+    ).status_code == 401
+
+
+def test_enrolled_user_pending_token_cannot_re_enroll(client):
+    # Anti-factor-replacement: an enrolled user's challenge pending token must not
+    # open the login-phase enrollment routes (that would let a password-only
+    # attacker swap in their own authenticator).
+    login = _login(client, "alice", "alice-password").json()
+    _enroll_mfa(client, login["token"])
+    p1 = _login(client, "alice", "alice-password").json()
+    r = client.post(
+        "/api/auth/mfa/enroll-setup", json={"pending_token": p1["pending_token"]}
+    )
+    assert r.status_code == 400
+    assert "already enrolled" in r.json()["detail"]
+    r = client.post(
+        "/api/auth/mfa/enroll-confirm",
+        json={"pending_token": p1["pending_token"], "code": "123456"},
+    )
+    assert r.status_code == 400

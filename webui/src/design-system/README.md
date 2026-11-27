@@ -24,8 +24,25 @@ it does **not** replace the established implementation layers:
 | `layout.filter-bar` / `FilterBar` | Flat hairline filter and refresh band. |
 | `data.table` / `DataTable` | Bounded record table with sort, selection, and paging. |
 | `feedback.empty-state` / `EmptyState` | Compact shaped no-data or inline-failure state. |
-| `settings.section` / `SettingsCard` | Divider-led settings section without nested cards. |
+| `settings.section` / `SettingsSection` | One Settings section in grouped panels (owned by `src/soc/pages/settings/primitives`); `settings.card` / `SettingsCard` is the pre-Round-14 divider band kept until every section moves to `SettingsGroup`. |
+| `surface.material-bar` / `MaterialBar`, `useScrollEdge`, `useScrollEdgeRef` | The one translucent material for sticky chrome, with the scroll-edge fade shown only while content is scrolled beneath; solid under reduced transparency or increased contrast. |
+| `surface.panel` / `Panel`, `PANEL_GAP`, `PANEL_PADDING`, `PANEL_PADDING_X` | One module on the tinted borderless panel, the Overview grammar for every page (Round 14). |
+| `typography.section-title` / `SectionTitle` | The module title on the canvas: a real heading with an optional caption and aside. |
+| `data.list-row` / `ListRow`, `ListRows` | A record row on a panel with one open control, one trailing action and a row menu; `ListRows` is the list. |
+| `control.row-actions` / `RowActions` | One trailing row action in view and the rest in a More actions menu; destructive actions neutral at rest. |
+| `feedback.status-dot` / `StatusDot` | A status as a 6px dot and plain text, coloured only when it is not the healthy default. |
+| `feedback.callout` / `Callout`, `DISMISSED_INTROS_KEY`, `DISMISSED_INTROS_MAX`, `DISMISSED_INTRO_ID_PATTERN` | A live warning, an error, or a dismissible first-run intro remembered per user. |
+| `applyTransparencyPreference`, `TRANSPARENCY_PREF_KEY`, `TRANSPARENCY_STORAGE_KEY` | The per-user Reduce transparency override behind the material. |
 | `DESIGN_SYSTEM_CATALOG` | JSON-safe inventory of tokens, components, source assets, and accessibility contracts. |
+
+Two parts are separate entries and never in the barrel, so they stay out of the entry
+chunk: the material, imported from `@/design-system/material` by shared primitives, and
+the Explain kit (`feedback.explain` / `ExplainTrigger`, `ExplainPanel`), imported from
+`@/design-system/explain` and only from lazy route chunks. The Explain kit makes a number
+explainable: hover or focus for a one-line formula with the real numbers (a hover card
+that meets WCAG 2.2 SC 1.4.13, Escape dismisses it), click, Enter, Space or tap for the
+full arithmetic with "Copy calculation", and a mouse-only `row-hover` mode inside queue
+rows. Its numbers come from the pure builders in `src/lib/explain/`.
 
 Source geometry lives under `assets/` as plain data. The marks are original Console
 artwork, not downloaded vendor logos, and inherit `currentColor` so the caller controls
@@ -40,9 +57,12 @@ second implementation.
 
 - Resting page content is border-first. `Card` has no shadow by default; reserve
   `elevation="sm"` for a genuinely detached surface.
-- Tabs and value segments share a 36px outer rail, compact 32px/28px items, a
-  `rounded-md` outer boundary, and `rounded-[3px]` active controls. They do not use
-  pill chrome or active shadows.
+- Tabs and value segments share a 36px outer rail, compact 32px/28px items, an 8px
+  (`rounded-md`) rail and concentric 6px (`rounded-sm`) active targets. They do not use
+  pill chrome or active shadows. Radii are one concentric scale on `--radius`: 6px
+  items and segments, 8px controls and rails, 10px menus and popovers, 14px dialogs
+  and sheets (see [`docs/development/ui-standard.md` → Foundations](../../../docs/development/ui-standard.md#foundations)).
+  Never an arbitrary `rounded-[3px]`/`rounded-[4px]`.
 - `ControlBar` and `FilterBar` are the only routine page-level control bands.
   Their default variants are flat hairline sections rather than cards.
 - `DataTable` owns its one bounded hairline surface. Do not put it inside another
@@ -79,6 +99,6 @@ components without duplicating or re-exporting their implementation here.
 `DESIGN_SYSTEM_CATALOG` is intentionally serialisable and uses stable ids instead of
 React implementation details. A future package can expose it as MCP resources and map
 component ids to examples or code generation guidance. **No MCP server, endpoint, or
-remote service exists in version 0.1.12**; the catalog is the input contract only. When
+remote service exists in version 0.2.0**; the catalog is the input contract only. When
 such a service is built, it must version this schema independently and keep token,
 accessibility, and source-mark ids backward compatible.

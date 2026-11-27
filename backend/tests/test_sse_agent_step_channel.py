@@ -1,0 +1,140 @@
+"""Item A4 — the investigation-progress SSE channel was dead on arrival.
+
+A browser ``EventSource`` matches a typed ``event:`` field EXACTLY. The client listened
+on ``agent``; the pipeline has only ever published ``agent.step``. Neither end can
+observe that: the publish succeeds, the subscription succeeds, and the frames are simply
+never delivered — so not one agent-step frame had ever reached a browser.
+
+These tests pin the two halves of the fix:
+  * the backend names its channels ONCE (``app.realtime.SSE_EVENT_TYPES``) and the
+    producer uses the constant rather than a literal, and
+  * a subscriber on the per-case room really does receive an ``event: agent.step`` frame.
+
+The webui half (``STREAM_CHANNELS`` in ``src/lib/useEventStream.ts`` + the
+``useAgentSteps`` consumer) is pinned by ``src/lib/__tests__/useEventStream.test.tsx``,
+which reads this module's registry off disk so the two ends cannot drift again.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+
+import pytest
+
+from app.realtime import (
+    AGENT_STEP_EVENT,
+    CASE_ACTIVITY_EVENT,
+    CASE_CHANGED_EVENT,
+    CASE_INVESTIGATION_EVENT,
+    CASE_REVIEW_EVENT,
+    CASE_RUNBOOK_EVENT,
+    CHAT_READ_EVENT,
+    CHAT_TURN_EVENT,
+    INAPP_EVENT,
+    JOB_EVENT,
+    OVERFLOW_EVENT,
+    RUNBOOKS_TOPIC,
+    SSE_EVENT_TYPES,
+    EventBus,
+    publish_case_runbook,
+)
+
+
+def test_registry_lists_exactly_the_channels_the_backend_publishes() -> None:
+    assert SSE_EVENT_TYPES == {
+        AGENT_STEP_EVENT, CASE_ACTIVITY_EVENT, INAPP_EVENT, JOB_EVENT, CHAT_TURN_EVENT,
+        CHAT_READ_EVENT, CASE_CHANGED_EVENT, CASE_RUNBOOK_EVENT, CASE_REVIEW_EVENT,
+        CASE_INVESTIGATION_EVENT, OVERFLOW_EVENT,
+    }
+    # Round 16 (SPEC §4.3 WP01): an AI investigation run was queued, started, attached
+    # its case or finished, topics ``cases``, ``cases:{id}`` and ``investigations``.
+    assert CASE_INVESTIGATION_EVENT == "case.investigation"
+    # Round 15 (SPEC D6.5): an auto-close review was picked or recorded, topics
+    # ``cases:{id}`` and ``cases``.
+    assert CASE_REVIEW_EVENT == "case.review"
+    # Round 14 (SPEC §4.10.15): a case's runbook run changed, topic ``runbooks``.
+    assert CASE_RUNBOOK_EVENT == "case.runbook"
+    # Round 12 (WP-CM): the live Case Manager queue nudge on topic ``cases``.
+    assert CASE_CHANGED_EVENT == "case.changed"
+    assert CHAT_TURN_EVENT == "chat.turn"
+    # Round 12 (final review): an answer read on one console is news on no other.
+    assert CHAT_READ_EVENT == "chat.read"
+    # The exact wire tokens. Changing one of these is a client-visible break.
+    assert AGENT_STEP_EVENT == "agent.step"
+    assert CASE_ACTIVITY_EVENT == "case.activity"
+
+
+def test_pipeline_publishes_through_the_registry_not_a_literal() -> None:
+    """The producer imports the constant. A second literal is exactly how the two ends
+    drifted apart in the first place."""
+    source = (Path(__file__).resolve().parents[1] / "app" / "agents" / "pipeline.py").read_text()
+    assert "AGENT_STEP_EVENT" in source
+    assert '"agent.step"' not in source.replace('logger.debug("agent.step', "")
+
+
+@pytest.mark.asyncio
+async def test_a_case_room_subscriber_receives_a_typed_agent_step_frame() -> None:
+    """End to end over the bus: the frame really carries ``event: agent.step``, which is
+    the token an ``addEventListener`` has to match."""
+    bus = EventBus(heartbeat_seconds=60)
+    frames: list[str] = []
+
+    async def _consume() -> None:
+        async for chunk in bus.subscribe(["cases:case-0001"], user=None):
+            frames.append(chunk.decode("utf-8"))
+            if len(frames) >= 2:  # ": connected" + the first real frame
+                break
+
+    task = asyncio.create_task(_consume())
+    await asyncio.sleep(0)  # let the subscriber register before publishing
+    bus.publish("cases:case-0001", AGENT_STEP_EVENT,
+                {"case_id": "case-0001", "step": "tools", "status": "running"})
+    await asyncio.wait_for(task, timeout=5)
+
+    assert frames[0] == ": connected\n\n"
+    assert "event: agent.step\n" in frames[1]
+    payload = json.loads(frames[1].split("data: ", 1)[1].split("\n", 1)[0])
+    assert payload["step"] == "tools"
+    bus.clear()
+
+
+@pytest.mark.asyncio
+async def test_the_old_channel_name_would_have_delivered_nothing() -> None:
+    """Regression guard for the actual defect: a listener on ``agent`` never matches an
+    ``agent.step`` frame, which is why the channel was silently dead."""
+    bus = EventBus(heartbeat_seconds=60)
+    bus.publish("cases:case-0002", AGENT_STEP_EVENT, {"case_id": "case-0002", "step": "triage"})
+    replayed = bus.replay(frozenset({"cases:case-0002"}), None, "0")
+    assert replayed and replayed[0].event_type == AGENT_STEP_EVENT
+    assert replayed[0].event_type != "agent"
+    bus.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_runbooks_subscriber_receives_a_typed_case_runbook_frame() -> None:
+    """Round 14: the run engine's progress nudge carries ``event: case.runbook`` on the
+    ``runbooks`` topic, with ids, progress counts and the revision only."""
+    bus = EventBus(heartbeat_seconds=60)
+    frames: list[str] = []
+
+    async def _consume() -> None:
+        async for chunk in bus.subscribe([RUNBOOKS_TOPIC], user=None):
+            frames.append(chunk.decode("utf-8"))
+            if len(frames) >= 2:
+                break
+
+    task = asyncio.create_task(_consume())
+    await asyncio.sleep(0)
+    progress = {"total": 11, "done": 4, "not_applicable": 1, "required_open": 5, "waiting": 1,
+                "blocked": 0, "note": "dropped: not a count"}
+    assert publish_case_runbook(bus, "case-0003", "run-1", progress, 7) is not None
+    await asyncio.wait_for(task, timeout=5)
+    assert "event: case.runbook\n" in frames[1]
+    payload = json.loads(frames[1].split("data: ", 1)[1].split("\n", 1)[0])
+    assert payload == {"case_id": "case-0003", "run_id": "run-1", "revision": 7, "progress": {
+        "total": 11, "done": 4, "not_applicable": 1, "required_open": 5, "waiting": 1, "blocked": 0}}
+    # Nothing to name, nothing published.
+    assert publish_case_runbook(bus, "", "run-1", progress, 1) is None
+    bus.clear()

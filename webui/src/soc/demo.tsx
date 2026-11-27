@@ -3,19 +3,28 @@
  *
  * A single, app-wide source of truth for the demo tenant state (off | seeded |
  * live). It polls GET /api/demo/status on an interval and re-fetches on demand
- * (after enable/reset/disable, or on navigation) so every surface — the shell
- * banner, the SAMPLE badge on demo rows, the "(simulated)" cost suffix, the muted
- * health chip, and the destructive-action guard — reflects the live state.
+ * (after enable/reset/disable, or on navigation) so every surface (the shell's
+ * top-bar demo chip, the SAMPLE badge on demo rows, the "(simulated)" cost suffix,
+ * the muted health chip, and the destructive-action guard) reflects the live state.
  *
  * BACK-COMPAT / ISOLATION: when demo is OFF (the default) every value here is inert:
  * `active` is false, `useDemoGuard()` returns "not guarded", and nothing renders. A
  * failed status fetch is swallowed (treated as OFF) so a backend without the demo
- * endpoints (or auth without the grant) never breaks the console. Synthetic data is
- * a backend concern; this context only reads NON-secret status metadata.
+ * endpoints (or auth without the grant) never breaks the console. That OFF stand-in
+ * (also the value before the first read lands) is marked `confirmed: false`: it is no
+ * answer, so a consumer that must tell "Demo left" from "the read failed" (the chat's
+ * caches, `chat/demo-identity.ts`) ignores it. Synthetic data is a backend concern;
+ * this context only reads NON-secret status metadata.
+ *
+ * SIGNED OUT: the status needs a session, so it is read (and polled) only while
+ * `useSessionKey()` names one. The sign-in page sends no status request; signing in
+ * reads it at once; signing out, or another person signing in, returns to the OFF
+ * stand-in and drops any reply still in flight from the session that ended.
  */
 import * as React from 'react';
 import { api } from '@/lib/api';
 import type { DemoStatus } from '@/lib/types';
+import { useSessionKey } from './session-key';
 
 /** Poll cadence for the demo status (ms). Cheap GET; demo is a rare, opt-in state. */
 const POLL_MS = 20_000;
@@ -27,9 +36,18 @@ export interface DemoContextValue {
   status: DemoStatus;
   /** True when the demo tenant is active (mode !== 'off'). */
   active: boolean;
-  /** Whether the initial status fetch is still in flight. */
+  /** Whether this session's first status read is still pending (also while signed out). */
   loading: boolean;
-  /** Re-fetch GET /api/demo/status now (call after enable/reset/disable + on nav). */
+  /**
+   * False while `status` is the OFF stand-in, not an answer: before the first read lands
+   * and after a failed read (a network blip, a 502/503, a 429, no grant). True when it
+   * came from a read. Absent outside a provider, where the inert OFF value is the answer.
+   */
+  confirmed?: boolean;
+  /**
+   * Re-fetch GET /api/demo/status now (call after enable/reset/disable + on nav). Without
+   * a session it sends nothing and resolves to the OFF stand-in.
+   */
   refresh: () => Promise<DemoStatus>;
 }
 
@@ -43,38 +61,49 @@ export function isDemoActive(status: DemoStatus | null | undefined): boolean {
 }
 
 export const DemoProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [status, setStatus] = React.useState<DemoStatus>(OFF);
-  const [loading, setLoading] = React.useState(true);
-  const aliveRef = React.useRef(true);
+  const sessionKey = useSessionKey();
+  // The last answer of this session's reads; null while none has landed (`loading`).
+  const [status, setStatus] = React.useState<DemoStatus | null>(null);
+  // The read session a reply belongs to: null without a session and after unmount, so
+  // nothing is requested then and a reply from an ended session never lands.
+  const sessionRef = React.useRef<object | null>(null);
 
   const refresh = React.useCallback(async (): Promise<DemoStatus> => {
-    let next: DemoStatus = OFF;
-    try {
-      next = await api.demo.status();
-    } catch {
-      // No demo endpoint / no grant / backend down → treat as OFF (inert).
-      next = OFF;
+    const session = sessionRef.current;
+    let next = OFF;
+    if (session) {
+      try {
+        next = await api.demo.status();
+      } catch {
+        // No demo endpoint / no grant / backend down: the OFF stand-in (inert).
+      }
+      if (sessionRef.current === session) setStatus(next);
     }
-    if (aliveRef.current) setStatus(next);
     return next;
   }, []);
 
   React.useEffect(() => {
-    aliveRef.current = true;
-    void (async () => {
-      await refresh();
-      if (aliveRef.current) setLoading(false);
-    })();
-    const t = window.setInterval(() => void refresh(), POLL_MS);
+    if (sessionKey === null) return undefined;
+    sessionRef.current = {};
+    void refresh();
+    const t = setInterval(() => void refresh(), POLL_MS);
     return () => {
-      aliveRef.current = false;
-      window.clearInterval(t);
+      sessionRef.current = null;
+      clearInterval(t);
+      // The session ended: the next one starts from the OFF stand-in (no answer yet).
+      setStatus(null);
     };
-  }, [refresh]);
+  }, [sessionKey, refresh]);
 
   const value = React.useMemo<DemoContextValue>(
-    () => ({ status, active: isDemoActive(status), loading, refresh }),
-    [status, loading, refresh],
+    () => ({
+      status: status ?? OFF,
+      active: isDemoActive(status),
+      loading: !status,
+      confirmed: !!status && status !== OFF,
+      refresh,
+    }),
+    [status, refresh],
   );
 
   return <DemoContext.Provider value={value}>{children}</DemoContext.Provider>;
@@ -82,7 +111,7 @@ export const DemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 /**
  * Access the demo context. Returns an inert OFF value when used outside a provider
- * (so leaf components — e.g. badges in isolated tests — never throw). Surfaces that
+ * (so leaf components, e.g. badges in isolated tests, never throw). Surfaces that
  * own demo controls should still be mounted under <DemoProvider>.
  */
 export function useDemo(): DemoContextValue {
@@ -106,7 +135,7 @@ export interface DemoGuard {
  * would touch REAL stores/sources and must be disabled with an explanatory tooltip;
  * when demo is off the guard is fully inert.
  *
- * Usage — wire `disabled`/`reason` onto the trigger's disabled + title/aria-disabled:
+ * Usage: wire `disabled`/`reason` onto the trigger's disabled + title/aria-disabled:
  *   const guard = useDemoGuard();
  *   <Button
  *     disabled={guard.disabled}
@@ -118,7 +147,7 @@ export interface DemoGuard {
 export function useDemoGuard(): DemoGuard {
   const { active } = useDemo();
   return React.useMemo<DemoGuard>(() => {
-    const reason = 'Disabled in demo mode — real actions are blocked while simulated data is active.';
+    const reason = 'Not available in Demo mode, which blocks real actions.';
     return {
       active,
       disabled: active,

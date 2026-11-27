@@ -1,18 +1,19 @@
 /**
- * CaseDetail — campaign membership chip (#51).
+ * CaseDetail: campaign membership chip (#51).
  *
  * The case→campaign linkage (`campaignsApi.forCase` + the exported `CampaignChip`) was
  * fully built but never mounted, so an operator viewing a case could not see which
  * campaign it belongs to. This spec locks the now-wired behaviour:
  *
  *   1. CaseDetail fetches the campaign a case belongs to on open (`campaignsApi.forCase`)
- *      and surfaces a "Part of campaign: X" chip in the case header (name = plain text, #9);
+ *      and surfaces a "Part of campaign: X" chip in the facts rail's Tags section (its one
+ *      home since Round 15, D8.4; name = plain text, #9);
  *   2. clicking the chip deep-links to the Campaigns surface via `onNavigate('campaigns')`;
  *   3. an uncampaigned case (or a disabled/erroring campaigns feature) renders NO chip
- *      (fail-quiet). A campaign is advisory only (#3/#4) — it never closes/escalates/
+ *      (fail-quiet). A campaign is advisory only (#3/#4): it never closes/escalates/
  *      re-clusters the case, so the chip is purely informational.
  *
- * Like CaseDetail.footer.test.tsx this is a live mount over a mocked `@/lib/api`; the
+ * Like CaseDetail.header-actions.test.tsx this is a live mount over a mocked `@/lib/api`; the
  * campaign client is mocked separately so it returns a deterministic membership.
  */
 import type * as React from 'react';
@@ -48,12 +49,12 @@ vi.mock('@/lib/api', () => {
     setUnauthorizedHandler: vi.fn(),
     api: {
       getCase: ok(openCase),
-      getPlaybooks: ok({ enabled: false, playbooks: [] }),
+      // The Overview's "What happened" stages (Round 15, D8.3) read through `get`.
+      get: ok({ case_id: 'case-88', stages: [], total: 0 }),
       getModels: ok({ providers: {} }),
       getSettings: ok({ prefs: {}, configured: {}, read_only: false }),
       cases: {
         threatContext: ok(null),
-        runPlaybook: ok(openCase),
         notify: ok({ sent: [] }),
       },
     },
@@ -79,7 +80,7 @@ import type { Campaign } from '../Campaigns.api';
 
 const CAMPAIGN: Campaign = {
   id: 'camp-xyz',
-  name: 'Lateral movement — 10.0.0.5',
+  name: 'Lateral movement, 10.0.0.5',
   status: 'open',
   case_ids: ['case-88', 'case-90'],
   case_count: 2,
@@ -103,7 +104,7 @@ function renderCase(onNavigate?: Navigate) {
   );
 }
 
-describe('CaseDetail — campaign membership chip (#51)', () => {
+describe('CaseDetail: campaign membership chip (#51)', () => {
   beforeEach(() => {
     forCaseMock.mockReset();
   });
@@ -118,7 +119,7 @@ describe('CaseDetail — campaign membership chip (#51)', () => {
     );
     // The chip renders the campaign name as PLAIN text (#9), fetched for THIS case.
     expect(
-      await screen.findByText(/part of campaign: lateral movement — 10\.0\.0\.5/i),
+      await screen.findByText(/part of campaign: lateral movement, 10\.0\.0\.5/i),
     ).toBeInTheDocument();
     expect(forCaseMock).toHaveBeenCalledWith('case-88');
   });
@@ -151,7 +152,13 @@ describe('CaseDetail — campaign membership chip (#51)', () => {
     // Defence against silent re-rot back into dead code (mirrors CaseDetail.live.test).
     const src = readFileSync(path.resolve(__dirname, '..', 'CaseDetail.tsx'), 'utf8');
     expect(src).toMatch(/campaignsApi\.forCase\(id\)/);
-    expect(src).toMatch(/<CampaignChip/);
     expect(src).toMatch(/onNavigate\('campaigns'\)/);
+    // Round 15 (D8.4): the chip renders in the facts rail (its one home), which the
+    // orchestrator hands the campaign; the header meta row no longer carries it.
+    const rail = readFileSync(path.resolve(__dirname, '..', 'casedetail', 'FactsRail.tsx'), 'utf8');
+    expect(rail).toMatch(/<CampaignChip/);
+    const header = readFileSync(path.resolve(__dirname, '..', 'casedetail', 'CaseHeaderMeta.tsx'), 'utf8');
+    expect(header).not.toMatch(/<CampaignChip/);
+    expect(src).toMatch(/campaign=\{campaign\}/);
   });
 });

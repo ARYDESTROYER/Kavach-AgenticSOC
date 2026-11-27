@@ -128,6 +128,33 @@ def _no_outbound_network(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     monkeypatch.setattr(socket, "gethostbyname", _gethostbyname)
 
 
+@pytest.fixture(autouse=True)
+def _demo_investigation_pace_off(monkeypatch: pytest.MonkeyPatch):
+    """Autouse: no Demo investigation pause in the suite (Round 16 XFDEMO).
+
+    In Demo Mode an investigation a person or a job starts waits a moment before each
+    model step, so the Console can show the run. The wait is read at call time, so
+    setting it to 0 here keeps every test fast. A test of the pause sets its own small
+    value."""
+    from app.llm import providers
+
+    monkeypatch.setattr(providers, "DEMO_INVESTIGATION_STEP_DELAY_S", 0)
+
+
+@pytest.fixture(autouse=True)
+def _reset_case_page_cache():
+    """Autouse: clear the shared short-TTL case-page cache between tests.
+
+    The cache is already self-invalidating (entries are guarded by store-object
+    identity + a fetch-limit key), but clearing it keeps every test hermetic no
+    matter how fixtures compose or how fast the suite runs."""
+    from app.api import metrics_shared
+
+    metrics_shared.invalidate_case_page_cache()
+    yield
+    metrics_shared.invalidate_case_page_cache()
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register the ``allow_network`` opt-out marker (``--strict-markers`` is on)."""
     config.addinivalue_line(
@@ -205,6 +232,7 @@ def mount_moved_routers(api, *, dependencies=None) -> None:
     Pass ``dependencies`` to mirror the production ``require_auth`` mount when the test
     turns auth on.
     """
+    from app.api.routes_audit import router as audit_router
     from app.api.routes_notifications import router as notifications_router
     from app.api.routes_prefs import router as prefs_router
     from app.api.routes_rag import router as rag_router
@@ -216,6 +244,7 @@ def mount_moved_routers(api, *, dependencies=None) -> None:
         prefs_router,
         rag_router,
         search_router,
+        audit_router,  # Round 14: GET /api/audit moved out of routes_search
         notifications_router,
         runbooks_router,
     ):

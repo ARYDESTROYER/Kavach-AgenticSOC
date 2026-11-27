@@ -243,3 +243,101 @@ def test_threat_context_route(client) -> None:
     assert {t["id"] for t in body["mitre_techniques"]} == {"T1110", "T1190"}
     # Unknown case → 404.
     assert client.get("/api/cases/nope/threat-context").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Related cases read by their case number (Round 16 cross-cutting review,
+# cluster-related-internal-ids): the clustering rows carry ``case_number`` so the
+# Console names each by its number and opens it, never by the internal id.
+# --------------------------------------------------------------------------- #
+def _closed(case_id: str, number: str, ip: str = "10.9.8.7") -> Case:
+    return Case(
+        case_id=case_id,
+        case_number=number,
+        cluster_signature=f"sig:{case_id}",
+        source_surface=SourceSurface.AUTOMATED_SCAN,
+        entity=Entity(type=EntityType.IP, value=ip),
+        rule_ids=["ssh_bruteforce"],
+        verdict=Verdict.FALSE_POSITIVE,
+        status=CaseStatus.CLOSED,
+        summary="prior benign scanner",
+    )
+
+
+def _no_rag(prefs: Preferences) -> Preferences:
+    return prefs.model_copy(update={"rag": prefs.rag.model_copy(update={"enabled": False})})
+
+
+@pytest.mark.asyncio
+async def test_related_rows_carry_the_case_number(app_state: AppState) -> None:
+    await app_state.cases.save(_closed("prior-49", "CASE-000049"))
+    # A cross-source link the panel's own scan never reads: the number is looked up.
+    await app_state.cases.save(_closed("linked-50", "CASE-000050", ip="198.51.100.4"))
+    case = _case(case_id="cur-1", ip="10.9.8.7")
+    case.related_case_ids = ["linked-50"]
+
+    panel = await tc.assemble(
+        case, _no_rag(app_state.prefs), enrich=None, rag=app_state.rag, cases=app_state.cases
+    )
+
+    numbers = {row["case_id"]: row.get("case_number") for row in panel.clustering["related_cases"]}
+    assert numbers == {"linked-50": "CASE-000050", "prior-49": "CASE-000049"}
+    # The resolved-case section carries it too.
+    assert {r["case_id"]: r.get("case_number") for r in panel.related_cases} == {
+        "prior-49": "CASE-000049"
+    }
+
+
+@pytest.mark.asyncio
+async def test_related_rows_read_the_number_from_resolved_case_recall(app_state: AppState) -> None:
+    class _Chunk:
+        source = "resolved_case"
+        score = 0.9
+        text = "prior case text"
+
+        def __init__(self, case_id: str, number: str | None) -> None:
+            self.metadata = {"case_id": case_id, "verdict": "false_positive", "case_number": number}
+
+    class _Rag:
+        async def ensure_seeded(self) -> None:
+            return None
+
+        async def retrieve(self, _query: str, top_k: int = 6):
+            return [_Chunk("rag-1", "CASE-000051"), _Chunk("rag-2", None)]
+
+    # rag-2 has no number in its metadata: the store has it.
+    await app_state.cases.save(_closed("rag-2", "CASE-000052", ip="192.0.2.77"))
+    case = _case(case_id="cur-2", ip="192.0.2.99")
+    panel = await tc.assemble(case, app_state.prefs, enrich=None, rag=_Rag(), cases=app_state.cases)
+
+    numbers = {row["case_id"]: row.get("case_number") for row in panel.clustering["related_cases"]}
+    assert numbers == {"rag-1": "CASE-000051", "rag-2": "CASE-000052"}
+
+
+@pytest.mark.asyncio
+async def test_related_number_lookup_is_fail_open_and_bounded(app_state: AppState) -> None:
+    looked_up: list[list[str]] = []
+
+    class _BrokenCases:
+        async def list(self, **_kwargs):
+            return [], 0
+
+        async def get_many(self, ids):
+            looked_up.append(list(ids))
+            raise RuntimeError("store down")
+
+        async def get(self, _case_id):
+            raise RuntimeError("store down")
+
+    case = _case(case_id="cur-3")
+    case.related_case_ids = [f"link-{i:02d}" for i in range(30)]
+    panel = await tc.assemble(
+        case, _no_rag(app_state.prefs), enrich=None, rag=None, cases=_BrokenCases()
+    )
+
+    rows = panel.clustering["related_cases"]
+    # The rows still render (by internal id) when the store cannot be read.
+    assert len(rows) == 12
+    assert all(row.get("case_number") == "" for row in rows)
+    # One bounded read: never more ids than the rows shown.
+    assert len(looked_up) == 1 and len(looked_up[0]) == 12

@@ -143,97 +143,22 @@ describe('BrandingEditor — faithful minimal login preview', () => {
     expect(scaled.length).toBeGreaterThan(0);
 
     const shell = container.querySelector('[data-login-preview-shell="minimal"]');
-    const slab = container.querySelector('[data-login-preview-slab]');
     expect(shell).toHaveAttribute('data-login-preview-layout', 'split');
-    expect(shell).toHaveClass('login-auth-canvas', 'overflow-hidden');
-    expect(slab?.parentElement).toHaveClass('w-[480px]');
-    expect(slab).toHaveClass(
-      'login-auth-slab',
-      'min-h-[492px]',
-      'w-[480px]',
-      'px-12',
-      'pb-24',
-      'pt-12',
-    );
-    expect(slab).not.toHaveClass('h-[492px]');
-    expect(slab).not.toHaveClass('border-x', 'shadow-elev2');
-    expect(container.querySelector('[data-login-preview-content]')).toHaveClass('w-[384px]');
-
-    // Runtime and preview deliberately share the live-Mistral background system:
-    // a flat theme canvas, the pure identity slab, four viewport guides, four
-    // neutral 240px carriers, and horizontal-edge-only warm trails. The preview is
-    // a representative frozen frame; it must never start ambient timers.
-    const ambient = shell?.querySelector('[data-login-ambient-grid]');
-    expect(ambient).toHaveAttribute('aria-hidden', 'true');
-    expect(ambient).toHaveAttribute('data-login-ambient-cadence', 'mistral');
-    expect(ambient).not.toHaveAttribute('data-login-accent-cycle');
-    expect(ambient).toHaveClass('pointer-events-none', 'hidden', 'sm:block');
-    expect(
-      Array.from(ambient?.querySelectorAll<HTMLElement>('[data-login-guide]') ?? []).map(
-        (guide) => guide.dataset.loginGuide,
-      ).sort(),
-    ).toEqual(['bottom', 'left', 'right', 'top']);
-    const ambientTiles = Array.from(
-      ambient?.querySelectorAll<HTMLElement>('[data-login-ambient-tile]') ?? [],
-    );
-    expect(ambientTiles).toHaveLength(4);
-    expect(ambientTiles.map((tile) => tile.dataset.loginAmbientTile).sort()).toEqual([
-      '0',
-      '1',
-      '2',
-      '3',
-    ]);
-    expect(ambientTiles.map((tile) => tile.dataset.loginAmbientSide).sort()).toEqual([
-      'bottom',
-      'left',
-      'right',
-      'top',
-    ]);
-    const trails = Array.from(
-      ambient?.querySelectorAll<HTMLElement>('[data-login-ambient-trail]') ?? [],
-    );
-    expect(trails).toHaveLength(2);
-    expect(
-      ambient?.querySelector(
-        '[data-login-ambient-side="top"] [data-login-ambient-trail]',
-      ),
-    ).toHaveAttribute('data-login-ambient-trail-active', 'true');
-    expect(
-      ambient?.querySelector(
-        '[data-login-ambient-side="bottom"] [data-login-ambient-trail]',
-      ),
-    ).toHaveAttribute('data-login-ambient-trail-active', 'true');
-    expect(
-      ambient?.querySelector(
-        '[data-login-ambient-side="left"] [data-login-ambient-trail]',
-      ),
-    ).toBeNull();
-    expect(
-      ambient?.querySelector(
-        '[data-login-ambient-side="right"] [data-login-ambient-trail]',
-      ),
-    ).toBeNull();
-    expect(ambient?.querySelector('[data-login-ambient-anchor]')).toBeNull();
-    expect(ambient?.querySelectorAll('.login-auth-trail')).toHaveLength(2);
-    expect(ambient?.querySelector('.login-auth-accent')).toBeNull();
-    expect(
-      ambientTiles.every((tile) => (
-        tile.classList.contains('h-[240px]') &&
-        tile.classList.contains('w-[240px]') &&
-        tile.style.width === '' &&
-        tile.style.height === '' &&
-        tile.style.transform === '' &&
-        (
-          tile.style.backgroundColor.includes('var(--login-tile-default)') ||
-          tile.style.backgroundColor.includes('var(--login-tile-muted)')
-        )
-      )),
-    ).toBe(true);
-    expect(
-      Array.from(ambient?.querySelectorAll<HTMLElement>('*') ?? [])
-        .filter((node) => node.style.backgroundColor.includes('var(--login-trail-'))
-        .every((node) => node.hasAttribute('data-login-ambient-trail')),
-    ).toBe(true);
+    // The preview mirrors the real page: one column on the Console canvas with the
+    // static brand wash, a 400px measure, the mark, one heading, a 44px field and
+    // the primary Continue. No slab, ambient tiles, hero or gradient controls.
+    expect(shell).toHaveClass('login-canvas', 'bg-canvas', 'overflow-hidden');
+    expect(shell?.querySelector('[data-login-preview-slab]')).toBeNull();
+    expect(shell?.querySelector('[data-login-ambient-grid]')).toBeNull();
+    expect(shell?.querySelector('.login-auth-slab, .login-shine-button, .login-theme-pill')).toBeNull();
+    const content = container.querySelector('[data-login-preview-content]');
+    expect(content).toHaveClass('w-[400px]');
+    expect(content).toHaveTextContent('Triage at machine speed.');
+    expect(content).toHaveTextContent('A body line.');
+    expect(content).toHaveTextContent('Username');
+    expect(content).toHaveTextContent('Continue');
+    expect(content?.querySelector('.h-11.border-input')).not.toBeNull();
+    expect(content?.querySelector('.bg-primary.text-primary-foreground')).not.toBeNull();
 
     // The old clipping fixed-height box is gone.
     expect(container.querySelector('.h-56')).toBeNull();
@@ -255,4 +180,23 @@ describe('BrandingEditor — faithful minimal login preview', () => {
       expect(screen.queryByLabelText('Login illustration')).not.toBeInTheDocument();
     },
   );
+});
+
+describe('BrandingEditor copy (Round 14)', () => {
+  beforeEach(() => {
+    getMock.mockReset().mockResolvedValue({ ...SAVED_BRANDING });
+    putMock.mockReset().mockImplementation((_p: string, b: unknown) => Promise.resolve(b));
+    getBrandingMock.mockReset().mockResolvedValue({ ...SAVED_BRANDING });
+    window.localStorage.clear();
+  });
+
+  it('explains accent presets, design tokens and the material pack without em dashes', async () => {
+    renderEditor();
+    expect(
+      await screen.findByText('One-click brand hues, each checked to keep white text at WCAG AA on the accent fill.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/^Bounded layout tokens: corner radius and display font\./)).toBeInTheDocument();
+    expect(screen.getByText(/denser command-center feel; colours and text contrast are unchanged\.$/)).toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toMatch(/[–—]/);
+  });
 });

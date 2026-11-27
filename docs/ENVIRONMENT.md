@@ -7,11 +7,13 @@ There are **two distinct environments**. Confusing them causes most build/deploy
 pain, so they are documented separately.
 
 > **Branch topology:** the remote uses `Testing` for integration and default
-> `main` for accepted Stable source. Version 0.1.12 is Stable only when the exact
-> verified `main` commit has the immutable `v0.1.12` tag and matching signed/public
+> `main` for accepted Stable source. Version 0.2.0 is Stable only when the exact
+> verified `main` commit has the immutable `v0.2.0` tag and matching signed/public
 > artifacts. The immutable `v0.1.10` and `v0.1.11` tags are superseded,
-> non-installable failed-publication records; never move, reuse, repair, install, or
-> bootstrap from them. Branch protection, required checks, Pages source selection, and environment
+> non-installable failed-publication records. The immutable `v0.1.12` tag completed
+> its signed/public publication but is bootstrap-blocked by its legacy installed-
+> identity comparison and is also unsupported; never move, reuse, repair, install,
+> or bootstrap from these records. Branch protection, required checks, Pages source selection, and environment
 > policy are repository settings; administrators must verify them independently of
 > this checkout.
 
@@ -21,17 +23,19 @@ pain, so they are documented separately.
 > **archived** (`archive/kibana-plugin/`, frozen, not built/shipped). The suite's own
 > state runs on a **selectable backend** (Elasticsearch, PostgreSQL, or SQLite).
 > Optional auth (6-role RBAC + custom roles / MFA-TOTP / OIDC SSO + **server-enforced
-> sessions** with idle/absolute/revocation and refresh rotation) is **fully built but
-> DEFAULT OFF** — `TLSOC_AUTH_ENABLED=true` to turn it on. A reversible, $0 **Demo
+> sessions** with idle and absolute limits and revocation; no sign-in issues a refresh
+> token, and `POST /api/auth/refresh` is deprecated) is **fully built but DEFAULT OFF**:
+> `TLSOC_AUTH_ENABLED=true` turns it on. A reversible, $0 **Demo
 > Mode** populates the product with synthetic data without any source wiring (see
 > `DEMO.md`). See `COMPATIBILITY.md` for the full matrix.
 >
 > Environment-relevant additions since the vendor-agnostic pivot include optional
 > **cloud LLM providers** (Azure OpenAI / AWS Bedrock / Google Vertex), a **local /
 > self-hosted LiteLLM-compatible provider** (any OpenAI-compatible `base_url`), and
-> **19 enrichment providers** behind an `EnrichmentProvider` SPI — all keyed via env
-> (see §2.6 / §2.7). The keyless enrichment providers are default-on; every keyed
-> provider/model stays default-off, additive, and degrades gracefully. **Round 10**
+> **38 enrichment providers** behind an `EnrichmentProvider` SPI — all keyed via env
+> (see §2.6 / §2.7). The quota-safe keyless enrichment providers are default-on; the
+> caveated keyless ones and every keyed provider/model stay default-off, additive,
+> and degrade gracefully. **Round 10**
 > is the one deliberate exception on the *Preferences* (not env) side: comprehensive
 > ingestion + a self-tuning autopilot now ship **ON** out of the box, bounded by a
 > default $10/day budget backstop (see §2.8 — env surface unaffected). For the full
@@ -200,12 +204,12 @@ prefixed Docker build/runtime metadata rather than `Secrets` fields:
 
 | Build/runtime value | Default | Purpose |
 |---|---|---|
-| `TLSOC_VERSION` | `0.1.12` in Compose | Machine SemVer for images and API identity |
+| `TLSOC_VERSION` | `0.2.0` in Compose | Machine SemVer for images and API identity |
 | `TLSOC_RELEASE_CHANNEL` | `testing` | Independent promotion stamp; use `stable` only for the accepted main/tag build |
-| `TLSOC_BUILD_SHA` | `unknown` | Exact source revision |
-| `TLSOC_BUILD_DATE` | `unknown` | Reproducible-build timestamp supplied by the builder |
+| `TLSOC_BUILD_SHA` | derived by the wrapper; `unknown` otherwise | Exact source revision. `scripts/agentic-soc-compose.sh` and `scripts/run-demo.sh` both source `scripts/lib/build-identity.sh`, which derives it from the checkout — but only when nothing supplied it. A supplied release identity (the supervised bootstrap) and a non-empty, non-`unknown` `.env` pin both win. An uncommitted **tracked** change is reported as `<sha>-dirty`; untracked files are ignored, so an operator note in the deployment directory does not mark the build dirty |
+| `TLSOC_BUILD_DATE` | derived by the wrapper; `unknown` otherwise | Reproducible-build timestamp supplied by the builder, derived from the HEAD commit date on the same terms as `TLSOC_BUILD_SHA` |
 | `TLSOC_SOURCE_URL` | repository URL in each Dockerfile | Canonical source URL embedded in OCI image metadata; the reference Compose files do not map an `.env` override |
-| `AGENTIC_SOC_UPDATE_REPOSITORY` | `ARYDESTROYER/Agentic-Kibana` | Repository whose tag-bound release workflow the host supervisor trusts; configure before bootstrap, not per browser request |
+| `AGENTIC_SOC_UPDATE_REPOSITORY` | Set it to `ARYDESTROYER/Kavach-AgenticSOC` in `.env` (the frozen Compose base still defaults to the repository's former name, which the bootstrap refuses) | Repository whose tag-bound release workflow the host supervisor trusts; the exact letter case matters; configure before bootstrap, not per browser request |
 
 The Console compiles the same version/channel/SHA/date stamp and always displays
 `vX.Y.Z · Testing|Stable` in the shell. Its popover reconciles that immutable
@@ -239,6 +243,7 @@ GHCR packages must be public and anonymously pullable by exact digest. See
 | `TLSOC_AWS_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` / `TLSOC_AWS_REGION` | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | **Round 3** — AWS Bedrock cloud LLM (stdlib SigV4, no boto3) (optional) |
 | `TLSOC_VERTEX_PROJECT` / `_LOCATION` / `_API_KEY` | `VERTEX_PROJECT` / `VERTEX_LOCATION` / `VERTEX_API_KEY` | **Round 3** — Google Vertex cloud LLM (short-lived OAuth Bearer) (optional) |
 | `TLSOC_GREYNOISE_API_KEY` · `TLSOC_SHODAN_API_KEY` · `TLSOC_CENSYS_API_ID`/`_SECRET` · `TLSOC_BINARYEDGE_API_KEY` · `TLSOC_IPINFO_TOKEN` · `TLSOC_OTX_API_KEY` · `TLSOC_PULSEDIVE_API_KEY` · `TLSOC_SPUR_API_KEY` · `TLSOC_XFORCE_API_KEY`/`_PASSWORD` · `TLSOC_URLSCAN_API_KEY` · `TLSOC_HIBP_API_KEY` · `TLSOC_HONEYPOT_ACCESS_KEY` · `TLSOC_ABUSECH_AUTH_KEY` | the same names unprefixed | **Round 3** — the 17-provider enrichment SPI (§2.7); all optional + default-off; keyless providers (Shodan InternetDB / IPinfo Lite / abuse.ch trio / RDAP-DoH) need no key and are default-on |
+| `TLSOC_CROWDSEC_API_KEY` · `TLSOC_GOOGLE_SAFEBROWSING_API_KEY` · `TLSOC_IPQUALITYSCORE_API_KEY` · `TLSOC_IPDATA_API_KEY` · `TLSOC_APIVOID_API_KEY` · `TLSOC_MALTIVERSE_API_KEY` · `TLSOC_SECURITYTRAILS_API_KEY` · `TLSOC_CRIMINALIP_API_KEY` · `TLSOC_NETLAS_API_KEY` · `TLSOC_HYBRID_ANALYSIS_API_KEY` · `TLSOC_METADEFENDER_API_KEY` · `TLSOC_EMAILREP_API_KEY` | the same names unprefixed | **Round 11** — 12 more keyed enrichment providers (§2.7; registry now 38 total); all optional + default-off. On the agnostic stack these ride the `deploy/docker-compose.enrichment-keys.yml` overlay (the frozen v1 base cannot change); the legacy stack forwards them directly. The 7 new keyless providers need no env var at all: CIRCL hashlookup / DShield / Onionoo are default-on; Spamhaus / Cymru MHR (need the host's own resolver) and Robtex / crt.sh (slow) are default-off toggles in Settings → Enrichment |
 | `TLSOC_LITELLM_API_KEY` | `LITELLM_API_KEY` | **Round 9** — optional key for a self-hosted LiteLLM-proxy / vLLM / Ollama / LM Studio endpoint (the `openai_compatible` provider path). **Not forwarded by the agnostic compose today** — add a matching `- LITELLM_API_KEY=${TLSOC_LITELLM_API_KEY:-}` line to `tlsoc-backend`'s `environment:` block yourself if you need it. Also settable at runtime via the "Add local model" dialog (`POST /api/llm/models/custom`), or omit entirely for a no-auth local endpoint (falls back to `OPENAI_API_KEY`). |
 | `TLSOC_EMBEDDING_API_KEY` | `EMBEDDING_API_KEY` | embeddings (falls back to the OpenAI key) |
 | `TLSOC_REDIS_URL` | `REDIS_URL` | enrichment cache (degrades to in-memory) |
@@ -248,9 +253,10 @@ GHCR packages must be public and anonymously pullable by exact digest. See
 | `TLSOC_CSRF_ENABLED` | `CSRF_ENABLED` | double-submit CSRF-token enforcement on state-changing requests. Default **`false`** — the standalone webui does not yet echo the CSRF cookie on login, so enable this only for API clients that set `X-CSRF-Token` themselves (see `SECURITY.md`). |
 | `TLSOC_AUTH_ENABLED` | `AUTH_ENABLED` | **DEFAULT OFF.** `true` turns on login + 6-role RBAC + MFA/SSO and (on first run, no users) seeds **Admin / Admin@123** (super_admin). Leaving it unset preserves the no-auth "old version" + the offline test path. |
 | `TLSOC_AUTH_JWT_SECRET` | `AUTH_JWT_SECRET` | HS256 signing secret for the session/access JWTs (auto-generated per process if unset → **all sessions invalidated on restart**; set a stable 32+ byte value in prod, e.g. `openssl rand -hex 32`, so sessions survive restarts). |
-| `TLSOC_AUTH_TOKEN_HOURS` | `AUTH_TOKEN_HOURS` | session-cookie / access-token lifetime in **hours** (default `12`). NOTE: the *richer* session policy below (idle / absolute / refresh / step-up) is **UI-editable Preferences**, not env. |
-| `TLSOC_AUTH_COOKIE_SECURE` | `AUTH_COOKIE_SECURE` | set `true` behind TLS so the session cookie is HTTPS-only (default `false`). |
+| `TLSOC_AUTH_TOKEN_HOURS` | `AUTH_TOKEN_HOURS` | access-token lifetime in **hours** for sign-ins **without** Remember me (default `12`; values above 144 are reduced to 144 with a startup warning, bearer-token API clients included). Those sign-ins get a browser-session cookie; a remembered sign-in lasts `session_policy.remember_me.duration_seconds` instead. NOTE: the *richer* session policy below (idle / absolute / refresh / step-up / remember me) is **UI-editable Preferences**, not env. |
+| `TLSOC_AUTH_COOKIE_SECURE` | `AUTH_COOKIE_SECURE` | set `true` behind TLS so the session cookie is HTTPS-only (default `false`). Required for **Remember me** except on a direct loopback request, or unless `session_policy.remember_me.allow_insecure_http` is `true` (not recommended); a same-host reverse proxy must send `X-Forwarded-For`. |
 | `TLSOC_AUTH_ADMIN_USERNAME` / `TLSOC_AUTH_ADMIN_PASSWORD` | `AUTH_ADMIN_USERNAME` / `AUTH_ADMIN_PASSWORD` | optional env single-admin (hashed in memory at boot, never stored; granted super_admin) — separate from the auto-seeded `Admin/Admin@123`. |
+| (not mapped) | `TRUSTED_PROXIES` | **Round 14.** Comma list of host names, IP addresses or CIDR ranges whose `X-Forwarded-For` the audit log believes when it records a client address. Default `tlsoc-webui` (the bundled Web UI service), so the standalone (agnostic) Compose stack needs nothing. On the legacy ELK attachment, whose merge block has no Web UI service, run the Web UI as a `tlsoc-webui` service on the backend's network or set `TRUSTED_PROXIES` in the copied `tlsoc-backend` block to the proxy that fronts the backend; otherwise every audit row records that proxy's address as the client. Behind another proxy or a load balancer, add it here through a Compose override's `environment:` block. Only a request from a listed peer has its forwarded header read, and then the rightmost entry that is not itself a trusted proxy is recorded (at most the last 32 entries are read); every other request is recorded with its connection address and the raw header is kept as untrusted (its tail when longer than 256 characters). Names resolve at startup and every 5 minutes; a name that does not resolve yet is retried within seconds. Audit metadata only, never an access decision. Uvicorn's own `FORWARDED_ALLOW_IPS` (loopback by default) only affects its scheme handling. |
 | `TLSOC_MFA_OBFUSCATION_KEY` | `MFA_OBFUSCATION_KEY` | obfuscation key for per-user TOTP secrets at rest (blank → derived from `AUTH_JWT_SECRET`; stdlib, not a KMS). |
 | `TLSOC_SSO_CLIENT_SECRETS` | `SSO_CLIENT_SECRETS` | JSON map `provider_id → client_secret` for OIDC SSO (Google / Microsoft / generic); the rest of each provider (issuer / client-id / redirect / group→role) is configured in **Settings**. May also be pushed at runtime via `POST /api/auth/sso/providers/{id}/secret`. Redirect/callback URI to register with the IdP: `<base-url>/api/auth/sso/callback`. |
 | `TLSOC_NOTIFICATION_SECRETS` | `NOTIFICATION_SECRETS` | JSON map `channel_id → {field: value}` seeding the per-channel **secret tier** at boot — covers the **SMTP password**, the **Resend API key**, the **SES IAM secret**, and Slack/Teams/webhook URLs + PagerDuty/Telegram tokens. The rest of each channel (provider/host/port/region/from/recipients) is **non-secret config set in Settings**. May also be pushed at runtime via `POST /api/notifications/channels/{id}/secret`. |
@@ -338,9 +344,14 @@ per model via the `PriceOverlayStore` (KV, no migration). An optional pre-flight
 $10/day blocking backstop) checks
 `estimate_cost` BEFORE the call; over budget it raises so the investigator fails safe
 to **NEEDS_HUMAN** — never a silent close (#3), and the ledger still writes exactly
-once per real call (#6).
+once per real call (#6). The gate bounds the pipeline (investigations, standup, scans,
+report summaries). **Workspace and Case Manager chat are outside both its daily and its
+monthly ceilings** (Round 12): a chat call is never blocked and its spend is not counted
+toward either. Chat's only spending bound is the optional daily
+`chat_agent.chat_daily_cap_usd`, which is **off by default**; every chat call is still
+ledgered (#6).
 
-### 2.7 Enrichment providers (Round 3 — the EnrichmentProvider SPI)
+### 2.7 Enrichment providers (Rounds 3 & 11 — the EnrichmentProvider SPI)
 
 Enrichment was generalized into an `EnrichmentProvider` SPI (`backend/app/enrichment/`)
 mirroring the connector registry: an ABC + manifest (indicator types, auth fields,
@@ -366,12 +377,41 @@ call site + the `EnrichmentResult` contract are unchanged (#3).
   **UNTRUSTED** and fenced before any prompt / escaped in the UI (#9); enrichment is
   **advisory only** and never feeds the deterministic `decide()` (#3).
 
-> Compose note: the agnostic/legacy compose files map a fixed set of `TLSOC_*` → backend
-> vars. The Round-3 cloud-LLM / enrichment keys above are read by the backend under their
-> **unprefixed** names; when running under Docker Compose, add the matching
-> `- AZURE_OPENAI_API_KEY=${TLSOC_AZURE_OPENAI_API_KEY:-}` (etc.) line to the
-> `tlsoc-backend` `environment:` block for each provider you enable. Running the backend
-> directly, it reads them from the environment as-is.
+**Round 11** grew the registry from 19 to **38 providers** (19 new):
+
+- **Keyless, default-on** (no env needed): **CIRCL hashlookup** (known-good file
+  hashes), **SANS ISC DShield** (IP sensor sightings), **Onionoo** (Tor relay/exit
+  context).
+- **Keyless, default-off** (opt in via **Settings → Enrichment**): **Spamhaus
+  ZEN/DBL** and **Team Cymru MHR** (DNS lookups — they need the host's OWN recursive
+  resolver; public resolvers are refused), **Robtex** and **crt.sh** (slow free
+  tiers).
+- **Keyed, default-off** (the env key only enables the toggle — 12 new keys, all
+  `TLSOC_`-prefixed in `.env`, see §2.3): `CROWDSEC_API_KEY` (CrowdSec CTI),
+  `GOOGLE_SAFEBROWSING_API_KEY`, `IPQUALITYSCORE_API_KEY`, `IPDATA_API_KEY`,
+  `APIVOID_API_KEY`, `MALTIVERSE_API_KEY`, `SECURITYTRAILS_API_KEY`,
+  `CRIMINALIP_API_KEY`, `NETLAS_API_KEY`, `HYBRID_ANALYSIS_API_KEY`,
+  `METADEFENDER_API_KEY`, `EMAILREP_API_KEY`.
+
+Every provider manifest now carries `setup_steps` (ordered operator steps naming the
+exact env var to set) and an `example` blurb ("how this source helps triage");
+`GET /api/enrichment/providers` serialises both and the Settings → Enrichment
+provider cards render them as per-provider "How to set up" guidance. Score
+discipline is unchanged (#3): verdict feeds score 80–90, graded reputations map onto
+0..100, and context-only sources cap at ≤40 with `malicious=False`, so no context
+provider alone can cross the default `max()` fusion cut.
+
+> Compose note: the legacy compose file maps every cloud-LLM and enrichment key
+> above (`TLSOC_*` → the unprefixed backend names). The **agnostic** base compose
+> is the frozen supervised-update v1 contract (`deploy/update-base-v1.sha256` —
+> its bytes must not change or installed hosts are stranded), so it maps the keys
+> through **Round 3** only; the 12 **Round-11** keyed vars ship as the additive
+> overlay `deploy/docker-compose.enrichment-keys.yml`:
+> `./scripts/agentic-soc-compose.sh -f deploy/docker-compose.enrichment-keys.yml up -d`.
+> (Keys can also be set at runtime in Settings → Enrichment — the in-memory
+> secret tier, lost on restart.) `LITELLM_API_KEY` (§2.3) is not forwarded by
+> either file today. Running the backend directly, it reads the unprefixed names
+> from the environment as-is.
 
 ### 2.8 Autopilot defaults (Round 10 — UI-editable Preferences, not env)
 
@@ -389,8 +429,8 @@ the industry-standard citations behind the numbers; this is just the knob refere
 | `background_scan_enabled` | **`true`** (was `false`) | comprehensive ingestion — every source is correlated + risk-scored, not just what's on the auto-forward allowlist |
 | `auto_investigate_risk_floor` | **`70`** | the deterministic risk-gate floor: an `events`-role cluster auto-forwards to the strong-LLM investigation once `risk_score >= floor`; below-floor clusters stay `$0` OPEN candidates — risk-scored, visible, never dropped (#4) |
 | `autopilot_profile` | `"balanced"` (`conservative` \| `balanced` \| `aggressive`) | one dial that moves the three rows above/below together — see the profile table in `docs/USAGE.md` §33 |
-| `caps.max_auto_investigations_per_tick` | **`25`**, **GLOBAL PER POLL TICK** | one concurrency-safe ceiling shared across every concurrently polled source in the manager fan-out; each direct push batch enforces the same configured cap locally. Cap-deferred candidates drain later once headroom frees. The **daily USD budget below remains the global spend bound** — this cap smooths *when* spend happens |
-| `budget.{enabled,daily_usd,soft_warn_pct,on_exceed}` | `true` / `10.0` / `0.8` / `"block"` | the default spend backstop (pairs with §2.6's per-model pricing); the provider call is stopped before spend and the case fails safe to `NEEDS_HUMAN`, never a silent drop or close (#3/#4). Warning-only mode is an explicit operator choice. |
+| `caps.max_auto_investigations_per_tick` | **`25`**, **GLOBAL PER POLL TICK** | one concurrency-safe ceiling shared across every concurrently polled source in the manager fan-out; each direct push batch enforces the same configured cap locally. Cap-deferred candidates drain later once headroom frees. The **daily USD budget below remains the spend bound for the pipeline** (investigations, standup, scans, report summaries) — this cap smooths *when* spend happens. Workspace and Case Manager chat are outside that budget; see the next row |
+| `budget.{enabled,daily_usd,soft_warn_pct,on_exceed}` | `true` / `10.0` / `0.8` / `"block"` | the default spend backstop for the pipeline (pairs with §2.6's per-model pricing); the provider call is stopped before spend and the case fails safe to `NEEDS_HUMAN`, never a silent drop or close (#3/#4). Warning-only mode is an explicit operator choice. **Workspace and Case Manager chat are outside its daily and monthly ceilings** (Round 12): their only bound is the optional daily `chat_agent.chat_daily_cap_usd`, which is **off by default**, so set it to cap chat spend. Every chat call is still ledgered (#6). |
 | `baseline.{enabled,warmup_days,max_series}` | `true` / `14` / `50000` | the entity-baseline producer now runs from day one (silent-source + volume-flood detection); `warmup_days` is the advisory wall-clock warm-up target shown in the UI gauge, `max_series` LRU-bounds cardinality (`0` = unbounded) |
 | `threshold_tuning.enabled` (+ `shadow_eval` forced `true`) · `campaign.enabled` · `cross_source_correlation.enabled` · `sla.enabled` · `priority_matrix.enabled` · `realtime.enabled` · `threshold_automation.enabled` (ships with `rules: []`) | all **`true`** | the default-ON $0/#3-safe smart engines — full behavior + what's still opt-in in `docs/USAGE.md` §33 |
 
@@ -403,7 +443,23 @@ install** simply starts at the defaults above with no banner at all.
 
 **Still opt-in (unchanged defaults):** `batch.enabled` (§2.6 covers the batch/flex LLM
 paths), changing the default blocking budget to warning-only, any
-`run_playbook`/`notify` action on a
+attach-runbook (`run_playbook`) or `notify` action on a
 case-automation rule, and baseline-driven auto-investigation — baseline stays a pure
 advisory producer that never calls `decide()` or forwards to investigation by itself
 (#3/#4).
+
+### 2.9 Round 14 preferences (UI-editable, not env)
+
+Round 14 adds or changes these `Preferences` and per-user values; none is an env var.
+Full tables are in `docs/reference/configuration.md`.
+
+| Preference | Default | Notes |
+|---|---|---|
+| `chat_agent.max_parallel` · `tool_timeout_s` · `model_step_timeout_s` · `max_concurrent_turns_per_user` · `max_concurrent_turns_global` | `12` · `45` · `900` · `12` · `48` | the Chat assistant's "Timeouts and capacity", tripled from `4` · `15` · `300` · `4` · `16`. `chat_agent.chat_limits_version` is now `2`: a stored block whose value still equals the Round 12 default moves once, in both limits modes; a value an administrator chose stays. The report summary wait stays capped at 280 s, below the Web UI proxy's 300 s |
+| `runbooks.{enabled,auto_attach,fallback,investigator_guidance,rag_corpus,ai_suggest,ai_step_drafts}` | all `true` | the one Runbooks feature (Settings → Integrations → Runbooks). None of them feeds `decide()` (#3) |
+| `runbooks.{require_distinct_approver,step_approvals}` | `false` | separation of duties for publishing, and per-step approver roles |
+| `runbooks.review_every_days_default` | `180` | review cadence of a new operator runbook, 30 to 730 days |
+| retired keys `playbooks.enabled`, the earlier `runbooks.enabled`, `rag.use_runbooks` | accepted | mapped once by meaning (a stored `false` becomes `runbooks.investigator_guidance: false` or `runbooks.rag_corpus: false`), then stamped with `runbooks.runbooks_config_version: 1`; `playbooks.enabled` and `rag.use_runbooks` stay readable as mirrors of their successors |
+| `UserPrefs.misc.dashboards_hidden` · `UserPrefs.misc.dismissed_intros` | `[]` | per user: built-in dashboards hidden from the library (at most 8) and dismissed introductory notes (at most 50); a change is audited before it is saved |
+| `DashboardLayout.default_window` | absent (last 24 hours) | a personal board's starting window: `now-24h`, `now-7d`, `now-30d` or `now-90d` |
+| `batch.*` (Discounted inference) | unchanged | edited in Settings → General → Discounted inference and saved with the other settings, so it needs `settings:manage` (on the Jobs page it needed `models:manage`) |
