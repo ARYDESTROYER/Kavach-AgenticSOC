@@ -13,9 +13,12 @@ vocabulary.
 
 !!! note "Current repository topology"
 
-    The remote now exposes both canonical branches and uses `main` as the default.
-    Repository administrators must still keep the required pull-request gates and
-    the `CI passed` aggregate enforced; a branch name alone never proves that a
+    The remote exposes both canonical branches, and `main` must be its default
+    branch. On 2026-11-27 the default was still `Testing`, so a plain `git clone`
+    landed on the integration branch; the maintainer sets the default back to `main`
+    before the 0.2.0 tag. Check out `main` explicitly until then. Repository
+    administrators must also keep the required pull-request gates and the
+    `CI passed` aggregate enforced; a branch name alone never proves that a
     particular build passed acceptance.
 
 ## Channel contract
