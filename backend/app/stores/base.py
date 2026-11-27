@@ -356,6 +356,32 @@ def is_deferred_candidate(case: Case, *, older_than: str) -> bool:
     )
 
 
+class DeferredCandidates(list):
+    """One page of the deferred queue (Round 16 CDX1): a plain ``list`` of cases that
+    also carries ``next_after``, the store-private marker that continues the read
+    after this page's last row, or ``None`` at the end of the queue.
+
+    :meth:`CaseRepository.list_deferred_candidates` returns it; a caller passes
+    ``next_after`` back as ``after`` and treats it as opaque. A store that does not
+    page returns a plain list, which has no ``next_after``, so the drain reads it as
+    the whole answer for the tick (the old single page)."""
+
+    def __init__(self, cases: Any = (), next_after: Any = None) -> None:
+        super().__init__(cases)
+        self.next_after = next_after
+
+
+def _open_scan_offset(after: Any) -> int:
+    """The OPEN-listing offset in the base default's marker; ``0`` (the head of the
+    queue) for a marker it cannot read."""
+    if isinstance(after, dict):
+        try:
+            return max(0, int(after.get("open_offset", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
 class CaseRepository(ABC):
     """Persists :class:`Case` documents (Section 7.1).
 
@@ -601,7 +627,9 @@ class CaseRepository(ABC):
             return
         await self.close_export_cursor(cursor)
 
-    async def list_deferred_candidates(self, *, older_than: str, limit: int) -> list[Case]:
+    async def list_deferred_candidates(
+        self, *, older_than: str, limit: int, after: Any = None,
+    ) -> list[Case]:
         """The cap-deferred candidates the deferred drain may investigate, oldest
         created first, at most ``limit`` (Round 16 SPEC WP15B, B11).
 
@@ -611,12 +639,21 @@ class CaseRepository(ABC):
         person acted on (:func:`is_deferred_candidate`). The bundled
         Elasticsearch and SQL repositories answer it with one query. This default
         keeps the paged scan over OPEN cases for third-party repositories: correct,
-        but it reads every OPEN case before the first deferred one."""
-        out: list[Case] = []
+        but it reads every OPEN case before the first deferred one.
+
+        ``after`` (Round 16 CDX1, additive) continues the read after an earlier page:
+        pass the ``next_after`` of the :class:`DeferredCandidates` page a call
+        returned; ``None`` reads from the head of the queue, and a marker the store
+        cannot read does too. The drain reads past a page of candidates it cannot
+        rebuild this way. This default's marker is the offset in the OPEN listing
+        after the last row it examined; the bundled stores use a keyset on
+        ``created_at`` then ``case_id``."""
         if limit <= 0:
-            return out
-        offset = 0
+            return DeferredCandidates()
+        out: list[Case] = []
+        offset = _open_scan_offset(after)
         page_size = max(50, int(limit))
+        more = True
         while len(out) < limit:
             page, total = await self.list(
                 status="open",
@@ -626,16 +663,20 @@ class CaseRepository(ABC):
                 sort_order="asc",
             )
             if not page:
+                more = False
                 break
+            examined = 0
             for case in page:
+                examined += 1
                 if is_deferred_candidate(case, older_than=older_than):
                     out.append(case)
                     if len(out) >= limit:
                         break
-            offset += len(page)
+            offset += examined
             if offset >= total:
+                more = False
                 break
-        return out
+        return DeferredCandidates(out, next_after={"open_offset": offset} if more else None)
 
 
 def _status_value(case: Any) -> str:

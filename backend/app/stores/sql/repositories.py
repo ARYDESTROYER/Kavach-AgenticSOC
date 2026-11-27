@@ -77,6 +77,7 @@ from ..base import (
     CaseRepository,
     ConfigRepository,
     CursorRepository,
+    DeferredCandidates,
     KVStore,
     UsageRepository,
     build_audit_doc_best_effort,
@@ -333,14 +334,22 @@ class SqlCaseRepository(CaseRepository):
         cases = [Case.model_validate(r.doc) for r in rows]
         return cases, total
 
-    async def list_deferred_candidates(self, *, older_than: str, limit: int) -> list[Case]:
+    async def list_deferred_candidates(
+        self, *, older_than: str, limit: int, after: Any = None,
+    ) -> list[Case]:
         """The cap-deferred candidates, oldest created first, in ONE query (Round 16
         B11): ``status = 'open'``, no ``verdict`` in the JSON document, its
         ``awaiting_reason`` starting with ``deferred:`` and ``updated_at`` before
         ``older_than`` (the materialised column, compared as text as every other
-        window here). The drain no longer reads every OPEN case each tick."""
+        window here). The drain no longer reads every OPEN case each tick.
+
+        Round 16 CDX1: the page is a :class:`DeferredCandidates` whose ``next_after``
+        is the last row's ``created_at`` and ``case_id`` (the ORDER BY, where the
+        primary key breaks ties), and ``after`` reads the rows after it: a keyset,
+        never ``OFFSET``. A full page has a marker; a short page is the end of the
+        queue. A marker that is not two strings reads from the head."""
         if limit <= 0:
-            return []
+            return DeferredCandidates()
         awaiting = _sql_json_text("awaiting_reason")
         decider = _sql_json_text("decision_by")
         stmt = (
@@ -352,15 +361,32 @@ class SqlCaseRepository(CaseRepository):
             .where(or_(decider.is_(None), decider != PERSON_DECIDER))
             .where(awaiting.like(f"{DEFERRED_REASON_PREFIX}%"))
             .where(CaseRow.updated_at < str(older_than or ""))
-            .order_by(*_case_order_by("created_at", "asc"))
-            .limit(int(limit))
         )
+        if (
+            isinstance(after, (list, tuple)) and len(after) == 2
+            and all(isinstance(part, str) for part in after)
+        ):
+            created, case_id = after
+            stmt = stmt.where(or_(
+                CaseRow.created_at > created,
+                and_(CaseRow.created_at == created, CaseRow.case_id > case_id),
+            ))
+        stmt = stmt.order_by(*_case_order_by("created_at", "asc")).limit(int(limit))
         async with self._sm() as session:
             rows = (await session.execute(stmt)).scalars().all()
         cases = [Case.model_validate(row.doc) for row in rows]
+        # The marker is the last ROW's key, not the last case kept below, so a row the
+        # shared rule drops is never read again.
+        next_after = (
+            [str(rows[-1].created_at or ""), str(rows[-1].case_id)]
+            if len(rows) >= int(limit) else None
+        )
         # The JSON predicates are exact on SQLite and PostgreSQL; the shared rule is
         # checked again so a store quirk can never hand the drain a decided case.
-        return [case for case in cases if is_deferred_candidate(case, older_than=older_than)]
+        return DeferredCandidates(
+            [case for case in cases if is_deferred_candidate(case, older_than=older_than)],
+            next_after=next_after,
+        )
 
     async def list_window(
         self,
