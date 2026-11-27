@@ -12,16 +12,15 @@ feature branches → Testing → main (Stable)
 ```
 
 `Testing` is the integration and acceptance branch. `main` is the supported Stable
-branch. The current source candidate is represented as `0.1.12` in packages/images
-and becomes Stable only if the immutable `v0.1.12` tag and its complete signed/public
+branch. The current source candidate is represented as `0.2.0` in packages/images
+and becomes Stable only if the immutable `v0.2.0` tag and its complete signed/public
 artifact set pass every publication and canonical runtime acceptance gate; its
-documentation line remains `0.1`.
+documentation line is `0.2`.
 
 !!! note "Canonical topology and administrative controls"
 
-    The remote now uses `Testing` for integration and default `main` for accepted
-    Stable source. Version 0.1.12 is Stable only when the exact verified `main`
-    commit has the immutable `v0.1.12` tag, matching signed/public artifacts, and
+    The remote uses `Testing` for integration and `main` for accepted Stable source. Version 0.2.0 is Stable only when the exact verified `main`
+    commit has the immutable `v0.2.0` tag, matching signed/public artifacts, and
     completed canonical runtime acceptance.
     Pull-request protections,
     required checks, and release-environment policy are repository settings rather
@@ -51,7 +50,7 @@ documentation line remains `0.1`.
     images, but constrained plan verification could not traverse the runner-owned
     verification directory. The workflow stopped before GitHub Release publication,
     so no installable signed plan exists for that tag. It is also historical,
-    bootstrap-blocked, and superseded by 0.1.12.
+    bootstrap-blocked, and superseded by 0.2.0.
 
     The immutable `v0.1.10` tag passed source and exact-tag CI, then its signed-release
     workflow timed out while the architecture-neutral Web Console builder ran under
@@ -64,6 +63,15 @@ documentation line remains `0.1`.
     cleanup then failed before attestations, GitHub Release, canonical asset,
     Stable-tag, or Stable-documentation publication. It too is non-installable,
     superseded, and immutable.
+
+    The immutable `v0.1.12` tag completed protected source and exact-tag CI and the
+    full signed/public release: all three dual-platform digest images, attestations,
+    canonical plan and bundle, GitHub Release, Stable aliases, Stable documentation,
+    anonymous reads, and keyless signatures verified. Canonical v0.1.1 bootstrap
+    then failed closed before application mutation because both legacy application
+    images omit the state-schema label and the updater compared one normalized
+    absence with one raw absence. It is cryptographically valid but
+    bootstrap-blocked, superseded, and not a supported installation source.
 
 ## Promotion gate
 
@@ -79,7 +87,7 @@ Before promoting `Testing` to `main`:
 - ensure every package, image, OpenAPI document, and documentation page uses the same
   release identity.
 
-Promote through a reviewed pull request. Tag the accepted `main` commit `v0.1.12` and
+Promote through a reviewed pull request. Tag the accepted `main` commit `v0.2.0` and
 publish artifacts identified by digest. Do not move a release tag.
 
 ### Version and promotion checklist
@@ -105,11 +113,11 @@ publish artifacts identified by digest. Do not move a release tag.
    publish by digest, and let the docs workflow move `stable`/`latest`.
 
 `TLSOC_VERSION` and `TLSOC_RELEASE_CHANNEL` answer different questions. Promoting
-`0.1.12` from Testing to Stable changes provenance, not its SemVer.
+`0.2.0` from Testing to Stable changes provenance, not its SemVer.
 
 ## Supported one-click upgrades
 
-Agentic SOC 0.1.12 includes the updater foundation for the reference deployment and
+Agentic SOC 0.2.0 includes the updater foundation for the reference deployment and
 becomes installable only after the candidate completes the immutable Stable
 publication and canonical runtime acceptance gates.
 After one explicit bootstrap, a built-in `super_admin` can authorize a compatible
@@ -117,7 +125,7 @@ Stable release from the Console and the updater performs the host-side work. The
 ordinary backend and browser never receive Docker access, registry credentials,
 arbitrary command execution, or a writable deployment file.
 
-The 0.1.12 updater bakes
+The 0.2.0 updater bakes
 `TUF_ROOT=/var/lib/agentic-soc-updater/sigstore-root`, so cosign's TUF trust state
 lives on the existing writable updater-state volume while the root filesystem stays
 read-only. Stable publication materializes the canonical plan and bundle as read-only
@@ -129,8 +137,8 @@ nginx runtime remains target-platform-specific. After the constrained verifier e
 release-fixture cleanup restores its runner-owned parent directory to private mode
 `0700`, then removes it; the plan and bundle remain mode `0444` beneath mode `0555`
 throughout verification. There is no state-schema,
-updater-protocol, publisher-identity, process-privilege, trust-policy, or frozen-base
-change.
+updater-protocol, process-privilege, or frozen-base change. The publisher identity
+does change, to the renamed repository; see "The repository was renamed" below.
 
 The first implementation is deliberately narrow:
 
@@ -158,14 +166,19 @@ that file is a manual upgrade even when every image and signature is otherwise v
 
 An installation made before the updater exists cannot grant itself host update
 authority. The supported transition from the final pre-supervisor Stable release,
-v0.1.1, to v0.1.12 therefore requires one host-authorized bootstrap. On the host:
+v0.1.1, to v0.2.0 therefore requires one host-authorized bootstrap. On the host:
 
 1. keep the existing reference PostgreSQL Compose deployment running;
 2. configure durable `.env` values for `TLSOC_PG_PASSWORD`,
    `TLSOC_AUTH_ENABLED=true`, a `TLSOC_AUTH_JWT_SECRET` of at least 32 characters,
-   and the trusted `AGENTIC_SOC_UPDATE_REPOSITORY`;
+   and the trusted repository, exactly
+   `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC`. A v0.1.1 `.env`
+   usually has no such line or names the repository's former name; add or change it
+   first. The bootstrap refuses a missing line, the former name in any letter case,
+   and the new name in the wrong letter case, prints the line to add, and never
+   edits `.env`;
 3. after the complete publication and acceptance evidence verifies, check out the
-   clean, exact annotated `v0.1.12` tag whose commit is contained in
+   clean, exact annotated `v0.2.0` tag whose commit is contained in
    `origin/main`; and
 4. run `./scripts/bootstrap-updater.sh` from that checkout.
 
@@ -187,7 +200,7 @@ it is deleted only after bootstrap observes that exact job terminal. An unreadab
 invalid supervisor or any active job fails closed for operator recovery; bootstrap
 never force-replaces work in progress.
 It builds only the initial supervisor transport from the verified checkout, then
-asks that supervisor to fetch, verify, preflight, and apply the signed v0.1.12 plan.
+asks that supervisor to fetch, verify, preflight, and apply the signed v0.2.0 plan.
 The full transition therefore uses the same digest-pinned pull, quiesce, verified
 backup, identity/health checks, durable receipt, and automatic rollback state machine
 as later Console-initiated updates. It is not an unverified local rebuild of the
@@ -200,13 +213,33 @@ application pair.
     through `v0.1.8` records and the failed-publication `v0.1.9` through `v0.1.11` records cannot be
     relabelled Stable. If an earlier attempt left
     an inspectable idle older supervisor while the application
-    remained on v0.1.1, the v0.1.12 bootstrap preserves durable state and replaces
+    remained on v0.1.1, the v0.2.0 bootstrap preserves durable state and replaces
     that version-mismatched supervisor before signed-plan verification. Reconcile
-    other states only through the documented 0.1.12 path appropriate to their actual
+    other states only through the documented 0.2.0 path appropriate to their actual
     installed release. Bootstrap also requires a strictly newer target, so an
-    already-running 0.1.12 deployment cannot bootstrap itself from the 0.1.12 plan.
+    already-running 0.2.0 deployment cannot bootstrap itself from the 0.2.0 plan.
 
-Once a supported 0.1.12 deployment has the supervisor, later compatible Stable
+### The repository was renamed
+
+The repository is now `ARYDESTROYER/Kavach-AgenticSOC`. From 0.2.0 on, that name is
+the update trust root: the signing identity of every release plan, the GHCR namespace
+`ghcr.io/arydestroyer/kavach-agenticsoc`, the OCI source label, the release discovery
+default and the public documentation address. The updater passes it verbatim to the
+signature check, which compares it exactly, letter case included.
+
+- The frozen base Compose file cannot change under updater protocol 1, so it still
+  defaults `AGENTIC_SOC_UPDATE_REPOSITORY` to the former name. That is why the
+  bootstrap requires the line in `.env` (step 2 above).
+- Artifacts of v0.1.12 and earlier stay valid under the former identity. They are
+  not re-signed.
+- GitHub does not redirect project Pages after a rename, so old
+  `arydestroyer.github.io/Agentic-Kibana/` links answer 404. The public Help Center is
+  now `https://arydestroyer.github.io/Kavach-AgenticSOC/`.
+- A saved **Updates & releases** preference that names the former repository, in any
+  letter case and with or without `.git`, reads as the new repository. Any other
+  repository, a fork included, is kept.
+
+Once a supported 0.2.0 deployment has the supervisor, later compatible Stable
 releases can be applied from the Console. A missing supervisor or a safely inspectable,
 idle older protocol or version is remediated by the host-authorized bootstrap; active, unreadable,
 or invalid supervisor state remains an explicit manual blocker. The product never
@@ -272,14 +305,14 @@ release is public, the workflow treats it as immutable. A missing, partial, dupl
 or unexpected published asset set is never repaired under that tag; publish a new patch
 release instead.
 
-Changing **Settings → Updates & releases** changes the public source observation;
+Changing **Settings → Organization → Updates & releases** changes the public source observation;
 it does not silently change the updater's trusted publisher. A fork must be
 explicitly bootstrapped with its own trusted repository and release-workflow
 identity on the host.
 
 The official supervisor deliberately has no container-registry credentials. Before
 publishing an installable release, the repository owner must make the three GHCR
-packages—`backend`, `webui`, and `updater`—public and prove each digest is anonymously
+packages (`backend`, `webui`, and `updater`) public and prove each digest is anonymously
 pullable. The release workflow checks that property before publication. The updater
 pulls and inspects all three images after a job starts but before it changes the
 running application; an unavailable or private package therefore fails the job
@@ -369,6 +402,23 @@ boundary. If a release changes persisted state incompatibly, one-click installat
 and image rollback are both the wrong procedure; ship a forward fix or follow a
 release-specific, operator-controlled restore plan.
 
+**Upgrade and rollback: case threads and chat history.** Builds with the rebuilt
+Workspace Chat keep that boundary on PostgreSQL: after an image-only rollback the older
+build still reads and writes case discussion threads and chat transcripts. It does not
+know the conversation-level fields those builds add, so its first chat write for a user
+drops that user's conversation pins, linked reports, time ranges, and usage totals; the
+transcripts and the reports themselves remain. It does not know the pin exemption
+either: those builds let up to 10 pinned conversations sit beyond the 50-conversation
+limit, so the older build's first saved answer for a user with more than 50
+conversations deletes that user's oldest conversations (by last activity, pinned ones
+included) until 50 remain. Before rolling back, ask users with more than 50
+conversations to export the extra conversations they want to keep (history row menu →
+**Export**) and delete them. On the Elasticsearch state backend, which has no
+supervised rollback, the new storage form is one-way: after a manual rollback, case
+threads and chat history appear empty and the older build's next write removes them.
+See
+[Known limitations](../releases/known-limitations.md#rollback-loses-chat-and-thread-data).
+
 No updater can make a host power loss, full disk failure, corrupt storage device, or
 external registry/network outage literally fail-proof. The supported contract is
 fail-closed and idempotent, with host-durable job state across browser/backend
@@ -386,7 +436,7 @@ updater does not claim zero downtime or immunity from loss of its trusted host.
 
 ### Updater retention and capacity
 
-Version 0.1.12 does **not** automatically prune updater jobs, preflights, cached signed
+Version 0.2.0 does **not** automatically prune updater jobs, preflights, cached signed
 plans and signature bundles, deployment snapshots/receipts, or PostgreSQL backups.
 The reference deployment keeps updater state in the persistent
 `agentic-soc-updater-state` volume and verified dumps in the separate
@@ -410,7 +460,7 @@ Never remove or rotate away:
 Archive or remove eligible history only after **all** of these are true: a later
 successfully installed release has superseded the record's rollback authority; the
 exact terminal outcome is present in application audit; and the operator's backup and
-retention policy permits disposal. Version 0.1.12 provides no supported online,
+retention policy permits disposal. Version 0.2.0 provides no supported online,
 per-record cleanup command, so do not delete individual live-volume files while the
 supervisor is running or infer eligibility from age alone.
 
@@ -439,6 +489,520 @@ that correctly reports **Manual upgrade required**:
    installed Help Center, and updater capability.
 10. Retain old artifacts and the verified backup until the observation window closes.
 
+## Changes that need attention when upgrading to this build
+
+This build (the `0.2.0` source candidate, which also carries every change of the
+never-tagged 0.1.13 candidate, described in the sections below) adds no new index or table
+and no migration step you run by hand. On PostgreSQL its first start widens one column in
+place (see [The audit id column](#the-audit-id-column)). It changes
+these behaviours, which operators should know about before upgrading.
+
+### Changes made for 0.2.0
+
+Version 0.2.0 adds no key-value namespace, index or table. Read these before upgrading:
+
+- **Set the repository first.** Add
+  `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to `.env`, in exactly
+  that letter case, before the bootstrap. It refuses to run without it and prints the
+  line to add (see [The repository was renamed](#the-repository-was-renamed)). A
+  deployment that is not on the reference PostgreSQL Compose stack shows **Updates
+  unavailable** in the top bar, and its update panel says "This deployment cannot update
+  itself"; upgrade it by hand.
+- **Reads need their grant.** With role-based access on, every read asks for the grant of
+  the data it returns. The built-in roles hold every such grant; a custom role without
+  one now gets `403` on that read (see
+  [Permissions](../reference/permissions.md#read-grants-on-every-read)). The Standup now
+  needs `metrics:view`, and the Models page `models:read`.
+- **Account rules the server enforces.** An account an administrator created or reset
+  must change its password before any other request (`403 password_change_required`). A
+  password reset signs the account out everywhere, and changing your own password signs
+  out your other sessions. Ten wrong second-factor codes lock second-factor checks for
+  the account for 5 minutes, doubling up to an hour. Only a stored Super admin with a
+  fresh sign-in can change single sign-on, and an SSO default role or group mapping must
+  be a built-in role.
+- **No refresh tokens.** `POST /api/auth/refresh` is deprecated and answers `401
+  session_invalid`. A client signs in again when its access token expires.
+- **Reinvestigation.** `POST /api/cases/{case_id}/reinvestigate` answers `409
+  investigation_running` while a run on the case is in progress and `409
+  open_case_exists` for a closed case whose events another open case holds; `wait:
+  false` answers `202` at once. A script that reinvestigated a case twice in a row must
+  wait for the first run.
+- **Recorded inputs.** Cases scored by 0.2.0 keep their risk inputs, each decision records
+  the thresholds it compared in its audit row, and each new usage-ledger row records its
+  rates. Older records are not backfilled and read "not recorded".
+- **Elasticsearch cases index.** At startup the backend adds two mappings to the cases
+  index template and to every live cases index that lacks them: `risk_breakdown.inputs`,
+  stored but never indexed, and `awaiting_reason`, text with a `keyword` subfield, the
+  same as the mapping Elasticsearch made for it before. There is no operator step. When
+  the mapping cannot be added (the client may not read or change templates, or the call
+  fails), the case store leaves the inputs out, logs it once, and such cases read "not
+  recorded".
+- **What's new.** After the update, each person sees a short What's new welcome once
+  after signing in. Accounts created after the update start with it marked as seen.
+- **Communication.** The **Notifications** navigation group is now **Communication**,
+  with **Inbox** and **What's new**. Its stored id is unchanged.
+- **Case Manager.** Cases have six tabs on Alt+1 to Alt+6: Alt+2 now opens Evidence,
+  Alt+4 Response and Alt+5 Activity, and Chat moved to Alt+6. Old `#/case_manager` links
+  with a `tab` keep working.
+
+### The audit id column
+
+In every published release up to v0.1.12, the PostgreSQL `audit.id` column is a 32-bit
+integer, while the strict
+audit path writes a larger key. On its first start on an existing PostgreSQL database,
+this build widens the column and its sequence to `bigint` in place. PostgreSQL rewrites
+the table to do it and holds an exclusive lock on it meanwhile, so the first start takes
+longer on a large audit table, and audit writes wait until it is done.
+
+Measured at release preparation with the backend's own migration code on PostgreSQL
+16.15 with its default settings, on a 4 vCPU virtual machine with 16 GB of memory, on an
+audit table built like v0.1.1's and filled with rows shaped like its poll row:
+
+| Audit rows | Table and indexes | Widening |
+| --- | --- | --- |
+| 1,000,000 | 0.61 GB | 4.9 s and 4.1 s (two runs) |
+| 5,000,000 | 3.06 GB | 25.0 s |
+| 10,000,000 | 6.12 GB | 44.3 s |
+
+The time follows the table's size on disk, 7 to 8 seconds per GB there; other disks and
+larger rows change it. Read the size of yours with
+`SELECT pg_size_pretty(pg_total_relation_size('audit'));`. The rewrite needs free disk
+about the size of the table. Ten million rows stay well inside the signed plan's
+300-second backend rollout timeout, so 0.2.0 keeps that timeout.
+
+On a very large audit table, stop the backend and run the widening yourself in a
+maintenance window before the upgrade, then start the backend again. A backend that
+stays up while the column changes fails each pooled connection's next query once.
+
+```sql
+ALTER TABLE audit ALTER COLUMN id TYPE bigint;
+ALTER SEQUENCE audit_id_seq AS bigint;
+```
+
+The backend then finds the column already widened and does nothing. If the widening
+fails at startup, the backend still starts, logs the error with these statements, and
+`GET /api/diagnostics/health` reports the schema migration as failed: strict audit
+writes, such as approving or rejecting a proposal, fail until you apply it. SQLite and a
+fresh PostgreSQL database need nothing.
+
+### Rolling back from 0.2.0
+
+Every field 0.2.0 stores is additive, and the earlier builds ignore fields they do not
+know. The rollback lane boots the previous release pinned in
+`scripts/rollback_previous_release.json` on data this build wrote, and checks what it
+keeps. After an image-only rollback and the return:
+
+- **Recorded risk inputs** are lost on every case the earlier build saves again. Back on
+  this build, such a case reads "not recorded" and its explanation uses today's weights.
+- **Second-factor lock counters** reset.
+- **Usage-ledger rows** are append-only and keep their rate fields.
+- **What's new markers** survive, because the earlier build keeps unknown personal
+  preference keys.
+- **The read grants and the server-side forced password change** revert while the
+  earlier build runs: a custom role without a read grant can read again, and an account
+  flagged to change its password is not held to it. The lane runs with sign-in off, so it
+  does not prove these two; they follow from the earlier build's code.
+- **The `audit.id` column** stays `bigint`. It is never narrowed again.
+- **The in-memory investigation list** is lost, as on any restart.
+
+The rollback to v0.1.1 was rehearsed at release preparation from source on PostgreSQL:
+v0.1.1 boots healthy on the data 0.2.0 wrote and reads and writes cases and audit rows,
+but its graceful stop, and any settings save it makes, reset every setting it does not
+model. Before rolling back to v0.1.1, note the settings you changed in 0.2.0 and set them
+again after the return. The full result is in
+[Known limitations](../releases/known-limitations.md#rolling-back-to-v011-resets-the-settings-it-does-not-model)
+and the [0.2.0 release record](../releases/0.2.0.md#rollback).
+
+### Round 15 changes
+
+Round 15 (built as the 0.1.13 candidate, now part of 0.2.0) adds no database migration,
+index or table. Case
+screenshots and the auto-close review ledger live in two new key-value namespaces,
+`case_files` and `auto_close_review`. Read these before upgrading:
+
+- **Role-based access has its own switch.** **Settings → Security & access → Roles &
+  permissions** turns it on or off, and so does `PUT /api/rbac` (stored role Super admin
+  and a recent sign-in). `PUT /api/settings` answers `409 rbac_switch_moved` when a body
+  would change `rbac.enabled`, and any other changed `rbac` field (`roles`, `resources`,
+  `custom_roles`, `denies`, `default_role`) now needs `roles:manage` and a fresh sign-in.
+  A script that sends the whole settings document with `rbac.enabled` unchanged keeps
+  working. See [Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access).
+- **New permission `team:view`.** SOC managers and Auditors get it by default (Super
+  admins hold every grant). A stored role override that names other resources keeps it.
+  While role-based access is off, Team activity is still limited to accounts whose
+  stored role is Super admin, SOC manager or Auditor. That limit covers the page only:
+  every account then still holds `audit:view` and `users:manage`, so it can read the same
+  rows in the Audit log or change its own role. Turn role-based access on to keep
+  per-person work private.
+- **Only a Super admin manages Super admin accounts.** Giving an account the Super admin
+  role, or changing, disabling or deleting an account that has it, now needs a caller
+  whose stored role is Super admin and a recent sign-in (`403 super_admin_only`
+  otherwise). A script that used a SOC manager's account for this needs a Super admin's.
+- **Two new settings, on by default.** `team_activity.enabled` (the Team activity page)
+  and `auto_close_review` (5% of automatic closes, at most 10 a day and 3 per rule,
+  expiring after 7 days). The review sample starts with the first automatic close after
+  the upgrade; earlier closes are never sampled. Neither changes a case decision.
+- **Front proxy body size.** A case screenshot is uploaded as one request of up to
+  3 MiB. The bundled Web UI allows it on that path; a TLS proxy in front of the Console
+  needs `client_max_body_size 3m` or more, or uploads fail with HTTP 413.
+- **Elasticsearch config index.** At startup the backend adds the `binary` mapping of the
+  new `case_file_data` field to the config index; there is no operator step. If it cannot,
+  it logs a warning and uploads still work, at the indexing cost described in
+  [Health, backup, and restore](health-backup.md#case-screenshots-in-the-backup).
+- **Audit rows for human case work.** New rows from case actions, assignments, tags,
+  comments and grades carry a structured `case.*` action, the case as target, the request
+  context and the changes; bulk actions add `run_id` `bulk-<id>`. Their `action_type`,
+  `surface` and `result_summary` are unchanged, so existing filters and parsers keep
+  working, and older rows are not rewritten.
+- **Attribution and re-investigation.** With sign-in on, the actor of a comment, tag
+  change or assignment, and the stored comment author, are the signed-in person. Rebuilding
+  a case after a new investigation keeps its owner, comments, grades, status history,
+  acknowledgement and an analyst's disposition.
+- **Feedback statistics.** `GET /api/feedback/stats` averages each sub-score over the
+  grades that rated it and adds three `*_rated` counts; grades recorded by an auto-close
+  review are left out of it.
+
+### Rolling back from Round 15
+
+The previous release pinned for the rollback lane (`45a4c31`, the Round 14 build) does
+not carry the preferences forward contract, and it rewrites the settings document without
+the keys it does not model. After an image-only rollback and the return:
+
+- `team_activity` and `auto_close_review` read as their defaults again (both on, with the
+  default sample rate and caps). Note any values you changed before the rollback and set
+  them again after the return.
+- `rbac.enabled` is kept, because the earlier build models it, and that build changes it
+  through `PUT /api/settings` again.
+- Screenshots and the review ledger stay in the store and are not shown while the earlier
+  build runs. Its own `cases` reset does not know them and leaves them; the next `cases`
+  reset on this release removes them.
+- A grade recorded by an auto-close review loses its `origin` and `review_id` fields the
+  first time the earlier build saves that case, but the case history keeps the review
+  event, so this build still recognises it as a review grade and keeps it out of the
+  agent statistics. While the earlier build runs, its own statistics count it.
+- The structured audit fields, `actions_taken` and `review_via` on history entries stay
+  stored; the earlier build ignores them.
+
+### Round 14 changes
+
+Round 14 (built as the same candidate) adds no database migration, index or table. Its
+new state lives in the existing key-value store. Read these before upgrading:
+
+- **Elasticsearch audit mapping.** New audit rows carry structured fields (outcome,
+  actor type, action, client, session, target, changes, request id, run id), and the
+  shipped audit template turns date detection off. On an Elasticsearch state backend
+  upgraded from an earlier build, bootstrap applies it itself at every start since 0.2.0,
+  with the management key's documented grants (`manage_index_templates` and `manage` on
+  `tlsoc-agent-*`). It adds the missing audit properties and `date_detection: false` to
+  the stored `tlsoc-agent-audit-template`, and keeps everything else that template holds,
+  the Storage & retention lifecycle settings included. It adds the same to every existing
+  audit index. It only adds: a property that is already mapped is left as it is, and
+  nothing is reindexed or rolled over. The manual step in
+  [Applying the Round 14 audit template](#applying-the-round-14-audit-template) below is a
+  fallback, needed only when the backend logs one of these warnings:
+  - "Audit template tlsoc-agent-audit-template could not be read" or "could not be
+    updated" (the management key may not read or write templates);
+  - "Audit index mappings could not be read" or "Audit index ... mapping could not be
+    extended";
+  - "Audit index ... already maps ... another way", where rolling the audit write index
+    over is enough.
+
+  Until the mapping is extended, a date-like value in a new audit row (a runbook review
+  date, a runbook id such as `2026-10-28`) can map a field as a date, and later
+  audit-first writes then answer `503 audit_unavailable`. A deployment whose audit index
+  was first created by Round 14 or later needs nothing; PostgreSQL and SQLite need
+  nothing.
+- **Settings and other changes are recorded first.** A settings save, a user or role
+  change, a source change, a runbook or dashboard change and every job file download now
+  write their audit row before the change takes effect. When the audit log cannot be
+  written, the change is not made and the request answers `503 audit_unavailable`
+  (before Round 14 a settings save went through and its audit row was best-effort).
+  Sign-ins, sign-outs and session events are never blocked. Settings saves that race
+  each other can answer `409 settings_conflict`. See the list in the
+  [API reference](../reference/api.md#writes-that-are-recorded-first).
+- **Client addresses in the audit log.** New rows record the client address, taken
+  from `X-Forwarded-For` only when the request came through a proxy named in the backend
+  setting `TRUSTED_PROXIES` (default `tlsoc-webui`, the bundled Web UI). A deployment
+  with another proxy or load balancer in front adds it there; see
+  [Configuration](../reference/configuration.md#trusted-proxies-for-the-audit-log).
+  The address and the user agent are personal data, kept as long as the audit log.
+- **Chat limits version 2.** The Chat assistant's "Timeouts and capacity" defaults are
+  tripled: 12 lookups at once, 45 seconds per lookup, 900 seconds before a silent model
+  call counts as stalled, 12 questions at once per user and 48 per backend. A stored
+  value that still equals the Round 12 default (4, 15, 300, 4, 16) moves once, in both
+  limits modes; a value an administrator chose stays. One limitation: a value an
+  administrator chose that happens to equal the old default cannot be told apart from it
+  and moves once. The report summary wait stays capped at 280 seconds. See
+  [Configuration](../reference/configuration.md#chat-assistant-bounds).
+- **One Runbooks feature.** The earlier response procedures and reference runbooks are
+  one feature, **Intelligence → Runbooks**. On the first start, every stored procedure
+  and reference runbook is converted once into a runbook, by the system actor
+  `runbook_migration`, before the library is used:
+  - a converted document that passes the checks is **Published**, marked Imported and
+    due for review at once; one that does not is a **Draft** with its problems listed;
+  - a document that was never used before the upgrade lands as a Draft and never
+    matches until someone publishes it: one whose id a bundled document of its own kind
+    owned (renamed `<id>-imported`), and, when a procedure folder was configured, every
+    procedure stored in the database (only the folder was read before);
+  - match conditions are carried over by meaning: beside a rule or another hard
+    condition, techniques become the runbook's coverage, and tags or keywords are left
+    out (they would otherwise stop it ever matching); a condition that cannot be kept
+    and whose loss would widen the match makes the runbook a Draft, so trusted guidance
+    never reaches more cases than before;
+  - nothing is dropped: every move is written in the runbook's import notes, and every
+    conversion is recorded in the audit log ("Runbook converted", "Runbook not
+    converted", "Runbook conversion finished");
+  - the knowledge index is then rebuilt from Published runbooks only. Until that
+    finishes, no text from before the upgrade is served to the investigator or chat as
+    trusted.
+  The library shows a one-time note with the counts and a **Show imported** filter.
+  Review each imported runbook: the investigator now reads each step's title and focus
+  line.
+- **Runbooks attach to cases.** By default, the matching Published runbook attaches to
+  every case that needs a person, and the built-in Generic incident runbook attaches
+  when nothing else matches (Settings → Integrations → Runbooks). A runbook never closes
+  a case. Closing a case by hand with required steps still open asks for a short reason,
+  which is recorded; it never blocks the close.
+- **Runbooks can shift the verdict mix.** By default the investigator is also given the
+  Published runbook that specifically matches a case (its rules, techniques or other
+  conditions) as trusted guidance, with the runbook's search phrases. That text can
+  change the verdict the agent returns, and so which cases close automatically; the
+  close and escalate decision itself is unchanged. The Generic incident fallback is
+  never given to the investigator as guidance (no runbook block and no extra searches):
+  it is a checklist for people. A Round 14 Testing build did give it to the
+  investigator, and on a staging copy that moved about half of the FALSE_POSITIVE
+  verdicts to NEEDS_HUMAN. A case whose rules no specific runbook covers gets no runbook
+  guidance. Like every Published runbook, its text stays in the knowledge search while
+  `runbooks.rag_corpus` is on, so a case's own search can still return a passage of it.
+  To give the agent no runbook guidance, set `runbooks.investigator_guidance: false`
+  (**Guide the agent with the matching runbook** in Settings); to keep runbook text out
+  of its knowledge search as well, also set `runbooks.rag_corpus: false` (**Use
+  Published runbooks in retrieval**). The built-in Generic incident runbook is now
+  version 2: two of its escalation lines name evidence of harm instead of conditions
+  most alerts meet.
+- **Settings keys from earlier versions.** `playbooks.enabled: false` becomes
+  `runbooks.investigator_guidance: false`; the earlier `runbooks.enabled: false` (stop
+  reference runbook retrieval) and `rag.use_runbooks: false` become
+  `runbooks.rag_corpus: false`. The new `runbooks.enabled` is always on after the
+  upgrade. See [Configuration](../reference/configuration.md#runbooks).
+- **Permissions.** Stored grants and denies that name `playbooks` keep working in every
+  layer (role overrides, the resource layer, denies and custom roles) and are read as
+  `runbooks`: `playbooks:manage` also gives the new `runbooks:publish`, and a stored
+  `runbooks:manage` grant gains `runbooks:publish` once (a stored deny of manage denies
+  publish too), so no role loses or gains the ability to make runbook text trusted.
+  After the first load, a `runbooks` entry wins over a `playbooks` key kept beside it.
+  `runbooks:run` is new and granted to every built-in role except auditor, and
+  `audit:export` is new for super admin, SOC manager and auditor. See
+  [Permissions](../reference/permissions.md#grants-stored-before-round-14).
+- **Discounted inference moved.** The Flex and Batch policy is now in **Settings →
+  General → Discounted inference** and saves with Settings, so it needs
+  `settings:manage` (on the Jobs page it needed `models:manage`). Every built-in role
+  holds both grants or neither.
+- **HTTP changes.** `GET /api/playbooks`, `GET /api/playbooks/{id}`,
+  `/api/playbooks/coverage` and `/api/playbooks/selection/{case_id}`, and `?shape=v1` on
+  `GET /api/runbooks` and `GET /api/runbooks/{id}`, answer from the runbook library in
+  the earlier shape for one release, with `Deprecation` headers. Every write of the
+  earlier shapes, including `POST /api/cases/{case_id}/run-playbook`, answers `410
+  runbooks_moved`: an old-shape write cannot be honoured without making unreviewed text
+  trusted. Update scripts to the `/api/runbooks` routes. See
+  [Retired procedure routes](../reference/api.md#retired-procedure-routes).
+- **Automation rules that ran a procedure now attach a runbook.** A case-automation rule
+  with the action stored as `run_playbook` keeps its stored form, but it now attaches
+  the runbook its target became (at no model cost) instead of starting a new
+  investigation. A target that is unknown, a Draft or retired is skipped and recorded as
+  "Runbook not attached" (`run.attach_skipped`), and the rule list shows "Needs a
+  runbook" beside it.
+- **Audit log page.** The audit log is server-paged with three scopes; `GET /api/audit`
+  keeps every earlier parameter's meaning, but a call without `scope` now returns 100
+  rows by default and at most 200 per call (a larger `limit` is clamped, never refused),
+  with a `next_cursor`, instead of up to 500 at once. Audit exports are a new job kind
+  that needs `audit:export` and a fresh sign-in.
+- **Dashboards and navigation.** The landing page is unchanged. The navigation's
+  Overview entry now opens the Dashboards library, and the Automated scans page is gone
+  (`#/scans` opens Case Manager filtered to cases the agent closed).
+- **Sign-in notice.** The automatic sign-out notice no longer states how long the
+  session lasted; `/api/auth/me` still sends `lifetime_seconds` for API clients.
+
+#### Applying the Round 14 audit template
+
+Run these only when the backend logged one of the warnings above, with the management
+API key (its `manage_index_templates` cluster grant and `manage` on `tlsoc-agent-*` cover
+both calls). A build before 0.2.0 could not apply the upgrade itself; on such a build,
+run them before the backend starts. `ES_URL`, `ES_CA_CERT`
+and `TLSOC_ES_MGMT_API_KEY` stand for your cluster's URL, its CA file and the encoded
+management key:
+
+```bash
+curl --cacert "$ES_CA_CERT" -H "Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY" \
+  -X PUT "$ES_URL/_index_template/tlsoc-agent-audit-template" \
+  -H 'Content-Type: application/json' \
+  --data-binary @deploy/mappings/tlsoc-agent-audit.template.json
+curl --cacert "$ES_CA_CERT" -H "Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY" \
+  -X POST "$ES_URL/tlsoc-agent-audit/_rollover"
+```
+
+The first call replaces the stored audit template with the shipped one; the second makes
+a new audit write index from it, so every row from then on is mapped with date detection
+off. Earlier indices keep their mapping.
+
+**If Storage & retention is active.** Applying Storage & retention on Elasticsearch adds
+its lifecycle policy to this same template (the `index.lifecycle.name` and
+`index.lifecycle.rollover_alias` settings). The shipped file has no lifecycle settings,
+so the first call above drops them, and the index the rollover creates is not managed by
+the policy. Look at the stored template before the first call:
+
+```bash
+curl --cacert "$ES_CA_CERT" -H "Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY" \
+  "$ES_URL/_index_template/tlsoc-agent-audit-template"
+```
+
+If its `template.settings` show a `lifecycle` entry, do one of these:
+
+- Keep the policy through the step: in a copy of the shipped file, add the two lifecycle
+  settings the stored template shows to `template.settings`, and send that copy in the
+  first call instead. With the policy Agentic SOC applies, the settings read:
+
+  ```json
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "index.lifecycle.name": "tlsoc-agent-ledgers-hot-warm",
+    "index.lifecycle.rollover_alias": "tlsoc-agent-audit"
+  }
+  ```
+
+- Or put the policy back afterwards: once the backend has started, open
+  **Settings → Organization → Storage & retention** and use **Apply supported
+  lifecycle** again. That puts the policy back on the audit template and on every audit
+  index, including the one the rollover created. Until then, Storage & retention shows
+  the lifecycle as drifted rather than active.
+
+**Confirming the upgrade.** Check that `GET _index_template/tlsoc-agent-audit-template`
+shows `"date_detection": false` under `template.mappings`, and that the audit write index
+shows it too: `GET _alias/tlsoc-agent-audit` names the index with
+`"is_write_index": true`, and `GET <that index>/_mapping` shows
+`"date_detection": false`. When both do, nothing more is needed, whether bootstrap or the
+manual fallback made the change.
+
+### Rolling back from Round 14
+
+A build before Round 14 predates the rollback forward-compatibility contract (see
+[Rollback](#rollback)), so three things it finds in Round 14 data break it. Check for
+them on a copy of the data before an image-only rollback to such a build:
+
+- **An audit export job puts it in safe-stop.** The earlier build cannot read a job
+  record of the `audit_export` kind, treats the whole job registry as corrupt and starts
+  in factory-reset safe-stop: every route, `/api/health/ready` included, answers
+  `503 factory_reset_in_progress`, and the container reports unhealthy. Read-only check
+  on PostgreSQL:
+  `SELECT j.value->>'kind', count(*) FROM kv, json_each(kv.value->'jobs') j WHERE kv.namespace='jobs' AND kv.key='jobs' GROUP BY 1;`.
+  There is no product way to remove such a record from the earlier build; removing it
+  by hand edits durable state and needs explicit approval.
+- **Its knowledge projection is refused.** The earlier build rebuilds 9 legacy runbook
+  chunks against the 51 `runbook-library:` chunks Round 14 wrote, refuses the projection
+  at the retention floor (`RAG projection REFUSED (retention_floor)`), serves no runbook
+  passage and re-embeds the corpus on every investigation. Lowering
+  `rag.min_projection_retention` to `0` on that build lets its projection through.
+  This needs a working settings API, so resolve the audit export safe-stop first. Set it
+  back to `0.5` (or the value it had) as soon as you return to Round 14 or later: the
+  value is kept in the shared preferences, and `0` leaves every knowledge source without
+  its retention floor.
+- **Its graceful stop drops runbook settings.** It rewrites the preferences document
+  from its own schema: every `runbooks.*` setting is removed, so after returning to
+  Round 14 they read as their defaults again. Note the values first (**Settings →
+  Integrations → Runbooks**) and set them again after the return.
+
+Apart from those, an image-only rollback to a build before Round 14 keeps working,
+with these effects:
+
+- The stored procedure and reference runbook documents were never changed, so the
+  earlier build finds them as they were. Runbooks written or published in Round 14, and
+  runs on cases, stay in the store unused.
+- Stored `playbooks` grants and the `run_playbook` automation rules are read as before.
+  A `runbooks:publish` or `runbooks:run` grant means nothing to the earlier build.
+- New audit rows keep their extra fields; the earlier build ignores them.
+- Chat limits that Round 14 saved keep the lookup timeout (45 s), the stall timeout
+  (900 s) and the backend-wide limit (48 questions). Lookups at once and questions per
+  user read as 8 and 10, the earlier build's maximums, instead of 12. Set them by hand if
+  other values are wanted.
+
+### Round 12 and Round 13 changes
+
+These earlier changes in the same candidate still apply:
+
+- **Chat limits migrate once.** The stored chat configuration moves to **Unlimited**
+  per-question limits on first read unless an administrator had changed a per-question
+  limit; then it stays **Bounded** with those values. The old defaults for the model
+  call timeout (30 → 300 seconds, Unlimited only) and the questions-at-once bounds
+  (2 → 4 per user, 8 → 16 per backend) move to the new ones. Review **Settings →
+  General → Chat assistant** after the upgrade. See
+  [Configuration](../reference/configuration.md#chat-assistant-bounds).
+- **Chat is outside the AI budget, daily and monthly.** Chat calls are never blocked by
+  the daily or the monthly AI budget (`budget.daily_usd`, `budget.monthly_usd`), and
+  their spend no longer counts toward either. Chat is still metered and shown on the
+  Cost page. Its only spending bound is the optional daily chat spending limit
+  (`chat_agent.chat_daily_cap_usd`, off by default) in the same settings section; there
+  is no monthly chat limit. If you relied on the monthly budget as a hard ceiling for
+  all AI spend, set the daily chat limit or a provider-side budget.
+- **Sign-in cookies.** A sign-in without **Remember me** now uses a browser-session
+  cookie instead of a persistent 12-hour cookie, and `AUTH_TOKEN_HOURS` now sets the
+  token lifetime of those sign-ins only; a remembered sign-in lasts the policy's
+  remembered duration (24 hours by default, at most 24). Users who relied on staying
+  signed in across browser restarts should use **Remember me**. Bearer-token API clients
+  are unaffected by the cookie change; their token lifetime is `AUTH_TOKEN_HOURS`, now
+  at most 144 hours.
+- **`AUTH_TOKEN_HOURS` is capped at 144 hours.** A value above 144 is reduced to 144,
+  with a warning at startup, so a revoked token can never outlive its session-registry
+  record. This applies to every token, including the bearer tokens of API clients and
+  automation: a deployment that set, for example, `TLSOC_AUTH_TOKEN_HOURS=720` now
+  issues tokens that expire after 6 days, so schedule re-authentication accordingly.
+- **Remember me needs HTTPS.** It is offered only when the server marks cookies as
+  secure (`AUTH_COOKIE_SECURE=true` behind TLS), or on a direct request from the server
+  itself, unless an administrator allowed it on plain HTTP
+  (`session_policy.remember_me.allow_insecure_http`, not recommended). A reverse proxy
+  on the backend's own host must send `X-Forwarded-For` (or another forwarding header),
+  or it looks like a local browser; the bundled Web container already does. See
+  [Security hardening](security.md#session-lifetimes).
+- **Dashboard counts.** The Open cases stock and the case totals on **Analytics →
+  Metrics** are exact store-wide counts at any size. Every Overview figure for the
+  selected window and the heavier rollups analyse up to 20,000 cases per window instead
+  of a fixed newest page; a larger window shows lower bounds (`≥`) and withholds rates.
+  Some figures on large stores therefore change on upgrade. The Overview tile **False
+  Positive Rate** is now labelled **AI-verdict FP rate**, and the Metrics tile **Total
+  cases (7d)** is now **Total cases (all time)**, which is what it always counted.
+- **Chat storage.** Every new Workspace answer is also stored in full in its own
+  document in the existing chat namespace (an exchange document, a running
+  conversation summary, step results, and a small live-state document per user), and
+  answer ratings in a new `chat_feedback` namespace. Nothing is removed from existing
+  conversations. These use the existing KV store and never add Elasticsearch mapping
+  fields.
+
+### Rolling back past Round 12
+
+An image-only rollback to an earlier build keeps working, with these losses:
+
+- **Long answers and long conversations.** The earlier build reads only the compact
+  copy kept in the conversation row. Answers longer than 24,000 characters end at that
+  length with a "truncated" marker, the oldest messages of a long conversation appear
+  as short previews, and in a conversation that grew past 140 messages the oldest
+  messages, which this build moved to archive pages, are not shown.
+  Rolling forward again restores the full text, except for conversations the earlier
+  build answered in after it trimmed them to its own 100-message window.
+- **New fields.** The earlier build drops the conversation summary marker on its next
+  write for a user and ignores the running and unread state; the stored summaries,
+  ratings, and step results stay in the store, unused, until a later build reads them
+  again.
+- **Chat limits.** The earlier build ignores `limits_mode` and the daily chat spending
+  limit, applies its own per-question limits again, and counts chat against the daily
+  AI budget.
+- **Sign-in.** Remembered sessions keep working until their token expires (at most
+  24 hours), under the earlier build's idle limit; new sign-ins get the earlier build's
+  persistent cookie.
+
+The Elasticsearch storage-form notes for case threads and chat history from the
+earlier chat rebuild still apply; see
+[Known limitations](../releases/known-limitations.md#rollback-loses-chat-and-thread-data).
+
 ## Observe upstream source revisions
 
 Open **Settings → Organization → Updates & releases** to configure the public
@@ -446,7 +1010,7 @@ GitHub repository and the branch used for each release channel. Fresh installati
 observe:
 
 ```text
-Repository: https://github.com/ARYDESTROYER/Agentic-Kibana
+Repository: https://github.com/ARYDESTROYER/Kavach-AgenticSOC
 Stable branch: main
 Testing branch: Testing
 Check interval: 360 minutes
@@ -491,14 +1055,14 @@ mutation.
     operator-owned external deployment with retained artifacts or blue-green serving;
     that topology is outside the supported one-click profile.
 
-Release observation and supervised installation remain independent of the strict plain-text
-authoring contract for Intelligence → Reference runbooks; see
-[Runbooks](../intelligence/runbooks.md).
+Release observation and supervised installation are independent of the runbook library
+under **Intelligence → Runbooks**: an update never edits, publishes or retires a runbook;
+see [Runbooks](../intelligence/runbooks.md).
 
 ## Rollback
 
 Rollback is not merely starting an older image. A newer version may have written state
-that older code does not understand. Version 0.1 does not provide a general schema
+that older code does not understand. Version 0.2 does not provide a general schema
 migration framework. The v1 supervisor therefore accepts only signed plans whose
 migration strategy is `none`, verifies a PostgreSQL custom-format backup before
 switching, and retains it only for explicit break-glass recovery. Automatic in-flight,
@@ -507,11 +1071,49 @@ images without rewriting PostgreSQL or discarding post-snapshot writes. Any rele
 that needs a schema migration is blocked from one-click installation and must follow
 a release-specific manual procedure.
 
+### Rollback forward compatibility
+
+From this build on, the running build tolerates and keeps what a newer build wrote, so
+the release after it can be rolled back to it with an image-only rollback:
+
+- **Jobs of an unknown kind.** A well-formed job record of a kind this build does not
+  know is kept exactly as stored through every registry write. It is never run, listed
+  or cancelled here, it counts toward the 1,000-job capacity, and it is pruned like any
+  other record once its status is terminal. It never puts startup into safe-stop; only a
+  corrupt record (not an object, or missing what makes it a job) still does.
+- **Preference keys it does not model.** A settings save keeps every stored key this
+  build does not model, at the top level and inside each settings section, and keeps a
+  stored value it only clamped for its own use (a chat limit above its ceiling) unless an
+  administrator changed that value. A migration stamp keeps only a newer build's valid
+  stamp; a malformed one is saved as the stamp this build set, so a once-only migration
+  does not run again on every load. A save whose read of the stored document fails
+  writes nothing rather than erase what it would have kept. Keys this build retired
+  on purpose (`playbooks.llm_select`) are not brought back. Items of a list (sources,
+  rules) are saved as this build models them.
+- **Intentional knowledge corpus migrations.** A release that replaces a knowledge
+  source's documents with a new document-id scheme records a marker (the KV namespace
+  `rag_corpus_migration`, one document per source naming its scheme and the schemes it
+  replaced). The projection guard reads it on either side of the migration: another
+  build's marked documents are replaced rather than counted as a shrink, so no
+  retention-floor refusal and no re-embedding on every investigation. A projection
+  reaching zero is still refused, and an unmarked shrink still trips the floor.
+
+The CI rollback lane (`scripts/rollback_lane.py`) boots this release on PostgreSQL,
+writes the data it introduces (an audit export job, the migrated runbook corpus, changed
+`runbooks.*` settings), then boots the previous release pinned in
+`scripts/rollback_previous_release.json` on that data and checks health, the corpus and
+the settings, and finally boots this release again. A second scenario repeats the steps
+with this release as the previous one and plants synthetic future data (an unknown job
+kind, unknown preference keys, a marker-identified corpus) that it must keep, so the lane
+gates this release's own forward contract whatever the pin is. When a release is cut, pin
+it as the previous release for the next one, and set `forward_contract` to `true` once
+the pinned release carries this contract, so the pinned scenario plants that data too.
+
 Stable fixes start on a focused branch from the affected source, merge into
 `Testing`, pass the same acceptance gate, and promote forward to `main` as a patch
 release. Emergency timing may shorten review, but it must not reverse the permanent
 Testing-to-Stable direction or patch only `main`.
 
-See [Version 0.1](../releases/0.1.md),
+See [Version 0.2](../releases/0.2.md),
 [Documentation versions](../releases/documentation-versions.md), and
 [Health, backup, and restore](health-backup.md).

@@ -1,13 +1,13 @@
 ---
 title: API reference
-description: Curated Agentic SOC API endpoint groups, authentication, pagination, realtime events, and OpenAPI discovery for version 0.1.
+description: Curated Agentic SOC API endpoint groups, authentication, pagination, realtime events, and OpenAPI discovery for version 0.2.
 ---
 
 # API reference
 
 The **Agentic SOC API** is the FastAPI service behind the Agentic SOC Console. This page covers
-the public HTTP surface in application version **0.1.12** and documentation line
-**0.1**. The API is mounted at `/api`; the service root is `/`.
+the public HTTP surface in application version **0.2.0** and documentation line
+**0.2**. The API is mounted at `/api`; the service root is `/`.
 
 ## Interactive and machine-readable specifications
 
@@ -19,14 +19,22 @@ Each running API publishes:
 
 Build information reports the application version, independent release channel,
 commit SHA, build time, state backend, and OCSF version. A Testing candidate and its
-Stable promotion both remain `0.1.12`; `TLSOC_RELEASE_CHANNEL` distinguishes
+Stable promotion both remain `0.2.0`; `TLSOC_RELEASE_CHANNEL` distinguishes
 `testing` from the accepted `stable` build.
 
-The committed 0.1 OpenAPI snapshot contains 217 paths and 258 operations. It is the
+The same identity is persisted on newly produced operational records. A Case's
+nullable `app_version` and `build_sha` identify the build that created the case and
+remain unchanged across later updates or re-investigation. Each newly appended AuditDoc
+and UsageDoc records the build that first appended it, with idempotent retries preserving
+that first-writer stamp. Legacy records are not backfilled and therefore return `null`;
+an unset current build SHA is the explicit string `unknown`, not `null`. This is additive:
+it arrived with the 0.1.13 candidate, ships in `0.2.0` and requires no SQL migration.
+
+The committed 0.2 OpenAPI snapshot contains 307 paths. It is the
 best source for current request-body models, enums, parameters, and operation IDs.
 Some handlers return plain dictionaries without a FastAPI `response_model`, so their
 generated response schema is intentionally less specific than the runtime payload.
-The specification also does not declare tags or an OpenAPI security scheme in 0.1.
+The specification also does not declare tags or an OpenAPI security scheme in 0.2.
 Runtime authentication and authorization still apply as described below.
 
 Because `/docs` and `/openapi.json` sit outside the protected `/api` router, restrict
@@ -68,8 +76,47 @@ curl --fail-with-body \
 ```
 
 An MFA-enabled account receives a short-lived `pending_token` after password
-verification and completes sign-in through `/api/auth/mfa/verify`. Session refresh,
-revocation, and step-up reauthentication have dedicated endpoints in the auth group.
+verification and completes sign-in through `/api/auth/mfa/verify`. Session revocation
+and step-up reauthentication have dedicated endpoints in the auth group. No sign-in
+issues a refresh token: `POST /api/auth/refresh` is deprecated and every call answers
+`401` with code `session_invalid`, so a client signs in again when its access token
+expires.
+
+Since 0.2, an account an administrator created or reset answers `403` with code
+`password_change_required` to every request but the password change until it sets a new
+password. Ten wrong second-factor codes in a row answer `429` with code `mfa_locked`, a
+`retry_after_seconds` value and a `Retry-After` header.
+
+**Remember me.** `POST /api/auth/login` accepts an optional `remember: true`
+(`GET /api/auth/sso/authorize` takes `remember=true` as a query parameter). The server
+decides: the response carries `remembered` and, when the request was refused,
+`remember_reason` (`role_excluded`, `insecure_transport`, or `disabled`). A remembered
+sign-in gets a persistent cookie for the policy's remembered duration; any other sign-in
+gets a browser-session cookie (no `Max-Age`) whose token lasts `AUTH_TOKEN_HOURS`. The
+MFA pending token carries the remember choice as a signed claim, so it survives the
+second step but can never be added there. `GET /api/setup/status` reports
+`remember_me {enabled, duration_seconds, idle_seconds, insecure_blocked, secure_cookies,
+secure_cookies_configured, standard_session_seconds}` for the sign-in page and the Session
+policy editor: on/off flags and durations only, never a secret. `secure_cookies_configured`
+says whether `AUTH_COOKIE_SECURE` was set explicitly or left at its `false` default.
+`GET /api/auth/me` checks the session registry on every call: when the session has
+ended it clears the cookie and answers `authenticated: false` with a `reason` of
+`revoked`, `idle_expired`, `absolute_expired`, or `tv_mismatch` (and, for a time limit,
+`lifetime_seconds`), so the sign-in page can say why. The Console says why the session
+ended without stating how long it lasted, so it does not show `lifetime_seconds`; the
+field stays for API clients. A signed-in answer also carries `object_scoped` (Round 14):
+true when row-level data scope applies to the caller's case reads, and the Console then
+hides case-derived dashboard panels instead of showing totals the caller could not read
+row by row. With sign-in off it is absent, which reads as false. Bearer-token API clients
+are unaffected by the cookie change; their token lifetime is `AUTH_TOKEN_HOURS`, now at
+most 144 hours (a larger value is reduced to 144 with a startup warning).
+
+Session listings (`GET /api/sessions`, `GET /api/admin/sessions`) add, per session,
+`remember` and `remember_seconds` (true only while the session is live and the policy
+still remembers it), `active` and `ended_reason` (`revoked`, `idle_expired`, or
+`absolute_expired`), `expires_at` (the earlier of the inactivity and hard limits),
+`effective_idle_expires_at`, and `effective_absolute_expires_at` (which activity never
+extends). Revoking your own current session records the reason `self_signout`.
 
 Authentication is applied centrally to the `/api` routers. A small bootstrap and
 health allowlist remains public; `POST /api/ingest/{source_id}` performs receiver-level
@@ -85,34 +132,45 @@ the exact request model and every operation under a prefix.
 | Area | Principal operations | Purpose |
 |---|---|---|
 | Service and health | `GET /`, `GET /api/health`, `/live`, `/ready`, `/build-info` | Service discovery, probes, dependency readiness, and release identity |
-| First-run setup | `GET /api/setup/status`; `POST /api/setup/account`, `/secrets`, `/complete` | Bootstrap the first account, submit runtime secrets, and complete setup |
-| Authentication | `/api/auth/login`, `/logout`, `/refresh`, `/reauth`, `/change-password`; `/api/auth/mfa/*`; `/api/auth/sso/*` | Password sessions, MFA, refresh rotation, step-up authentication, and OIDC |
+| First-run setup | `GET /api/setup/status`; `POST /api/setup/account`, `/secrets`, `/complete` | Bootstrap the first account, submit runtime secrets, report whether the AI runtime can be called, and complete setup; see [First-run setup readiness](#first-run-setup-readiness) |
+| Authentication | `/api/auth/login`, `/logout`, `/reauth`, `/change-password`; `/api/auth/mfa/*`; `/api/auth/sso/*`; the deprecated `/refresh` | Password sessions, MFA, step-up authentication, and OIDC; `/refresh` answers `401 session_invalid` |
 | Account and sessions | `/api/account/*`, `/api/me/avatar`, `/api/sessions*`, `/api/admin/sessions*` | Profile, effective permissions, activity, and session revocation |
 | Users and roles | `/api/users*`, `/api/roles*` | User lifecycle, built-in/custom roles, permission preview, and simulation |
+| Role-based access | `GET /api/rbac`, `PUT /api/rbac` | Read whether role-based access is on and turn it on or off; see [Role-based access switch](#role-based-access-switch) |
+| Team activity | `GET /api/team/activity`, `GET /api/team/people`, `GET /api/team/people/{username}/events` | Per-person work counts from the audit log; see [Team activity](#team-activity) |
 | Connector catalog | `GET /api/connectors`, `GET /api/connectors/{source_type}`, `POST /api/connectors/test` | Discover connector manifests and test source access |
-| Sources and ingest | `/api/sources*`, `POST /api/ingest/{source_id}`, `POST /api/poll`, `GET /api/logs` | Configure feeds, accept pushed records, poll pull sources, inspect health, and browse logs |
-| Cases | `GET /api/cases`, `GET /api/cases/{case_id}`, `POST /api/cases/bulk` | List, filter, retrieve, export, and act on cases |
-| Case investigation | `/api/cases/{case_id}/triage`, `/timeline`, `/trace`, `/stages`, `/rationale`, `/threat-context`, `/forwarding`; `POST /investigate`, `/reinvestigate`, `/feedback` | Explain evidence, agent work, deterministic routing, and analyst feedback |
+| Sources and ingest | `/api/sources*`, `POST /api/ingest/{source_id}`, `POST /api/poll`, `GET /api/logs` | Configure feeds, accept pushed records, poll pull sources, inspect health, and browse logs (with exact `rule`, `severity` and `severity_gte` filters) |
+| Cases | `GET /api/cases`, `GET /api/cases/{case_id}`, `POST /api/cases/{case_id}/action`, `POST /api/cases/bulk` | List, filter (including `q`, `assignee`, `severity`, `status_group`, an exact AI `verdict`, an exact `rule`, `closed_by`, and the auto-close `review` state), retrieve, export, and act on cases |
+| Case investigation | `/api/cases/{case_id}/triage`, `/timeline`, `/trace`, `/stages`, `/rationale`, `/threat-context`, `/forwarding`, `/events`, `/usage`; `POST /investigate`, `/reinvestigate`, `/feedback` | Explain evidence, agent work, deterministic routing, raw events, AI usage, and analyst feedback; see [Case records](#case-records) and [Explained numbers](#explained-numbers) |
+| AI investigation runs | `GET /api/investigations/active` | The AI investigations queued or running now and those that just finished; see [AI investigation runs](#ai-investigation-runs) |
 | Case collaboration | `/api/cases/{case_id}/thread*`, `/tasks*`, `/activity`, `/comment`, `/assign`, `/tags`, `/notify` | Discussion, reactions, tasks, ownership, activity, and manual notification |
-| Workspace | `POST /api/chat`, `/api/chat/conversations*`, `POST /api/investigate`, `POST /api/overview`, `GET /api/search`, `/scans`, `/personas` | Console chat with per-user history, entity investigation, cross-surface search, scan queues, and personas |
-| Detection and automation | `/api/rules*`, `/api/tuning*`, `/api/baseline*`, `/api/campaigns*`, `/api/batch*`, `/api/proposals*` | Rule lifecycle, safe preview/version rollback, analyst-grounded recommendations, baselines, reconciled campaigns, batch jobs, and approvals |
-| Playbooks | `GET/POST /api/playbooks`, `GET/PUT /api/playbooks/{playbook_id}`, `POST /api/playbooks/reload`, `/dry-run`, `GET /coverage`, `/selection/{case_id}`, `POST /api/cases/{case_id}/run-playbook` | Durable catalog/open/edit, deterministic diagnostics and coverage, selection provenance, and case execution |
-| Knowledge and memory | `/api/rag/*`, `/api/memory*`, `/api/runbooks*`, `POST /api/threat-context/import` | Import/search/delete knowledge, manage operator memory, and manage protected/owned runbooks |
+| Case screenshots | `GET` and `POST /api/cases/{case_id}/files`, `DELETE /api/cases/{case_id}/files/{file_id}`, `GET /api/cases/{case_id}/files/{file_id}/content` | List, add, delete and serve screenshots on a case; see [Case screenshots](#case-screenshots) |
+| Auto-close review | `POST /api/cases/{case_id}/review`, `GET /api/cases/{case_id}/review`, `GET /api/auto-close-review/summary`, `GET /api/metrics/auto-close-review` | Record a person's review of an automatic close, one case's review state, the Review scope badge, and the Agent effectiveness module; see [Auto-close review](#auto-close-review) |
+| Workspace | `POST /api/chat`, `POST /api/chat/stream`, `GET /api/chat/context`, `POST /api/chat/turns/{turn_id}/cancel`, `GET /api/chat/turns/active`, `GET /api/chat/turns/{turn_id}/events`, `POST /api/chat/turns/{turn_id}/seen`, `GET /api/chat/topics/{topic_id}`, `POST /api/chat/entity-question`, `GET /api/chat/starters`, `POST /api/chat/starters/events`, `/api/chat/conversations*`, `/api/chat/feedback*`, `POST /api/investigate`, `POST /api/overview`, `GET /api/search`, `/scans`, `/personas` | Console chat (blocking and streamed) with per-user history, rejoining running answers, suggested questions, the step inspector, answer ratings, entity investigation, cross-surface search, scan queues, and personas |
+| Chat reports | `GET/POST /api/reports`, `GET/PATCH/DELETE /api/reports/{report_id}`, `POST /api/reports/add`, `POST /api/reports/from-answer`, `POST /api/reports/from-conversation`, `POST /api/reports/{report_id}/summary` | Owner-scoped reports built from saved chat answers, with an optional AI summary |
+| Detection and automation | `/api/rules*` (including `GET /api/rules/summary` and `/api/rules/analyst-policies*`), `/api/tuning*`, `/api/baseline*`, `/api/campaigns*`, `/api/batch*`, `/api/proposals*` | Rule lifecycle, safe preview/version rollback, analyst-grounded recommendations, baselines, reconciled campaigns, batch jobs, and approvals |
+| Runbook library | `/api/runbooks*` (list, metrics, validate, match preview, import, drafts, versions, governance, export, reindex) | Write, review, publish, retire and export runbooks; see [Runbooks](#runbooks) |
+| Runbooks on cases | `/api/cases/{case_id}/runbooks*`, `POST /api/runbooks/progress`, `POST /api/runbooks/lookup-test` | Start, work and finish a runbook on a case; queue progress; test a lookup |
+| Retired procedure routes | `GET /api/playbooks*` (read aliases), writes and `POST /api/cases/{case_id}/run-playbook` (`410 runbooks_moved`) | Kept for one release; see [Retired procedure routes](#retired-procedure-routes) |
+| Knowledge and memory | `/api/rag/*` (including `/api/rag/precedent/composition` and `/api/rag/precedent/exclusions*`), `/api/memory*`, `POST /api/threat-context/import` | Import/search/delete knowledge, inspect precedent composition, evict individual precedent records durably, and manage operator memory |
 | Enrichment and MITRE | `/api/enrichment/*`, `/api/mitre/coverage*`, `GET /api/cases/{case_id}/threat-context` | IOC enrichment, provider configuration, ATT&CK coverage, and Navigator export |
-| Dashboards and metrics | `/api/dashboards*`, `/api/metrics*`, `/api/feedback/stats`, `/api/usage/summary`, `/api/cost/estimate` | Personal dashboards, posture/noise/improvement metrics, usage, feedback, and cost estimates |
+| Dashboards and metrics | `/api/dashboards*`, `/api/metrics*` (including `GET /api/metrics/breakdown` and `GET /api/metrics/explain`), `/api/feedback/stats`, `/api/usage/summary`, `/api/cost/estimate` | Personal dashboards, posture/noise/improvement metrics, exact breakdowns for the built-in boards, usage, feedback, and cost estimates |
+| Agent health diagnostics | `GET /api/diagnostics/health`, `GET /api/diagnostics/precedent-composition`, `GET /api/metrics/auto-close-health` | Permission-separated precedent/migration and auto-close evidence for the range-aware Effectiveness surface, including the per-rule precedent distribution, futility findings, and the zero-cost corpus composition report |
 | Standup and handoff | `/api/standup*` | Shift report, acknowledgements, and action items |
 | Notifications | `/api/notifications/providers`, `/channels/*`, `/preview`, `/test`, `/prefs`, `/inbox*` | Channel catalog/secrets, safe previews, tests, per-user preferences, and in-app inbox |
+| Application background jobs | `POST/GET /api/jobs`, `GET /api/jobs/{job_id}`, `POST /cancel`, `GET /artifact` | Self-scoped durable work, progress, cooperative cancellation, bounded failures, result projections, and verified retained artifacts |
 | Preferences and presentation | `/api/settings*`, `/api/prefs/*`, `/api/branding`, `/api/terminology`, `/api/views*`, `/api/budget*`, `/api/llm/*`, `/api/models` | Organization/user preferences, saved views, model routing/pricing, branding, and budget controls |
 | Release-source discovery | `GET /api/releases/upstream`, `POST /api/releases/upstream/check` | Read cached or force a cooldown-bounded refresh of public Stable/Testing source metadata; never deploys or activates code |
 | Supervised application updates | `GET /api/system-updates/status`, `POST /preflight`, `POST /jobs`, `GET /jobs/{job_id}`, `POST /cancel`, `POST /rollback`, `GET /receipt` | Capability and blocker discovery plus a fresh-auth, built-in-super-admin control plane for one supported signed Compose/PostgreSQL application update; host operations stay behind the private supervisor socket |
-| Improvement worker health | `GET /api/schedulers/health` | Process-local tuner, campaign, and batch enabled/gated/running plus last attempt/success/error |
+| Improvement worker health | `GET /api/schedulers/health` | Process-local threshold-tuner, campaign, event-driven baseline, and Batch health; list-only, never a personal Inbox job |
 | Telemetry-gap evidence | `GET /api/tuning/source-recommendations` | Query-backed supported missing-evidence recommendations; connector absence alone is never proof |
-| Own-state storage lifecycle | `GET/PUT /api/storage/lifecycle`, `POST /api/storage/lifecycle/preview`, `POST /api/storage/lifecycle/apply` | Inspect/save desired Hot/Warm/archive policy, preview capabilities, and explicitly apply the supported Elasticsearch ILM subset |
+| Own-state storage lifecycle | `GET/PUT /api/storage/lifecycle`, `POST /api/storage/lifecycle/preview`; apply via `POST /api/jobs` | Inspect/save/preview desired policy; submit canonical `storage_lifecycle_apply` work as a Job (`POST .../apply` is retired with 410) |
 | Portable data export | `POST /api/admin/export` | Legacy single-file, bounded, secret-free application-state snapshot (`data_export:export`) |
-| Full-history export segment | `POST /api/admin/export/segment` | Continue one supported safe scope past 5,000 records using an opaque cursor (fresh auth + `data_export:export`) |
+| Full-history export archive | `POST /api/admin/export/archive` | OpenAPI-deprecated executable compatibility primitive: synchronously assemble and verify selected safe scopes before serving one ZIP (fresh auth + `data_export:export`) |
+| Full-history export segment | `POST /api/admin/export/segment` | OpenAPI-deprecated executable compatibility primitive: continue one supported safe scope past 5,000 records using an opaque cursor (fresh auth + `data_export:export`) |
 | Cancel export segment | `POST /api/admin/export/segment/cancel` | Release the PIT carried by an unfinished cursor (fresh auth + `data_export:export`) |
-| Audit and realtime | `GET /api/audit`, `GET /api/events` | Append-only action history and server-sent event updates |
-| Demo and reset | `/api/demo/*`, `POST /api/admin/reset` | Isolated synthetic demonstration lifecycle and privileged tiered reset |
+| Audit and realtime | `GET /api/audit`, `GET /api/audit/count`, `GET /api/audit/records/{record_id}`, `GET /api/events` | Append-only action history (search, count, one record) and server-sent event updates |
+| Demo and reset | `/api/demo/*`; reset via `POST /api/jobs` | Isolated synthetic demonstration lifecycle and canonical `tiered_reset` Job submission (`POST /api/admin/reset` is retired with 410) |
 
 ## Supervised application updates
 
@@ -141,79 +199,173 @@ fragment, command, backup path, or migration instruction to these routes. The ba
 derives canonical assets and delegates over one configured Unix socket; the supervisor
 independently enforces its host-pinned repository and signed release contract.
 
-## Runbook management
+## Runbooks
 
-Runbooks use a dedicated resource boundary: list/detail require `runbooks:read`,
-while create, update, delete, and reindex require `runbooks:manage`.
+Runbooks are one feature with two routers: the library (built-in and operator runbooks,
+their versions and governance) and the runs on cases. See
+[Runbooks](../intelligence/runbooks.md) for the model, matching and the Markdown format.
+
+Grants: every read needs `runbooks:read`. Writing drafts, duplicating, importing,
+sending for review, retiring, restoring an old version as a draft and rebuilding the
+search index need `runbooks:manage`. Publishing, sending a version in review back to
+draft, restoring a retired runbook and **Mark reviewed** need `runbooks:publish`. Working
+a run on a case needs `runbooks:run`. A draft or a version in review is visible only to a
+holder of `runbooks:manage` or `runbooks:publish`; for anyone else it does not exist
+(`404`).
+
+### Library
 
 | Operation | Contract |
 | --- | --- |
-| `GET /api/runbooks` | Bundled and operator runbook summaries plus enabled/retrieval state and per-item index status |
-| `GET /api/runbooks/{runbook_id}` | Metadata, full stored `content`, and parsed guidance body |
-| `POST /api/runbooks` | Validate and create an operator runbook from `{id, content}`, then attempt immediate targeted indexing |
-| `PUT /api/runbooks/{runbook_id}` | Validate and replace an operator runbook using `{content, expected_revision}`, then attempt targeted reindexing |
-| `DELETE /api/runbooks/{runbook_id}?expected_revision=N` | Delete the expected operator revision and its retrieval projection |
-| `POST /api/runbooks/{runbook_id}/reindex` | Reconcile one runbook's full-body retrieval projection |
-| `POST /api/runbooks/reindex` | Reconcile all bundled and operator runbook projections without clearing unrelated knowledge |
+| `GET /api/runbooks` | The library (`RunbookLibrary`): every runbook the caller may see, filtered by `q`, `state` (`draft`, `in_review`, `published`, `retired`) and `origin` (`builtin`, `operator`, `imported`); `show_replaced=true` also lists built-ins a Published copy replaces. `runs_30d` is `null` without `cases:read`. `migrated_procedures` maps each procedure id from an earlier version to the runbook id it became, limited to the runbooks the caller may see |
+| `GET /api/runbooks/metrics?window=` | Runs, completion times, skipped steps, coverage of cases that needed a person, rules with no runbook, and the with and without cohorts (a comparison, not a cause). Also needs `cases:read`. Each figure states its population; `partial` marks a lower bound. `400 runbook_window_invalid` for a window it cannot read |
+| `POST /api/runbooks/validate` | Every issue of a `{definition}` or `{source}` (Markdown) and the investigator guidance length against its 3,000-character budget. Writes nothing |
+| `POST /api/runbooks/match-preview` | Which of the last 500 cases of the last 30 days a definition (or a stored runbook, by `id`) would get, where another runbook wins, and the near misses. Also needs `cases:read`. Attaches nothing |
+| `POST /api/runbooks` | Create a runbook as a version 1 draft from `{definition}` or `{source}` |
+| `POST /api/runbooks/import` | Import Markdown. Always a new draft: a clashing id is renamed and every problem is kept as an import note; the import is due for review at once |
+| `GET /api/runbooks/{id}` | One runbook: summary, live version, version list and, for `manage` or `publish`, its draft and in-review versions. A retired runbook also answers its retired version (`retired`: the text, `retired_by` and `retired_at`), which Restore brings back |
+| `GET /api/runbooks/{id}/versions/{n}` | One version with its Markdown source (`404 runbook_version_not_found` for a draft without `manage` or `publish`) |
+| `GET /api/runbooks/{id}/export?version=` | One version as a `text/markdown` attachment. The export is recorded in the audit log first; if that fails, nothing is sent (`503 audit_unavailable`) |
+| `PUT /api/runbooks/{id}/draft` | Save the draft from `{definition}` or `{source}` with `expected_revision`. Editing a Published runbook creates the next version as a draft; editing a version in review takes it back to draft. A save that changes nothing writes nothing |
+| `DELETE /api/runbooks/{id}/draft?expected_revision=` | Discard the draft or the version in review. A runbook that was never published disappears; published history is never deleted |
+| `POST /api/runbooks/{id}/duplicate` | Copy a built-in or operator runbook into a new draft (`<id>-custom`). A built-in's copy replaces the built-in for matching once it is Published |
+| `POST /api/runbooks/{id}/submit` | `{version, expected_revision?}`: send a valid draft for review |
+| `POST /api/runbooks/{id}/publish` | `{version, expected_revision, content_hash?}`: make that version live. The revision (and the content hash, when sent) is the one the publisher reviewed, so text changed since is never published unseen (`409 runbook_conflict`). No fresh sign-in is needed |
+| `POST /api/runbooks/{id}/reject` | `{version, reason, expected_revision?}`: send a version in review back to draft; a missing or blank reason is `422 runbook_invalid` |
+| `POST /api/runbooks/{id}/retire` | Retire the live version: it stops matching and stops guiding the investigator; runs that use it keep working |
+| `POST /api/runbooks/{id}/restore` | Republish the last live version of a retired runbook (`runbooks:publish`) |
+| `POST /api/runbooks/{id}/reviewed` | Mark reviewed: records the reviewer and the time without a new version |
+| `POST /api/runbooks/{id}/versions/{n}/restore` | A new draft from an earlier version (`runbooks:manage`); audited as a draft change, never as `runbook.restored` |
+| `POST /api/runbooks/{id}/reindex` | Reproject one runbook in the knowledge index. A built-in id is reprojected like an operator one (its live chunks are written again, or removed when a Published operator copy replaces it); an unknown id is `404 runbook_not_found` |
+| `POST /api/runbooks/reindex` | OpenAPI-deprecated, request-bound full reconciliation, kept as it was; the Console submits a `runbook_reindex` job |
 
-Bundled items return `source_type=bundled`, `protected=true`, and `editable=false`.
-Operator items return their current revision, actor/timestamp metadata, and separate
-index state (`index_status`, `indexed_revision`, `last_indexed_at`, and a bounded
-`index_error`). The list envelope also reports `enabled` and `retrieval_enabled`;
-catalog management remains possible when retrieval is disabled.
+Every library write is recorded in the audit log before it becomes visible, and a failed
+store write appends its own failure row (for example `runbook.publish_failed`). A stale
+`expected_revision` is `409 runbook_conflict` with the latest state. In Demo Mode every
+library write answers `409 runbook_demo_readonly` ("Runbooks cannot be edited in Demo
+Mode."). When separate approval is on (`runbooks.require_distinct_approver`), a publisher
+who wrote or edited the version is refused with `403 runbook_distinct_approver`. Other
+codes: `413 runbook_body_too_large`, `422 runbook_invalid` (with the issues), `409
+runbook_state` (a transition that does not apply), `409 runbook_limit`, `503
+runbook_store_unavailable`, and `409 runbook_scope_unsupported` from the metrics and the
+match preview while row-level data scope is on.
 
-Update and delete are optimistic: a stale `expected_revision` is rejected rather
-than overwriting another operator's edit. Create/update/delete responses report the
-durable catalog result separately from the index result. Reindex responses report
-`indexed`, `deleted`, `failed`, and bounded `errors`, so callers must not treat a
-partial synchronization as a complete success.
+### Runs on cases
 
-New and replacement operator documents require a small plain-text manifest plus a
-strict plain-text body of no more than 1,800 characters. The body uses the required
-ordered labels documented in [Runbooks](../intelligence/runbooks.md), rejects
-Markdown and HTML formatting, and permits sequential numbered lines only in
-`INVESTIGATION STEPS`. Manifest fields have independent write ceilings and their
-combined retrieval descriptor may not exceed 1,200 Unicode characters.
-Validation failures return actionable issues identifying what failed, why it is
-rejected, and how to fix it. A rejected request creates neither a catalog revision nor
-a retrieval projection. Existing non-compliant content remains readable and
-reindexable; its next edited revision must satisfy the current contract.
+| Operation | Contract |
+| --- | --- |
+| `GET /api/cases/{case_id}/runbooks` | The case's runs (`CaseRunbooks`), each step's lookup evidence redacted for the caller by the grant its tool needs, progress, newer Published versions, the case's other tasks and `role_labels` (each role the steps name by its label, "SOC manager"). Needs `runbooks:read` and `cases:read` |
+| `GET /api/cases/{case_id}/runbooks/candidates` | The Start runbook list with the match explanation for each runbook |
+| `POST /api/cases/{case_id}/runbooks` | `{runbook_id, note?}`: start a Published runbook by hand. Idempotent per case and runbook: `201` for a new run, `200` with `already_attached` when it is already there |
+| `POST /api/cases/{case_id}/runbooks/suggest` | The AI suggests a runbook. One gateway call; `dry_run=true` returns the estimate only |
+| `PATCH /api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}` | Update a step: `expected_revision` (the step's own `revision` from `runs[i].steps[step_id].revision`, never the case document's), plus any of `status`, `assignee`, `note`, `reason`, `decision`, `action_record`, `evidence_link` |
+| `POST .../steps/{step_id}/lookup` | Run a Lookup step now |
+| `POST .../steps/{step_id}/approval` | `{decision: approve or reject, reason?}` for a step that waits for approval |
+| `POST .../steps/{step_id}/draft` | The AI drafts the step's note (labelled "AI draft" until a person confirms it); one gateway call, `dry_run=true` for the estimate |
+| `POST .../steps/{step_id}/draft/confirm` | `{text}`: confirm the draft, which marks the step done |
+| `POST /api/cases/{case_id}/runbooks/{run_id}/switch-version` | `{version, reason}`: move the run to a newer Published version |
+| `POST /api/cases/{case_id}/runbooks/{run_id}/abandon` | `{reason}`: abandon the run |
+| `POST /api/runbooks/progress` | `{case_ids}` (at most 100): progress per case for the queue chips (`cases:read`). It sums every run of a case that was not abandoned; a case with no such run, or whose runs cannot be read, is absent |
+| `POST /api/runbooks/lookup-test` | `{lookup, case_id}`: run a draft lookup once against one case for the editor's **Test with a case**. Needs `runbooks:manage`, `sources:read`, `cases:read` and the lookup's own grant; stores nothing |
 
-The validation response uses HTTP 422 with this stable detail envelope:
+Every write except the progress read and the lookup test needs `runbooks:run`. Every run
+write answers `409 runbook_state` ("Runbooks are turned off in Settings.") while runbooks
+are turned off, and `404 case_not_found` for an unknown case. A stale step revision is
+`409 runbook_conflict` with the latest run in `detail.latest`; never retry it
+automatically. A background lookup on the step, or a change to another step, never
+conflicts.
 
-```json
-{
-  "detail": {
-    "code": "runbook_validation_failed",
-    "message": "Runbook rejected. Fix the issues below and submit again.",
-    "issues": [
-      {
-        "code": "stable_issue_code",
-        "field": "body",
-        "problem": "What is missing or invalid.",
-        "reason": "Why the contract rejects it.",
-        "fix": "The concrete correction to make."
-      }
-    ],
-    "limits": {
-      "body_max_characters": 1800,
-      "retrieval_descriptor_max_characters": 1200,
-      "document_max_bytes": 131072
-    },
-    "body_characters": 0
-  }
-}
-```
+Step rules: a step waiting for approval cannot be marked Not applicable (`409
+step_state`); reopening it to To do withdraws the recorded action and the pending
+approval. A recorded action's `performed_at` must be a date and time no later than five
+minutes from now (`409 step_state`), and is stored in UTC; without it, now is used. A run
+completes when every required step is Done or Not applicable; an optional step waiting
+for approval never keeps it open. `run.started` is recorded once, on the first change
+that starts a step (a note, a status other than To do, a decision, a recorded action or
+a confirmed draft); an assignment or an evidence link alone does not start a run.
 
-`body_characters` is the Unicode character count of the parsed, newline-normalized,
-outer-trimmed body. Clients should render all returned issues rather than stopping at
-the first one. `GET /api/runbooks` publishes the full backend-owned
-`authoring_standard`, including current field/list limits and prohibited formatting,
-so alternate authoring clients can present the same guidance.
+A run a person chose counts as the most specific attachment, so automation never stacks
+another run on it. A runbook attaches only to a case that is open, needs a person, is
+being investigated, is escalated or is on hold. Lookups run read-only with a 45-second
+deadline each, which includes loading the case's events; **Run lookup** waits for the
+run's other lookups only within that bound, then answers `503 lookup_unavailable`
+("Other lookups on this runbook are still running. Try again shortly.").
 
-Runbook content is trusted operator-controlled knowledge and is projected under a
-stable `runbook:<id>` document identity. These routes never execute it as a playbook
-and never call or modify deterministic case-policy authority.
+The AI routes answer `429 runbook_ai_budget` ("The AI budget for today is used up."),
+`504 runbook_ai_timeout`, `503 runbook_ai_unavailable` and `502 runbook_ai_invalid`
+(no draft text); nothing changes on any of them. The AI never attaches a runbook, never
+marks a step and never touches the verdict.
+
+Run changes publish a `case.runbook` frame (`{case_id, run_id, progress, revision}`) on
+the `runbooks` topic of `GET /api/events`, sent only to holders of both `runbooks:read`
+and `cases:read`.
+
+### Closing a case with required steps open
+
+The case action route (`POST /api/cases/{case_id}/action`) and the bulk route accept
+`open_steps_reason` (1 to 500 characters; runs of whitespace collapse to one space, and a
+blank value counts as none). A person can always close a case: when its active runbook
+still has required steps open, the first terminal move records
+`case.closed_with_open_steps` with the reason, who closed it and how (`console`, `api`,
+`bulk` or `proposal`). Only a request that sets `require_open_steps_reason: true` (the
+Console does, to show its dialog) and gives no reason is refused, with `409
+runbook_steps_open` and a body of `{code, message, required_open, steps: [{run_id,
+step_id, title, status}]}`. Marking a case a duplicate (a terminal move with the
+`duplicate` disposition) is never refused for open steps. A request that is invalid on
+its own (an unknown disposition, `set_disposition` without one) is answered `400` first,
+so the dialog appears only for a close a reason makes valid. A bulk close and the
+`case_lifecycle` job never fail an item for open steps; the job takes one shared
+`open_steps_reason` (same bounds and cleaning, recorded with `via: "bulk"`) and refuses
+`require_open_steps_reason` as an unknown parameter (`422`). Automatic closes never read
+runbook steps.
+
+### Retired procedure routes
+
+For one release, the routes of the earlier procedure catalog stay as read aliases
+answered from the runbook library, with `Deprecation: true` and a `Link` header to
+`/api/runbooks`: `GET /api/playbooks`, `GET /api/playbooks/{id}` (an unknown id still
+answers `404 {"detail": "playbook not found"}`), `GET /api/playbooks/coverage` and
+`GET /api/playbooks/selection/{case_id}`. `?shape=v1` on `GET /api/runbooks` and
+`GET /api/runbooks/{id}` answers the earlier runbook shape (Published runbooks only), with
+the same headers.
+
+The list and detail aliases need `runbooks:read`. The two aliases that read cases need
+`runbooks:read` and `cases:read`. `GET /api/playbooks/coverage` follows its successor,
+`GET /api/runbooks/metrics`: it answers `409 runbook_scope_unsupported` while row-level
+data scope applies to the caller, and it reads at most the newest 20,000 cases, with
+`truncated: true` when more cases exist beyond them or the case read failed part way, so
+every figure is then a lower bound. A store holding exactly 20,000 cases is read whole and
+answers `truncated: false`. A case store that cannot be read at all answers `503
+case_store_unavailable`.
+
+Every write of the earlier shapes answers `410` with `{"detail": "Playbooks are now
+runbooks.", "code": "runbooks_moved", "see": "/api/runbooks"}`: `POST /api/playbooks`,
+`PUT /api/playbooks/{id}`, `POST /api/playbooks/reload`, `POST /api/playbooks/dry-run`,
+`POST /api/cases/{case_id}/run-playbook`, and an old-shape runbook write (`{id, content}`
+on `POST /api/runbooks`, `PUT /api/runbooks/{id}`, `DELETE /api/runbooks/{id}`), whatever
+else the body carries. A write in the old shape cannot be honoured without making
+unreviewed text trusted, so it is refused rather than translated. The aliases and the
+`410` routes are removed in the next release.
+
+## Analyst rule policies
+
+`GET /api/rules/analyst-policies` (`rules:read`) lists every operator declaration that a
+detection is benign in this environment, each with a derived `live` flag
+(enabled and not expired). `PUT /api/rules/analyst-policies/{policy_id}`,
+`POST /api/rules/analyst-policies/{policy_id}/enabled`, and
+`DELETE /api/rules/analyst-policies/{policy_id}` require `rules:manage`. Pass `new` as
+the id to have the server mint one. Author and creation instant are recorded
+server-side and survive later edits; every mutation appends an audit row.
+
+A cluster whose detections are **all** declared is closed with the `false_positive`
+disposition and the `analyst_policy` decision owner, with no model call. The case is
+still created, audited, and reopenable; this is not the event drop that
+`suppression_rules` performs. The evaluation happens before any verdict exists, so it
+neither reads nor extends the auto-close policy.
+
+`analyst_policy` closes are excluded from false-positive rate, automation rate,
+auto-close health, the noise-reduction funnel, case lineage, tuner observed volume, and
+improvement evidence, and are never accepted as analyst-confirmed outcomes.
 
 ## Threshold tuning and approvals
 
@@ -249,6 +401,63 @@ Memory approval succeeds only after confirmed persistence. Approve and reject bo
 require strict append-only control-audit evidence keyed by proposal id before final
 status, so an unavailable audit ledger fails closed and a retry reuses the same row.
 
+## Precedent corpus composition and exclusion
+
+`GET /api/rag/precedent/composition` (`rag:read`) and
+`GET /api/diagnostics/precedent-composition` (`settings:read`) report the same read-only
+composition: the precedent corpus as it stands beside the projection a rebuild would
+produce. Both are seed-free and cost zero embedding calls, and the payload states so
+explicitly with `embedding_calls: 0`.
+
+Each half cross-tabulates the analyst-confirmed `outcome` against the model's own
+`verdict` (`outcome_by_verdict`) as well as reporting each marginal, per-rule counts, and
+chunk/document totals. The joint distribution is the point: per-outcome counts alone read
+clean on a corpus that is unanimously `false_positive` and also unanimously
+`needs_human`. `projected.pool` reports the qualifying population the bounded window was
+drawn from, its own composition, and whether the bounded scan completed, so a window
+drawn from an equally skewed pool (which no reprojection can repair) is visible.
+`projected.admission` reports how much of the window one operator transaction occupies.
+`rebuild_corpus(dry_run=true)` returns the same report and changes nothing.
+
+`POST /api/rag/precedent/exclusions` (`rag:manage`) durably excludes cases from the
+precedent projection and deletes their records in the same operation, so an eviction is
+not undone by the next projection. `GET` lists the set with per-rule and per-reason
+breakdowns (`rag:read`); `DELETE /api/rag/precedent/exclusions/{case_id}` removes a
+marker, after which the record is re-derived on the next projection. Selection uses
+projection metadata keys only. Exclusions never modify case ground truth, are bounded
+relative to the configured precedent window, and are audited in both directions, as are
+knowledge-document deletes.
+
+`GET /api/diagnostics/health` reports the exclusion set inside `precedent_corpus`,
+subtracts excluded cases from the reconciliation's qualifying-record count, and reports a
+corpus emptied by exclusions as `operator_excluded` rather than `starved`. A refused
+projection attributable to a deliberate precedent-window reduction is reported as a
+warning with `reason_code: window_size_reduction`, not as a critical corpus loss; a
+projection that would reach zero is refused unconditionally and no setting changes that.
+
+## Analyst-confirmed precedent evidence
+
+`GET /api/diagnostics/health` (`settings:read`) returns `precedent_effectiveness`
+alongside the existing corpus block:
+
+- `distribution`: analyst-confirmed precedent counted per rule identity (the canonical,
+  order-independent detection set), with `available`, `truncated`, `unattributed_documents`
+  (precedent recorded before rule identity was captured), and `total_confirmed`. An
+  unreadable corpus reports `available: false`, never an empty distribution.
+- `futile_rules`: rules holding abundant analyst-confirmed benign precedent whose cases
+  still route to a human, each with its counts, an explanation, and remediation. Each also
+  appears as a `precedent_not_effective:{rule}` warning in `alerts`.
+- `promotion_enabled`, `window_size`, and `window_stratified` describe the active policy.
+
+When `precedent.promotion` is enabled, each investigated case records `precedent_signal`:
+`status` (`qualified`, `insufficient`, `conflicting`, `not_retrieved`, `unavailable`,
+`disabled`, or `not_applicable`), the confirmed benign/malicious counts for the matched
+rule identity, how many matching precedents were retrieved, and the thresholds applied.
+Rule identity must match exactly; similarity alone never qualifies, and the lower-trust
+`model_unconfirmed` tier is never promotable. The signal is evidence supplied to the
+investigator; the verdict remains the model's and the close decision remains the
+deterministic policy's.
+
 ## Memory and RAG trust
 
 Only memory entries that are both active and `review_status=approved` are injected as
@@ -269,46 +478,499 @@ dimensions fail before partial indexing; an embedding-space change clears/reseed
 rather than mixing dimensions. Local fallback records the actual provider/model and
 `embedding_fallback=true`.
 
-## Playbook catalog and procedure provenance
-
-Bundled playbooks are immutable package data. Operator playbooks are strict-CAS
-StateStore records across Elasticsearch, PostgreSQL, and SQLite; no separate index or
-table is required. Management is `playbooks:manage`; reads, dry-run, and coverage use
-`playbooks:read`; case selection explanation uses `cases:read`. A successful write is
-durable and atomically refreshed into the active catalog. The limits are 100 operator
-playbooks, 2 MiB aggregate operator content, 256 KiB per document, and 2,400 characters
-of rendered trusted procedure context. Send the current `expected_revision` on PUT;
-a stale update returns `409`. There is no delete route.
-
-`POST /api/playbooks/dry-run` accepts at most 100 `rule_ids`, one `entity_type`, and
-`event_count` from 0 through 1,000,000. It explains exact deterministic match/no-match
-without an LLM, investigation, or decision call. `GET /api/playbooks/coverage` scans at
-most 20,000 stored cases and reports covered/uncovered cases, selected counts,
-`truncated`, and the top 100 unmatched rule families. Matching is exact—not fuzzy or
-model-selected.
+## Procedure provenance
 
 The latest investigation's `procedure_provenance` audit row distinguishes selected
-from consulted persona/playbook state, selection reason, consultation path, retrieval
+from consulted persona and runbook state, selection reason, consultation path, retrieval
 query groups, and retrieved knowledge source/score/document id/revision/content hash
-with a bounded snippet. Rationale and Case Manager Overview project the latest run;
-selected-only inputs are never presented as consulted/applied.
+with a bounded snippet. The rationale and the case's **Investigation inputs** (on its AI
+investigation tab) project the latest run; selected-only inputs are never presented as
+consulted/applied.
+
+Its `retrieval_status` and `retrieval_reason` describe that run only. `measured` means
+every configured retrieval query group completed, including a measured empty result;
+`not_attempted` means a known path skipped retrieval; `unavailable` means the run's
+retrieval evidence cannot be established, such as interruption, unverified corpus
+seeding, or any failed query group. Retrieval is fail-soft: bounded last-known-good
+chunks or chunks from successful groups may still appear in that run's `knowledge` and
+ground the investigator. They do not turn a partial/unverified run into a measurement.
+These run-level fields do not overwrite the Case's authoritative lifetime
+`retrieval_history_status` or its cumulative `retrieval_observation_status`.
+
+## Audit log
+
+Every audit route is a read of the append-only log and needs `audit:view`; a caller
+without it gets `403` and an access-denied row, whatever it sends. See
+[Audit log](../administration/audit-log.md) for what the page shows.
+
+| Operation | Contract |
+| --- | --- |
+| `GET /api/audit` | One page of records (`AuditPage`: `records`, `total`, `total_relation` `eq` or `gte`, an opaque signed `next_cursor`, `run_totals` for the investigations on the page, and the deployment's `retention`) |
+| `GET /api/audit/count` | `{count, relation}`: an exact count up to `cap` (at most 100,001), then `gte`. The export dialog uses it |
+| `GET /api/audit/records/{record_id}` | One record, or `404 audit_record_not_found`. It accepts the list's filter parameters, so opening a record from a filtered page is recorded with that page's view |
+
+**Compatibility.** Every parameter the route took before Round 14 keeps its meaning:
+`action` filters the stored `action_type`, `actor` is an exact match, and `surface`,
+`case_id` and `source_id` filter as before (each takes at most 512 characters). `from`
+and `to` take the forms the earlier Elasticsearch range accepted: date math such as
+`now-7d` or `now-1d/d`, an ISO 8601 time, a date, a year or month, or epoch
+milliseconds; a partial `to` is filled the way an `lte` bound is. Each takes at most 64
+characters (`422 audit_invalid_time` above that). A call without `scope` reads every row,
+100 at a time; `limit` 0 or absent means that default, and any other whole number is
+clamped to 1 to 200 (with `scope` the default is 50), never refused: the rest comes
+through `next_cursor`. `records` and `total` are still the response's keys.
+
+**New parameters.** `scope` (`people`, `agent` or `all`), `q` (free-text search, at most
+200 characters), `event` (one event, an event family or a category), `actor_contains`,
+`actor_kind`, `outcome` (`success`, `failure`, `denied`, `partial` or `unknown`; `unknown`
+also finds older rows that recorded no outcome and derive none), `target`, `ip`, `order`
+(`desc` or `asc`) and `cursor`. A structured filter returns the same rows on every store.
+`q` and `actor_contains` ignore case on every store, but only PostgreSQL and
+Elasticsearch fold the case of letters outside ASCII (`école` finds `École` there, not on
+SQLite); on Elasticsearch the stored summaries are matched by whole words and phrases.
+
+**Paging.** The first page resolves the time window once and the cursor carries the
+resolved instants, so `now-7d` does not move under **Load more**; each store pages inside
+its own snapshot and `total` is the same on every page. Elasticsearch reports a total
+above 10,000 as `gte`. A cursor whose snapshot closed answers `409 audit_cursor_expired`
+with a message naming why ("The list was refreshed because it had been open a long
+time.", "... because many newer searches were opened after it." or "... because Demo
+Mode was turned on or off."); reload from the first page. A tampered or malformed cursor
+is `400 audit_cursor_invalid`.
+
+**Demo Mode.** People and settings reads the People rows of the real control store and of
+the Demo store; Agent activity reads the Demo store; All (or no `scope`) is the real
+control store's People rows and every Demo row, so a real agent row is never listed while
+Demo Mode is on. Demo rows carry `demo: true` and a `record_id` that starts with `demo:`.
+
+**Records.** A `record_id` is opaque and names the store it came from. Every value is
+returned as stored, as plain text; `prompt_excerpt` and `tool_output_summary` carry
+fenced, untrusted log data. Every audit string is cleaned when the row is written: names,
+ids, labels and client fields lose control characters and are bounded (an actor to 160
+characters; an actor, target id or change field made only of such characters is stored
+as U+FFFD), and every other text, `tool_input` included, loses NUL characters. A lone
+UTF-16 surrogate is removed on write, and one stored by an older build is returned as
+U+FFFD. On PostgreSQL a row an older build stored with `\u0000` is read as if it had
+been cleaned, and is never rewritten. A row written before Round 14 has `outcome: null` (an
+access-denied row reads as denied and an error row as failed, with `outcome_derived:
+true`). `category`, `event_label`, `demo` and the `*_derived` flags are computed when the
+row is read and are not part of the stored record.
+
+Errors: `422 audit_invalid_filter` and `422 audit_invalid_time` (with a `message`),
+`400 audit_cursor_invalid`, `409 audit_cursor_expired`, `404 audit_record_not_found` and
+`503 audit_unavailable`. Searching, counting and opening a record write one "Audit log
+viewed" row per user per distinct filter set every five minutes, best-effort.
+
+An audit export is a background job (`audit_export`), described under
+[Application background jobs](#application-background-jobs).
+
+## Writes that are recorded first
+
+Since Round 14 every new state change is recorded in the audit log before it becomes
+visible. When the audit log cannot be written, the change is not made and the request
+answers `503 audit_unavailable`. This applies to `PUT /api/settings`, `PUT
+/api/branding`, `PUT /api/prefs/org`, `PUT /api/terminology`, `POST`, `PUT` and `DELETE
+/api/users`, `PUT /api/users/{username}/roles`, `POST`, `PUT` and `DELETE /api/roles`,
+`PUT /api/account/me`, `PUT /api/me/avatar`, `POST /api/auth/change-password`, `POST
+/api/auth/mfa/confirm`, `/api/auth/mfa/enroll-confirm`, `/api/auth/mfa/disable`, `POST
+/api/auth/sso/providers/{id}/secret`, `PUT /api/prefs/user` when it changes
+`misc.dashboards_hidden` or `misc.dismissed_intros`, `POST /api/sources`, `DELETE
+/api/sources/{id}`, `POST /api/sources/{id}/secrets`, `POST /api/setup/secrets`, `POST
+/api/setup/complete`, `PUT /api/rbac`, every runbook and dashboard write, adding or
+deleting a case screenshot, recording an auto-close review, the job submissions that
+are recorded first, and every job file download. The SSO callback redirects with
+`sso_error=audit_unavailable`. Sign-in, sign-out and session events are never blocked: a
+row that cannot be written is logged and counted instead.
+
+`POST /api/setup/secrets` keeps one exception so a broken audit store stays repairable:
+during an audit outage it still applies `es_mgmt_api_key`, `es_url` and `es_ca_cert` (the
+management connection that holds the audit log) and answers `503 audit_unavailable`
+naming any other key it did not change.
+
+`PUT /api/settings`, `PUT /api/branding`, `PUT /api/prefs/org` and `PUT
+/api/terminology` try a save that races another one up to three times, then answer
+`409 settings_conflict`. `PUT /api/tuning/config`, `/api/baseline/config`,
+`/api/batch/config` and `/api/campaigns/config`, `POST /api/campaigns/recorrelate`, and
+`POST /api/tuning/{rule}/apply` and `/rollback` answer `409 demo_mode_changed` when Demo
+Mode was switched during the request. A settings save says "Demo Mode was turned on or off
+while saving, so nothing was saved. Try again."; the campaign rebuild and the tuning apply
+and rollback name what was not done instead.
+
+Every response carries `X-Request-ID`, an unexpected server error (`500`) included, and
+the audit rows of a request carry the same id.
+
+## Metrics breakdown
+
+`GET /api/metrics/breakdown` returns exact case or usage counts grouped by one field, or
+by two as a cross-tab, over a window. The built-in dashboards read it; it uses the same
+aggregation engine as chat's exact case counts, so the two always agree.
+
+| Parameter | Meaning |
+| --- | --- |
+| `kind` | `cases` (default, needs `metrics:view`) or `usage` (needs `cost:view`) |
+| `by` | Required. For cases: `rule`, `source`, `severity`, `status`, `verdict`, `closed_by`, `assignee`, `mitre_tactic`, `mitre_technique`. For usage: `surface`, `role`, `model`, `provider`, `service_tier` |
+| `then` | An optional second grouping from the same set, not equal to `by` |
+| `window` | The chat window grammar (`all`, `now-24h`, `now-7d`, `this_month`, a range `A..B`, ...); default `now-7d`. Days, weeks, months and years count whole local periods, as chat does; an hours window (`now-168h`) is a rolling span |
+| `bucket` | Optional zero-filled time buckets over the window |
+| `top` | Groups kept, 1 to 50 (default 10); the rest is one exact "other" row |
+| `filter_rule` | Cases only: count only cases carrying this exact rule value (1 to 256 characters, matched as stored) |
+| `status_group` | Cases only: `open` or `closed` |
+
+Case rows carry two families that are never mixed: AI verdicts (`verdict_tp`,
+`verdict_fp`, `verdict_needs_human`) and the analyst outcome (`analyst_tp`, `analyst_fp`,
+`analyst_ungraded`; a close by an analyst policy is never graded). An unbucketed row's
+`open_now` counts the open cases matching the row whenever they were created, so it can
+exceed the row's windowed `count`. `rule`, `mitre_tactic` and `mitre_technique` are
+`multi_valued`: a case counts once in each of its values, so the rows do not add up to
+`total`. `window_label` names the window in words ("Last 7 days (since 20 Oct 2026)").
+`exact: false` with `partial` and `partial_reason` marks a lower bound; a figure that was
+not measured is never shown as zero. Cases with no readable creation date are reported in
+`missing_created`.
+
+One answer per question is shared for a few seconds and a question already being read is
+joined; at most two reads run at once, each has a time limit, and an answer holds at most
+5,000 rows. Errors: `400 breakdown_bad_param` (an unknown value, `then` equal to `by`, a
+case-only parameter with usage, a `top` outside 1 to 50, a window it cannot read, or
+more than 5,000 rows), `403` without the grant, `409 breakdown_scope_unsupported` for a
+case breakdown while row-level data scope applies to the caller, and `503
+breakdown_unavailable`. It is a read: no audit row and no model call.
+
+## Rules: summary and exact filters
+
+`GET /api/rules/summary?rule=&window=&source_id=` returns one detection rule's picture for
+the rule sheet in seven sections. Each section checks its own grant and carries its own
+`status` (`ok`, `forbidden`, `unsupported` or `unavailable`, with a plain `reason`), so a
+missing grant or a failing store degrades one section, never the sheet.
+
+| Section | Grant | Holds |
+| --- | --- | --- |
+| `alerts` | `sources:read` | The rule's events in the window: `count` with `count_relation` (`eq` or `gte`), first and last seen, a severity series by named level and the sources that answered |
+| `top_source_ips` | `sources:read` | The 10 source IPs with most events |
+| `top_targets` | `sources:read` | The 10 hosts and users with most events |
+| `cases` | `cases:read` | Every case the rule ever opened, all time whatever `window` is: count, still open, the analyst outcome and the 5 newest. Reused for up to 15 seconds |
+| `definition` | `rules:read` | A suite rule, or "Defined in the source SIEM" |
+| `tuning` | `automation:read` | The threshold tuner's view of the rule |
+| `analyst_policy` | `rules:read` | The live "declared benign" policy, if any |
+
+`rule` is the exact rule value as shown (1 to 256 characters on one line); `window` uses
+the chat window grammar and defaults to the last 3 days; `window` in the answer echoes
+the bounds the figures cover. Whether the count is exact is `count_relation` and each
+`sources[].exact`, never `status`: `unsupported` (the chart and top lists are a sample of
+each source's newest events) can come with an exact count. A source that answered from
+part of its data (a failed shard, a timeout) keeps its native total as an "at least"
+floor, and the reasons say that part of the log store did not answer. No model call, no
+raw rows, no audit row.
+
+`GET /api/logs` takes three exact filters, each optional: `rule` (an equality match
+against any rule identity of an event: its rule field, its rule name field or the suite's
+rule classification; 1 to 256 characters), `severity` (one named level: `info`, `low`,
+`medium`, `high` or `critical`) and `severity_gte` (that level or above). A level is
+projected through each source's own severity scale before it is compared. While a filter
+is active the envelope echoes `filters: {rule, severity, severity_gte}` and adds
+`matched: {count, relation}`, where `relation` is `eq` or `gte`; each `sources[]` item
+adds `exact`, `total` and `total_relation`. State the count from `matched`, never by
+adding up `sources[].count` (rows, capped at `limit`). For the same rule and window,
+`matched.count` equals the rule summary's `alerts.count`. Without a filter none of these
+keys is present.
+
+`GET /api/cases` takes `rule` (cases whose rule values hold that exact value, as stored;
+the population the rule sheet's **Show the N cases** opens) and `closed_by` (terminal
+cases closed by `agent`, `analyst`, `analyst_policy` or `system`; `system` also covers
+older cases with no recorded decider). Any other `closed_by` value, `human` included, is
+`400`, naming the four accepted values; an empty value is no filter. The applied values
+are echoed as `rule_applied` and `closed_by_applied`. Free-text `q` also matches a case's
+rule values.
+
+## First-run setup readiness
+
+`GET /api/setup/status` (public) includes `ai_runtime_ready`: `true` when both the router
+and the investigator models can be called with the credentials the backend holds. For
+OpenAI and Anthropic that is the provider's key; for an OpenAI-compatible endpoint a
+LiteLLM or OpenAI key, or a base URL that resolves for the model (a self-hosted server
+may need no key); for Azure OpenAI a key and an endpoint; for Amazon Bedrock an access key
+id and its secret; for Google Vertex AI a token and a project. The mock provider counts
+as ready only in Demo Mode. This public route never names the provider.
+
+`POST /api/setup/secrets` (`settings:manage`) answers `{ok, configured,
+ai_runtime_ready, ai_runtime_provider}`, read after the keys were applied.
+`ai_runtime_provider` is one of `openai`, `anthropic`, `openai_compatible`, `azure`,
+`bedrock`, `vertex` or `mock`: the provider of the first of the two roles that cannot be
+called, else the investigator's. The setup wizard words its notices from these fields.
+Neither field makes a model call.
+
+## Role-based access switch
+
+`GET /api/rbac` (`roles:read`) returns `RbacStatus`: `enabled`, `auth_enabled`,
+`can_change`, `blockers` (`auth_off`, `not_super_admin`, `read_only_settings`),
+`caller_role` (the role stored for the caller, even while role-based access is off),
+`super_admin_count` (active Super admin accounts, the environment administrator
+included), and `role_counts` (active accounts per stored role) for a caller holding
+`users:manage`, else `null`.
+
+`PUT /api/rbac` takes `{"enabled": true}` or `{"enabled": false}` (a JSON boolean, no
+other field; anything else is `422`). Its rules are checked in this order:
+
+| Order | Rule | Refusal |
+|---|---|---|
+| 1 | Sign-in is on | `409 rbac_auth_required` |
+| 2 | A registered session signed in, or re-authenticated with `POST /api/auth/reauth`, within the session policy's re-authentication window (10 minutes by default); a missing or unknown session, or a session store that cannot be read, is refused too | `401 reauth_required` |
+| 3 | The caller's stored role is `super_admin` (role-based access being off never counts) | `403 rbac_super_admin_only`, with an Access denied row |
+| 4 | Settings are not in read-only mode | `403` "Settings are in read-only mode" |
+| 5 | Turning on: at least one active Super admin account exists | `409 rbac_no_super_admin` |
+| 6 | Already in the requested state | `200` with `changed: false` and no audit row |
+| 7 | The audited settings write (action `settings.updated`, target **RBAC**, `changes` `rbac.enabled` before and after), recorded before it is visible | `409 settings_conflict` after its retries, `503 audit_unavailable` |
+
+The answer is `RbacStatus` plus `changed`. Demo Mode does not change any of this: the
+switch writes the real settings and the control audit.
+
+`PUT /api/settings` no longer changes the switch: a body that would change `rbac.enabled`
+answers `409 rbac_switch_moved` ("Turn role-based access on or off in Roles &
+permissions, or with PUT /api/rbac."). A changed `roles`, `resources`, `custom_roles`,
+`denies` or `default_role` under `rbac` needs `roles:manage` (an Access denied row on a
+refusal) and a fresh sign-in (`401 reauth_required`), checked before the save's audit row;
+with sign-in off both checks pass. A body that sends `rbac` unchanged is saved as before.
+
+## Team activity
+
+Every route needs `team:view` (SOC manager and Auditor by default; Super admin holds every
+grant). While role-based access is off every account holds every grant, so the routes also
+need a stored role of `super_admin`, `soc_manager` or `auditor`, else `403
+team_activity_role_required` with an Access denied row. With `team_activity.enabled` off
+they answer `409 team_activity_off`. A read the audit store cannot answer is `503
+team_activity_unavailable`.
+
+| Operation | Contract |
+| --- | --- |
+| `GET /api/team/activity?window=` | `TeamActivity`: `window`, `timezone`, `days`, `people` (per person: `key`, `username`, `display_name`, `role`, `active`, `kind`, `counts`, `closed_by`, `bulk`, `daily`, `last_active`, `median_ack_seconds`, `ack_samples`, `reviews`), `team` (the same totals plus `people_active` and `ack_status`), `exact`, `partial_reason`, `scanned_rows`, `auth_enabled`, `rbac_enabled`, `demo`, `generated_at` |
+| `GET /api/team/people` | The roster: `username`, `display_name`, `role`, `active` and `kind` (`account`, `environment` or `demo`), with `auth_enabled` and `demo` |
+| `GET /api/team/people/{username}/events?window=&cursor=&limit=` | One person's counted events, newest first: `ts`, `kind`, `label` (worded by the server), `case_id`, `case_number` and `detail` (built from structured fields only). `limit` is 1 to 200 (default 50); follow the signed `next_cursor`. Answers `total`, `exact` and `partial_reason` too |
+
+`window` takes the time-window grammar (`today`, `yesterday`, `now-7d`, a date range
+`A..B`; blank is `today`) in the SLA time zone, at most 92 days (`422
+team_window_too_long`; an unreadable token is `422 team_invalid_window`). The counted
+kinds are `acknowledged`, `closed` (split in `closed_by` into `true_positive`,
+`false_positive`, `benign`, `duplicate` and `other`), `reopened`, `escalated`,
+`commented`, `assigned`, `screenshot_added`, `reviewed`, `runbook_step_done` and
+`signed_in`; `bulk` counts the lifecycle rows written by bulk actions. `reviews` reports
+`completed`, `agreed`, `disagreed`, `unsure`, `answered`, an `agreement_rate` only from 30
+answered reviews, the median time spent on the review card and the median time from the
+pick to the review. People are matched case-insensitively; a person `kind` is `account`,
+`environment`, `demo`, `deleted` or `unattributed` (rows that name nobody, which have no
+events route: `404 team_person_not_found`).
+
+Counts are an exact fold over at most 250,000 audit rows of the window. An Elasticsearch
+read that cannot hold a point in time stops at 10,000 rows and a store without paging
+stops at its own scan limit; the answer then has `exact: false` and `partial_reason`
+`row_limit` or `store_limit`, and its counts are lower bounds. The median time to
+acknowledge covers at most 5,000 cases (`ack_status` `too_many_cases` above that). With
+sign-in off the answer is empty with `auth_enabled: false`. In Demo Mode case work comes
+from the Demo audit and sign-ins from the control audit. Answers are cached per viewer and
+window for 60 seconds. An events cursor is bound to the viewer, the person and the window
+(`400 team_cursor_invalid`, `409 team_cursor_expired`). No answer carries an IP address,
+user agent, session or settings row. Reading writes one `team.viewed` audit row per viewer
+every ten minutes, and one per viewer and person for the events, best-effort.
+
+## Case screenshots
+
+| Operation | Grant | Contract |
+| --- | --- | --- |
+| `GET /api/cases/{case_id}/files` | `cases:read` | `{case_id, files, deleted, count, bytes, can_upload, limits}`: the live screenshots in upload order, deleted ones with their metadata, and the bounds that apply. Each entry has `id`, `position`, `content_type`, `bytes`, `width`, `height`, `sha256`, `caption`, `filename`, `uploaded_by`, `uploaded_at`, `has_thumbnail`, `deleted` and `can_delete` |
+| `POST /api/cases/{case_id}/files` | `cases:comment` | A JSON body `{data_base64, content_type?, thumbnail_base64?, filename?, caption?}` (a `data:` URL is accepted). `201` with `{file, deduplicated: false}`; the same image again answers `200` with the existing entry and `deduplicated: true` and writes nothing. Allowed on closed cases |
+| `DELETE /api/cases/{case_id}/files/{file_id}` | `cases:comment`, and the uploader or a `cases:close` holder | Removes the image and its thumbnail and keeps the metadata as a deleted entry. Anyone else gets `403 case_files_delete_forbidden` and an Access denied row |
+| `GET /api/cases/{case_id}/files/{file_id}/content` | `cases:read` | `variant` is `full` (default) or `thumb`; `download=1` asks for an attachment. The stored bytes with their sniffed `Content-Type`, `X-Content-Type-Options: nosniff`, a server-made file name (`<case number>-<n>.<ext>`, `inline` or with `download=1` `attachment`), a `sandbox` content security policy, `Cache-Control: private, no-store` and `Cross-Origin-Resource-Policy: same-origin`. A missing thumbnail serves the full image |
+
+Limits: PNG, JPEG and WebP only, recognised by their bytes (`415
+case_files_unsupported_type`); at most 2 MiB stored per image after its metadata is removed
+(`413 case_files_too_large`), 8,192 pixels a side and 40 megapixels (`422
+case_files_dimensions`); a thumbnail of at most 48 KiB and 640 pixels a side; 20 images and
+20 MiB per case (`409 case_files_case_full`); 2 GiB in all (`409 case_files_storage_full`);
+in Demo Mode and on the in-memory store 5 images per case and 64 MiB in all. A request body
+over 3 MiB is refused before it is read (`413 case_files_body_too_large`). Each person may
+make 30 uploads a minute and 2 at once (`429 case_files_busy` with `Retry-After`). A caption
+is plain text of at most 200 characters (`422` above that); a file name is cut to its last
+120 characters. Other refusals: `422 case_files_invalid_image` and
+`case_files_invalid_base64`, `404 case_not_found` and `case_file_not_found`, `409
+case_files_duplicate` and `case_files_conflict` for racing writes, and `503
+case_files_unavailable` when the store cannot be read (never a false `404`).
+
+The server validates the structure of each image and strips its metadata but never decodes
+its pixels. Adds and deletes are recorded in the audit log first (`case.file_attached`,
+`case.file_deleted`, and `case.file_attach_failed` or `case.file_delete_failed`), with the
+case as the target and the file named by id, type and size; a summary never carries a file
+name or caption. Screenshots are never on the `Case` document and never reach a model,
+a chat tool, a report or a prompt. The bundled Web UI allows request bodies of 3 MiB on the
+upload path; a proxy in front of it needs the same.
+
+## Auto-close review
+
+`POST /api/cases/{case_id}/review` (`cases:write`) records a person's review of a case the
+AI agent closed automatically. The body is `{classification, note?, accuracy?,
+reasoning_quality?, action_appropriateness?, elapsed_ms?}`: `classification` is
+`true_positive`, `false_positive`, `benign` or `unsure`; `note` at most 1,000 characters;
+each rating above 0 and at most 1; `elapsed_ms` 0 to 86,400,000 (unknown fields are `422`).
+
+- The case must be closed and its first decision an agent close, else `409
+  review_not_agent_closed`; a picked case whose review is recorded answers `409
+  review_already_recorded`. An agent-closed case that was not picked can be reviewed too;
+  that review is an ordinary grade.
+- The `case.review_recorded` audit row is written first (`503 audit_unavailable`, and
+  nothing changes, when it cannot be); then the case gets one feedback entry (the analyst is
+  the signed-in person, `actual_outcome` is `true_positive` for a true positive,
+  `false_positive` for a false positive or benign, `unknown` for unsure); then the ledger is
+  completed. For a picked case the entry also carries `origin: "auto_close_review"` and the
+  `review_id`, and the case gets one `auto_close_review` history event.
+- The review never sets the case's status, decider or disposition. Its note becomes fenced,
+  untrusted precedent text, as a grading comment does.
+- The answer is `{agrees, can_reopen, sampled, review_id}`: `agrees` is `null` for unsure,
+  and `can_reopen` says whether the caller holds `cases:close`. A disagreeing reviewer
+  without `cases:close` sends one Inbox item (category Assignment) to the people who can
+  close cases, at most 200.
+
+`GET /api/cases/{case_id}/review` (`cases:read`) returns `{case_id, agent_closed, state,
+can_record, review_id, sampled_at, expires_at}` for the case workspace: the pending band,
+**Start review** and **Review this auto-close** read it. `state` is `none` (never picked),
+`pending`, `completed` or `expired`, computed on read. `agent_closed` applies the POST's
+own rule, and `can_record` says whether the POST would accept a review now, the caller's
+grants aside. `expires_at` is `null` once the review is completed. A pending or expired
+entry whose case history already holds its review reads as `completed`, and the ledger is
+repaired. It answers `404 case_not_found` and `503 review_ledger_unavailable`. The case
+never changes, and no audit row is written.
+
+`GET /api/auto-close-review/summary` (`cases:read`) returns `{enabled, pending,
+disagreed_open, sampled_today, daily_cap}` for the Case Manager Review scope.
+`GET /api/metrics/auto-close-review?window=` (`metrics:view`, default `now-30d`, `400
+bad_window` for a window it cannot read) returns the Agent effectiveness module over the
+cases picked in the window: the settings, `sampled`, `reviewed`, `pending`, `expired`,
+`unsure`, `agreement` (a rate and a Wilson 95% interval only from 30 reviews, else
+`status: insufficient`), `missed_threats` (a true positive given on an automatic
+false-positive close), `by_rule` (top 10), `time_spent_ms`, `time_to_review_ms`, `by_day`,
+`eligible` (automatic closes by the day of their first agent decision, with `complete`),
+`ledger_complete` and `statement` ("Agreement describes the sampled cases only,
+unweighted. It is not an estimate of auto-close precision.").
+
+`GET /api/cases?review=pending|completed|disagreed|expired` lists the cases of one Review
+state, with the other queue filters, sorting and paging applied, and
+echoes `review_applied` (another value is `400`). It reads at most the 2,000 cases the
+ledger keeps.
+
+Each pick writes one `case.review_requested` audit row (actor `system`, shown in Agent
+activity) and publishes a `case.review` frame. Reopening from a review sends
+`review_via: "auto_close_review"` on `POST /api/cases/{case_id}/action`, recorded on the
+history entry and the audit row only; any other value is `422`, and bulk bodies refuse it.
+
+## AI investigation runs
+
+`GET /api/investigations/active` (`cases:read`) lists the AI investigations queued or
+running now (`items`), the ones that finished in the last 120 seconds (`recent`), how
+many runs are for alerts whose case does not exist yet (`new_runs`), and the
+investigation slots (`slots.in_use` and `slots.cap`). `?case_id=` narrows it to one case.
+Each run carries its id, case id, state (`queued`, `running` or `finished`), phase, trigger, start
+time, time cap and, once finished, its outcome and the status and verdict after it.
+`requested_by_you` is true for the caller's own runs. The requester's name is added only
+for a caller who holds `users:manage`. `process_local` is always `true`: the list is held
+in memory on the backend that runs the investigations, a restart forgets it, and another
+replica's runs are not seen.
+
+Each change publishes one `case.investigation` event on the `cases`, `cases:{case_id}`
+and `investigations` topics, with the same event id, so a client on all three receives
+it once. The frame carries ids, enums and counts only, never a name, and is not kept for
+replay: a reconnecting client reads the route.
+
+`POST /api/cases/{case_id}/reinvestigate` (`cases:reinvestigate`) accepts `wait: false`
+in its body and then answers `202` with `{run_id, case_id, state}` at once; without it,
+the call waits for the run and returns the updated case, as before. Before it writes an
+audit row or rebuilds anything, it refuses:
+
+- `409` with code `investigation_running` and the run, while a run on the case or its
+  signature is queued or running;
+- `409` with code `open_case_exists` and that case's id, for a closed case whose events
+  another open case now holds. A closed case is otherwise reinvestigated in place.
+
+`POST /api/cases/{case_id}/investigate` makes the same two checks before it rebuilds the
+case. It has no `wait` field and always answers when the run ends.
+
+A close or status change made while a run is in progress is replaced by the run's
+result when it finishes. The person's disposition, note, actions taken, comments and
+screenshots are kept, a `case.close_replaced` audit row records it, and that person gets
+an Inbox item. A person who started a run gets an Inbox item when it finishes.
+
+## Case records
+
+`GET /api/cases/{case_id}/events` (`cases:read` and `sources:read`) reads the raw events
+behind a case again from its source, through the read-only log client. It pages with
+`limit` (1 to 200, default 50) and `cursor` (the previous page's `next_cursor`). Each row
+is the `GET /api/logs` row shape plus `index`, `source_id` and `in_evidence` (the findings
+that cite it). When the events cannot be read, `available` is `false` and `reason` is
+`push_source_not_retrievable`, `aged_out` or `source_unavailable`. Every value is
+source-controlled data. Reads are audited as `case.events_viewed`, at most once per
+person and case every ten minutes.
+
+`GET /api/cases/{case_id}/usage` (`cases:read` and `cost:view`) returns the case's
+usage-ledger rows, newest first, at most 500, with `rows_total`, `truncated`, lifetime
+`totals` over every row, the case's `token_cost` and `reconciles`, which says whether the
+investigation total equals it. Rows
+written by 0.2 or later carry their rates and `price_basis` (see
+[State, audit, and cost](../concepts/state-audit-cost.md#model-usage-and-cost)).
+
+## Explained numbers
+
+`GET /api/cases/{case_id}/triage` adds, at read time and without storing them:
+
+- `auto_close_policy`: the auto-close entry for the case's verdict class;
+- `sla`: the case's SLA reading (the clock, its target, start, due time, stop and
+  state), or `null`;
+- `asset_cidr`, only for a `settings:read` holder: today's internal network range that
+  holds the entity, labelled as today's configuration.
+
+The risk calculation of a case says `weight_basis: "recorded_at_scoring"` when the case
+kept its inputs (`risk_breakdown.inputs`), else `current_preferences`. The decision span
+of the trace carries the gate recorded when the case was decided, with
+`policy_changed` when today's policy differs, and `run_failed` when the newest run
+failed.
+
+`GET /api/metrics/explain` (`metrics:view`) takes `metric` (`mtta`, `mttr`, `dwell`,
+`mttd`, `active_risk_index`, `fp_rate` or `sla_attainment`) and `window_hours`, and
+returns the cases behind that dashboard figure, computed from the same cases and the
+same code, so its value equals the figure. It lists up to 200 case rows. Without
+`cases:read` the rows are withheld and `samples_withheld` says why; with row-level data
+scope, `hidden_by_scope` counts the rows left out, which still count in the figure. An
+unknown `metric` answers `422` with code `explain_metric_unknown`, and an unreadable
+store `503`, never a zero.
+
+## Refusals and deprecations added in 0.2
+
+| Answer | When |
+|---|---|
+| `403` for a missing read grant | A read without the grant of its data, when role-based access is on; see [Permissions](permissions.md#read-grants-on-every-read) |
+| `403 password_change_required` | Any request but the password change from an account that must change its password |
+| `403` "Only a Super admin can change single sign-on." | A change to the `sso` settings or a provider secret from anyone but a stored Super admin with a fresh sign-in |
+| `422` | An SSO default role or group mapping that names a custom role |
+| `429 mfa_locked` | Ten wrong second-factor codes in a row |
+| `409 investigation_running` | A reinvestigation or case investigation while a run on the case is queued or running |
+| `409 open_case_exists` | A reinvestigation or case investigation of a closed case whose events another open case holds |
+| `409 source_demo_readonly` | A write to a Demo source while Demo Mode is on |
+| `401 session_invalid` | Every call to the deprecated `POST /api/auth/refresh` |
 
 ## Scheduler and telemetry evidence
 
 `GET /api/schedulers/health` (`automation:read`) returns
 `scheduler_runtime_running` plus `workers` for `threshold_tuner`,
-`campaign_correlation`, and `batch_jobs`. Each worker reports `enabled`, `gated`,
-`running`, `cadence`, `last_attempt_at`, `last_success_at`, `last_error`, and
-`processed`. Tuner/campaign success anchors recover from durable state after restart;
-the runtime is still process-local and has no distributed lease. `manual` is reported
-as gated, and a push/queue-only deployment is not marked gated merely because pull
-polling is disabled.
+`campaign_correlation`, `baseline_producer`, and `batch_jobs`. Each worker reports
+`enabled`, `gated`, `running`, `cadence`, `last_attempt_at`, `last_success_at`,
+`last_error`, and `processed`. The first, second, and fourth are cadence loops covered
+by `scheduler_runtime_running`. `baseline_producer` is event-driven with
+`cadence=on_ingest`; it is enabled/running when baseline learning is enabled outside
+Demo and reports its own attempted, confirmed-success, error, and processed evidence
+without depending on the cadence-loop runtime flag. Tuner/campaign success anchors
+recover from durable state after restart; the workers remain process-local and have no
+distributed lease. `manual` is reported as gated, and a push/queue-only deployment is
+not marked gated merely because pull polling is disabled.
 
 `GET /api/tuning/source-recommendations` (`cases:read`) scans at most 20,000 cases and
 returns `status`, `recommendations`, `scanned_cases`, `truncated`,
 `evidence_schema="agentic-soc.telemetry-gap/v1"`, and an explicit
 `not_available_reason`. It also returns `capture_status` and
-`capture_not_available_reason`; v0.1.12 reports capture unavailable rather than
+`capture_not_available_reason`; v0.2.0 reports capture unavailable rather than
 claiming that uncontrolled legacy text is evidence. It accepts only stored structured
 history from a controlled producer after a bounded query/tool attempt with result `field_missing`,
 `query_unsupported`, or `source_unqueryable`. The v1 allowlist maps outbound DNS,
@@ -319,13 +981,127 @@ case ids, and up to 10 bounded proofs.
 ## Common query behavior
 
 Case listing uses `limit` and `offset`, with optional `status`, `surface`, `entity`,
-`from`, and `to` filters. Other list endpoints define their own query parameters;
+`from`, and `to` filters. The Case Manager queue adds `status_group` (`active` or
+`terminal`; not together with `status`), `q` (case-insensitive search; every word must
+match the case ID or number, title, summary, status, verdict, entity, source, or
+assignee), `assignee`, `severity` (the displayed severity band), an exact AI `verdict`
+(`TRUE_POSITIVE`, `FALSE_POSITIVE`, or `NEEDS_HUMAN`), an exact `rule` and `closed_by`
+(see [Rules: summary and exact filters](#rules-summary-and-exact-filters)), `review`
+(see [Auto-close review](#auto-close-review)), and
+`sort_field`/`sort_order`; `total` is the exact number of matching cases. Bulk `close` and `resolve` requests accept
+a `disposition` and `disposition_declared: true`, which records the disposition as the
+analyst's classification on every case, as a single close does; the field stays optional
+on the wire for older clients, and the console always sends it. A case action
+(`POST /api/cases/{case_id}/action`) may carry `actions_taken`, at most 8 of `no_action_needed`, `blocked_indicator`,
+`isolated_host`, `disabled_account`, `reset_credentials`, `removed_malware`,
+`patched_or_hardened`, `notified_owner`, `escalated_externally`, `tuned_detection` and
+`other` (an unknown value is `422`); they are stored on the case history entry and the
+audit row and appear in the case Markdown export. Other list endpoints define their own query parameters;
 do not assume that all collections share one pagination envelope. Follow the OpenAPI
 operation for the endpoint being called.
+
+Personal dashboards (`/api/dashboards*`) refuse to create a board whose id is `new` or
+starts with `builtin:` or `u:` (`400 dashboard_id_reserved`); a board stored earlier
+under such an id is still read, updated, renamed, duplicated and deleted. A board's
+`default_window` must be one of the four presets, and every create, update, delete and
+duplicate is recorded in the audit log before it is saved. The built-in boards are
+defined by the Console and are not stored. `GET /api/notifications/providers` lists
+`channel_types` as plain strings (`["email", "slack", ...]`).
 
 Source and log browse limits are server-bounded. Treat every returned log field,
 raw record, case-derived string, and search result as untrusted data when presenting
 it in another system.
+
+## Workspace Chat streaming, context, and Stop
+
+`POST /api/chat/stream` takes the same body as `POST /api/chat` and answers with
+`application/x-ndjson`: one `ChatStreamEventModel` per line. The order is `turn.start`
+first, then `step.start`/`step.end` for each lookup, `usage` after each model call,
+`text.delta`/`text.reset` only when the turn types out its answer, and `ping` every 10
+seconds; `step.progress {index, done, total?, unit}` while a long lookup counts, and
+`text.continued {part}` when the answer continues in another model call (the text keeps
+streaming, with no `text.reset`); the last line is always `turn.done` (the saved
+`ChatResponse`) or `turn.error`
+(`provider_unavailable`, `budget_blocked`, `breaker_open`, `history_unavailable`, or
+`internal`, with `retryable`). Every check that can fail before work starts (auth,
+permissions, concurrency, validation, conversation lookup, idempotency, source) fails as
+an ordinary HTTP error before the 200, never as a `turn.error`; losing authority after the
+turn started is a `turn.error` (see below). A completed key replays
+as `turn.start {replayed: true}` followed by `turn.done`, with no model call.
+
+Additive request fields, all optional: `stream_mode` (`steps` or `text`; presentation
+only), `scopes` (`logs`, `cases`, `metrics`, `intel`, `docs`, `platform`), `time_range`
+(`{from, to}` of any length; `{"from": "all"}` is all time), `origin` (`user`,
+`follow_up`, `starter`, `command`, `continue`, `clarify`, `retry_step`), `continue_of`,
+and `topic` (a retrieval hint naming the console-map topic an
+"Ask about this" turn started from: at most 121 characters of `a-z`, `0-9`, `_`, `:`, `.` and
+`-`; a malformed value is 422 and an unknown one is ignored). Only `origin: "user"`
+text counts as the analyst's own words for indicator lookups; `clarify` and
+`retry_step` are treated like `follow_up`. Additive response fields include `blocks`,
+`steps`, `usage`, `citations`, `console_links`, `follow_ups` (at most 3, chosen by code
+from what this answer shows and the model's own suggestions that name it; never an
+extra model call), `conversation_title` (the conversation's title: a new Workspace
+conversation takes the `title` its first answer's header names, in the same model call,
+when that title is one line of at most 48 characters in sentence case; otherwise it
+keeps the title derived from the first question, and a rename is never replaced),
+`answer_kind`, `notice`,
+`turn_id`, `message_id`, `user_message_id` (the saved id of the question the answer
+replies to, so a client can find that question on screen; never stored on the answer),
+`memory_proposal`, `case_saved`, `case_save_notice`, `clarify`
+(`{question, options (≤ 4), allow_custom}` when the assistant asks instead of answering),
+`saved_report` (`{id, title, items, skipped?}` when the answer asked for a report and the
+server saved it) or `saved_report_error` (`report_limit`, `report_unavailable`, or
+`report_empty`), `continued` (continuation steps the final answer used), `compacted`
+(earlier messages were folded into the conversation summary), and `command` (`"compact"`
+on the reply to `/compact`, otherwise `null`: a note about the chat rather than an answer,
+with no source and with `usage` always present, zero when no model call ran; it is never
+replayed to the model, summarised again, or saved by `POST /api/reports/from-conversation`). Each step may carry
+`observation_ref` (for the step inspector) and `progress`. Notice kinds add `limited`
+(data lookups ran, part of the question is beyond them), `stopped_repeating`, and
+`compacted`; `unsupported` is used only when no data lookup ran. A tool window that lies
+entirely outside the request's `time_range` is refused inside the turn
+(`OUTSIDE_SELECTED_RANGE` in the step's result) rather than silently replaced by the
+range. On a case-scoped answer, `case_saved` says whether the question and
+answer were posted to the case's discussion thread (`null` when no case thread applied),
+and `case_save_notice` is the `not_saved` notice whenever `case_saved` is `false`, even
+when another notice such as `denied` or `partial` holds `notice`. Its `retryable` is true
+only when the thread store failed, so asking again with the same `idempotency_key` can
+add the answer; a missing `cases:comment` grant or a missing case is not retryable. The
+`not_saved` notice is also the `notice` when the answer has no other one.
+
+| Operation | Contract |
+|---|---|
+| `POST /api/chat/turns/{turn_id}/cancel` | Stop a running turn you own. No new step starts and the stream ends with `turn.done` carrying a `cancelled` notice. With `limits_mode: unlimited` the in-flight model call is abandoned at once and ledgered as `abandoned`; with `bounded` it finishes and is recorded. 404 when the turn is unknown, finished, or another user's |
+| `GET /api/chat/turns/active` | The caller's running turns: `[{turn_id, conversation_id, case_id, started_at, label, lookups, tokens, status}]`, `status` being `running` or `needs_input`. Owner-scoped and process-local |
+| `GET /api/chat/turns/{turn_id}/events?after=<seq>` | Rejoin a turn: NDJSON replay of the turn's bounded event ring after line `seq` (text deltas coalesced; at most 2,000 entries and 1,000,000 characters of answer text in 250,000 deltas), then the live tail to the terminal event. Past the text bound the oldest answer text is dropped; a rejoin from before the dropped text gets one `text.reset` line in its place (its `seq` is the last dropped line), then the retained text, so the live text restarts from the retained part instead of being joined across the hole. `turn.done` still carries the whole saved answer. A finished turn stays readable for 5 minutes. 404 for another user's or an unknown turn |
+| `POST /api/chat/turns/{turn_id}/seen` | The turn's outcome (an answer, a question or a failure, in a Workspace or a Case Manager chat) is on your screen (204 for any well-formed turn id). Stores nothing; publishes the owner-only `chat.read` event naming the turn, so your other consoles drop the mark they hold for exactly that turn. The event names the turn's conversation or case only while the server still keeps your finished turn (5 minutes); after that, or for an id that is not yours, it names the turn alone and reaches only your own consoles |
+| `GET /api/chat/context` | The caller's effective model, context window, `max_output_tokens`, `limits_mode`, the operator `timezone`, prompt estimates, tool catalogue with `allowed` (the caller's grants) and `available` (false when this deployment switched the tool off; absent means true) per tool, starters, bounds, and text-streaming availability; money and budget fields only with `models:read`, today's spend also with `cost:view`. Writes no audit rows. Since Round 13 `starters` keeps its shape but holds only the fixed everyday set (with the Demo Mode card first when Demo is on) and reads no case data; live suggestions come from `GET /api/chat/starters` |
+| `GET /api/chat/topics/{topic_id}` | The fixed question for an "Ask about this" topic. `topic_id` is a console-map id, `<family>:<anchor>` such as `kpi:mtta` or `settings:models`; 404 for an unknown topic |
+| `POST /api/chat/entity-question` | `{kind, value}` for an "Ask AI" chip (`ip`, `host`, `user`, `hash`, `domain`, `url`, `email`, `rule`, or `case`) → `{kind, value, question}`, the server-worded question to send with `origin: "starter"`. 422 when the value does not have its kind's shape. Writes nothing and calls no model |
+| `GET /api/chat/starters?surface=&conversation_id=&case_id=` | Suggested questions for `surface` `home` (the default), `thread`, or `case` (`ChatStartersInfo`: `surface`, `enabled`, `as_of`, `expires_at`, `timezone`, up to 6 `starters`, and `catch_up`). `home` serves the new-chat cards and the "Since …" line; `thread` the catch-up line for a conversation the caller owns (`conversation_id` required); `case` up to three Case Manager questions, the ones that apply to the case's state, for a case the caller can read (`case_id` required). A missing, unknown, or another owner's id is 404 (`conversation_not_found`, `case_not_found`); an unknown surface is 422; 503 `chat_suggestions_unavailable` when the conversation or case store does not answer. Computed by code from the suite's own state under the caller's grants: no model call, no log read, no audit row, and no usage record. Cached per caller for 60 seconds (the key includes the caller's grants, the surface and ids, Demo Mode, the operator time zone, the organisation switch, and the revision of the caller's suggestion state, so a hidden card is gone on the next read); a build in which part failed or timed out is served but not cached. `expires_at` is `as_of` plus 120 seconds. With `chat_agent.dynamic_starters` off, `home` serves the everyday set and no catch-up line and `thread` serves nothing |
+| `POST /api/chat/starters/events` | `{type, surface, keys}`, `type` being `viewed`, `used`, or `dismissed`, with up to 6 opaque 16-character keys from the cards the caller was served (204). `viewed` moves the caller's visit clock (a gap of 30 minutes starts a new visit, 8 hours a new shift) and counts views per key; `used` records a use; `dismissed` hides that kind of card for 24 hours. Keys resolve to card kinds from what this server served the caller; an unknown key is ignored. An unknown field, a malformed key, more than 6 keys, or an unknown type is 422. At most 30 events per caller per minute, then 429 `chat_suggestions_busy` with `Retry-After`. CSRF-checked like every POST; no audit row. The state holds only card kinds, opaque keys, counts, and times (never question text, values, or answers), is never sent to a model, and is deleted with the user |
+
+Concurrency is bounded per user and per process (`max_concurrent_turns_per_user`,
+default 12, and `max_concurrent_turns_global`, default 48): a turn over either bound is
+`429 chat_busy` before any work, with `Retry-After` and a body of `{code, message,
+retry_after, scope, limit}`, where `scope` is `user` or `global`. It is a capacity
+bound, not a token limit; the console waits and sends again. When the caller's account
+record cannot be read, the turn is `503 chat_account_unavailable` with `retry_after`. A non-default model without
+`models:read` is `403 chat_model_forbidden`; a model that is not an enabled chat model is
+`422 chat_model_unavailable`.
+
+A running answer acts only while the authority it started with lasts. The server checks
+again before every model step and lookup batch. Signing out, revoking the session,
+signing out everywhere, disabling, deleting or replacing the account, or a role change
+that removes a grant the turn uses stops it at once: nothing more is looked up or saved.
+An access token that expires while the turn runs (or while it is being admitted) ends it
+at the next check. The stream (and a rejoin) ends with `turn.error {code: "internal",
+retryable: false}` and the message "Your session ended, so this answer was stopped
+before it finished. Sign in again to ask." or "Your access changed, so this answer was
+stopped before it finished. Ask again to use your current access." `POST /api/chat`
+answers `401 {code: "session_invalid", reason: "session_ended"}` or
+`403 {code: "chat_access_changed"}`. A stop that covers the whole account also forgets
+its finished turns, so `…/events` returns 404.
 
 ## Workspace Chat persistence and retry
 
@@ -340,8 +1116,12 @@ characters** using letters, digits, `.`, `_`, `:`, or `-`. When omitted, the ser
 returns a generated key for the completed persisted turn. Keep that value stable when
 retrying an ambiguous turn. Reusing a key for the same completed request replays the
 committed response without another transcript append or model charge. A still-running
-key returns `409 chat_request_in_progress`; a key reused for a different request returns
-`409 chat_idempotency_conflict`. Each principal may hold at most 256 simultaneous live
+key returns `409 chat_request_in_progress` with `retry_after` and the running `turn_id`
+and `conversation_id`, so the client can rejoin it; a key whose billed turn ended without
+a saved answer returns `409 chat_request_failed` (send the question again with a new
+key; the old one stays held for its lease so it is never billed twice); a key reused for
+a different request returns `409 chat_idempotency_conflict`. A running turn holds its
+key for 10 minutes and renews it every minute, so a turn of any length keeps it. Each principal may hold at most 256 simultaneous live
 request leases; while all are occupied, a new key returns retryable
 `409 chat_request_capacity_busy` without invoking or billing the model.
 
@@ -364,16 +1144,21 @@ History endpoints are newest-first and per authenticated user:
 
 | Operation | Contract |
 |---|---|
-| `GET /api/chat/conversations` | Retained summaries plus `total`, `history_truncated`, `total_conversation_count`, and `oldest_retained_at` |
-| `GET /api/chat/conversations/{conversation_id}` | Authoritative retained transcript and per-turn provenance |
-| `PATCH /api/chat/conversations/{conversation_id}` | Rename an owned conversation |
+| `GET /api/chat/conversations` | Retained summaries, pinned first, plus `total`, `history_truncated`, `total_conversation_count`, and `oldest_retained_at`; `limit` up to 60, and `q` (≤ 200 characters) searches titles, questions, answers, and block titles and adds a `match {message_id, snippet}` to each hit (`search_incomplete` says when a very long history was not searched to the end). Each summary carries `status` (`idle`, `running`, `needs_input`, or `failed`) and `unread`; a brand-new thread is listed as a temporary `running` row while its first answer is written |
+| `GET /api/chat/conversations/{conversation_id}` | The newest 100 messages, each restored to its full text, with `earlier_message_count` (how many older messages it left out) and `summary_covers_through`, plus per-turn provenance. No message is ever removed: read the older ones with the paging route below |
+| `GET /api/chat/conversations/{conversation_id}/messages?before=<message_id>&limit=` | The paging cursor for a long conversation: up to `limit` (1–100, default 50) messages immediately before message `before` (the newest ones without it), oldest first, each restored to its full text from its exchange document, with `earlier_message_count` (0 = the page starts the conversation). The console's **Show earlier messages** passes the first message it shows as `before` and loads 50 at a time; an export reads every page. Owner-scoped: another user's conversation, or a `before` that is not one of its messages, is 404; an invalid `before` or `limit` is 422 |
+| `GET /api/chat/conversations/{conversation_id}/messages/{message_id}` | One message, restored to its full text |
+| `GET /api/chat/conversations/{conversation_id}/messages/{message_id}/steps/{index}` | The step inspector: the stored observation the model saw for one lookup (aggregates only, never raw log rows; `untrusted: true`), its parameters, and `truncated`. 404 `step_not_found`, `step_observation_unavailable`, or `step_observation_expired` (observations are kept for the owner's 100 most recent answers, up to 24,000 characters per step) |
+| `POST /api/chat/conversations/{conversation_id}/read` | Clear the conversation's `unread` mark (204) |
+| `PATCH /api/chat/conversations/{conversation_id}` | Rename (`title`, 1–80 characters) or pin (`pinned`) an owned conversation; an 11th pin is `409 chat_pin_limit` |
 | `DELETE /api/chat/conversations/{conversation_id}` | Delete an owned conversation; audit remains append-only |
 
 `total` and a conversation's `message_count` describe retained rows. The additive
 `total_conversation_count` and `total_message_count` describe the corresponding total
 before retention, while `history_truncated` and `oldest_retained_at` disclose an
-incomplete retained window. The current bounds are **50 conversations per user** and
-**100 messages per conversation**. Conversation summary/detail objects also include
+incomplete retained window. The bound is **50 conversations per user** (plus up to 10
+pinned). Messages are no longer removed from a conversation: every question and answer
+is stored in full in its own exchange document, and reads restore it. Conversation summary/detail objects also include
 `source_name`, `history_truncated`, `total_message_count`, and `oldest_retained_at`.
 
 History lives in one hashed StateStore partition per normalized user. On first access,
@@ -382,12 +1167,131 @@ shared document; no reset or new index/table is required. A history read or comm
 cannot be verified returns `503 chat_history_unavailable` instead of an empty list or a
 false saved result. Existing `404 conversation not found` behavior remains unchanged.
 
+Summaries also carry `pinned`, `report_id`, `time_range`, and cumulative `total_tokens`,
+`total_cost`, and `usage_turns` (null on conversations saved before they were recorded).
+Each stored assistant answer keeps a compact inline copy (its blocks, steps, citations,
+and usage as one opaque JSON string of at most 16 kB) in the conversation row, and the
+full exchange in its own document; when the row grows past its storage bound, the oldest
+answers' inline copies shrink to previews and are restored from their exchange documents
+on read. Answers saved before this release have no exchange document and keep the older
+behaviour: their blocks become "Expired from saved history" stubs before any text is
+removed. A history save that fails after the model call was billed ends the turn with
+`history_unavailable` and `retryable: false`: the same key would only return `409
+chat_request_in_progress` until its lease expires, so send the question again with a new
+key.
+
+### Answer ratings
+
+| Operation | Contract |
+|---|---|
+| `POST /api/chat/feedback` | `{conversation_id, message_id, rating: "up" or "down", reason?, comment?}` rates one of the caller's own Workspace answers (204). `reason` is `wrong`, `incomplete`, `slow`, or `other`; `comment` is at most 1,000 characters. Rating again replaces the earlier rating. Audited without the comment; never used to train a model or to decide a case |
+| `GET /api/chat/feedback?conversation_id=` | The caller's own ratings, newest first |
+| `GET /api/chat/feedback/summary?since=` | The caller's own ratings as counts only: up, down, thumbs-down reasons, and how many carried a comment |
+
+Chat's `soc_metrics` lookup reports the same counts for the asking user's own ratings.
+Ratings are stored per user in the `chat_feedback` namespace (at most 500 per user).
+
+## Chat reports
+
+Reports are owner-scoped and need `cases:read`. All error details are
+`{code, message, ...}`.
+
+| Operation | Contract |
+|---|---|
+| `GET /api/reports` | `{reports, total, limit}`: the caller's reports, newest first (at most 100). Each row has `id`, `title`, `template`, `conversation_id` (the conversation whose draft it is), `source_conversation_id` (the one conversation its items come from, else the draft's; `null` on rows written before this build until the report next changes), `item_count`, `created_at`, `updated_at`, `version`, `has_summary` |
+| `POST /api/reports` | Create a report (`title`, `template`, optional `conversation_id`); `409 report_conversation_draft_exists` carries the existing draft's `report_id`; `409 report_limit` at 100 reports |
+| `GET /api/reports/{report_id}` | The report, its items, and its summary |
+| `PATCH /api/reports/{report_id}` | Title, template, item order, notes, or removed items, with `expected_version`; `409 report_version_conflict` carries `current_version`; `409 report_full` (`reason: size`) when the change would outgrow the document |
+| `DELETE /api/reports/{report_id}` | Delete with `expected_version` (body or query) |
+| `POST /api/reports/add` | `{conversation_id, message_id, block_id?, report_id?}`. The server reads the block, or the whole answer when `block_id` is absent, from the caller's saved conversation and snapshots it; client block JSON is never accepted, so case-chat content cannot be added. A whole answer keeps all of its text: when it does not fit one section it continues in further sections titled "(continued)", whose source block id is `#<n>`. The conversation's draft is created on first add. `409 block_unavailable` for expired or unreadable content; `409 report_full` (`reason: items` at 60 items, or `size`) |
+| `POST /api/reports/from-answer` | `{conversation_id, message_id}`: save one answer as the report its header asked for, after the automatic save returned a retryable `saved_report_error`. Idempotent per answer (a repeat returns the same report); returns `{id, title, items}` |
+| `POST /api/reports/from-conversation` | `{conversation_id, title?, template?, idempotency_key?}`: save a whole Workspace conversation as a new report, one section per answer up to the item limit. Returns `{report, items, skipped, created}`; `409 report_empty` when the conversation has no answers |
+| `POST /api/reports/{report_id}/summary` | One metered model call over a bounded, fenced digest of the report (never raw logs); returns the report with its summary. `?dry_run=1` returns the token and cost estimate instead. Idempotent per key; `409 report_summary_in_progress` while another runs; `429 report_summary_rate_limited` (10 an hour per user, Demo exempt); `409 report_too_large_to_summarise` before any spend; `503`/`504` with summary-specific messages |
+
+Templates are `investigation`, `hunt`, `ioc`, `shift`, `posture`, `custom`,
+`executive`, `monthly`, `infographic`, and `investigation_brief`. A Workspace answer
+whose final header asks for a report is saved by the server from the persisted answer
+(never from client content); a stopped or failed answer and a case-scoped turn never
+create one. Every report change writes an audit row with action `report`; a summary also
+writes one usage row like any other model call, on the `report` surface, which counts
+against the daily AI budget.
+
+## Base metrics and retrieval-history evidence
+
+`GET /api/metrics` needs `metrics:view` and returns its deterministic dashboard
+aggregates plus an additive `retrieval_history` object. Its `cost` part is the AI spend
+of the window, which `cost:view` governs: for a caller without that grant it is `{}`
+(see [Spend and metrics grants](#spend-and-metrics-grants)). The `GET /api/metrics`
+headline counts (`total_cases`, `open_cases`, `needs_human_cases`, `closed_cases`,
+`by_status`, `by_verdict`, `by_disposition`) are exact store-wide counts; `counts_exact` is false, with the reason in `counts_note`, when
+part of them could only be tallied over the analysed cases. Every other figure is
+computed over all cases when the store holds no more than 20,000, else over its newest
+20,000, and `truncated`, `store_total` (the exact case count), and `fetched` (the cases
+analysed) say which. The posture and other rollups follow the same rule per scope:
+exact up to 20,000 cases in their window, and marked truncated beyond it. SLA
+`attainment_pct` is `null`, with `attainment_reason`, when no case could be scored. Retrieval eligibility
+is limited to investigated cases with a verdict. The Case wire contract keeps
+`knowledge_used` as an array. `retrieval_history_status` is authoritative for lifetime
+completeness, while `retrieval_observation_status` (`measured`, `not_measured`, or
+`unavailable`) is authoritative for whether at least one completed observation exists.
+Therefore `knowledge_used=[]` is a measured zero only when the observation status is
+`measured`. A legacy Case starts with both status fields `unavailable`; a later fully
+measured run may advance the observation status, but lifetime history remains
+`unavailable` and is never backfilled. The object reports:
+
+| Field | Contract |
+|---|---|
+| `status`, `available`, `reason` | `available`, `insufficient_evidence`, or `unavailable`, with an explanatory reason whenever no headline can be reported |
+| `loaded_cases`, `total_cases`, `truncated` | Cohort completeness; any truncated read makes the headline unavailable |
+| `eligible_cases` | Investigated cases with a verdict |
+| `history_available_cases`, `history_unavailable_cases` | Split by the authoritative Case lifetime marker `retrieval_history_status` |
+| `completed_attempt_cases` | History-available cases whose `retrieval_observation_status` is `measured`; array presence or emptiness is not used to infer completion |
+| `cases_with_references` | Completed-attempt cases whose cumulative reference list is non-empty; `null` when the cohort cannot support the measure |
+| `reference_coverage` | `cases_with_references / completed_attempt_cases`, rounded to four decimals; otherwise `null` |
+| `formula` | Human-readable definition of the same case-level ratio |
+
+This is case-level reference coverage only. `knowledge_used` is cumulative,
+de-duplicated, and bounded, so the metric is neither retrieval quality nor a per-run hit
+rate. Any investigated case with unavailable lifetime history makes a mixed cohort
+`unavailable`; a truncated read does the same. No eligible cases or no completed,
+instrumented attempt reports `insufficient_evidence`. In all three situations the
+numerator and rate remain `null`. In an otherwise history-complete cohort,
+`not_measured` cases are excluded from the denominator; when at least one measured Case
+exists they do not force the headline unavailable. Absent instrumentation is never
+converted to zero.
+
+### Spend and metrics grants
+
+`GET /api/feedback/stats` needs `metrics:view`. Each sub-score average (`avg_accuracy`,
+`avg_reasoning_quality`, `avg_action_appropriateness`) is taken over the grades that
+rated it, and `accuracy_rated`, `reasoning_quality_rated` and
+`action_appropriateness_rated` count them: an average of `0.0` with a count of `0` means
+nobody rated it. Grades recorded by an auto-close review are left out of these
+statistics. `GET /api/usage/summary` (the Cost page,
+and one case's spend with `case_id`) needs `cost:view`. `cost:view` also governs the
+spend on the routes that show it beside other figures, which answer everything else to a
+caller without it:
+
+- `GET /api/budget/status` (`models:read`) keeps the caps and settings but returns each
+  window's `spent`, `fraction` and `band` and `excluded_today` as `null`.
+- `GET /api/cases/{case_id}/timeline` leaves every span's `cost` and `tokens` and both
+  `totals` `null`.
+- `GET /api/cases`, `GET /api/cases/{case_id}`, `GET /api/scans`, the case JSON export
+  (`GET /api/cases/{case_id}/export`) and every single-case response
+  (`POST /api/investigate`, and a case's action, feedback, comment, tags, assignment,
+  investigate and reinvestigate) return the case with its own AI spend, `token_cost`, as
+  `null`. The stored figure is unchanged.
+
 ## Agent-improvement evidence
 
 `GET /api/metrics/agent-improvement` is an additive, read-only reporting endpoint
 protected by `metrics:view`. By default it compares the **last seven complete UTC
 days** with the **preceding, non-overlapping 28 complete UTC days**. The current UTC
-day is excluded so a partial day cannot be compared with complete history.
+day is excluded so a partial day cannot be compared with complete history. Its recorded
+case-associated AI cost needs `cost:view` too: for a caller without it the usage ledger
+is not read, and every `recorded_case_cost` block (the headline one and each period
+comparison's) is `unavailable` with zero figures and the reason
+"AI spend needs the cost:view permission".
 
 Optional query parameters are:
 
@@ -405,6 +1309,15 @@ than a synthetic composite score:
 | `analyst_reported_verdict_agreement` | Weighted analyst-reported agreement: `(agree + 0.5 × partial) / unique latest-valid graded cases` | Higher |
 | `material_analyst_correction_rate` | Explicit disagreement or an allow-listed AI-verdict/outcome conflict divided by the same unique graded-case cohort | Lower |
 | `human_review_turnaround` | p50 elapsed time from the first human acknowledgement to the final human terminal transition in the final live episode | Lower |
+
+A grade recorded by an auto-close review (its entry carries
+`origin: "auto_close_review"`, or it matches an `auto_close_review` history event on the
+case by time and analyst) is left out of the graded-case cohort behind agreement and correction,
+and is counted under `exclusions.auto_close_review_grade`. A reopen sent with
+`review_via: "auto_close_review"` on a case that carries a review recorded at or before
+it is not counted as a human reopen after an agent close in the reopen guardrail. Review
+grades stay ground truth for the threshold tuner and the precedent corpus; see
+[Auto-close review](#auto-close-review).
 
 Each metric carries its current and baseline samples, definition, delta, direction,
 minimum sample, and `enough_data`, `insufficient_evidence`, or `unavailable` status.
@@ -441,7 +1354,7 @@ than becoming zero.
 
 Agreement and correction use identical reference weights over exact source-by-severity
 strata represented by at least five grades in both windows. The payload reports only
-aggregate stratum counts and coverage—never source identifiers. A headline improvement
+aggregate stratum counts and coverage, never source identifiers. A headline improvement
 claim requires at least 80% coverage in **each** cohort, complete non-truncated case
 retrieval, and sufficient samples. The guardrails report confirmed false-negative rate
 over confirmed positives and human reopen-after-agent-close rate over closures with a
@@ -478,6 +1391,144 @@ cases. Up to 12 member references are returned as stable one-way hashes, with a
 truncation count; raw source identifiers and alert payloads are excluded. Consumers
 must tolerate `available: false` or incomplete fields for older cases.
 
+## Application background jobs
+
+`POST /api/jobs` accepts `{kind, idempotency_key, params}` and returns HTTP 202 after
+the validated job is durably admitted and its submission transition audit is confirmed.
+Every Jobs route requires `inapp:read`; the
+server also enforces each operation's resource grant at admission and execution. The
+supported kinds and material parameters are:
+
+| Kind | Parameters |
+| --- | --- |
+| `case_reinvestigate` | `case_ids` plus optional `model` |
+| `case_lifecycle` | `case_ids`, canonical lifecycle `action`, its bounded optional action fields, and an optional shared `open_steps_reason` (1 to 500 characters, whitespace collapsed; recorded with `via: "bulk"`). `require_open_steps_reason` is not a parameter here and is refused (`422`) |
+| `case_assign` | `case_ids`, `assignee` |
+| `case_tag` | `case_ids`, one `tag` |
+| `data_export_archive` | optional safe `scopes` |
+| `data_export_segment` | optional safe `scopes` and `page_size` |
+| `precedent_bootstrap` | exact acknowledgement plus bounded optional limit/batch/dry-run fields |
+| `runbook_reindex` | optional `runbook_id` |
+| `rag_import` | up to 20 bounded documents |
+| `tiered_reset` | scope and its exact confirmation phrase |
+| `storage_lifecycle_apply` | acknowledgement plus the exact saved lifecycle-policy snapshot |
+| `audit_export` | `format` (`csv` or `jsonl`), `scope` (`people`, `agent` or `all`), `from` and `to` (absolute ISO 8601 instants with a zone), `order` (`asc` only), optional `q`, and `filters` (`action`, `event`, `actor`, `actor_contains`, `actor_kind`, `outcome`, `surface`, `case_id`, `source_id`, `target`, `ip`) |
+
+**Audit export.** An `audit_export` job writes one plain CSV or JSON Lines file of the
+audit rows the read API returns for the same scope, search and filters, oldest first. It
+needs `audit:export` and `audit:view` (both checked again at every page and at download)
+and a fresh sign-in (`401 {"code": "reauth_required"}` otherwise), and it runs only while
+that fresh authority lasts. It never reads past the millisecond before it was submitted,
+so its own request row is never in the file. Refusals, which write no row: `409
+audit_export_demo_mode` in Demo Mode, `429 job_busy` while the same person already has an
+export queued or running, `422 audit_invalid_filter` or `audit_invalid_time`, `422
+audit_export_too_large` above 100,000 events, `422 audit_export_unverifiable` when the
+store cannot count exactly, and `503 audit_unavailable` when the log cannot be counted or
+the request row cannot be written. A failed job's reason starts with a code
+(`audit_export_too_large`, `audit_export_incomplete`, `audit_export_expired`,
+`audit_export_no_space`, `audit_export_denied` or `audit_unavailable`), and nothing
+partial is ever kept. Progress counts events; the finished job links to the audit log in
+its scope. The file is named `agentic-soc-audit_<from>_<to>.csv` (or `.ndjson`); CSV is
+UTF-8 with a byte order mark, RFC 4180 quoting, one fixed column set and formula
+defusal, and JSON Lines writes each stored row unchanged.
+
+**Requests recorded first.** Submitting `audit_export`, `tiered_reset`,
+`data_export_archive` or `data_export_segment` appends its request row
+(`audit.export_requested`, `reset.requested` or `export.requested`, with who asked and
+from where) before the job exists; if that row cannot be written the job is not created
+(`503 audit_unavailable`). A create that fails after its row adds a `*.request_failed`
+row with the same request id. Every row of one such job names the job as its target.
+
+Unknown or extra parameters fail validation. Secret-looking keys are rejected, and
+large active canonical parameters share an 8 MiB registry cap. Case operations accept
+an immutable `case_ids` snapshot; later UI selection changes cannot alter it.
+
+The Console/user workflow for these long operations is `POST /api/jobs`. Direct
+archive/segment export, precedent bootstrap, RAG import, and full-catalog Runbook
+reindex remain executable, request-bound compatibility primitives and are explicitly
+deprecated in OpenAPI. They are not canonical Console submission paths. Targeted
+single-Runbook reindex remains a normal direct catalog operation. By contrast, the old
+direct reset and storage-apply mutations are non-executable and return 410.
+
+The idempotency key is scoped to actor/account generation and a canonical request
+fingerprint. Retry one ambiguous intent with the same key. A changed request under that
+key returns 409. The same material request converges on its retained job for that row's
+lifetime. A deliberate repeat uses a fresh key; atomic pruning of a terminal row releases
+the old binding, while active rows are never evicted for capacity.
+
+`GET /api/jobs?limit=&offset=` returns the caller's jobs with active work first and then
+newest terminal history. A public job exposes `job_id`, kind, actor/timestamps, status,
+`progress`, bounded `failures`, full failure/truncation counts, request fingerprint,
+result counts/optional `artifact_id`, public compacted parameters, and
+`cancel_requested`. The additive response can also contain:
+
+- `related.llm_batches` for `models:read`, using the safe provider Batch projection; and
+- `system_workers` for `automation:read`, using the existing scheduler-health shape.
+
+Those two sections are read-only projections, not application jobs. Scheduler health is
+always list-only. A newly accepted local LLM Batch row strictly snapshots at most 200
+active accounts with effective `models:read` and drives a generation-bound stable Inbox
+outbox for those recipients. The note exposes bounded safe provider/model copy, request
+progress, and terminal counts only (never provider handles, custom/case IDs, candidates,
+or raw errors) and has no Batch Cancel, artifact, or completion toast. Authorization-store
+outage remains pending/retryable; permission or account-generation loss removes and
+fail-closed filters the note. The audience is frozen, so later users/grants, legacy rows,
+and recipients beyond the bound remain Jobs-list-only. The bounded audience/outbox
+contract is regression-backed; the Jobs projection remains authoritative for every
+non-recipient.
+
+`GET /api/jobs/{job_id}` and `POST /api/jobs/{job_id}/cancel` are self-scoped to the
+exact actor/account generation. A successful cancel response waits for its transition
+audit before returning `202`.
+Cancellation is cooperative: queued work can stop immediately, while running work sets
+`cancel_requested` and stops at a supported checkpoint without rolling back completed
+items. Live grants, account generation, and step-up authority are rechecked during
+execution.
+
+`GET /api/jobs/{job_id}/artifact` returns bytes only when the terminal result has a
+non-empty `artifact_id`. The server verifies the private file's size and SHA-256 before
+sending `Content-Type`, `Content-Length`, and a bounded attachment filename with
+`no-store`/`nosniff` (a ZIP for a data export, `text/csv; charset=utf-8` or
+`application/x-ndjson` for an audit export). No artifact returns 404; missing/pruned/corrupt retained metadata
+fails instead of streaming unverified content. Every download of every job kind is
+recorded in the audit log before the first byte is sent, after the ownership, grant and
+integrity checks: `audit.export_downloaded` for an audit export, `job.artifact_downloaded`
+for any other kind, always in the real audit log (Demo Mode included). If that row cannot
+be written the download answers `503 audit_unavailable` and sends nothing. A refused
+download (`404`, `403`, `410`, `503`) writes no download row. A file needs, at download
+time, the grants its job needed (an audit export needs `audit:export` and `audit:view`),
+checked again against the stored account. When its owner no longer holds one of them the
+answer is `403` with `{"code": "job_artifact_permission_lost", "message", "required",
+"missing"}` (`required` lists the job's grants, `missing` the ones the caller lacks now),
+and the refusal is recorded as Access denied, naming the missing grants, like any refused
+read. When the check cannot confirm the grants although the caller holds them (the stored
+account or custom roles could not be read), the answer is `503` with `{"code":
+"job_permission_unverifiable", "message"}`, nothing is recorded as Access denied, and the
+download can be tried again.
+
+Application-job progress upserts one stable per-user Inbox notification and publishes
+actor-scoped SSE topic `jobs`, event type `job`, with polling as a client fallback.
+Failure details retain at most 20 entries plus the omitted count. Terminal compaction
+drops large inputs and item maps. Bulk-case notification URLs carry only allow-listed
+current-context filters (`status`, `assignee`, or `tag`), not an exact immutable cohort.
+Submission/retry, cancellation, and terminal states are audit-before-visible: successful
+`202` responses wait for their transition audit, and terminal Inbox/SSE projection is
+withheld until its terminal audit is confirmed. Durable reconciliation repairs an
+ambiguous audit transition before projection.
+
+Job claims and transitions use one strict-CAS StateStore registry and renewable
+five-minute leases. The runner and its investigation/export concurrency remain
+in-process, and the wider application is still single-replica. Factory reset replaces
+the prior Jobs/Inbox/artifact state with one privileged actorless sanitized receipt. In
+the supported single-backend-process profile, a default-deny HTTP mutation gate drains
+admitted requests and SSE before tenant producers and detached writers are quiesced; the
+reset then strictly clears tenant state and audits the actorless receipt before releasing
+its Jobs, Batch, and HTTP fences. This is not a distributed transaction across arbitrary
+application replicas. If that privacy boundary fails, the
+application stays fenced/degraded, ordinary work remains blocked, and only a new freshly
+authorized factory-reset attempt is admitted. See
+[Background jobs](../operations/background-jobs.md).
+
 ## Realtime events
 
 `GET /api/events` is a server-sent events stream. The optional `topics` query filters
@@ -486,6 +1537,33 @@ The server emits heartbeats; clients should reconnect and fall back to bounded p
 when the stream is unavailable. When realtime preferences disable the event bus, the
 endpoint returns HTTP 204. Browser `EventSource` clients cannot set an Authorization
 header, so authenticated Console subscriptions use the session cookie.
+
+Application jobs use topic `jobs` and event type `job`; the payload is the actor-scoped
+public job projection. Chat turns use topic `chat` and event type `chat.turn`
+(`{turn_id, conversation_id, case_id, phase, label, lookups, tokens}`, `phase` being
+`started`, `progress`, `finished`, `failed`, or `needs_input`), sent to the turn's owner
+only and never to an anonymous subscriber. Marking a conversation read
+(`POST /api/chat/conversations/{id}/read`) publishes event type `chat.read`
+(`{conversation_id}`) on the same topic, to the owner only, so the owner's other consoles
+drop that answer's "new answer" mark. Showing a turn's outcome
+(`POST /api/chat/turns/{turn_id}/seen`) publishes the same event naming the turn
+(`{turn_id, conversation_id}` or `{turn_id, case_id}`), so a case chat answer or a
+failure seen on one console is no news on the others. Neither event is kept for replay. The console reads
+both on its job stream (`topics=chat,jobs`) and checks `GET /api/chat/turns/active` before
+it follows a turn. With authentication disabled it polls that route instead: on load,
+when the tab becomes visible again, and every 5 seconds while it follows a turn. Case
+writes publish `case.changed` on topic `cases` with identifiers, status, and timestamps
+only, so the Case Manager queue can refresh. An auto-close review pick or a recorded
+review publishes `case.review` (`{case_id, review_id, state}`, `state` `pending` or
+`completed`) on both `cases:{id}` and `cases`, so an open queue refreshes its Review
+count. Adding or deleting a screenshot publishes `case.activity` on `cases:{id}` with
+`{case_id, kind, actor, ref: {file_id}}`, `kind` being `file_attached` or
+`file_deleted`. AI investigation changes publish `case.investigation` on `cases`, `cases:{id}` and
+`investigations` (the last served with `cases:read`); see
+[AI investigation runs](#ai-investigation-runs). Runbook run changes publish `case.runbook`
+(`{case_id, run_id, progress, revision}`) on topic `runbooks`, served only to holders of
+both `runbooks:read` and `cases:read`. Ordinary progress is sampled, while
+submission/start/terminal transitions force publication. SSE is a nudge, not the durable registry or Inbox.
 
 ## Upstream release observations
 
@@ -516,7 +1594,12 @@ Stable annotated-tag commit.
 capabilities, per-tier status, and a target-by-target explanation. `PUT` saves the
 validated desired policy but does not silently mutate storage. `POST .../preview`
 is read-only and returns the plan/blockers for the supplied or saved policy.
-`POST .../apply` is the explicit, freshly authenticated, audited mutation.
+
+The canonical mutation is `POST /api/jobs` kind `storage_lifecycle_apply`, with
+`acknowledge: true` and the exact saved policy snapshot. Admission is freshly
+authenticated and audited; execution fails if the authoritative saved policy has
+drifted. Authenticated calls to the retired `POST /api/storage/lifecycle/apply` route
+receive `410 Gone` plus `durable_job_required`; it is not a synchronous bypass.
 
 Apply is deliberately allowlisted: on Elasticsearch it can install/remove the
 Agentic SOC ILM policy and lifecycle settings only for the append-only audit and
@@ -544,9 +1627,15 @@ only configured booleans or configured field names. See the
 default 1000). It returns a canonical `application/json` attachment with a per-scope
 count/total/truncation manifest. `limit_per_scope` caps the whole selected scope;
 grouped automation and knowledge collections are sampled fairly within that cap. The
-Knowledge includes an exact runbook/playbook catalog-count manifest, sanitized full
-Markdown for operator-owned procedures, and safe metadata/manifests (without source
-content or filesystem paths) for versioned bundled procedures. The server never
+Knowledge includes an exact runbook catalog-count manifest (schema version 2: the
+runbook library, the documents of the two retired procedure lists read as they were
+stored, and the two removed bundled groups, which now export empty), sanitized full
+Markdown for operator runbooks, and safe metadata (without source content or filesystem
+paths) for the bundled runbooks. A cases export adds each case's runbook runs as
+`case_runbook_runs`, with the rows of a log-search lookup left out and counted in
+`rows_dropped`, and each case's screenshot metadata as `case_files` (never the image
+bytes, which the manifest lists as excluded); the automation scope includes the
+auto-close review ledger. The server never
 traverses environment/source credentials, users, sessions, password/MFA material,
 browser tokens, or upstream raw logs; a final recursive sanitizer removes
 credential-shaped fields and common token/private-key patterns. Raw knowledge chunks
@@ -555,8 +1644,47 @@ use fewer scopes or a lower item cap when the server returns HTTP 413. The respo
 not an import/restore format. The default permission is limited to `super_admin` and
 `soc_manager` through `data_export:export`, and each request is audited.
 
-For all records in a selected supported safe scope, use
-`POST /api/admin/export/segment` with `scope`, optional opaque `cursor`, and
+`POST /api/admin/export/archive` accepts optional `scopes` (default `all`) and is an
+executable but OpenAPI-deprecated direct full-history compatibility primitive. It walks the existing bounded segment
+machinery on the server, writes one `<scope>.ndjson` ZIP entry incrementally, and writes root
+`manifest.json` only after every selected scope emits the record count fixed at that
+scope's start. The manifest identifies
+the format as `agentic-soc-portable-export-archive` version 1, records the UTC generation
+time, authenticated actor, current `app_version` / `build_sha`, and for each scope its
+snapshot total, exported count, completion status, consistency/PIT truth, entry name,
+uncompressed byte count, and SHA-256. The server reopens the finished ZIP and streams
+every member through CRC, count, size, digest, and manifest verification before auditing
+or serving it.
+The 200 response is `application/zip`, has a real `Content-Length`, and uses a UTC-stamped
+`agentic-soc-export-*.zip` attachment filename. Any incomplete or unverified walk,
+unavailable strict registry/audit store, expired snapshot, failed late fresh-auth check,
+or disk/write error returns non-2xx before an archive is served. The temporary artifact
+and any open PIT are released on success, failure, request cancellation, or streaming
+disconnect.
+
+The direct archive route is synchronous and uses temporary server disk; artifact delivery is
+atomic in the narrow sense that HTTP response headers do not start until the complete ZIP
+has passed integrity checks. It is not one cross-scope database transaction. Each scope
+declares its own consistency: only `exact: true` proves fixed membership and values;
+PostgreSQL `bounded_at_start` means that the starting count was emitted while OFFSET pages
+may reflect concurrent changes. The backend permits one archive build/download per process
+and preserves 64 MiB of temporary-filesystem free space; another request returns 409 and
+insufficient space returns 507. The bundled Console proxy allows five minutes. For a dataset
+that may exceed that proxy/ingress window or available temporary-disk capacity, use the
+application-job contract or the direct advanced segment contract below. External
+reverse proxies need a compatible upstream timeout; increasing a timeout does not turn
+this support artifact into a backup.
+
+The primary Console workflow submits `data_export_archive` or `data_export_segment`
+through `/api/jobs`. Both run server-side after `202 Accepted` and persist one verified
+ZIP behind the terminal job's `artifact_id`. The segment job follows all scope cursors
+and packages the numbered JSON envelopes itself; the browser does not collect them.
+Artifact storage/retention and cooperative cancellation follow the application-job
+contract above.
+
+For all records in a selected supported safe scope, direct advanced clients may use the
+executable but OpenAPI-deprecated `POST /api/admin/export/segment` compatibility
+primitive with `scope`, optional opaque `cursor`, and
 `page_size` (1–5000). The 5,000 value is a per-response/segment safety bound, not a
 lifetime cap. Follow `segment.next_cursor` until `segment.complete` is `true`; never
 infer completion from a short page. Compact JSON responses are individually capped at
@@ -569,8 +1697,10 @@ for internally monotonic counters/position. A cursor is not transferable. Expira
 backend restart, or an invalid cursor requires restarting that scope. Call
 `POST /api/admin/export/segment/cancel` with the scope and last cursor on cancellation.
 
-The segment route requires both `data_export:export` and fresh authentication.
-Knowledge/automation registry reads and the delivery audit write are strict: an
+The archive and segment routes require both `data_export:export` and fresh authentication.
+Archive permission and freshness are checked again after assembly. Its strict audit row
+records a prepared, authorized artifact before network streaming; it cannot prove that the
+client received every byte. Knowledge/automation registry reads and the audit write are strict: an
 unavailable or malformed backing collection returns HTTP 503, releases an active PIT,
 and never emits a truthful-looking `complete` response.
 Cases, audit, and usage are store-paginated; automation and knowledge remain KV-backed
@@ -581,7 +1711,7 @@ chunks, credentials, or upstream logs; they are not a whole-application backup.
 
 ## Compatibility expectations
 
-The 0.1 API favors additive fields and stable existing paths, but it is still a
+The 0.2 API favors additive fields and stable existing paths, but it is still a
 pre-1.0 contract. Pin clients to an application patch version, tolerate unknown
 response fields, regenerate typed clients when the OpenAPI snapshot changes, and
 test against the `Testing` branch before promoting the accepted source tree to

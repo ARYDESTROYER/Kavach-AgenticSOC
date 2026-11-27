@@ -66,7 +66,7 @@ beforeEach(() => {
   activityMock.mockReset();
   adminListMock.mockReset();
   sessionsListMock.mockResolvedValue({ sessions: [] });
-  activityMock.mockResolvedValue({ events: [] });
+  activityMock.mockResolvedValue({ activity: [] });
 });
 
 describe('Sessions — header actions guarded when signed out (finding 18)', () => {

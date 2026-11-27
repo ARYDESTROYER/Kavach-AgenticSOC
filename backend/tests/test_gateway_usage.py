@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from app import __version__
 from app.config import ModelConfig
 from app.constants import USAGE_READ_PATTERN, Role, UsageOutcome
 from app.es.fake import InMemoryESClient
@@ -17,7 +18,8 @@ async def _usage_docs(es: InMemoryESClient):
     return [h["_source"] for h in resp["hits"]["hits"]]
 
 
-async def test_every_completion_writes_one_usage_doc():
+async def test_every_completion_writes_one_usage_doc(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TLSOC_BUILD_SHA", "gateway-success-build")
     es = InMemoryESClient()
     gw = LLMGateway(secrets=_FakeSecrets(), usage_store=UsageStore(es),
                     provider_overrides={"mock": MockProvider()})
@@ -31,6 +33,8 @@ async def test_every_completion_writes_one_usage_doc():
     assert d["case_id"] == "c1"
     assert d["outcome"] == UsageOutcome.OK.value
     assert d["total_tokens"] == d["prompt_tokens"] + d["completion_tokens"]
+    assert d["app_version"] == __version__
+    assert d["build_sha"] == "gateway-success-build"
 
 
 async def test_cost_is_recorded_for_priced_model():
@@ -44,7 +48,8 @@ async def test_cost_is_recorded_for_priced_model():
     assert docs[0]["cost"] > 0
 
 
-async def test_error_records_usage_and_raises():
+async def test_error_records_usage_and_raises(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TLSOC_BUILD_SHA", "gateway-error-build")
     es = InMemoryESClient()
     gw = LLMGateway(secrets=_FakeSecrets(), usage_store=UsageStore(es),
                     provider_overrides={"mock": _RaisingProvider()})
@@ -54,6 +59,8 @@ async def test_error_records_usage_and_raises():
     docs = await _usage_docs(es)
     assert len(docs) == 1
     assert docs[0]["outcome"] == UsageOutcome.ERROR.value
+    assert docs[0]["app_version"] == __version__
+    assert docs[0]["build_sha"] == "gateway-error-build"
 
 
 class _FakeSecrets:

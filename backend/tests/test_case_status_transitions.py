@@ -119,6 +119,93 @@ def test_closed_cannot_move_without_reopen(client, mock_provider):
     assert _action(client, cid, action="reopen").json()["status"] == "open"
 
 
+def test_resolved_case_takes_its_final_close(client, mock_provider):
+    """RESOLVED is "worked to completion, pending final close", so the dedicated close
+    verb finishes it, records the declared outcome and appends resolved → closed."""
+    cid = _create_case(client, mock_provider, "203.0.113.30")
+    r = _action(client, cid, action="resolve", disposition="false_positive",
+                disposition_declared=True, reason="benign scanner")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "resolved"
+
+    r = _action(client, cid, action="close", disposition="benign",
+                disposition_declared=True, note="final close")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "closed"
+    assert body["disposition"] == "benign"
+    last = body["status_history"][-1]
+    assert (last["from_status"], last["to_status"]) == ("resolved", "closed")
+    assert body["history"][-1]["action"] == "close"
+    assert body["history"][-1]["classified_disposition"] == "benign"
+    assert body["decision_by"] == "analyst"
+
+    # Already closed: a repeat close stays a same-status no-op (no new transition).
+    r = _action(client, cid, action="close")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "closed"
+    assert len(r.json()["status_history"]) == len(body["status_history"])
+
+
+def test_resolved_case_confirm_fp_closes_it(client, mock_provider):
+    cid = _create_case(client, mock_provider, "203.0.113.31")
+    assert _action(client, cid, action="resolve").json()["status"] == "resolved"
+    r = _action(client, cid, action="confirm_fp")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "closed"
+    assert r.json()["disposition"] == "false_positive"
+
+
+def test_resolved_case_other_moves_still_need_reopen(client, mock_provider):
+    """Only close/confirm_fp may leave RESOLVED forward; every other move out of a
+    terminal status still needs an explicit reopen, and set_status never closes."""
+    cid = _create_case(client, mock_provider, "203.0.113.32")
+    assert _action(client, cid, action="resolve").json()["status"] == "resolved"
+    for body in (
+        {"action": "set_status", "status": "open"},
+        {"action": "set_status", "status": "closed"},
+        {"action": "hold"},
+        {"action": "escalate"},
+        {"action": "acknowledge"},
+        {"action": "resume"},
+    ):
+        r = _action(client, cid, **body)
+        assert r.status_code == 400, (body, r.text)
+    assert client.get(f"/api/cases/{cid}").json()["status"] == "resolved"
+    # Recording the outcome never moves the status, so it stays legal here.
+    r = _action(client, cid, action="set_disposition", disposition="benign")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "resolved"
+    assert _action(client, cid, action="reopen").json()["status"] == "open"
+
+
+def test_closed_case_cannot_go_back_to_resolved(client, mock_provider):
+    cid = _create_case(client, mock_provider, "203.0.113.33")
+    assert _action(client, cid, action="close").json()["status"] == "closed"
+    r = _action(client, cid, action="resolve", disposition="benign", disposition_declared=True)
+    assert r.status_code == 400
+    assert "reopen the case first" in r.json()["detail"]
+    assert client.get(f"/api/cases/{cid}").json()["status"] == "closed"
+
+
+def test_bulk_close_finishes_resolved_cases(client, mock_provider):
+    """The bulk path shares the single-case guard, so a resolved row in the All scope
+    closes instead of failing with an illegal-transition error."""
+    resolved = _create_case(client, mock_provider, "203.0.113.34")
+    working = _create_case(client, mock_provider, "203.0.113.35")
+    assert _action(client, resolved, action="resolve").json()["status"] == "resolved"
+    r = client.post("/api/cases/bulk", json={
+        "ids": [resolved, working], "action": "close",
+        "disposition": "true_positive", "disposition_declared": True,
+    })
+    assert r.status_code == 200, r.text
+    assert all(row["ok"] for row in r.json()["results"]), r.json()
+    for cid in (resolved, working):
+        got = client.get(f"/api/cases/{cid}").json()
+        assert got["status"] == "closed"
+        assert got["disposition"] == "true_positive"
+
+
 def test_confirm_fp_sets_disposition(client, mock_provider):
     cid = _create_case(client, mock_provider, "203.0.113.18")
     r = _action(client, cid, action="confirm_fp")

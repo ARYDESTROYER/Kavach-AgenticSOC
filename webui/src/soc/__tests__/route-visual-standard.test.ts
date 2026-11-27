@@ -5,14 +5,16 @@
  * from quietly re-introducing a private width/header/motion grammar. Host-tab pages own
  * the shared PageContainer/PageHeader while their child panels remain embeddable.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const SRC = path.resolve(process.cwd(), "src");
 
+// Round 14 (W8a): Analytics.tsx only routes to the Metrics, Agent effectiveness and Cost
+// pages, and each of those owns its container and header, so the three pages are listed.
 const PRIMARY_SURFACES = [
-  "soc/pages/Analytics.tsx",
+  "soc/pages/AgentEffectiveness.tsx",
   "soc/pages/Approvals.tsx",
   "soc/pages/Audit.tsx",
   "soc/pages/Baseline.tsx",
@@ -28,11 +30,12 @@ const PRIMARY_SURFACES = [
   "soc/pages/Metrics.tsx",
   "soc/pages/Models.tsx",
   "soc/pages/Overview.tsx",
-  "soc/pages/Scans.tsx",
   "soc/pages/Settings.tsx",
   "soc/pages/Sources.tsx",
   "soc/pages/Standup.tsx",
+  "soc/pages/TeamActivity.tsx",
   "soc/pages/Tuning.tsx",
+  "soc/pages/WhatsNew.tsx",
   "soc/pages/Workspace.tsx",
   "soc/components/UnifiedLogsSheet.tsx",
 ] as const;
@@ -69,9 +72,32 @@ describe("Console route visual standard", () => {
     const manager = source("soc/pages/CaseManager.tsx");
     expect(manager).toContain("<PageContainer");
     expect(manager).toContain('variant="fluid"');
-    expect(manager).toContain("w-auto sm:-mx-2 lg:-mx-4");
-    expect(manager).toContain("2xl:-mx-8");
+    expect(manager).toContain("w-auto -my-2 sm:-mx-2");
     expect(manager).toContain('role="separator"');
+    // Round 16 (WP02): the split workspace owns its frame, as Chat does: no routed page
+    // header, an sr-only h1 (the top bar's breadcrumb shows the name).
+    expect(manager).not.toContain("<PageHeader");
+    expect(manager).toContain('<h1 className="sr-only">Case Manager</h1>');
+    // The bleed no longer steps with the old gutter ladder, so it must not re-grow one.
+    expect(manager).not.toContain("lg:-mx-4");
+    expect(manager).not.toContain("2xl:-mx-8");
+  });
+
+  it("keeps the shell gutter and the Case Manager bleed a MATCHED PAIR", () => {
+    // These two strings are the whole contract: the bleed widens the board back out of the
+    // shell gutter to a constant 16px inset at every width. Tuned independently they drift,
+    // and at >=1536px the board overflows `<main class="… overflow-x-hidden">` by 8px/side.
+    // Round 16 (WP02): `-my-2` takes 8px of the 24px top and bottom inset back too, so the
+    // board sits on 16px on every side, and the height is the viewport minus the 56px bar
+    // and those two insets (5.5rem), so the frame starts at y = 72 and the page never
+    // scrolls. jsdom cannot see either (no layout, no media queries), so the source strings
+    // ARE the proof: no other gate covers this.
+    expect(source("soc/AppShell.tsx")).toContain(
+      "const CONTENT_INSET = 'mx-auto w-full min-w-0 px-4 py-6 sm:px-6';",
+    );
+    expect(source("soc/pages/CaseManager.tsx")).toContain(
+      'className="h-[calc(100dvh-5.5rem)] min-h-0 w-auto -my-2 sm:-mx-2 xl:min-h-[600px]"',
+    );
 
     const home = source("soc/pages/Home.tsx");
     expect(home).toContain("<Overview");
@@ -82,35 +108,60 @@ describe("Console route visual standard", () => {
   it("keeps every embedded Case Manager tab on one shared content rail", () => {
     const shared = source("soc/pages/casedetail/shared.tsx");
     expect(shared).toContain("export const CASE_MANAGER_PANEL_PADDING");
-    expect(shared).toContain("px-4 py-4 sm:px-5 sm:py-5 lg:px-6");
+    // Round 16 (SPEC §4.4 WP03): container queries on the case pane, never the viewport,
+    // and 16px above the first content at every width.
+    expect(shared).toContain("'px-4 pt-4 pb-6 @[48rem]/case:px-5 @[64rem]/case:px-6'");
+    expect(shared).not.toMatch(/CASE_MANAGER_PANEL_PADDING =[^;]*\b(sm|lg):/);
 
     for (const file of [
       "soc/pages/casedetail/OverviewPanel.tsx",
-      "soc/pages/casedetail/TimelinePanel.tsx",
+      "soc/pages/casedetail/EvidencePanel.tsx",
       "soc/pages/casedetail/InvestigationPanel.tsx",
-      "soc/pages/casedetail/ThreatContextPanel.tsx",
       "soc/pages/casedetail/CollaborationPanel.tsx",
       "soc/pages/casedetail/CaseChatPanel.tsx",
+      "soc/pages/CaseDetail.tsx",
     ]) {
       expect(source(file), `${file} must reuse the Case Manager content rail`).toContain(
         "CASE_MANAGER_PANEL_PADDING",
       );
     }
+    // The stage timeline and the threat context are SECTIONS of the Brief and Evidence
+    // tabs, which own the rail, so they never add their own (a second rail would stack
+    // 32px gutters inside the tab).
+    for (const file of [
+      "soc/pages/casedetail/TimelinePanel.tsx",
+      "soc/pages/casedetail/ThreatContextPanel.tsx",
+    ]) {
+      expect(source(file), `${file} must not add a rail of its own`).not.toContain(
+        "CASE_MANAGER_PANEL_PADDING",
+      );
+    }
   });
 
-  it("lets Workspace Chat own one fluid route container without a detached embedded toolbar", () => {
+  it("lets Workspace Chat own its full-height frame instead of a page container (chat revamp §10.1a)", () => {
     const workspace = source("soc/pages/Workspace.tsx");
     const chat = source("soc/pages/Chat.tsx");
-    const history = source("soc/components/ChatHistoryRail.tsx");
+    const frame = source("soc/chat/workspace/ChatWorkspace.tsx");
+    const history = source("soc/chat/workspace/HistoryRail.tsx");
 
+    // Both Workspace tabs are lazy so Chat never downloads the case-detail chunk.
+    expect(workspace).toContain("const Chat = React.lazy(() => import('./Chat'));");
+    expect(workspace).toContain("const Investigate = React.lazy(() => import('./Investigate'));");
+    expect(workspace).toContain("<Chat caseId={caseId} opts={opts} />");
     expect(workspace).not.toContain('<PageContainer variant="fixed">');
-    expect(workspace).toContain("return <Chat caseId={caseId} />");
-    expect(chat).toContain('variant="fluid"');
-    expect(workspace).not.toContain("<Chat embedded");
-    expect(chat).toContain("actions={actions}");
-    expect(chat).toContain("<ChatHistoryRail");
-    expect(history).toContain('aria-label="Conversation history"');
-    expect(chat).toContain('presentation="workspace"');
+    expect(chat).toContain("<ChatWorkspace");
+    expect(chat).not.toContain("<PageHeader");
+    expect(chat).not.toContain("<PageContainer");
+    // The frame bleeds the shell's WHOLE inset: `-mx-4 -my-6 sm:-mx-6` with `w-auto` is the
+    // matched pair of CONTENT_INSET's `px-4 py-6 sm:px-6` (pinned above), so no canvas
+    // strip shows beside the chat (Round 12, diagnosis/layout.md (h)), and the height is
+    // the viewport minus the 3.5rem top bar, so the document never scrolls. `overflow-clip`
+    // (never `hidden`): a clipped frame cannot be scrolled by a focus() or a contents jump.
+    expect(frame).toContain(
+      'className="-mx-4 -my-6 flex h-[calc(100dvh-3.5rem)] w-auto min-h-0 min-w-0 overflow-clip bg-background sm:-mx-6"',
+    );
+    expect(frame).toContain('<h1 className="sr-only">Chat</h1>');
+    expect(history).toContain('aria-label="Chat history"');
   });
 
   it("uses one shared blocking-load grammar across case evidence panels", () => {
@@ -125,15 +176,27 @@ describe("Console route visual standard", () => {
     }
   });
 
-  it("resets row-start dividers when flat telemetry strips wrap", () => {
-    const cases = source("soc/pages/Cases.tsx");
-    const metrics = source("soc/pages/Metrics.tsx");
-    const sources = source("soc/pages/Sources.tsx");
-
-    for (const page of [cases, metrics]) {
-      expect(page).toContain("sm:[&>*:nth-child(3n+1)]:border-l-0");
-      expect(page).toContain("xl:[&>*:first-child]:border-l-0");
+  /**
+   * Telemetry strips (Round 14, SPEC §4.9.2): a page's strip is the shared `KpiStrip`. Its
+   * panel grid (`KpiTileGrid surface="panel"`) draws only the rules between two tiles, at
+   * every column count, so a wrapped row never starts with a hanging divider; the strip
+   * primitive's own tests pin that grammar. The hand-rolled `grid grid-cols-2 border-y`
+   * strips of Cases, Metrics and Sources, whose row-start resets this gate once derived
+   * from each strip's column counts, are gone, and none may come back on any page.
+   */
+  it("puts the telemetry strips on the shared KpiStrip, never a hand-rolled bordered grid", () => {
+    const strips = ["soc/pages/Cases.tsx", "soc/pages/Metrics.tsx", "soc/pages/Sources.tsx"];
+    expect(strips.length).toBeGreaterThan(0);
+    for (const file of strips) {
+      expect(source(file), `${file} must render its strip with the shared KpiStrip`).toMatch(/<KpiStrip\b/);
     }
-    expect(sources).toContain("sm:[&>*:first-child]:border-l-0");
+    const pages = readdirSync(path.join(SRC, "soc/pages")).filter((name) => name.endsWith(".tsx"));
+    expect(pages.length).toBeGreaterThan(0);
+    for (const name of pages) {
+      expect(
+        source(`soc/pages/${name}`),
+        `soc/pages/${name} must not hand-roll a bordered telemetry strip grid; use KpiStrip`,
+      ).not.toMatch(/grid grid-cols-2 border-y border-border\/70/);
+    }
   });
 });

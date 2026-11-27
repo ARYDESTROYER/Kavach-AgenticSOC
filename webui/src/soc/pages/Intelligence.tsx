@@ -1,100 +1,64 @@
 /**
- * Intelligence — the host for the agent's knowledge and procedure surfaces, each
- * with its own explicit operator job:
+ * Intelligence: the host for the agent's knowledge and procedure surfaces, each with its own
+ * operator job.
  *
- *   - Knowledge corpus: indexed RAG material (import / inspect / search / delete).
- *   - Reference runbooks: retrievable investigation guidance (browse / author / index).
- *   - Operator memory: approved durable facts injected into investigations + chat.
- *   - Response playbooks: deterministically selected operator procedures.
- *   - Agent personas: the read-only specialist roster used by deterministic routing.
+ *   - Knowledge corpus: indexed RAG material (import, inspect, search, delete).
+ *   - Runbooks: the team's response procedures (Round 14, SPEC §4.10.1), a page of its own
+ *     with its library and editor.
+ *   - Operator memory: approved durable facts given to investigations and chat.
+ *   - Agent personas: the read-only specialist roster the router chooses from.
  *
- * The redundant in-page "Knowledge | Memory | Playbooks" segmented strip was removed
- * (the left-nav Intelligence group exposes a clickable child for every job, so an
- * in-page tab bar duplicating those buttons is clutter). The active
- * sub-view is selected by the `tab` route opt (forced by the `knowledge` / `memory` /
- * `runbooks` / `playbooks` / `personas` routes and by
- * `navigate('intelligence', { tab })`); the host
- * owns the single PageHeader (each sub-page renders `embedded`), whose title/icon
- * reflect the active sub-view so a left-nav click lands on a correctly-titled page.
+ * The active view comes from the `tab` route opt (forced by the `knowledge`, `runbooks`,
+ * `memory` and `personas` routes and by `navigate('intelligence', { tab })`). Knowledge and
+ * memory render inside the host's one page header; Runbooks and Personas draw their own.
+ * The retired `playbooks` and `catalog` ids open Runbooks.
  */
-import { Boxes, Brain, BookMarked, BookOpenCheck, Users, type LucideIcon } from 'lucide-react';
 import { useNavigateOptional, type Navigate } from '@/soc/router';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { PageContainer } from '@/soc/components/PageContainer';
 import Knowledge from './Knowledge';
 import Runbooks from './Runbooks';
 import Memory from './Memory';
-import Catalog from './Catalog';
+import Personas from './Personas';
 
 export interface IntelligenceProps {
   onNavigate?: Navigate;
-  /** Active sub-view from the route opts (the legacy 'catalog' alias opens Playbooks). */
+  /** Active view from the route opts. */
   tab?: string;
 }
 
-type SubView = 'knowledge' | 'runbooks' | 'memory' | 'playbooks' | 'personas';
+type View = 'knowledge' | 'runbooks' | 'memory' | 'personas';
 
-const HEADERS: Record<SubView, { icon: LucideIcon; title: string; description: string }> = {
+const HEADERS: Record<'knowledge' | 'memory', { title: string; help: string }> = {
   knowledge: {
-    icon: Boxes,
     title: 'Knowledge corpus',
-    description: 'Indexed RAG material the agent can retrieve — import, inspect, search, and manage each source.',
-  },
-  runbooks: {
-    icon: BookMarked,
-    title: 'Reference runbooks',
-    description: 'Trusted investigation guidance retrieved as reference knowledge; never executable authority.',
+    help: 'Indexed material the agent can retrieve. Import, inspect, search and manage each source.',
   },
   memory: {
-    icon: Brain,
     title: 'Operator memory',
-    description: 'Approved durable operator facts available to automated investigations and Workspace chat.',
-  },
-  playbooks: {
-    icon: BookOpenCheck,
-    title: 'Response playbooks',
-    description: 'Operator procedures selected deterministically to guide an investigation; never decision authority.',
-  },
-  personas: {
-    icon: Users,
-    title: 'Agent personas',
-    description: 'Read-only specialist profiles selected deterministically to focus one investigator per cluster.',
+    help: 'Approved durable operator facts given to automated investigations and Workspace chat.',
   },
 };
 
+export function intelligenceView(tab: string | undefined): View {
+  if (tab === 'runbooks' || tab === 'playbooks' || tab === 'catalog') return 'runbooks';
+  if (tab === 'memory') return 'memory';
+  if (tab === 'personas') return 'personas';
+  return 'knowledge';
+}
+
 export default function Intelligence({ onNavigate, tab }: IntelligenceProps = {}) {
-  // Coupling-A: resolve navigate once (an explicit prop wins for tests). Call the hook
-  // UNCONDITIONALLY (rules-of-hooks), then let an explicit prop win.
+  // Resolve navigate once (an explicit prop wins for tests); the hook is called unconditionally.
   const contextNavigate = useNavigateOptional();
   const navigate = onNavigate ?? contextNavigate;
-  const view: SubView =
-    tab === 'runbooks'
-      ? 'runbooks'
-      : tab === 'memory'
-        ? 'memory'
-        : tab === 'personas'
-          ? 'personas'
-          : tab === 'playbooks' || tab === 'catalog'
-            ? 'playbooks'
-            : 'knowledge';
+  const view = intelligenceView(tab);
+  if (view === 'runbooks') return <Runbooks />;
+  if (view === 'personas') return <Personas />;
   const header = HEADERS[view];
   return (
-    <PageContainer variant="wide" className="space-y-6">
-      <PageHeader
-        icon={header.icon}
-        eyebrow="Intelligence"
-        title={header.title}
-        description={header.description}
-      />
-      {view === 'memory' ? (
-        <Memory embedded onNavigate={navigate} />
-      ) : view === 'runbooks' ? (
-        <Runbooks embedded />
-      ) : view === 'playbooks' || view === 'personas' ? (
-        <Catalog embedded defaultTab={view} />
-      ) : (
-        <Knowledge embedded onNavigate={navigate} />
-      )}
+    <PageContainer variant="wide">
+      <PageHeader title={header.title} help={header.help} />
+      {view === 'memory' ? <Memory embedded onNavigate={navigate} /> : <Knowledge embedded onNavigate={navigate} />}
     </PageContainer>
   );
 }

@@ -22,7 +22,8 @@ import ssl
 
 import pytest
 
-from app.config import Preferences
+from app.config import Preferences, SourceInstance
+from app.constants import IngestMode, SourceType
 from app.connectors.base import ConnectorManifest, PushReceiver
 from app.connectors.receivers import (
     BUILTIN_RECEIVERS,
@@ -270,7 +271,12 @@ def test_webhook_bearer_auth_valid(prefs):
     assert len(events) == 1
     assert events[0].ip == "203.0.113.9"
     assert events[0].user == "root"
-    assert events[0].severity == 75.0       # severity_id 4 (High) -> 75.0
+    # This receiver is not a CONFIGURED source, so no native ladder resolves and the raw
+    # 8 projects through the identity -> severity_id 1 -> 10.0. The retired
+    # ``raw <= 10 ? raw*10`` guess is what used to read it as High (75.0); it also
+    # disagreed with a CONFIGURED push source, which already produced 10.0 here. See
+    # ``test_undeclared_source_ingests_on_the_identity_ladder`` for the full contract.
+    assert events[0].severity == 10.0
 
 
 def test_webhook_bearer_auth_invalid(prefs):
@@ -315,7 +321,9 @@ def test_webhook_ndjson_body(prefs):
     assert len(events) == 2
     assert [e.ip for e in events] == ["10.0.0.1", "10.0.0.2"]
     assert events[0].user == "a"
-    assert events[0].severity == 90.0       # severity 9 -> Critical -> 90.0
+    # Undeclared ladder -> identity: 9/100 -> severity_id 1 -> 10.0 (see the dedicated
+    # ingest-ladder contract test below).
+    assert events[0].severity == 10.0
 
 
 def test_idless_ndjson_ids_are_distinct_stable_and_source_scoped(prefs):
@@ -354,6 +362,15 @@ def test_identical_vendor_ids_are_isolated_at_ingest_boundary():
 
 
 def test_webhook_applies_saved_source_field_mappings(prefs):
+    # The saved source config carries the field mappings AND the source's declared
+    # native severity ceiling — both are read from the same configured SourceInstance.
+    prefs = prefs.model_copy(update={"sources": [SourceInstance(
+        id="custom-webhook",
+        source_type=SourceType.GENERIC,
+        ingest_mode=IngestMode.PUSH_HTTP,
+        display_name="Custom webhook on a 0-10 risk ladder",
+        severity_scale_max=10.0,
+    )]})
     wh = WebhookReceiver(
         config={
             "auth_mode": "none",
@@ -386,6 +403,7 @@ def test_webhook_applies_saved_source_field_mappings(prefs):
     assert event.host == "workstation-7"
     assert event.rule == "DET-7"
     assert event.rule_name == "Impossible travel"
+    # risk.value 9 on the source's DECLARED 0-10 ladder -> 90/100 -> severity_id 5 -> 90.0
     assert event.severity == 90.0
     assert event.timestamp_millis > 0
 
@@ -414,7 +432,8 @@ def test_hec_unwraps_object_event(prefs):
     assert len(events) == 1
     assert events[0].ip == "198.51.100.4"
     assert events[0].user == "svc"
-    assert events[0].severity == 90.0
+    # Undeclared ladder -> identity (see the ingest-ladder contract test below).
+    assert events[0].severity == 10.0
 
 
 def test_hec_unwraps_string_event(prefs):
@@ -556,6 +575,58 @@ def test_score_to_severity_id_is_scale_aware():
     assert score_to_severity_id(12, "wazuh_0_16") == 4  # 12/16*100 = 75 → High
     assert score_to_severity_id(8, "auto") == 4         # legacy heuristic unchanged (back-compat)
     assert score_to_severity_id(95, "ocsf_0_100") == 5  # Critical either way
+
+
+def test_score_to_severity_id_accepts_a_declared_numeric_ceiling():
+    """The modern input is a NUMBER — the source's declared ladder ceiling.
+
+    One declared number describes any ladder (0-10, 0-16, 0-1000), projected through the
+    ONE shared formula. The deprecated string ids above stay byte-identical, but nothing
+    in the suite resolves a source to one of them any more."""
+    from app.ocsf.model import score_to_severity_id
+
+    assert score_to_severity_id(8, 100.0) == 1     # identity: 8/100 -> Informational
+    assert score_to_severity_id(8, 10.0) == 4      # 8/10 -> 80 -> High
+    assert score_to_severity_id(12, 16.0) == 4     # 12/16 -> 75 -> High
+    assert score_to_severity_id(500, 1000.0) == 3  # 500/1000 -> 50 -> Medium
+    # a ceiling that could never divide falls back rather than raising
+    assert score_to_severity_id(8, 0) == score_to_severity_id(8, "auto")
+
+
+def test_undeclared_source_ingests_on_the_identity_ladder(prefs):
+    """INGEST-side contract: an UNDECLARED source projects raw severity through identity.
+
+    A push receiver whose ``connector_id`` matches no configured source has no native
+    ladder to resolve, so the raw number is read as-is on 0-100. The retired
+    ``raw <= 10 ? raw*10`` guess used to inflate exactly this case — and it disagreed
+    with a CONFIGURED push source, which already produced the identity reading, so this
+    change removes an inconsistency rather than creating one.
+
+    Declaring the source's real ceiling restores the high reading. That declaration is
+    the ONLY thing that moves the number: the connector type is not an input.
+    """
+    body = json.dumps({"src_ip": "10.0.0.1", "severity": 9}).encode()
+    headers = {"Content-Type": "application/json"}
+
+    undeclared = WebhookReceiver(config={"auth_mode": "none"}, connector_id="wh-undeclared")
+    ev = undeclared.handle_request(body, headers, prefs)[0]
+    assert ev.severity == 10.0                       # 9/100 -> severity_id 1
+
+    declared_prefs = prefs.model_copy(update={"sources": [SourceInstance(
+        id="wh-declared",
+        source_type=SourceType.GENERIC,
+        ingest_mode=IngestMode.PUSH_HTTP,
+        display_name="declared 0-10 ladder",
+        severity_scale_max=10.0,
+    )]})
+    declared = WebhookReceiver(config={"auth_mode": "none"}, connector_id="wh-declared")
+    ev2 = declared.handle_request(body, headers, declared_prefs)[0]
+    assert ev2.severity == 90.0                      # 9/10 -> 90 -> severity_id 5
+
+    # An unmatched connector_id against the SAME prefs falls back to the identity — the
+    # two unresolvable paths (no sources at all / no matching source) never disagree.
+    stray = WebhookReceiver(config={"auth_mode": "none"}, connector_id="wh-undeclared")
+    assert stray.handle_request(body, headers, declared_prefs)[0].severity == 10.0
 
 
 @pytest.mark.asyncio

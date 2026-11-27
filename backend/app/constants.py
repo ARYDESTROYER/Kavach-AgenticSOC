@@ -7,6 +7,7 @@ the policy boundaries (Section 6.4) are defined exactly once.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal, get_args
 
 # --------------------------------------------------------------------------- #
 # Elasticsearch indices OWNED by the backend (Section 7).
@@ -193,6 +194,24 @@ BATCH_JOBS_NS = "batch_jobs"
 BATCH_JOBS_KEY = "jobs"
 BATCH_JOBS_DOC_ID = "batch_jobs"        # ES doc id within CONFIG_INDEX
 
+# Durable operator jobs (server-owned long operations).  The complete registry is
+# one strict-CAS document in the existing state-backend KV, so this introduces no
+# Elasticsearch index, SQL table, or migration.
+JOBS_NS = "jobs"
+JOBS_KEY = "jobs"
+JOBS_DOC_ID = "jobs"                    # ES doc id within CONFIG_INDEX
+
+# Frozen investigation fixtures for the replay harness: one bounded CATALOG document
+# plus a FIXED-SIZE ring of body slots, over the SAME shared KV every other Round-3/4
+# store uses — no new Elasticsearch index, SQL table, or migration.  A fixed slot ring
+# rather than one key per fixture because :class:`app.stores.base.KVStore` has no delete
+# primitive: per-fixture keys would leave an unbounded tail of tombstones, while slot
+# ``seq % ring_size`` is simply overwritten.  The ES adapter composes ``<ns>:<key>`` doc
+# ids for both, so no per-document id mapping is required.
+REPLAY_FIXTURES_NS = "replay_fixtures"
+REPLAY_FIXTURES_KEY = "catalog"
+REPLAY_FIXTURE_SLOT_PREFIX = "slot-"    # body key = f"{PREFIX}{index:04d}"
+
 # Threshold TUNING state (per-rule tuning suggestions + counters) — the nightly
 # auto-tuner's proposed threshold adjustments awaiting apply/shadow-eval.
 TUNING_NS = "tuning"
@@ -228,6 +247,28 @@ NOISE_KEY = "noise_counters"
 NOISE_DOC_ID = "noise_counters"         # ES doc id within CONFIG_INDEX
 
 # --------------------------------------------------------------------------- #
+# RAG CORPUS HEALTH — the durable record of the last knowledge projection.
+# --------------------------------------------------------------------------- #
+# Same single-KV-document pattern as NOISE_NS above: no new ES index, SQL table or
+# migration. ``RagService.last_projection`` is IN-PROCESS only, so the evidence of a
+# corpus collapse died with the container both times it happened in production — and
+# a restart is exactly what an operator does when they notice something is wrong.
+# This document persists the last projection outcome and the last REFUSAL so the
+# condition survives that restart and can be reported on a health surface.
+# Advisory observability only: never read by ``case_manager.decide()`` (#3), and
+# every read/write is fail-open so a store glitch can never break seeding.
+RAG_HEALTH_NS = "rag_health"
+RAG_HEALTH_KEY = "rag_health"
+RAG_HEALTH_DOC_ID = "rag_health"        # ES doc id within CONFIG_INDEX
+
+# Intentional RAG corpus migrations (``stores.rag_corpus_migration``): one KV document
+# per knowledge source, keyed by the source name, naming the document-id scheme a
+# build projects and the schemes it replaced on purpose. The projection guard reads
+# it so a deliberate source replacement, in either direction of an upgrade or a
+# rollback, is never mistaken for corpus loss. Same zero-migration KV pattern.
+RAG_CORPUS_MIGRATION_NS = "rag_corpus_migration"
+
+# --------------------------------------------------------------------------- #
 # Operator-added CUSTOM MODELS (self-hosted / LiteLLM / vLLM / Ollama — any
 # OpenAI-compatible endpoint) registered at RUNTIME from the UI, so a local model
 # can be added with no rebuild. Same single-KV-document pattern as PRICE_OVERLAY_NS
@@ -243,6 +284,222 @@ NOISE_DOC_ID = "noise_counters"         # ES doc id within CONFIG_INDEX
 CUSTOM_MODELS_NS = "custom_models"
 CUSTOM_MODELS_KEY = "models"
 CUSTOM_MODELS_DOC_ID = "custom_models"  # ES doc id within CONFIG_INDEX
+
+# --------------------------------------------------------------------------- #
+# Chat REPORTS (chat revamp SPEC §9.1). Per-user report documents built from
+# Workspace chat answers. Same zero-migration KV pattern as every namespace above,
+# but ONE document per report plus ONE small per-user index document, so opening a
+# report never loads another user's (or another report's) items. With the ES
+# backend each (namespace, key) is the CONFIG_INDEX doc ``reports:<key>``; the
+# store composes ``key = "<user-hash>:<report-id>"`` for a report and
+# ``"<user-hash>:<REPORTS_INDEX_KEY>"`` for the index, so the ES doc id reads
+# ``reports:<user-hash>:<report-id>`` exactly as the spec names it. Raw usernames
+# never appear in a key (the hash is the chat-history partition hash). Report
+# content is presentation data only: it never feeds ``case_manager.decide()`` (#3).
+# --------------------------------------------------------------------------- #
+REPORTS_NS = "reports"
+REPORTS_INDEX_KEY = "index"
+REPORT_ID_PREFIX = "rpt-"
+REPORT_ITEM_ID_PREFIX = "rpti-"
+MAX_REPORTS_PER_USER = 100
+MAX_REPORT_ITEMS = 60  # Round 12 (SPEC D11): monthly/executive reports from chat
+MAX_REPORT_DOC_BYTES = 512_000
+MAX_REPORT_TITLE_CHARS = 120
+MAX_REPORT_NOTE_CHARS = 500
+MAX_REPORT_SUMMARY_CHARS = 1_200
+MAX_REPORT_NEXT_STEPS = 5
+
+# --------------------------------------------------------------------------- #
+# Round 14 RUNBOOKS (SPEC §4.10.6). The one runbook feature replaces the two legacy
+# procedure stores (``PLAYBOOKS_NS`` and ``RUNBOOKS_NS`` above, which stay readable
+# for one release). Both namespaces use the shared KV store, so there is no new ES
+# index, SQL table or migration (#12). On Elasticsearch every document holds one
+# opaque canonical-JSON string under a fixed ``runbook_``-prefixed field (the
+# reports-store rule), so runbook text never grows the shared mapping.
+#
+# * ``runbook_library``: ``index`` (the bounded list of runbook summaries),
+#   ``rb:<id>`` (every version of one operator runbook) and ``migration`` (the
+#   one-shot marker of §4.10.17). Built-in runbooks are package data, never stored.
+# * ``runbook_runs``: ``case:<case_id>`` (every run on one case, with live step
+#   progress) and ``ledger:<yyyy-mm>`` (one compact row per run, written only on
+#   run-level transitions, keyed on the UTC month the run started).
+#
+# Runbooks and runs are human workflow: neither ever feeds ``case_manager.decide()``
+# or ``AutoClosePolicy`` (#3), and automatic closes never read run state.
+# --------------------------------------------------------------------------- #
+RUNBOOK_LIBRARY_NS = "runbook_library"
+RUNBOOK_LIBRARY_INDEX_KEY = "index"
+RUNBOOK_LIBRARY_MIGRATION_KEY = "migration"
+RUNBOOK_LIBRARY_DOC_KEY_PREFIX = "rb:"
+RUNBOOK_RUNS_NS = "runbook_runs"
+RUNBOOK_RUNS_CASE_KEY_PREFIX = "case:"
+RUNBOOK_RUNS_LEDGER_KEY_PREFIX = "ledger:"
+
+# Audit actors written by the Round 14 runbook feature (SPEC §4.10.9, §4.10.17). The
+# selector writes the investigator's ``DECISION`` row naming the winning runbook (the
+# successor of the legacy ``playbook_selector`` actor, which stays readable forever);
+# the migration writes one ``runbook.migrated`` row per converted legacy document as
+# a system actor.
+RUNBOOK_SELECTOR_ACTOR = "runbook_selector"
+RUNBOOK_MIGRATION_ACTOR = "runbook_migration"
+
+# --------------------------------------------------------------------------- #
+# Round 15 KV namespaces (SPEC §3.4, D5.1, D6.4). Same zero-migration KV pattern as
+# every namespace above (#12): no new ES index, SQL table or migration, and every
+# document a fixed, namespace-prefixed set of at most six top-level fields with its
+# payload in opaque JSON (or the base64 content field).
+#
+# * ``case_files``: screenshots on a case (``case:<case_id>`` index, write-once
+#   ``blob:<file_id>`` and ``thumb:<file_id>`` content, optional ``usage`` totals).
+#   Never on the ``Case`` document, never read by a model (#7, #9).
+# * ``auto_close_review``: the one strict-CAS ``ledger`` document of the random
+#   auto-close review sample. Human workflow only: never read by ``decide()`` (#3).
+# --------------------------------------------------------------------------- #
+CASE_FILES_NS = "case_files"
+AUTO_CLOSE_REVIEW_NS = "auto_close_review"
+
+# Round 15 (SPEC D6.7, D6.9): the one token that marks an auto-close review. It is the
+# ``FeedbackEntry.origin`` of a review grade, the ``event`` of the case history entry
+# that names it (``{event, review_id, feedback_ts, analyst, ts, agrees}``), and the only
+# value ``CaseAction.review_via`` accepts.
+AUTO_CLOSE_REVIEW_ORIGIN = "auto_close_review"
+AUTO_CLOSE_REVIEW_EVENT = "auto_close_review"
+REVIEW_VIA_AUTO_CLOSE_REVIEW = "auto_close_review"
+
+# Round 15 (SPEC D4.2): what a person did about a case, as a fixed vocabulary. Optional
+# on a lifecycle action (``CaseAction.actions_taken``), at most
+# :data:`CASE_ACTIONS_TAKEN_MAX` values, an unknown value answers 422. Stored on the
+# ``analyst_action`` history entry and in the structured audit row's ``changes``;
+# shown in the case Markdown export. Plain data a person chose: never model text, and
+# never read by ``decide()`` (#3).
+CaseActionTaken = Literal[
+    "no_action_needed",
+    "blocked_indicator",
+    "isolated_host",
+    "disabled_account",
+    "reset_credentials",
+    "removed_malware",
+    "patched_or_hardened",
+    "notified_owner",
+    "escalated_externally",
+    "tuned_detection",
+    "other",
+]
+CASE_ACTIONS_TAKEN: tuple[str, ...] = get_args(CaseActionTaken)
+CASE_ACTIONS_TAKEN_MAX = 8
+#: The words the case Markdown export uses for each value (sentence case, plain).
+CASE_ACTIONS_TAKEN_LABELS: dict[str, str] = {
+    "no_action_needed": "No action needed",
+    "blocked_indicator": "Blocked an indicator",
+    "isolated_host": "Isolated a host",
+    "disabled_account": "Disabled an account",
+    "reset_credentials": "Reset credentials",
+    "removed_malware": "Removed malware",
+    "patched_or_hardened": "Patched or hardened",
+    "notified_owner": "Notified the owner",
+    "escalated_externally": "Escalated outside the SOC",
+    "tuned_detection": "Tuned the detection",
+    "other": "Other",
+}
+
+# Round 15 (SPEC D7.1): the structured audit ``action`` each human case-work row now
+# carries. ``action_type``, ``surface`` and ``result_summary`` of these rows stay
+# byte-identical; the read API's event families map onto them
+# (``audit.query.EVENT_FAMILY_ALIASES``) so a filter by the old family still finds the
+# new rows.
+CASE_LIFECYCLE_AUDIT_ACTIONS: dict[str, str] = {
+    "acknowledge": "case.acknowledged",
+    "close": "case.closed",
+    "confirm_fp": "case.fp_confirmed",
+    "resolve": "case.resolved",
+    "reopen": "case.reopened",
+    "escalate": "case.escalated",
+    "deescalate": "case.deescalated",
+    "hold": "case.held",
+    "resume": "case.resumed",
+    "set_disposition": "case.disposition_set",
+    "set_status": "case.status_set",
+}
+CASE_ASSIGNED_AUDIT_ACTION = "case.assigned"
+CASE_TAGGED_AUDIT_ACTION = "case.tagged"
+CASE_COMMENTED_AUDIT_ACTION = "case.commented"
+CASE_GRADED_AUDIT_ACTION = "case.graded"
+CASE_COLLAB_AUDIT_ACTIONS: tuple[str, ...] = (
+    CASE_ASSIGNED_AUDIT_ACTION,
+    CASE_TAGGED_AUDIT_ACTION,
+    CASE_COMMENTED_AUDIT_ACTION,
+)
+#: A bulk action's audit rows carry ``run_id = "<prefix><id>"`` (SPEC D7.3): the
+#: existing ``batch_id`` of ``POST /api/cases/bulk`` and the ``bulk-<job_id>`` of the
+#: ``case_lifecycle``, ``case_assign`` and ``case_tag`` jobs. Legacy rows are never bulk.
+BULK_RUN_ID_PREFIX = "bulk-"
+
+# --------------------------------------------------------------------------- #
+# Invisible / reordering code points (chat revamp SPEC §7.6 + BLOCKS.md amendment 4).
+#
+# ONE code-point table shared by the prompt-side marker normaliser
+# (``agents/prompts._neutralise_markers``, which renders these as visible escapes)
+# and the display-side sanitiser (``agents/blocks.display_text``, which strips them),
+# and pinned to the webui ``displayText()`` through ``answer-blocks.contract.json``
+# ("invisible_ranges"). It is the Unicode Default_Ignorable_Code_Point set
+# (DerivedCoreProperties.txt) plus the controls and separators that render as
+# nothing or reorder text:
+#
+# * C0 EXCEPT TAB/LF/CR (ordinary whitespace that fenced payloads and Markdown must
+#   keep), DEL and C1;
+# * the soft hyphen, the combining grapheme joiner, the Arabic letter mark, the Hangul
+#   fillers (U+115F/1160, U+3164, U+FFA0 — "letters" that draw nothing), the Khmer
+#   inherent vowels and the Mongolian free variation selectors/vowel separator;
+# * the zero-width space/joiners, LRM/RLM, the line/paragraph separators, every bidi
+#   embedding/override/isolate, the word joiner and invisible operators;
+# * the variation selectors (U+FE00-FE0F; also used to smuggle bytes behind an
+#   emoji), the BOM, the reserved specials and interlinear-annotation controls;
+# * the shorthand-format and musical-symbol format controls, and the whole TAG
+#   block plus the variation-selector supplement (U+E0000-E0FFF: tag characters
+#   spell hidden ASCII that a model reads and a reviewer cannot see).
+#
+# These are exactly the code points that let a forged ``<<<END_...>>>`` marker hide
+# from a regex, smuggle text past a human reader, or render differently from what a
+# reviewer reads. Ranges are sorted and disjoint; three of them are astral, so every
+# generator of a regex class from this table must emit astral-safe escapes
+# (``\U%08x`` here, ``\u{...}`` with the ``u`` flag in JS).
+# --------------------------------------------------------------------------- #
+INVISIBLE_TEXT_RANGES: tuple[tuple[int, int], ...] = (
+    (0x0000, 0x0008),
+    (0x000B, 0x000C),
+    (0x000E, 0x001F),
+    (0x007F, 0x009F),
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFFB),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+
+
+def _class_escape(code_point: int) -> str:
+    # ``\uXXXX`` only addresses the BMP: padding an astral code point to four digits
+    # would silently mean "U+E000 followed by '0'", so astral ones use ``\UXXXXXXXX``.
+    return f"\\u{code_point:04x}" if code_point <= 0xFFFF else f"\\U{code_point:08x}"
+
+
+# The same ranges as a regex character-class body (``f"[{INVISIBLE_TEXT_CLASS}]"``).
+INVISIBLE_TEXT_CLASS = "".join(
+    _class_escape(lo) if lo == hi else f"{_class_escape(lo)}-{_class_escape(hi)}"
+    for lo, hi in INVISIBLE_TEXT_RANGES
+)
 
 
 class Verdict(str, Enum):
@@ -337,6 +594,17 @@ class DecisionBy(str, Enum):
     AGENT = "agent"          # FP auto-close only, under strict conditions
     ANALYST = "analyst"      # human action
     SYSTEM = "system"        # deterministic routing (e.g. fail-to-human)
+    # An operator's explicit, audited, revocable per-rule declaration ("this detection
+    # is benign in my estate"), applied deterministically with NO LLM call. It is
+    # deliberately its OWN owner rather than a flavour of the three above:
+    #   * not ``agent``   — no model produced it, so it must never count as agent
+    #                       performance (automation rate, auto-close health, noise
+    #                       funnel, agent-improvement evidence);
+    #   * not ``analyst`` — ``engine.analyst_outcomes.analyst_confirmed_outcome`` would
+    #                       then read it as INDEPENDENT ground truth and the tuner and
+    #                       precedent corpus would train on the automation's own output;
+    #   * not ``system``  — it is an operator decision, not deterministic routing.
+    ANALYST_POLICY = "analyst_policy"
 
 
 class Role(str, Enum):
@@ -395,7 +663,14 @@ class ActionType(str, Enum):
     TUNING = "tuning"              # a threshold-tuning suggestion applied / shadow-evaluated
     RESET = "reset"                # an operator reset of cases/sources/factory state
     DATA_EXPORT = "data_export"    # privileged, secret-free portable application-state export
+    JOB = "job"                    # durable operator-job lifecycle transition
     SYSTEM_UPDATE = "system_update"  # operator-authorized supervised app update / rollback
+    # --- Chat revamp (additive; ADVISORY audit row — never feeds decide(), #3). ---
+    REPORT = "report"              # a chat report created / edited / summarised / deleted
+    # --- Round 14 (additive; never feeds decide(), #3). ---
+    # A person searched or opened the audit log (SPEC D8): one row per user per
+    # distinct filter set per 5 minutes, always written to the control audit.
+    AUDIT_VIEW = "audit_view"
 
 
 class UserRole(str, Enum):
@@ -531,6 +806,38 @@ class BatchJobState(str, Enum):
     EXPIRED = "expired"
 
 
+class JobKind(str, Enum):
+    """Registered server-owned long-operation kinds."""
+
+    CASE_REINVESTIGATE = "case_reinvestigate"
+    CASE_LIFECYCLE = "case_lifecycle"
+    CASE_ASSIGN = "case_assign"
+    CASE_TAG = "case_tag"
+    DATA_EXPORT_ARCHIVE = "data_export_archive"
+    DATA_EXPORT_SEGMENT = "data_export_segment"
+    PRECEDENT_BOOTSTRAP = "precedent_bootstrap"
+    RUNBOOK_REINDEX = "runbook_reindex"
+    RAG_IMPORT = "rag_import"
+    RAG_REBUILD = "rag_rebuild"
+    TIERED_RESET = "tiered_reset"
+    STORAGE_LIFECYCLE_APPLY = "storage_lifecycle_apply"
+    REPLAY_EXPERIMENT = "replay_experiment"
+    # Round 14 (SPEC §4.5.6): one CSV or JSON Lines file of the audit rows that match
+    # the Audit page's filters, oldest first, at most 100,000 rows.
+    AUDIT_EXPORT = "audit_export"
+
+
+class JobStatus(str, Enum):
+    """Durable lifecycle of a server-owned operator job."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 # How a candidate case was surfaced for triage (Round 4 detection sources). ``detection``
 # is a signature/correlation match; ``anomaly`` is a statistical baseline deviation;
 # ``rule`` is an explicit operator rule. ADVISORY provenance only — never feeds #3.
@@ -604,6 +911,14 @@ VERDICT_KEYS = (
 # pass can treat fenced content as untrusted DATA without restructuring.
 UNTRUSTED_OPEN = "<<<UNTRUSTED_LOG_DATA>>>"
 UNTRUSTED_CLOSE = "<<<END_UNTRUSTED_LOG_DATA>>>"
+# Round 12 (SPEC D4): the running conversation summary that replaces older chat
+# exchanges. It is model-written from earlier answers and lookups (tainted content),
+# so it is UNTRUSTED: these markers wrap an ordinary UNTRUSTED fence, and the single
+# marker normaliser (``agents.prompts.neutralise_markers``) rewrites any forged copy of
+# either marker found inside a log value, a memory entry, a case comment or the
+# summary itself.
+CONVERSATION_SUMMARY_OPEN = "<<<CONVERSATION_SUMMARY>>>"
+CONVERSATION_SUMMARY_CLOSE = "<<<END_CONVERSATION_SUMMARY>>>"
 
 
 # --------------------------------------------------------------------------- #
@@ -708,3 +1023,14 @@ OCSF_SEVERITY_TO_SCORE = {0: 0.0, 1: 10.0, 2: 30.0, 3: 50.0, 4: 75.0, 5: 90.0, 6
 # here, so there is exactly one place to tune them. Used as the shared band vocabulary
 # for the advisory severity axis + the Noise-Reduction funnel's per-band buckets.
 SEVERITY_BANDS = ("critical", "high", "medium", "low", "info")
+
+# The DEFAULT ceiling of a source's native severity ladder, used whenever the
+# operator has DECLARED none (``config.SourceInstance.severity_scale_max`` is ``None``,
+# or the event's source cannot be resolved at all).
+#
+# 100 is the canonical OCSF ``severity_score`` ceiling every normaliser in
+# ``app/ocsf/`` already produces, so an undeclared source projects through the
+# IDENTITY. That is the honest default: with no declaration we have no evidence
+# that the number means anything other than what it says, and guessing a ladder
+# from a value's magnitude is exactly the bug this constant retires.
+DEFAULT_SEVERITY_SCALE_MAX = 100.0

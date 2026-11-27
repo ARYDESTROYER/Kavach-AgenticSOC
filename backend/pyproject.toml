@@ -1,11 +1,12 @@
 [build-system]
-requires = ["setuptools>=68", "wheel>=0.42"]
+requires = ["setuptools>=77", "wheel>=0.42"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tlsoc-agentic-triage"
-version = "0.1.12"
+version = "0.2.0"
 description = "Agentic SOC backend (FastAPI + LangGraph)"
+license = "Apache-2.0"
 readme = "README.md"
 requires-python = ">=3.11"
 dynamic = ["dependencies", "optional-dependencies"]
@@ -15,17 +16,18 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*", "playbooks"]
+include = ["app*"]
 namespaces = false
 
 [tool.setuptools.package-data]
 app = [
+    "knowledge/*.json",
     "llm/model_registry.json",
-    "runbooks/*.md",
+    "runbooks/library/*.md",
     "threat/*.json",
     "threat/*.md",
+    "whats_new_latest.json",
 ]
-playbooks = ["*.md"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

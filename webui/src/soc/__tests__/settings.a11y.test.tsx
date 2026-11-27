@@ -57,11 +57,10 @@ vi.mock('@/lib/api', () => {
       getSettings: ok({ prefs, configured: {}, read_only: false }),
       getModels: ok({ providers: { anthropic: ['claude-sonnet'] } }),
       getSettingsSchema: ok({ sections: [] }),
-      getPlaybooks: ok({ enabled: false, playbooks: [] }),
       getBranding: ok({}),
       caseIdPreview: ok({ samples: [], valid: true }),
       account: { get: ok({ username: '', role: '', env_managed: false }), put: ok({}), avatar: ok({}) },
-      account_activity: ok({ events: [] }),
+      account_activity: ok({ activity: [] }),
       sessions: { list: ok({ sessions: [] }), revoke: ok({ ok: true }), revokeOthers: ok({ revoked: 0 }) },
       users: { list: ok({ users: [] }), create: ok({}), update: ok({}), remove: ok({}) },
       admin: {

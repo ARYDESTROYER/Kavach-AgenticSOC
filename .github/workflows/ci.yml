@@ -1,6 +1,6 @@
 name: CI
 
-# Nineteen independently visible status checks: eighteen repository-native quality
+# Twenty-one independently visible status checks: twenty repository-native quality
 # gates plus one fail-closed branch-protection target. Keep "CI passed" required on
 # main and Testing; the individual jobs make a failure immediately diagnosable.
 
@@ -60,6 +60,33 @@ jobs:
       - name: Run the complete offline suite
         run: python -m pytest -q
 
+  # Runbook guidance and prompt text can change the verdict the agent returns
+  # (never decide()). This deterministic two-arm run on frozen fixtures, with a
+  # declared sensitivity model and no key or network, fails a build whose change
+  # moves the FALSE_POSITIVE-verdict or close-eligible rate past its threshold.
+  verdict-stability:
+    name: Verdict stability gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+      - name: Install test dependencies
+        run: |
+          python -m pip install --requirement requirements-dev.txt
+          python -m pip check
+      - name: Run the deterministic two-arm verdict stability gate
+        run: python -m pytest -q -rs tests/test_verdict_stability_gate.py
+
   backend-package:
     name: Backend package integrity
     runs-on: ubuntu-latest
@@ -95,14 +122,28 @@ jobs:
           with ZipFile(wheels[0]) as archive:
               names = set(archive.namelist())
           required = {
+              "app/knowledge/aliases.json",
+              "app/knowledge/app_docs.json",
+              "app/knowledge/console_map.json",
+              "app/knowledge/manifest.json",
               "app/llm/model_registry.json",
               "app/threat/mitre_techniques.json",
               "app/threat/SOURCE.md",
+              "app/whats_new_latest.json",
           }
           missing = sorted(required - names)
           assert not missing, f"wheel is missing runtime data: {missing}"
-          assert any(name.startswith("app/runbooks/") and name.endswith(".md") for name in names)
-          assert any(name.startswith("playbooks/") and name.endswith(".md") for name in names)
+          library = {
+              name for name in names
+              if name.startswith("app/runbooks/library/") and name.endswith(".md")
+          }
+          assert len(library) == 12, f"wheel must ship the 12 built-in runbooks, found {sorted(library)}"
+          retired = sorted(
+              name for name in names
+              if name.startswith(("playbooks/", "app/playbooks/"))
+              or (name.startswith("app/runbooks/") and name.count("/") == 2 and name.endswith(".md"))
+          )
+          assert not retired, f"wheel still ships retired procedure files: {retired}"
           PY
           python -m pip install --no-deps --target "${RUNNER_TEMP}/wheel-site" dist/*.whl
           cd "${RUNNER_TEMP}"
@@ -249,7 +290,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
       - name: Install production dependencies
         run: |
           python -m pip install --requirement requirements.txt
@@ -342,6 +385,118 @@ jobs:
           kill "${server_pid}"
           wait "${server_pid}" || true
           trap - EXIT
+      # Installed AFTER the boot check so that check keeps running against exactly
+      # the production dependency set.
+      - name: Install test dependencies
+        run: |
+          python -m pip install --requirement requirements-dev.txt
+          python -m pip check
+      # The offline suite runs on SQLite, whose INTEGER is already 64-bit, so it
+      # structurally cannot catch a PostgreSQL-only column-width or in-place
+      # migration defect (see tests/test_postgres_state_acceptance.py). These
+      # tests skip without a PostgreSQL URL, so they must be run HERE, against the
+      # live service, with POSTGRES_TEST_DB_URL exported.
+      - name: Run the PostgreSQL state acceptance tests
+        env:
+          POSTGRES_TEST_DB_URL: postgresql+asyncpg://tlsoc:ci-postgres-password@127.0.0.1:5432/tlsoc
+          ACCEPTANCE_REPORT: ${{ runner.temp }}/postgres-acceptance.xml
+          ACCEPTANCE_MODULES: >-
+            tests/test_postgres_state_acceptance.py
+            tests/test_postgres_json_nul.py
+            tests/test_postgres_rollback_compat.py
+            tests/test_postgres_runbook_fallback.py
+        run: |
+          read -r -a modules <<< "${ACCEPTANCE_MODULES}"
+          python -m pytest -q -rs "${modules[@]}" \
+            --junit-xml="${ACCEPTANCE_REPORT}"
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import PurePosixPath
+
+          # These tests skip themselves without a PostgreSQL URL, so a silently
+          # skipped lane would look identical to a passing one. Assert they really
+          # EXECUTED against the live service — never let this gate go quiet.
+          root = ET.parse(os.environ["ACCEPTANCE_REPORT"]).getroot()
+          suite = root.find("testsuite") if root.tag == "testsuites" else root
+          if suite is None:
+              raise SystemExit("no testsuite element in the acceptance report")
+          counts = {
+              key: int(suite.get(key, "0"))
+              for key in ("tests", "skipped", "failures", "errors")
+          }
+          print(f"PostgreSQL acceptance results: {counts}")
+          if counts["tests"] < 1:
+              raise SystemExit("no PostgreSQL acceptance tests ran")
+          if counts["skipped"]:
+              raise SystemExit(
+                  "PostgreSQL acceptance tests were SKIPPED — the live service was "
+                  "not reachable via POSTGRES_TEST_DB_URL"
+              )
+          if counts["failures"] or counts["errors"]:
+              raise SystemExit("PostgreSQL acceptance tests failed")
+          # Every listed module must contribute at least one executed test, so a
+          # module that collects nothing cannot pass behind the others.
+          executed = {
+              part
+              for case in suite.iter("testcase")
+              if case.find("skipped") is None
+              for part in str(case.get("classname", "")).split(".")
+          }
+          for module in os.environ["ACCEPTANCE_MODULES"].split():
+              name = PurePosixPath(module).stem
+              if name not in executed:
+                  raise SystemExit(f"no PostgreSQL acceptance test executed from {module}")
+          PY
+
+  # An image-only rollback is the documented recovery path. This lane boots this
+  # release on a scratch PostgreSQL database, boots the previous release pinned in
+  # scripts/rollback_previous_release.json on that data, then boots this release
+  # again; a second scenario boots this checkout as the previous release on
+  # synthetic future data. It needs no Redis and no model key.
+  rollback-lane:
+    name: N to N-1 rollback acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
+        env:
+          POSTGRES_USER: tlsoc
+          POSTGRES_PASSWORD: ci-postgres-password
+          POSTGRES_DB: tlsoc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tlsoc -d tlsoc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      # Full history so the pinned previous release is present for git archive
+      # without a second fetch.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+      - name: Install production dependencies
+        run: |
+          python -m pip install --requirement backend/requirements.txt
+          python -m pip check
+      - name: Unit-test the rollback lane
+        run: python -m unittest scripts.test_rollback_lane -v
+      - name: Boot the previous release on this release's PostgreSQL data
+        run: |
+          python scripts/rollback_lane.py \
+            --database-url postgresql+asyncpg://tlsoc:ci-postgres-password@127.0.0.1:5432/tlsoc \
+            --work-dir "${RUNNER_TEMP}/rollback-lane"
 
   webui-tests:
     name: Web UI tests (Vitest)
@@ -446,6 +601,12 @@ jobs:
         run: |
           python scripts/test_build_docs_bundle.py
           python scripts/test_docs_theme.py
+      - name: Verify the chat app-knowledge corpus is current
+        run: python scripts/build_app_knowledge.py --check
+      - name: Verify the What's new release notes are valid and current
+        run: |
+          python scripts/test_build_release_notes.py
+          python scripts/build_release_notes.py --check
       - name: Build and revalidate the versioned Help Center
         env:
           TLSOC_RELEASE_CHANNEL: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && 'stable' || 'testing' }}
@@ -484,6 +645,10 @@ jobs:
           TLSOC_BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           export TLSOC_BUILD_DATE
           npm run build
+      - name: Check the first-paint bundle on the built output
+        env:
+          REQUIRE_DIST_BUILD: "1"
+        run: npx vitest run src/soc/__tests__/bundle-first-paint.test.ts
       - name: Upload Web UI production bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -542,7 +707,7 @@ jobs:
 
   bootstrap-bash32:
     name: Bootstrap portability (macOS Bash 3.2)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -703,6 +868,8 @@ jobs:
               docker run --rm --entrypoint python "${IMAGE}" -m pip check
               docker run --rm --entrypoint python "${IMAGE}" -c \
                 'from importlib.metadata import version; assert version("wheel") == "0.45.1"'
+              docker run --rm --entrypoint python "${IMAGE}" -c \
+                'from app.engine.runbook_model import BUILTIN_RUNBOOK_IDS, load_builtin_runbooks; assert sorted(r.id for r in load_builtin_runbooks()) == sorted(BUILTIN_RUNBOOK_IDS) and len(BUILTIN_RUNBOOK_IDS) == 12'
               ;;
             webui)
               jq -e '.[0].Config.ExposedPorts["80/tcp"] != null' \
@@ -753,7 +920,7 @@ jobs:
             --mount "type=volume,source=${state_volume},target=/var/lib/agentic-soc-updater" \
             --mount "type=volume,source=${backup_volume},target=/var/backups/agentic-soc" \
             --mount "type=volume,source=${runtime_volume},target=/deployment/host-runtime" \
-            --env UPDATE_TRUSTED_REPOSITORY=ARYDESTROYER/Agentic-Kibana \
+            --env UPDATE_TRUSTED_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC \
             --env UPDATE_COMPOSE_FILE=/deployment/docker-compose.yml \
             --env UPDATE_ENV_FILE=/deployment/.env \
             --env UPDATE_STATE_DIR=/var/lib/agentic-soc-updater \
@@ -853,9 +1020,11 @@ jobs:
     needs:
       - repository-contracts
       - backend-tests
+      - verdict-stability
       - backend-package
       - backend-smoke
       - postgres-redis
+      - rollback-lane
       - webui-tests
       - types-and-api
       - webui-lint
@@ -873,9 +1042,11 @@ jobs:
           results=(
             "${{ needs.repository-contracts.result }}"
             "${{ needs.backend-tests.result }}"
+            "${{ needs.verdict-stability.result }}"
             "${{ needs.backend-package.result }}"
             "${{ needs.backend-smoke.result }}"
             "${{ needs.postgres-redis.result }}"
+            "${{ needs.rollback-lane.result }}"
             "${{ needs.webui-tests.result }}"
             "${{ needs.types-and-api.result }}"
             "${{ needs.webui-lint.result }}"

@@ -6,8 +6,8 @@
  *   - each tier's destructive button ARMS only on the EXACT type-to-confirm token
  *     (a near-miss / wrong-tier phrase / trailing junk keeps it disabled; a leading/
  *     trailing-whitespace-trimmed exact match arms it);
- *   - confirming posts `POST admin/reset {scope, confirm}` with the right scope;
- *   - the success dialog echoes the server's `cleared[]` receipt as plain text.
+ *   - confirming submits one `tiered_reset` durable job with the right scope/phrase;
+ *   - the destructive work never runs in the browser.
  *
  * Offline — the shared api client is mocked; no network. The component renders inside
  * the real AuthProvider with `auth.me` reporting auth OFF, so `hasPermission` returns
@@ -18,9 +18,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 const mocks = {
-  post: vi.fn(),
+  submit: vi.fn(),
   authMe: vi.fn(),
+  toastSuccess: vi.fn(),
+  permissions: vi.fn(),
 };
+
+vi.mock('sonner', () => ({
+  toast: { success: (...args: unknown[]) => mocks.toastSuccess(...args) },
+}));
 
 vi.mock('@/lib/api', () => {
   class ApiError extends Error {
@@ -38,9 +44,9 @@ vi.mock('@/lib/api', () => {
     setUnauthorizedHandler: vi.fn(),
     setReauthHandler: vi.fn(),
     api: {
-      post: (path: string, body?: unknown) => mocks.post(path, body),
+      jobs: { submit: (body: unknown) => mocks.submit(body) },
       auth: { me: () => mocks.authMe() },
-      roles: { get: vi.fn().mockResolvedValue({ matrix: {}, rbac_enabled: false }) },
+      account: { permissions: () => mocks.permissions() },
     },
   };
 });
@@ -61,7 +67,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Auth OFF → hasPermission() returns true, so <Can> renders everything.
   mocks.authMe.mockResolvedValue({ auth_enabled: false, authenticated: false, user: null });
-  mocks.post.mockReset();
+  mocks.submit.mockReset();
+  mocks.toastSuccess.mockReset();
+  mocks.permissions.mockResolvedValue({
+    authenticated: false, role: 'super_admin', custom_roles: [], rbac_enabled: false, permissions: {},
+  });
 });
 
 /** Open a tier's confirm dialog by clicking its card button, then return the dialog. */
@@ -80,22 +90,34 @@ describe('DangerZone', () => {
     expect(screen.getByRole('heading', { name: 'Danger zone', level: 2 })).toBeInTheDocument();
     const tiers = screen.getByTestId('danger-zone').querySelectorAll('[data-settings-tier]');
     expect(tiers).toHaveLength(3);
+    // Round 14 (SE14): the tiers are rows on ONE group panel, divided by hairlines, never
+    // three boxed cards.
+    const panels = screen.getByTestId('danger-zone').querySelectorAll('[data-settings-panel]');
+    expect(panels).toHaveLength(1);
     tiers.forEach((tier) => {
-      expect(tier.className).not.toMatch(/rounded|shadow|bg-card|bg-surface/);
+      expect(panels[0].contains(tier)).toBe(true);
+      expect(tier.className).not.toMatch(/rounded|shadow|bg-card|bg-surface|border/);
     });
-    expect(screen.getByRole('button', { name: 'Reset cases & logs' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Reset sources + logs' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reset cases and logs' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reset sources and logs' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Factory reset' })).toBeInTheDocument();
+  });
+
+  it('says the cases tier removes the screenshots on cases and the review sample (Round 15)', async () => {
+    renderDangerZone();
+    await waitFor(() => expect(screen.getByTestId('danger-zone')).toBeInTheDocument());
+    const cases = screen.getByTestId('danger-zone').querySelector('[data-settings-tier="cases"]') as HTMLElement;
+    expect(within(cases).getByText('Screenshots on cases and the auto-close review sample')).toBeInTheDocument();
   });
 
   it('arms the destructive button ONLY on the exact confirm token (cases tier)', async () => {
     renderDangerZone();
     await screen.findByTestId('danger-zone');
-    const dialog = await openTier('Reset cases & logs');
+    const dialog = await openTier('Reset cases and logs');
 
     const input = within(dialog).getByPlaceholderText('RESET CASES') as HTMLInputElement;
     // The CTA inside the dialog carries the tier title too.
-    const confirmBtn = within(dialog).getByRole('button', { name: 'Reset cases & logs' });
+    const confirmBtn = within(dialog).getByRole('button', { name: 'Reset cases and logs' });
 
     // Disabled by default.
     expect(confirmBtn).toBeDisabled();
@@ -122,9 +144,9 @@ describe('DangerZone', () => {
     await screen.findByTestId('danger-zone');
 
     // Sources tier.
-    let dialog = await openTier('Reset sources + logs');
+    let dialog = await openTier('Reset sources and logs');
     let input = within(dialog).getByPlaceholderText('RESET SOURCES') as HTMLInputElement;
-    let cta = within(dialog).getByRole('button', { name: 'Reset sources + logs' });
+    let cta = within(dialog).getByRole('button', { name: 'Reset sources and logs' });
     fireEvent.change(input, { target: { value: 'RESET CASES' } });
     expect(cta).toBeDisabled();
     fireEvent.change(input, { target: { value: 'RESET SOURCES' } });
@@ -141,44 +163,160 @@ describe('DangerZone', () => {
     expect(cta).not.toBeDisabled();
   });
 
-  it('posts the correct scope + confirm and shows the cleared receipt', async () => {
-    mocks.post.mockResolvedValue({
-      ok: true,
-      scope: 'cases',
-      cleared: ['cases:42', 'kv:inbox', 'live_tail_rings'],
+  it('submits the correct durable reset job and closes the confirm dialog', async () => {
+    mocks.submit.mockResolvedValue({
+      job_id: 'job-reset', kind: 'tiered_reset', actor: 'operator',
+      created_at: '2026-08-13T00:00:00Z', status: 'queued',
+      progress: { done: 0, total: 1, unit: 'reset' }, failures: [], failure_count: 0,
+      failures_truncated: 0, request_fingerprint: 'd'.repeat(64), params: {}, cancel_requested: false,
     });
     renderDangerZone();
     await screen.findByTestId('danger-zone');
-    const dialog = await openTier('Reset cases & logs');
+    const dialog = await openTier('Reset cases and logs');
     const input = within(dialog).getByPlaceholderText('RESET CASES');
     fireEvent.change(input, { target: { value: 'RESET CASES' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Reset cases & logs' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reset cases and logs' }));
 
     await waitFor(() =>
-      expect(mocks.post).toHaveBeenCalledWith('admin/reset', {
-        scope: 'cases',
-        confirm: 'RESET CASES',
+      expect(mocks.submit).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'tiered_reset',
+        params: { scope: 'cases', confirm: 'RESET CASES' },
+      })),
+    );
+    expect(mocks.submit.mock.calls[0][0].idempotency_key).toMatch(/^tiered_reset-/);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      'Reset cases and logs job accepted.',
+      expect.objectContaining({
+        description: expect.stringMatching(/outcome remains in Inbox/i),
+        action: expect.objectContaining({ label: 'Open Inbox' }),
       }),
     );
+  });
 
-    // The success dialog echoes each cleared line as plain text.
-    await screen.findByText('Reset complete');
-    expect(screen.getByText('cases:42')).toBeInTheDocument();
-    expect(screen.getByText('kv:inbox')).toBeInTheDocument();
-    expect(screen.getByText('live_tail_rings')).toBeInTheDocument();
+  it("returns focus to the tier's button when its dialog is cancelled, closed or accepted (SPEC §3.3)", async () => {
+    mocks.submit.mockResolvedValue({
+      job_id: 'job-reset', kind: 'tiered_reset', actor: 'operator',
+      created_at: '2026-08-13T00:00:00Z', status: 'queued',
+      progress: { done: 0, total: 1, unit: 'reset' }, failures: [], failure_count: 0,
+      failures_truncated: 0, request_fingerprint: 'd'.repeat(64), params: {}, cancel_requested: false,
+    });
+    renderDangerZone();
+    const zone = await screen.findByTestId('danger-zone');
+    const tierButton = within(zone).getByRole('button', { name: 'Reset sources and logs' });
+
+    // Cancel.
+    tierButton.focus();
+    fireEvent.click(tierButton);
+    let dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(tierButton));
+
+    // Escape.
+    fireEvent.click(tierButton);
+    dialog = screen.getByRole('dialog');
+    fireEvent.keyDown(document.activeElement ?? dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(tierButton));
+
+    // Accepted: the job is queued and the dialog closes.
+    fireEvent.click(tierButton);
+    dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByPlaceholderText('RESET SOURCES'), { target: { value: 'RESET SOURCES' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reset sources and logs' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(tierButton));
+  });
+
+  it('discloses factory privacy semantics and never promises a personal Inbox result', async () => {
+    mocks.submit.mockResolvedValue({
+      job_id: 'job-factory', kind: 'tiered_reset', actor: 'operator',
+      created_at: '2026-08-13T00:00:00Z', status: 'queued',
+      progress: { done: 0, total: 1, unit: 'reset' }, failures: [], failure_count: 0,
+      failures_truncated: 0, request_fingerprint: 'e'.repeat(64), params: {}, cancel_requested: false,
+    });
+    renderDangerZone();
+    await screen.findByTestId('danger-zone');
+    const dialog = await openTier('Factory reset');
+
+    expect(within(dialog).getByText(/Personalisation, historical Jobs, personal Inbox/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/identity-free operational reset receipt/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Personal Inbox history is erased/i)).toBeInTheDocument();
+
+    fireEvent.change(within(dialog).getByPlaceholderText('FACTORY RESET'), {
+      target: { value: 'FACTORY RESET' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Factory reset' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      'Factory reset job accepted.',
+      {
+        description:
+          'The server will quiesce work, clear personal state and retain only a sanitized system receipt.',
+      },
+    );
   });
 
   it('surfaces a cancelled step-up re-auth (401) without wiping anything', async () => {
-    mocks.post.mockRejectedValue(new ApiError(401, 'reauth required', { code: 'reauth_required' }));
+    mocks.submit.mockRejectedValue(new ApiError(401, 'reauth required', { code: 'reauth_required' }));
     renderDangerZone();
     await screen.findByTestId('danger-zone');
-    const dialog = await openTier('Reset cases & logs');
+    const dialog = await openTier('Reset cases and logs');
     const input = within(dialog).getByPlaceholderText('RESET CASES');
     fireEvent.change(input, { target: { value: 'RESET CASES' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Reset cases & logs' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reset cases and logs' }));
 
     await screen.findByText(/Re-authentication was required and not completed/i);
     // No success dialog.
     expect(screen.queryByText('Reset complete')).not.toBeInTheDocument();
+  });
+  it('uses outline destructive buttons on the page and a solid red button only in the dialog (SE14)', async () => {
+    renderDangerZone();
+    await screen.findByTestId('danger-zone');
+    for (const name of ['Reset cases and logs', 'Reset sources and logs', 'Factory reset']) {
+      const pageButton = screen.getByRole('button', { name });
+      expect(pageButton.className).toContain('border-critical/60');
+      expect(pageButton.className).toContain('text-critical-text');
+      expect(pageButton.className).not.toMatch(/(^|\s)bg-critical(\s|$)/);
+    }
+    const dialog = await openTier('Factory reset');
+    const confirm = within(dialog).getByRole('button', { name: 'Factory reset' });
+    expect(confirm.className).toMatch(/(^|\s)bg-critical(\s|$)/);
+  });
+
+  it('labels the consequence lists in sentence case, without capitals or em dashes', async () => {
+    renderDangerZone();
+    const zone = await screen.findByTestId('danger-zone');
+    expect(within(zone).getAllByText('Clears')).toHaveLength(3);
+    expect(within(zone).getAllByText('Keeps')).toHaveLength(3);
+    expect(zone.innerHTML).not.toMatch(/uppercase|tracking-wide/);
+    expect(zone.textContent ?? '').not.toContain('\u2014');
+    expect(zone.textContent ?? '').not.toMatch(/OOBE/);
+    const dialog = await openTier('Reset sources and logs');
+    expect(dialog.textContent ?? '').not.toContain('\u2014');
+    expect(within(dialog).getByText('Clears')).toBeInTheDocument();
+  });
+
+  it('renders nothing without the users:manage grant', async () => {
+    mocks.authMe.mockResolvedValue({
+      auth_enabled: true,
+      authenticated: true,
+      user: { username: 'viewer', role: 'viewer' },
+    });
+    // The server's effective grants for this viewer hold no users:manage.
+    mocks.permissions.mockResolvedValue({
+      authenticated: true,
+      role: 'viewer',
+      custom_roles: [],
+      rbac_enabled: true,
+      permissions: { cases: ['read'], settings: ['read'] },
+    });
+    renderDangerZone();
+    await waitFor(() => expect(mocks.permissions).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId('danger-zone')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Factory reset' })).toBeNull();
   });
 });

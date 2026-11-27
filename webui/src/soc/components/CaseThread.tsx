@@ -30,7 +30,7 @@
  */
 import * as React from 'react';
 
-import { useEventStream } from '@/lib/useEventStream';
+import { useEventStream, type StreamEvent } from '@/lib/useEventStream';
 import {
   Bot,
   Check,
@@ -51,6 +51,7 @@ import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Textarea } from '@/ui/textarea';
 import { EmptyState } from '@/soc/components/EmptyState';
+import { Markdown } from '@/soc/components/Markdown';
 
 import type { CaseMessage, PickableUser } from '@/soc/pages/CaseDetail.api';
 
@@ -409,10 +410,19 @@ const MessageItem: React.FC<MessageItemProps> = ({
             </div>
           ) : (
             <>
-              {/* UNTRUSTED body — plain text with non-markup @mention highlight (#9). */}
-              <p className="mt-1 whitespace-pre-wrap break-words text-sm text-foreground/90">
-                {renderBody(msg.body || '')}
-              </p>
+              {kind === 'ai' ? (
+                /* AI-authored body: the dependency-free safe Markdown renderer (React nodes
+                   only, never an HTML string — #9), so `**bold**` and `code` read as
+                   formatting instead of raw asterisks and backticks (CM-8). */
+                <div className="mt-1 break-words text-sm text-foreground/90" data-testid="case-thread-ai-body">
+                  <Markdown text={msg.body || ''} className="space-y-1.5 text-sm leading-relaxed" />
+                </div>
+              ) : (
+                /* UNTRUSTED human body — plain text with non-markup @mention highlight (#9). */
+                <p className="mt-1 whitespace-pre-wrap break-words text-sm text-foreground/90">
+                  {renderBody(msg.body || '')}
+                </p>
+              )}
 
               {/* reactions */}
               {counts.length || pickerOpen ? (
@@ -619,9 +629,11 @@ export interface CaseThreadProps {
   liveCaseId?: string;
   /**
    * Called when a live `case.activity` frame arrives for `liveCaseId`. The caller
-   * should refetch the authoritative thread. Only fires when `liveCaseId` is set.
+   * should refetch the authoritative thread. Only fires when `liveCaseId` is set. The
+   * frame is passed along (Round 15): one that names a screenshot (`ref.file_id`) asks
+   * the Files section to re-read instead, on this one stream.
    */
-  onLiveActivity?: () => void;
+  onLiveActivity?: (event: StreamEvent) => void;
 }
 
 /**
@@ -647,8 +659,8 @@ export const CaseThread: React.FC<CaseThreadProps> = ({
   // Live nudge: a `case.activity` frame on this case's room → ask the caller to refetch
   // the thread. The frame payload is never rendered here (#9) — it only triggers a load.
   const onEvent = React.useCallback(
-    (ev: { type: string }) => {
-      if (ev.type === 'case.activity') onLiveActivity?.();
+    (ev: StreamEvent) => {
+      if (ev.type === 'case.activity') onLiveActivity?.(ev);
     },
     [onLiveActivity],
   );
@@ -716,8 +728,8 @@ export const CaseThread: React.FC<CaseThreadProps> = ({
 
       {canComment ? (
         <div className="rounded-lg border border-border bg-muted/20 p-3">
-          <div className="mb-2 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-            <Check className="h-3 w-3" />
+          <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Check className="h-3 w-3" aria-hidden />
             New message
           </div>
           <ThreadComposer

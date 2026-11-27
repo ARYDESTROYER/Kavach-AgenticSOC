@@ -1,5 +1,5 @@
 /**
- * ModelsCatalog — the LLM model catalog table (Round 3 / Feature 9).
+ * ModelsCatalog: the LLM model catalog table (Round 3 / Feature 9).
  *
  * Renders the GET /api/llm/models rows: provider, capability badges (context window,
  * max output, modalities, tool-json/cache support), pricing (input/output per million),
@@ -7,17 +7,23 @@
  * price-override marker. Per-row actions: open the price-override editor, and a metered
  * "test call".
  *
+ * Round 14 (F9, MO1): capability chips are de-duplicated by label (a "vision" modality and
+ * a "vision" capability are one "Vision" chip), and a row shows two chips then "+N" with
+ * the full list in a tooltip; prices are one per cell, never wrapped mid-phrase, so a row
+ * stays at most three lines tall; every label is 12px or larger (F13).
+ *
  * #9: every model id / label / capability / modality is operator-/registry-influenceable
  * and is rendered as PLAIN text or in a Badge (controlled label) — never HTML. The test
  * reply + any error are shown in a fenced CodeBlock by the parent page.
  */
 import * as React from 'react';
-import { Pencil, FlaskConical, Sparkles, Boxes } from 'lucide-react';
+import { cn } from '@/lib/cn';
+import { Pencil, FlaskConical, Sparkles } from 'lucide-react';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
-import { fmtMoney, fmtTokens, humanizeToken } from '@/lib/format';
+import { DASH, fmtMoney, fmtTokens, humanizeToken } from '@/lib/format';
 import {
   PRICING_SOURCE_META,
   batchRates,
@@ -36,9 +42,18 @@ export interface ModelsCatalogProps {
   providerFilter?: string;
   /** Whether the current user may manage models (drives action availability). */
   canManage?: boolean;
+  /** `panel` when the table sits in a `Panel` and bleeds to its edges. Default `bordered`. */
+  surface?: 'bordered' | 'panel';
 }
 
-/** Capability chips derived from a catalog row (controlled labels, never raw text). */
+/** How many capability chips a row shows before the rest collapse into "+N". */
+export const VISIBLE_CAPABILITY_CHIPS = 2;
+
+/**
+ * Capability chips derived from a catalog row (controlled labels, never raw text),
+ * de-duplicated by label: the first chip with a label wins, so a modality and a
+ * capability flag that read the same ("Vision") show once.
+ */
 export function capabilityChips(row: ModelCatalogRow): { key: string; label: string }[] {
   const chips: { key: string; label: string }[] = [];
   if (row.context_window > 0) {
@@ -65,7 +80,75 @@ export function capabilityChips(row: ModelCatalogRow): { key: string; label: str
   }
   if (caps.has('vision')) chips.push({ key: 'vision', label: 'Vision' });
   if (caps.has('reasoning')) chips.push({ key: 'reasoning', label: 'Reasoning' });
-  return chips;
+  const seen = new Set<string>();
+  return chips.filter((chip) => {
+    const label = chip.label.toLowerCase();
+    if (seen.has(label)) return false;
+    seen.add(label);
+    return true;
+  });
+}
+
+/** The capabilities cell: two chips, then "+N" with the whole list in a tooltip. */
+function CapabilityChips({ row }: { row: ModelCatalogRow }) {
+  const chips = capabilityChips(row);
+  if (!chips.length) {
+    return <span className="text-sm text-muted-foreground">{DASH}</span>;
+  }
+  const visible = chips.slice(0, VISIBLE_CAPABILITY_CHIPS);
+  const hidden = chips.slice(VISIBLE_CAPABILITY_CHIPS);
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {visible.map((c) => (
+        <Badge key={c.key} variant="secondary" className="whitespace-nowrap text-xs">
+          {c.label}
+        </Badge>
+      ))}
+      {hidden.length ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              // Starts with the visible "+N" so speech input can name it (WCAG 2.5.3).
+              aria-label={`+${hidden.length} more capabilities: ${hidden.map((c) => c.label).join(', ')}`}
+              data-testid="capability-more"
+            >
+              <Badge variant="secondary" className="cursor-default whitespace-nowrap text-xs">
+                +{hidden.length}
+              </Badge>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>
+            <span>{chips.map((c) => c.label).join(', ')}</span>
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+    </div>
+  );
+}
+
+/** One price: a muted name and the figure, never wrapped. */
+function Price({
+  name,
+  value,
+  muted,
+  title,
+}: {
+  name: string;
+  value: number | null | undefined;
+  muted?: boolean;
+  title?: string;
+}) {
+  return (
+    <span
+      className={cn('whitespace-nowrap', muted ? 'text-xs text-muted-foreground' : 'text-sm text-foreground')}
+      title={title}
+      data-price=""
+    >
+      <span className="text-muted-foreground">{name}</span> {fmtMoney(value)}
+    </span>
+  );
 }
 
 /**
@@ -76,31 +159,34 @@ export function capabilityChips(row: ModelCatalogRow): { key: string; label: str
  */
 function PricingCell({ row }: { row: ModelCatalogRow }) {
   const batch = batchRates(row);
+  const batchNote = batch ? `Batch is ${Math.round(batch.multiplier * 100)}% of the list price` : undefined;
   const hasCache =
     row.cache_write_per_million != null || row.cache_read_per_million != null;
+  // Two price columns (input-side, output-side), one price per cell: list, then
+  // cache, then batch. A missing cache side leaves its cell empty, not a dash.
   return (
-    <div className="flex flex-col items-end gap-0.5 tabular-nums">
-      <span className="text-sm text-foreground">
-        in {fmtMoney(row.input_per_million)} · out {fmtMoney(row.output_per_million)}
-      </span>
+    <div className="ml-auto grid w-max grid-cols-[auto_auto] items-baseline justify-items-end gap-x-4 gap-y-0.5 tabular-nums">
+      <Price name="In" value={row.input_per_million} />
+      <Price name="Out" value={row.output_per_million} />
       {hasCache ? (
-        <span className="text-[0.7rem] text-muted-foreground">
-          {row.cache_write_per_million != null
-            ? `cache-write ${fmtMoney(row.cache_write_per_million)}`
-            : ''}
-          {row.cache_write_per_million != null && row.cache_read_per_million != null
-            ? ' · '
-            : ''}
-          {row.cache_read_per_million != null
-            ? `cache-read ${fmtMoney(row.cache_read_per_million)}`
-            : ''}
-        </span>
+        <>
+          {row.cache_write_per_million != null ? (
+            <Price name="Cache write" value={row.cache_write_per_million} muted />
+          ) : (
+            <span />
+          )}
+          {row.cache_read_per_million != null ? (
+            <Price name="Cache read" value={row.cache_read_per_million} muted />
+          ) : (
+            <span />
+          )}
+        </>
       ) : null}
       {batch ? (
-        <span className="text-[0.7rem] text-muted-foreground">
-          batch {Math.round(batch.multiplier * 100)}% · in {fmtMoney(batch.input)} · out{' '}
-          {fmtMoney(batch.output)}
-        </span>
+        <>
+          <Price name="Batch in" value={batch.input} muted title={batchNote} />
+          <Price name="Batch out" value={batch.output} muted title={batchNote} />
+        </>
       ) : null}
     </div>
   );
@@ -131,6 +217,7 @@ export function ModelsCatalog({
   onTest,
   providerFilter,
   canManage = true,
+  surface = 'bordered',
 }: ModelsCatalogProps) {
   const filtered = React.useMemo(
     () =>
@@ -147,7 +234,7 @@ export function ModelsCatalog({
       cell: (r) => (
         <div className="flex flex-col gap-0.5">
           <span className="font-medium text-foreground">{r.label}</span>
-          <span className="font-mono text-[0.7rem] text-muted-foreground">{r.id}</span>
+          <span className="font-mono text-xs text-muted-foreground">{r.id}</span>
         </div>
       ),
     },
@@ -159,21 +246,7 @@ export function ModelsCatalog({
     {
       id: 'capabilities',
       header: 'Capabilities',
-      cell: (r) => {
-        const chips = capabilityChips(r);
-        if (!chips.length) {
-          return <span className="text-xs text-muted-foreground">—</span>;
-        }
-        return (
-          <div className="flex flex-wrap gap-1">
-            {chips.map((c) => (
-              <Badge key={c.key} variant="secondary" className="text-[10px]">
-                {c.label}
-              </Badge>
-            ))}
-          </div>
-        );
-      },
+      cell: (r) => <CapabilityChips row={r} />,
     },
     {
       id: 'pricing',
@@ -210,13 +283,13 @@ export function ModelsCatalog({
         r.assigned_roles.length ? (
           <div className="flex flex-wrap gap-1">
             {r.assigned_roles.map((role) => (
-              <Badge key={role} variant="info" className="text-[10px]">
+              <Badge key={role} variant="info" className="whitespace-nowrap text-xs">
                 {humanizeToken(role)}
               </Badge>
             ))}
           </div>
         ) : (
-          <span className="text-xs text-muted-foreground">—</span>
+          <span className="text-sm text-muted-foreground">{DASH}</span>
         ),
     },
     {
@@ -263,11 +336,9 @@ export function ModelsCatalog({
       getRowId={(r) => r.id}
       loading={loading}
       ariaLabel="LLM model catalog"
+      surface={surface}
       empty={
-        <div className="flex flex-col items-center gap-2 text-muted-foreground">
-          <Boxes className="h-8 w-8 opacity-40" aria-hidden />
-          <span className="text-sm">No models in the catalog. Add an LLM key.</span>
-        </div>
+        <span className="text-sm text-muted-foreground">No models in the catalog. Add an AI provider key.</span>
       }
     />
   );

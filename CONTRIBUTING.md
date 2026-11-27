@@ -29,8 +29,8 @@ not a public issue or pull request.
   `main` commit. Do not develop directly on `main`, and
   do not maintain a parallel prerelease branch under another name. See
   [`docs/releases/channels.md`](docs/releases/channels.md). Commit focused changes;
-  push only when asked. The remote uses `main` as its default and retains `Testing`
-  as the integration branch. Repository administrators must keep the required
+  push only when asked. The remote uses `Testing` as the integration branch and `main`
+  for accepted Stable source (the default branch once maintainer action M1 resets it). Repository administrators must keep the required
   checks and pull-request protections enforced on those canonical branches.
 - **Release notes:** keep one active top-level `[Unreleased]` section. Dated,
   unpublished work is a Development snapshot, not another pseudo-release. The final
@@ -278,16 +278,18 @@ A new `SourceType` enum value (`constants.py`) and (for receivers) the right
 ## Continuous integration (merge gate)
 
 `.github/workflows/ci.yml` runs on every pull request (and pushes to `main` /
-`Testing`) and must be green before merge. It exposes eighteen independently
+`Testing`) and must be green before merge. It exposes twenty independently
 diagnosable quality checks plus one fail-closed aggregate:
 
 | Status check | Contract |
 | --- | --- |
 | Repository & version contracts | Canonical SemVer, release-channel, package, image, Compose, OpenAPI, and documentation metadata agree. |
 | Backend tests (offline) | The complete fake-ES/mock-LLM/SQLite suite passes, including deny-by-default route authorization coverage. |
+| Verdict stability gate | A deterministic two-arm run of frozen fixtures through the real pipeline, with a declared sensitivity model and no key or network, fails when runbook guidance or prompt text moves the FALSE_POSITIVE-verdict or close-eligible rate more than 15 points between the guided and unguided arms or from the rates recorded on the fixtures. |
 | Backend package integrity | The sdist and wheel build, install, report the canonical version, and contain required runbooks, playbooks, model, and ATT&CK data. |
 | Backend startup smoke | Production dependencies import, feature routers discover, the ASGI lifespan starts on isolated SQLite state, and liveness reports the expected version. |
-| PostgreSQL & Redis acceptance | The supported PostgreSQL+pgvector state path boots against pinned service images, readiness proves a real KV write/read, the vector extension exists, and Redis responds. |
+| PostgreSQL & Redis acceptance | The supported PostgreSQL+pgvector state path boots against pinned service images, readiness proves a real KV write/read, the vector extension exists, and Redis responds. Every `backend/tests/test_postgres_*.py` module then runs against the live service, and the step fails if any of them is skipped or executes no test. |
+| N to N-1 rollback acceptance | This release boots on a scratch PostgreSQL database and writes an audit export job, the migrated runbook corpus and changed runbook settings; the previous release pinned in `scripts/rollback_previous_release.json` then boots on that data and this release boots again. A second scenario boots this checkout as the previous release on synthetic future data (an unknown job kind, unknown preference keys, a marker-identified corpus) that it must keep. Any safe-stop, refused knowledge projection, re-embedding on every retrieval, failed health check or lost runbook setting fails it. |
 | Web UI tests (Vitest) | The complete component, interaction, accessibility, and page regression suite passes with zero stderr or captured console stdout. |
 | TypeScript & OpenAPI drift | Backend OpenAPI regeneration is byte-stable and the Console type-checks without a soft skip. |
 | Web UI lint | ESLint, hooks, and `jsx-a11y` finish with zero errors or warnings. |
@@ -295,13 +297,13 @@ diagnosable quality checks plus one fail-closed aggregate:
 | Help Center & docs | Public structure/links, bundle/theme contracts, and the version-matched strict documentation build pass. |
 | Web UI production build | The release-stamped Console and installed Help Center compile into an inspectable production artifact. |
 | Workflow & shell contracts | Every workflow passes pinned actionlint with a checksum-verified ShellCheck binary, CI policy regression tests pass, and every tracked shell script parses. |
-| Bootstrap portability (macOS Bash 3.2) | A native `macos-14` runner proves the one-time supervisor bootstrap parses and forwards both zero-argument and replacement Compose invocations under Apple Bash 3.2. |
+| Bootstrap portability (macOS Bash 3.2) | A native `macos-15` runner (Apple still ships Bash 3.2 as `/bin/bash`) proves the one-time supervisor bootstrap parses and forwards both zero-argument and replacement Compose invocations under Apple Bash 3.2. |
 | Deploy & updater contracts | The reference five-service Compose topology resolves, invalid startup modes fail closed, and updater wire, plan, lifecycle-wrapper, backup, and rollback contracts pass. |
 | Python static correctness | Ruff's fatal correctness rules reject syntax faults, invalid control flow, and undefined names without turning legacy style debt into a release bypass. |
 | Release image build (backend) | The complete backend image builds from the shipping Dockerfile and its OCI identity, healthcheck, port, and non-root runtime contract match the candidate. |
 | Release image build (webui) | The Console plus version-matched Help Center image builds and its OCI identity, healthcheck, and port match the candidate. |
 | Release image build (updater) | The isolated updater image builds and its OCI identity, healthcheck, protocol label, and entry point match the candidate. |
-| CI passed | Runs even after failures and fails unless every one of the eighteen checks completed successfully. |
+| CI passed | Runs even after failures and fails unless every one of the twenty checks completed successfully. |
 
 The jobs intentionally run separately and in parallel. This costs a few repeated
 dependency-cache restores and image layers, but a pull request cannot hide API drift,
@@ -334,6 +336,10 @@ npm --prefix webui run check:types
 npm --prefix webui run typecheck
 npm --prefix webui run lint -- --max-warnings=0
 npm --prefix webui run gates
+# Build provenance is a PAIR: pass both, always the full object id. An abbreviated
+# `git rev-parse --short` is not an exact revision, so the resulting build reports
+# complete provenance that no upgrade can be pinned to. scripts/check_version.py
+# fails the build if a shipped script or document derives the SHA that way.
 (cd webui && TLSOC_RELEASE_CHANNEL=testing \
   TLSOC_BUILD_SHA="$(git rev-parse HEAD)" \
   TLSOC_BUILD_DATE="$(git show -s --format=%cI HEAD)" npm run build)

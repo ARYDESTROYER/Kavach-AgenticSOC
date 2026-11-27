@@ -7,7 +7,7 @@
  * registered local model can be removed. The modelsApi client is mocked (no network).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { addCustomMock, removeCustomMock, providersTestMock, catalogMock, providersMock } =
@@ -137,6 +137,35 @@ describe('Models — Add local model', () => {
     );
   });
 
+  it('gives example URLs the backend container can reach ([oss] B3)', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: /add local model/i }));
+    const field = await screen.findByLabelText(/base url/i);
+    // Inside the Compose stack, localhost is the backend container itself.
+    expect(field).toHaveAttribute('placeholder', 'http://host.docker.internal:4000/v1');
+    const help = screen.getByTestId('local-base-url-help');
+    expect(help).toHaveTextContent('http://host.docker.internal:4000/v1 (LiteLLM)');
+    expect(help).toHaveTextContent('http://host.docker.internal:11434/v1 (Ollama)');
+    expect(help).toHaveTextContent('host-gateway');
+    expect(help.textContent).not.toMatch(/localhost:(4000|11434)/);
+  });
+
+  it('names the Docker host and a Compose override, and reads the hint with the field ([oss] B3)', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: /add local model/i }));
+    const field = await screen.findByLabelText(/base url/i);
+    const help = screen.getByTestId('local-base-url-help');
+    // The browser may run on another machine than the Docker host, so the hint names
+    // the host, never "this computer".
+    expect(help).toHaveTextContent('For a server on the Docker host');
+    expect(help.textContent).not.toMatch(/this computer/);
+    // The base Compose file is pinned by the updater, so the Linux step goes in an
+    // override file, never in the base file.
+    expect(help).toHaveTextContent('in a Compose override file');
+    // A screen reader hears the hint when it reaches the field.
+    expect(field).toHaveAccessibleDescription(expect.stringContaining('localhost is the backend container itself'));
+  });
+
   it('fetches models from the endpoint via the reachability probe', async () => {
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: /add local model/i }));
@@ -170,7 +199,10 @@ describe('Models — Add local model', () => {
 
     // The local-models panel shows the row + a Remove control.
     const removeBtn = await screen.findByRole('button', { name: /remove team-llama/i });
-    expect(screen.getByText(/local & self-hosted models/i)).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Local and self-hosted models' })).toBeInTheDocument();
+    // Round 14: the remove icon is neutral at rest (red only on hover or focus).
+    expect(removeBtn).toHaveClass('text-muted-foreground');
+    expect(removeBtn.className).not.toMatch(/(^|\s)text-critical(\s|$)/);
     fireEvent.click(removeBtn);
     await waitFor(() => expect(removeCustomMock).toHaveBeenCalledWith('team-llama'));
   });
@@ -188,5 +220,100 @@ describe('Models — Add local model', () => {
     expect(empty).toHaveAccessibleDescription(
       /open Settings.*Secret keys.*hosted provider.*self-hosted model/i,
     );
+  });
+});
+
+describe('Models on the Round 14 console grammar (MO1 to MO4)', () => {
+  beforeEach(() => {
+    catalogMock.mockReset();
+    providersMock.mockReset();
+    catalogMock.mockResolvedValue({
+      ...CATALOG,
+      models: [
+        ...CATALOG.models,
+        row({ id: 'claude-x', label: 'Claude X', provider: 'anthropic', price_overridden: true }),
+      ],
+    });
+    providersMock.mockResolvedValue({
+      providers: [
+        { name: 'openai', configured: true, models: ['gpt-4o'], supports_base_url: false },
+        { name: 'anthropic', configured: false, models: [], supports_base_url: false },
+      ],
+    });
+  });
+
+  it('heads the page with "Models", a help tip and an icon Refresh', async () => {
+    renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Models' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'About Models' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh models' })).toBeInTheDocument();
+    expect(screen.queryByText('Models & LLMs')).toBeNull();
+    expect(screen.queryByText('Administration')).toBeNull();
+  });
+
+  it('shows the counts as a compact strip, underline tabs and the catalog in a panel', async () => {
+    renderPage();
+    const strip = await screen.findByRole('group', { name: 'Model summary' });
+    expect(strip).toHaveAttribute('data-kpi-strip', 'compact');
+    expect(strip.querySelectorAll('svg')).toHaveLength(0);
+    expect(screen.getByRole('tablist')).toHaveAttribute('data-variant', 'underline');
+    const catalog = screen.getByRole('region', { name: 'Catalog' });
+    expect(catalog).toHaveClass('surface-panel');
+    expect(within(catalog).getByRole('combobox', { name: 'Filter by provider' })).toBeInTheDocument();
+    expect(within(catalog).getByRole('button', { name: /add local model/i })).toBeInTheDocument();
+  });
+
+  it('lists providers as rows with a status in words', async () => {
+    renderPage();
+    await userEvent.click(await screen.findByRole('tab', { name: 'Providers' }));
+    const panel = await screen.findByRole('region', { name: 'Providers' });
+    expect(within(panel).getByText('1 of 2 configured')).toBeInTheDocument();
+    expect(within(panel).getByTestId('provider-status-openai')).toHaveTextContent('Configured');
+    expect(within(panel).getByTestId('provider-status-anthropic')).toHaveTextContent('Not set');
+  });
+
+  it('sets a price override through number fields, not raw number inputs', async () => {
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: 'Override price for gpt-4o' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('spinbutton', { name: /Input per 1M/ })).toHaveValue('1');
+    expect(within(dialog).getByRole('spinbutton', { name: /Output per 1M/ })).toHaveValue('3');
+    expect(dialog.querySelector('input[type="number"]')).toBeNull();
+  });
+
+  it('returns focus to the row button that opened the price or test dialog (SPEC §3.3)', async () => {
+    renderPage();
+    const price = await screen.findByRole('button', { name: 'Override price for gpt-4o' });
+    price.focus();
+    fireEvent.click(price);
+    const priceDialog = await screen.findByRole('dialog', { name: 'Override pricing' });
+    fireEvent.click(within(priceDialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(price));
+  });
+
+  it('returns focus to Add local model when its dialog closes', async () => {
+    renderPage();
+    const catalog = await screen.findByRole('region', { name: 'Catalog' });
+    const add = within(catalog).getByRole('button', { name: /add local model/i });
+    add.focus();
+    fireEvent.click(add);
+    const dialog = await screen.findByRole('dialog', { name: 'Add a local model' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(add));
+  });
+
+  it('keeps em dashes out of its copy', async () => {
+    renderPage();
+    await screen.findByRole('region', { name: 'Catalog' });
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const offenders: string[] = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent ?? '';
+      // A lone em dash is the missing-value placeholder; a sentence break is not.
+      if (text.includes('\u2014') && text.trim() !== '\u2014') offenders.push(text);
+    }
+    expect(offenders).toEqual([]);
   });
 });

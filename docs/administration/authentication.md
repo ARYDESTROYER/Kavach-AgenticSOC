@@ -1,6 +1,6 @@
 ---
 title: Authentication
-description: Configure local authentication, sessions, MFA, and OIDC SSO in Agentic SOC 0.1.
+description: Configure local authentication, sessions, MFA, and OIDC SSO in Agentic SOC 0.2.
 ---
 
 # Authentication
@@ -32,12 +32,87 @@ supply controlled bootstrap credentials, then rotate them immediately.
 ## Sessions
 
 Access tokens carry a session identifier and token version. The session store applies
-idle, absolute, revocation, and refresh-rotation checks. Users can inspect and revoke
-their sessions; administrators can inspect the organization session registry and
-revoke sessions for another user.
+idle, absolute and revocation checks. No sign-in issues a refresh token: a session
+lasts until its access token expires, within the idle and absolute limits, and then
+the person signs in again. `POST /api/auth/refresh` stays for older clients and is
+marked deprecated: every call answers `401` with code `session_invalid`. Users can inspect and revoke their sessions;
+administrators can inspect the organization session registry and revoke sessions for
+another user.
+
+Changing your own password signs out your other sessions (the current one stays). An
+administrator's password reset signs the account out everywhere. An account an
+administrator creates or resets must change its temporary password before anything
+else; until then every other request answers `403` with code
+`password_change_required`. The seeded demonstration administrator is not flagged.
+
+Ten wrong second-factor codes in a row lock second-factor checks for the account for
+5 minutes, doubling for each further run up to an hour. An administrator who turns MFA
+off for the account also clears the lock, so the person can enrol again. Turning MFA
+off and enrolling a new authenticator both need a recent sign-in, and an enrolled
+account turns MFA off with a current code before it enrols a new one.
 
 Use short access lifetimes appropriate to the environment. Session continuity also
 depends on the selected state store and a stable JWT secret.
+
+A sign-in without **Remember me** uses a browser-session cookie: it usually ends when
+the browser closes, and the server's idle and absolute limits apply in any case. Its
+token lasts `AUTH_TOKEN_HOURS` (default 12 hours; a value above 144 hours is reduced to
+144, for bearer-token API clients too).
+
+When a session ends on its own, the sign-in page says why, without stating how long the
+session lasted:
+
+- after a period of inactivity: "For your security, you were signed out after a period
+  of inactivity. Sign in to continue.";
+- when it was ended from another device or by an administrator: "This session was ended
+  from another device or by an administrator. Sign in to continue.";
+- when all of the account's sessions were signed out: "All of your sessions were signed
+  out. Sign in to continue.";
+- when the session reached its time limit, or for any other reason: "For your security,
+  you were signed out. Sign in to continue."
+
+A remembered session that ran out while the browser was closed shows the time-limit
+notice once on this device. The server still reports the limit (`lifetime_seconds` on
+`GET /api/auth/me`); the console does not show it.
+
+## Remember me
+
+The sign-in page offers **Remember me**. The row shows only its label, with no duration.
+When Remember me is turned off, or the connection is insecure, the row stays visible and
+disabled with its one-line reason. Checking it shows a warning first ("Stay signed in on
+this device?", with **Cancel** focused): anyone who uses this browser can open the
+console as that user, without a password, until they sign out or the session ends, so it
+belongs only on a device they trust. The warning states no duration; the limits below are
+yours to set. After **Keep me signed in**:
+
+- the session survives browser restarts for the remembered duration (6, 12, or 24
+  hours; 24 by default and at most), and never longer than the **Absolute lifetime**;
+- the standard **Idle timeout** still applies, unless the administrator sets a separate
+  inactivity limit for remembered devices;
+- the username is remembered on this device, and the browser's own password manager may
+  offer to save the password. Agentic SOC never stores the password. **Use a different
+  account** on the sign-in page, or **Forget this device** under **Settings → Account →
+  Sessions & activity**, removes the remembered username;
+- two-factor authentication is still required at every sign-in, and sensitive actions
+  still ask for the password.
+
+Administrators configure it in the **Remember me** group of the session policy under
+**Settings → Security & access → Single sign-on & policy**: turn it off, choose how long
+devices stay signed in, add a separate inactivity limit, list roles that are never
+remembered, and, only when secure cookies are off, allow it on plain HTTP (not
+recommended). Changes apply to live sessions on their next request.
+
+Remember me needs HTTPS with `AUTH_COOKIE_SECURE=true`, unless an administrator allowed
+it on plain HTTP (`session_policy.remember_me.allow_insecure_http`, not recommended).
+Until secure cookies are on, and while that setting is off, the checkbox is shown
+disabled with the reason, except on a direct request from the server itself. It is
+hidden only when authentication is disabled. A remembered session shows a
+**Remembered** badge and its expiry under **Settings → Account → Sessions & activity**
+and in the administrator's session list.
+
+See [Security hardening](../operations/security.md#session-lifetimes) for the full
+session-lifetime table, the transport rules for reverse proxies, and the documented
+deviations from NIST SP 800-63B-4.
 
 ## MFA
 
@@ -54,26 +129,43 @@ a separate stable key and include it in secret backup procedures.
 Agentic SOC includes Google, Microsoft, and generic OIDC provider shapes. Configure provider
 metadata as organization preferences and supply each client secret through the secret
 tier. Register the callback URL ending in `/api/auth/sso/callback` at the identity
-provider.
+provider. The sign-in page shows one **Sign in with** button per enabled provider, named
+by its display name; a Google or Microsoft provider without one reads "Sign in with
+Google" or "Sign in with Microsoft", never its internal id, and a long name wraps onto a
+second line.
 
 The callback validates browser-bound state. Email-based linking requires a verified
 email and does not attach an SSO identity to a local-credential account merely because
-the email strings match. Test sign-in and account-linking behavior with a non-admin
-identity before rollout.
+the email strings match. A verified email links only to an account of the same provider
+that has no subject yet; an account of another provider, or one already bound to a
+different subject, is refused, so an existing subject is never re-bound by email.
+**Allowed domains** checks the hosted domain of a Google identity, and for every other
+identity the domain of its verified email; an unverified email gives no domain. A group
+mapping never changes the role of a stored Super admin. Test sign-in and account-linking
+behavior with a non-admin identity before rollout.
+
+Only a stored Super admin who signed in recently can change single sign-on: adding,
+removing or editing a provider, turning SSO on or off, or setting a provider's client
+secret. Anyone else sees the settings read-only, with "Only a Super admin can change
+single sign-on." The default role and each group mapping must be one of the built-in
+roles; a custom role name is refused when you save. To give an SSO user custom-role
+grants, add the custom role to their account after they first sign in.
 
 Runtime SSO secrets entered through the UI are memory-only. Supply them through the
 deployment environment when restart persistence is required.
 
 ## Public routes and middleware
 
-The setup status, login, refresh, SSO initiation/callback, liveness, readiness, and
-branding bootstrap surfaces have narrowly scoped public behavior. The `/api` router
-otherwise applies authentication centrally, and state-changing routes add permission
-checks.
+The setup status, login, the deprecated refresh route, SSO initiation/callback,
+liveness, readiness, and branding bootstrap surfaces have narrowly scoped public
+behavior. The `/api` router
+otherwise applies authentication centrally, and routes check permissions for reads as
+well as writes: since version 0.2 every read asks for the grant of the data it returns
+(see [Read grants on every read](../reference/permissions.md#read-grants-on-every-read)).
 
 Security headers are enabled by default. Rate limiting is optional. The current CSRF
 middleware requires clients to echo the expected token; the web UI does not complete
-that exchange automatically in version 0.1, so do not enable CSRF without validating
+that exchange automatically in version 0.2, so do not enable CSRF without validating
 the client flow.
 
 See [Users and RBAC](users-rbac.md) and [Security hardening](../operations/security.md).

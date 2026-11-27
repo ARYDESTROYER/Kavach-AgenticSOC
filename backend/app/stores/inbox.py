@@ -28,7 +28,7 @@ from typing import Callable, TypeVar
 from ..constants import INBOX_KEY, INBOX_NS, USER_PREFS_DEFAULT_BUCKET
 from ..models import InAppNotification
 from ..utils import iso_now
-from .base import KVStore, kv_mutate
+from .base import KVStore, kv_mutate, kv_mutate_strict
 
 _T = TypeVar("_T")
 
@@ -41,6 +41,29 @@ _MAX_PER_USER = 200
 
 # Lifecycle states (mirrors InAppNotification.state); a dismissed item is dropped.
 _READ_STATES = {"read", "archived"}
+
+
+def _is_active_job(note: InAppNotification) -> bool:
+    status = str(getattr(getattr(note, "job_status", None), "value", note.job_status) or "")
+    return bool(note.job_id) and status in {"queued", "running"}
+
+
+def _trim_preserving_active(notes: list[InAppNotification]) -> list[InAppNotification]:
+    """Trim oldest terminal/general items first; active jobs are never evicted.
+
+    If every item is active, temporary overflow is intentional: losing the only
+    durable progress entry would be worse than exceeding the advisory ring cap.
+    """
+    if len(notes) <= _MAX_PER_USER:
+        return notes
+    excess = len(notes) - _MAX_PER_USER
+    kept: list[InAppNotification] = []
+    for note in notes:
+        if excess > 0 and not _is_active_job(note):
+            excess -= 1
+            continue
+        kept.append(note)
+    return kept
 
 
 def normalize_user_id(user_id: str | None) -> str:
@@ -156,9 +179,7 @@ class InboxStore:
         def _change(inboxes: dict[str, list[InAppNotification]]) -> None:
             notes = list(inboxes.get(uid, []))
             notes.append(notification)
-            if len(notes) > _MAX_PER_USER:
-                notes = notes[-_MAX_PER_USER:]
-            inboxes[uid] = notes
+            inboxes[uid] = _trim_preserving_active(notes)
 
         await self._mutate(_change)
         return notification
@@ -184,9 +205,7 @@ class InboxStore:
             for uid, note in built:
                 notes = list(inboxes.get(uid, []))
                 notes.append(note)
-                if len(notes) > _MAX_PER_USER:
-                    notes = notes[-_MAX_PER_USER:]
-                inboxes[uid] = notes
+                inboxes[uid] = _trim_preserving_active(notes)
 
         await self._mutate(_change)
         return [note for _, note in built]
@@ -210,6 +229,169 @@ class InboxStore:
         if limit and limit > 0:
             notes = notes[:limit]
         return notes, total
+
+    async def upsert_job(self, notification: InAppNotification) -> InAppNotification:
+        """Insert or update one stable job notification in-place by ``job_id``."""
+        uid = normalize_user_id(notification.recipient)
+
+        def _change(inboxes: dict[str, list[InAppNotification]]) -> InAppNotification:
+            notes = list(inboxes.get(uid, []))
+            for index, existing in enumerate(notes):
+                if existing.job_id and existing.job_id == notification.job_id:
+                    was_active = _is_active_job(existing)
+                    now_active = _is_active_job(notification)
+                    # Preserve identity. A terminal update becomes newly unread so
+                    # an operator who read progress before leaving still sees the
+                    # eventual completion/failure badge on return.
+                    notification.id = existing.id
+                    notification.created_at = existing.created_at
+                    if was_active and not now_active:
+                        notification.state = "unseen"
+                        notification.read_at = None
+                    else:
+                        notification.state = existing.state
+                        notification.read_at = existing.read_at
+                    notes[index] = notification
+                    inboxes[uid] = _trim_preserving_active(notes)
+                    return notification
+            notes.append(notification)
+            inboxes[uid] = _trim_preserving_active(notes)
+            return notification
+
+        return await self._mutate(_change)
+
+    async def upsert_job_strict(
+        self, notification: InAppNotification
+    ) -> InAppNotification:
+        """Confirmed stable job projection; raises rather than losing terminal state."""
+        uid = normalize_user_id(notification.recipient)
+        box: dict[str, InAppNotification] = {}
+
+        def mutator(current: dict | None) -> dict:
+            inboxes = self._decode(current)
+            pending = self._decode_pending(current)
+            notes = list(inboxes.get(uid, []))
+            for index, existing in enumerate(notes):
+                if existing.job_id and existing.job_id == notification.job_id:
+                    was_active = _is_active_job(existing)
+                    now_active = _is_active_job(notification)
+                    notification.id = existing.id
+                    notification.created_at = existing.created_at
+                    if was_active and not now_active:
+                        notification.state = "unseen"
+                        notification.read_at = None
+                    else:
+                        notification.state = existing.state
+                        notification.read_at = existing.read_at
+                    notes[index] = notification
+                    break
+            else:
+                notes.append(notification)
+            inboxes[uid] = _trim_preserving_active(notes)
+            box["value"] = notification
+            return self._encode(inboxes, pending)
+
+        await kv_mutate_strict(
+            self._kv, INBOX_NS, INBOX_KEY, mutator, lock=self._lock
+        )
+        return box["value"]
+
+    async def purge_job_entries(self) -> int:
+        """Strictly remove personal/system job notes at a factory boundary."""
+        box = {"count": 0}
+
+        def mutator(current: dict | None) -> dict:
+            inboxes = self._decode(current)
+            pending = self._decode_pending(current)
+            for uid, notes in list(inboxes.items()):
+                kept = [note for note in notes if not note.job_id]
+                box["count"] += len(notes) - len(kept)
+                if kept:
+                    inboxes[uid] = kept
+                else:
+                    inboxes.pop(uid, None)
+            return self._encode(inboxes, pending)
+
+        await kv_mutate_strict(
+            self._kv, INBOX_NS, INBOX_KEY, mutator, lock=self._lock
+        )
+        return box["count"]
+
+    async def purge_batch_entries_strict(self) -> int:
+        """Remove LLM Batch projections when the Batch registry is reset."""
+        box = {"count": 0}
+
+        def mutator(current: dict | None) -> dict:
+            inboxes = self._decode(current)
+            pending = self._decode_pending(current)
+            for uid, notes in list(inboxes.items()):
+                kept = [note for note in notes if note.ref.get("kind") != "llm_batch"]
+                box["count"] += len(notes) - len(kept)
+                if kept:
+                    inboxes[uid] = kept
+                else:
+                    inboxes.pop(uid, None)
+            return self._encode(inboxes, pending)
+
+        await kv_mutate_strict(
+            self._kv, INBOX_NS, INBOX_KEY, mutator, lock=self._lock
+        )
+        return box["count"]
+
+    async def remove_job_projection_strict(
+        self,
+        recipient: str,
+        job_id: str,
+        *,
+        audience_generation: str | None = None,
+    ) -> bool:
+        """Strictly remove one stable application/LLM-Batch Inbox projection."""
+        uid = normalize_user_id(recipient)
+        removed = {"value": False}
+
+        def mutator(current: dict | None) -> dict:
+            inboxes = self._decode(current)
+            pending = self._decode_pending(current)
+            notes = list(inboxes.get(uid, []))
+            kept = [
+                note
+                for note in notes
+                if not (
+                    note.job_id == job_id
+                    and (
+                        audience_generation is None
+                        or note.audience_generation == audience_generation
+                    )
+                )
+            ]
+            removed["value"] = len(kept) != len(notes)
+            if kept:
+                inboxes[uid] = kept
+            else:
+                inboxes.pop(uid, None)
+            return self._encode(inboxes, pending)
+
+        await kv_mutate_strict(
+            self._kv, INBOX_NS, INBOX_KEY, mutator, lock=self._lock
+        )
+        return removed["value"]
+
+    async def clear_all_strict(self) -> int:
+        """Confirmed factory-boundary purge of live and deferred Inbox state."""
+        box = {"count": 0}
+
+        def mutator(current: dict | None) -> dict:
+            inboxes = self._decode(current)
+            pending = self._decode_pending(current)
+            box["count"] = sum(len(v) for v in inboxes.values()) + sum(
+                len(v) for v in pending.values()
+            )
+            return self._encode({}, {})
+
+        await kv_mutate_strict(
+            self._kv, INBOX_NS, INBOX_KEY, mutator, lock=self._lock
+        )
+        return box["count"]
 
     async def unread_count(self, user_id: str | None) -> int:
         """Count of not-yet-read items (``state in {unseen, seen}``) — the badge."""
@@ -262,6 +444,10 @@ class InboxStore:
             for idx, n in enumerate(notes):
                 if n.id != notification_id:
                     continue
+                # An active job entry is the operator's only stable progress anchor.
+                # It may be read, but cannot be hidden until the terminal update.
+                if _is_active_job(n):
+                    return None
                 patch = {"state": "archived"}
                 if not n.read_at:
                     patch["read_at"] = iso_now()
@@ -279,6 +465,8 @@ class InboxStore:
 
         def _change(inboxes: dict[str, list[InAppNotification]]) -> bool:
             notes = list(inboxes.get(uid, []))
+            if any(n.id == notification_id and _is_active_job(n) for n in notes):
+                return False
             remaining = [n for n in notes if n.id != notification_id]
             if len(remaining) == len(notes):
                 return False
@@ -297,6 +485,28 @@ class InboxStore:
             inboxes.pop(uid, None)
             pending.pop(uid, None)  # also drop any deferred-digest items on delete
             return n
+
+        return await self._mutate_pending(_change)
+
+    async def clear_non_job(self) -> int:
+        """Clear ordinary case notifications while preserving every job anchor."""
+
+        def _change(
+            inboxes: dict[str, list[InAppNotification]],
+            pending: dict[str, list[InAppNotification]],
+        ) -> int:
+            removed = 0
+            for uid, notes in list(inboxes.items()):
+                kept = [note for note in notes if note.job_id]
+                removed += len(notes) - len(kept)
+                if kept:
+                    inboxes[uid] = kept
+                else:
+                    inboxes.pop(uid, None)
+            # Deferred digests never contain authoritative job progress.
+            removed += sum(len(notes) for notes in pending.values())
+            pending.clear()
+            return removed
 
         return await self._mutate_pending(_change)
 
@@ -358,9 +568,7 @@ class InboxStore:
             else:
                 notes.extend(held)
                 delivered = held[-1]
-            if len(notes) > _MAX_PER_USER:
-                notes = notes[-_MAX_PER_USER:]
-            inboxes[uid] = notes
+            inboxes[uid] = _trim_preserving_active(notes)
             return delivered
 
         return await self._mutate_pending(_change)

@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { approveMock, listProposalsMock, toastSuccessMock } = vi.hoisted(() => ({
+const { approveMock, getCaseMock, listProposalsMock, toastSuccessMock } = vi.hoisted(() => ({
   approveMock: vi.fn(),
+  getCaseMock: vi.fn(),
   listProposalsMock: vi.fn(),
   toastSuccessMock: vi.fn(),
 }));
@@ -15,6 +16,8 @@ vi.mock('@/lib/api', async (importOriginal) => {
       ...actual.api,
       listProposals: listProposalsMock,
       approveProposal: approveMock,
+      // The source case is named by its case number (Round 14), read once per id.
+      getCase: getCaseMock,
     },
   };
 });
@@ -59,6 +62,8 @@ describe('Approvals automation acknowledgements', () => {
     approveMock.mockReset();
     listProposalsMock.mockReset();
     toastSuccessMock.mockReset();
+    getCaseMock.mockReset();
+    getCaseMock.mockResolvedValue({ case_id: 'case-ack-1', case_number: 'CASE-000101' });
     listProposalsMock.mockResolvedValue({ proposals: [ACK_PROPOSAL] });
   });
 
@@ -69,6 +74,9 @@ describe('Approvals automation acknowledgements', () => {
     expect(screen.getByText('Operator acknowledgement')).toBeInTheDocument();
     expect(screen.getByText('lead-review')).toBeInTheDocument();
     expect(screen.getByText(/does not change a setting, create Memory/i)).toBeInTheDocument();
+    // The source case reads as its case number, never the internal id.
+    expect(await screen.findByRole('button', { name: 'Open case CASE-000101' })).toBeInTheDocument();
+    expect(screen.queryByText('case-ack-1')).toBeNull();
 
     fireEvent.click(screen.getByRole('switch', { name: 'Group by source or rule' }));
     expect(screen.getByText('Automation · lead-review')).toBeInTheDocument();

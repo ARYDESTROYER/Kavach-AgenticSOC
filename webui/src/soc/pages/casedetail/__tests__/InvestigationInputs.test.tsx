@@ -34,6 +34,8 @@ const RATIONALE: CaseRationale = {
       consulted: true,
     },
     consultation_path: 'strong_investigator',
+    retrieval_status: 'measured',
+    retrieval_reason: 'completed',
     retrieval_query_groups: [],
     knowledge: [],
   },
@@ -74,7 +76,34 @@ describe('InvestigationInputs', () => {
     expect(await axe(container)).toHaveNoViolations();
   });
 
-  it('does not claim that a merely selected playbook was consulted', () => {
+  it('titles the section and labels each input in sentence case, not tracked capitals', () => {
+    const { container } = render(<InvestigationInputs rationale={RATIONALE} />);
+
+    // A section of the Investigation tab (Round 15, D8.3): its heading is the tab's
+    // section level, like the AI assessment and the decision above it.
+    const heading = screen.getByRole('heading', { level: 2, name: 'Investigation inputs' });
+    expect(heading).toHaveClass('text-base', 'font-semibold', 'text-foreground');
+    expect(heading).not.toHaveClass('uppercase');
+
+    const labels = screen.getAllByTestId('investigation-input-label');
+    // Round 14: runbook passages found by retrieval are "Runbook references"; this
+    // fixture's procedure is from before Round 14, so it keeps the legacy label.
+    expect(labels.map((label) => label.textContent)).toEqual([
+      'Memory',
+      'Knowledge',
+      'Runbook references',
+      'Persona',
+      'Older runbook',
+      'Threshold tuning',
+    ]);
+    for (const label of labels) {
+      expect(label).toHaveClass('text-xs', 'font-medium', 'text-muted-foreground');
+      expect(label.className).not.toMatch(/uppercase|tracking-wide/);
+    }
+    expect(container.querySelectorAll('.uppercase')).toHaveLength(0);
+  });
+
+  it('does not claim that a merely selected procedure from before Round 14 was consulted', () => {
     render(
       <InvestigationInputs
         rationale={{
@@ -86,7 +115,76 @@ describe('InvestigationInputs', () => {
     );
 
     expect(screen.queryByText('selected-only')).toBeNull();
-    expect(screen.getByText('Runbook')).toBeInTheDocument();
+    expect(screen.getByText('Runbook references')).toBeInTheDocument();
+  });
+
+  it('says an older version made the run, never a release round (WP16)', () => {
+    render(<InvestigationInputs rationale={RATIONALE} />);
+    const older = screen.getByLabelText(/^Older runbook: /);
+    expect(older.getAttribute('aria-label')).toMatch(/The latest run, made by an older version, received and consulted this procedure\./);
+    expect(older.getAttribute('aria-label')).not.toMatch(/Round/);
+  });
+
+  it('names the Published runbook the latest run received, with its version (Round 14)', () => {
+    const { container } = render(
+      <InvestigationInputs
+        rationale={{
+          case_id: 'case-r14',
+          knowledge: [],
+          runbook: {
+            id: 'brute-force',
+            version: 4,
+            title: 'Brute force and password spray',
+            reason: 'Matched rule auth-failures',
+            consulted: true,
+            selected_id: 'brute-force',
+          },
+          procedure_provenance: {
+            persona: { selected_id: '', selection_reason: '', consulted: false },
+            playbook: { selected_id: '', selection_reason: '', consulted: false },
+            consultation_path: 'strong_investigator',
+            retrieval_status: 'measured',
+            retrieval_query_groups: [],
+            knowledge: [],
+          },
+          // A stale legacy field never shows beside a Round 14 runbook.
+          playbook: { id: 'old-procedure', consulted: true },
+        } as unknown as CaseRationale}
+      />,
+    );
+
+    expect(screen.getByText('Brute force and password spray · v4 · Consulted')).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Runbook: Brute force/)).toHaveAttribute(
+      'aria-label',
+      expect.stringMatching(/received this Published runbook as guidance\. Matched because: Matched rule auth-failures/),
+    );
+    expect(screen.queryByText(/old-procedure/)).toBeNull();
+    expect(container.textContent).not.toMatch(/playbook|\u2014/i);
+    expect(screen.getByText(/Deterministic policy still made the final route/)).toBeInTheDocument();
+  });
+
+  it('discloses a matched runbook the run never received as selected only, never as an input', () => {
+    render(
+      <InvestigationInputs
+        showSelectionStatus
+        rationale={{
+          case_id: 'case-r14-selected',
+          knowledge: [],
+          runbook: { id: '', version: null, title: '', reason: '', consulted: false, selected_id: 'brute-force' },
+          procedure_provenance: {
+            persona: { selected_id: '', selection_reason: '', consulted: false },
+            playbook: { selected_id: '', selection_reason: '', consulted: false },
+            consultation_path: 'kill_switch',
+            retrieval_status: 'not_attempted',
+            retrieval_query_groups: [],
+            knowledge: [],
+          },
+        } as unknown as CaseRationale}
+        onReview={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('brute-force · Selected only')).toBeInTheDocument();
+    expect(screen.queryByText(/These inputs informed preprocessing/)).toBeNull();
   });
 
   it('discloses selected-only procedures in the Investigation view without calling them inputs', () => {
@@ -120,8 +218,8 @@ describe('InvestigationInputs', () => {
     expect(screen.queryByText(/These inputs informed preprocessing/)).toBeNull();
   });
 
-  it('stays absent when the latest run recorded no supplemental inputs', () => {
-    const { container } = render(
+  it('does not turn missing retrieval telemetry into a false no-input state', () => {
+    render(
       <InvestigationInputs
         rationale={{
           case_id: 'case-3',
@@ -130,9 +228,38 @@ describe('InvestigationInputs', () => {
           platform_tuning_status: 'recorded',
           platform_tuning: [],
         }}
+        onReview={vi.fn()}
       />,
     );
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.getByText('Provenance unavailable')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review inputs' })).toBeNull();
+    expect(screen.queryByText(/These inputs informed preprocessing/)).toBeNull();
+  });
+
+  it('discloses an explicit not-run retrieval path without calling it an input', () => {
+    render(
+      <InvestigationInputs
+        showSelectionStatus
+        rationale={{
+          case_id: 'case-not-run',
+          knowledge: [],
+          procedure_provenance: {
+            persona: { selected_id: '', selection_reason: '', consulted: false },
+            playbook: { selected_id: '', selection_reason: '', consulted: false },
+            consultation_path: 'kill_switch',
+            retrieval_status: 'not_attempted',
+            retrieval_reason: 'kill_switch',
+            retrieval_query_groups: [],
+            knowledge: [],
+          },
+        }}
+        onReview={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Not run')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review inputs' })).toBeNull();
+    expect(screen.queryByText(/These inputs informed preprocessing/)).toBeNull();
   });
 
   it('does not turn a provenance failure into a false no-input state', async () => {
@@ -157,7 +284,7 @@ describe('InvestigationInputs', () => {
       />,
     );
 
-    expect(screen.getByText('Provenance unavailable')).toBeInTheDocument();
+    expect(screen.getAllByText('Provenance unavailable')).toHaveLength(2);
     expect(screen.queryByRole('button', { name: 'Review inputs' })).toBeNull();
     expect(screen.queryByText(/These inputs informed preprocessing/)).toBeNull();
   });

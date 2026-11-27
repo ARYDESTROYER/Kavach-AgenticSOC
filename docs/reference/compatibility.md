@@ -1,22 +1,22 @@
 ---
 title: Compatibility
-description: Supported runtimes, state backends, telemetry sources, providers, deployment shapes, and contract expectations for Agentic SOC 0.1.
+description: Supported runtimes, state backends, telemetry sources, providers, deployment shapes, and contract expectations for Agentic SOC 0.2.
 ---
 
 # Compatibility
 
-This matrix describes application **0.1.12** and documentation line **0.1**. It
+This matrix describes application **0.2.0** and documentation line **0.2**. It
 distinguishes implemented support from enum placeholders and archived components.
 
 ## Runtime and build matrix
 
-| Component | Version 0.1 baseline | Notes |
+| Component | Version 0.2 baseline | Notes |
 |---|---|---|
 | Agentic SOC API | Python 3.11 or newer | Dependency pins are in `backend/requirements.txt`; project metadata requires Python `>=3.11` |
 | Agentic SOC Console | Node 22 for install/build | React 18, Vite 5, TypeScript 5.6, Tailwind, and Radix/shadcn-style primitives |
 | Container frontend | nginx | Serves the compiled SPA, version-matched `/docs/<major.minor>/` Help Center, and relative `/api/*` proxy |
 | Event schema | OCSF 1.4.0 | Every connector normalizes before the engine processes an event |
-| Documentation | MkDocs Material; Mike history plus native GitHub Pages deployment | Every app serves its installed 0.1 guide at `/docs/0.1/`; the public selector uses `0.1`; packages/images use `0.1.12` |
+| Documentation | MkDocs Material; Mike history plus native GitHub Pages deployment | Every app serves its installed 0.2 guide at `/docs/0.2/` and redirects `/docs/0.1/` pages to it; the public selector uses `0.2`; packages/images use `0.2.0` |
 
 The Agentic SOC Console is the only supported primary UI. It does not require Kibana. The
 former Kibana plugin is archived, frozen, and excluded from current build/test/release
@@ -41,7 +41,7 @@ state deployment can also connect to a different source cluster.
 
 ## Telemetry sources
 
-Version 0.1 implements three pull connectors:
+Version 0.2 implements three pull connectors:
 
 - Elasticsearch;
 - OpenSearch;
@@ -91,7 +91,7 @@ path.
 
 ## API and stored-data compatibility
 
-Version 0.1 currently uses Semantic Version `0.1.12`. As a pre-1.0 product, it prioritizes
+Version 0.2 currently uses Semantic Version `0.2.0`. As a pre-1.0 product, it prioritizes
 additive API and model changes but does not promise indefinite wire or storage
 compatibility across future minor versions.
 
@@ -106,12 +106,12 @@ For integrations:
 - do not assume that starting an older image is a safe database rollback.
 
 Persisted Pydantic models generally use defaults/migrations for additive fields, and
-shared KV stores avoid a new table for many features. Version 0.1 does not yet provide
+shared KV stores avoid a new table for many features. Version 0.2 does not yet provide
 a complete database migration/rollback framework. See [Upgrades](../operations/upgrades.md).
 
 ## Browser, proxy, and network expectations
 
-No formal per-browser certification matrix is published for 0.1. Use a maintained
+No formal per-browser certification matrix is published for 0.2. Use a maintained
 browser capable of modern ES modules, CSS variables, and server-sent events. The
 Console expects same-origin relative `/api` access; the reference nginx configuration
 provides that proxy. If a custom proxy changes origins, cookies, buffering, or SSE
@@ -123,7 +123,7 @@ egress, but source and enrichment network paths still depend on configuration.
 
 ## Explicitly unsupported or unverified claims
 
-Agentic SOC 0.1 does not claim high availability, coordinated horizontal workers,
+Agentic SOC 0.2 does not claim high availability, coordinated horizontal workers,
 multi-tenant row isolation, universal push-transport durability, autonomous write-side
 response, or production certification for every source/provider combination. Review
 [Known limitations](../releases/known-limitations.md) and [Security](security.md)

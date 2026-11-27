@@ -16,9 +16,17 @@ from . import __version__
 from . import api as api_pkg
 from .api.deps import require_auth
 from .api.routes import router
+from .audit.context import configure_trusted_proxies, trusted_proxies
+from .build_identity import log_build_identity_advisories
 from .config import Secrets
 from .logging_setup import configure_logging
-from .middleware import CSRFMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware
+from .middleware import (
+    CSRFMiddleware,
+    MutationAdmissionMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
+from .middleware.request_id import RequestIdMiddleware, internal_error_response
 from .state import AppState
 
 logger = logging.getLogger("tlsoc.main")
@@ -65,9 +73,31 @@ async def lifespan(app: FastAPI):
     secrets = Secrets()
     configure_logging(secrets.log_level)
     logger.info("Starting Agentic SOC API")
+    # Observational only: a degraded build identity is inherited by every record this
+    # process writes and makes supervised updates refuse the build, but it must never
+    # keep the suite from accepting traffic.
+    log_build_identity_advisories(logger)
     state = AppState.create(secrets=secrets)
     app.state.tlsoc = state
+    # Resolve the trusted proxy host names for the audit client address in a worker
+    # thread (Round 14 SPEC §4.5.3); never waits on DNS, and the request-id middleware
+    # repeats it every 5 minutes, retrying within seconds a name that does not resolve
+    # yet (the bundled Web UI starts only once this backend is healthy).
+    trusted_proxies().refresh_in_background()
     await state.startup()
+    # Build the bundled Help Center index off the event loop now, so the first chat
+    # turn after a restart does not pay ~350 ms of CPU on the loop for the $0
+    # product-help path and console-link resolution (chat revamp SPEC §5.4). Never
+    # raises: an unavailable corpus only disables product help.
+    from .knowledge import warm_app_knowledge
+
+    await warm_app_knowledge()
+    # The chat tool catalogue too (its module imports, ~0.25 s of CPU): every chat
+    # route and the first Case Manager chip read resolve grants against it (Round 13
+    # polish PB3). Never raises.
+    from .agents.chat_tools.registry import warm_catalogue
+
+    await warm_catalogue()
     try:
         yield
     finally:
@@ -81,7 +111,18 @@ app = FastAPI(
     description="Vendor-neutral Agentic SOC API. It consumes source data "
                 "read-only and owns only Agentic SOC application state.",
     lifespan=lifespan,
+    # One schema per model. ``/chat/stream`` documents its NDJSON lines with an
+    # additional-response model, which FastAPI renders in validation mode; with
+    # separate input/output schemas that splits ``ChatResponse`` into -Input and
+    # -Output components for no wire difference (chat revamp SPEC §3).
+    separate_input_output_schemas=False,
 )
+
+# Always-on tenant mutation admission. It is a no-op during normal operation and
+# becomes the process-local HTTP drain boundary only while a durable factory-reset
+# Job owns the corresponding CAS fence. Added before security middleware so response
+# hardening remains outermost.
+app.add_middleware(MutationAdmissionMiddleware)
 
 # --- Security middleware (Wave 2; env-toggleable, independent of auth). Added in
 # this order so security headers are OUTERMOST (cover every response incl. 401/403).
@@ -97,6 +138,16 @@ if _sec.rate_limit_enabled:
     )
 if _sec.security_headers_enabled:
     app.add_middleware(SecurityHeadersMiddleware)
+
+# Request ids (Round 14 SPEC §4.5.3): added LAST so it is the outermost layer and every
+# response, a rate-limit or CSRF refusal included, echoes ``X-Request-ID``; the audit
+# rows a request writes carry the same id. The trusted proxies for the audit client
+# address come from ``TRUSTED_PROXIES`` (default: the bundled Web UI service).
+configure_trusted_proxies(_sec.trusted_proxies)
+app.add_middleware(RequestIdMiddleware)
+# The 500 of an unhandled error is sent outside every middleware; this handler gives
+# it the request's id too (``internal_error_response``).
+app.add_exception_handler(Exception, internal_error_response)
 
 # Auth gate on the WHOLE /api router (deny-by-default; a strict no-op when auth is
 # disabled). Every /api route inherits it → a new route is protected automatically.

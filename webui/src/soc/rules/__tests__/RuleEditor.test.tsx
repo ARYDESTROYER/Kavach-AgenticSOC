@@ -60,7 +60,7 @@ describe('RuleEditor — Define is polymorphic per tier', () => {
     renderEditor(newRuleForm('case_automation'));
     expect(screen.getByText(/never sets status/i)).toBeInTheDocument();
     // the verdict CONDITION dropdown exists (bug #6: only real Verdict values)
-    expect(screen.getByText('When a case matches (all ANDed)')).toBeInTheDocument();
+    expect(screen.getByText('When a case matches all of these')).toBeInTheDocument();
   });
 });
 
@@ -107,7 +107,7 @@ describe('RuleEditor — config-writer behaviour', () => {
     expect(screen.queryByText(/MITRE technique ids/i)).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('tab', { name: 'Schedule' }));
-    expect(screen.getByText('Cadence comes from the source feed')).toBeInTheDocument();
+    expect(screen.getByText('Cadence comes from the source feed.')).toBeInTheDocument();
     expect(screen.queryByText('Run every')).not.toBeInTheDocument();
     expect(screen.queryByText('Additional look-back')).not.toBeInTheDocument();
   });

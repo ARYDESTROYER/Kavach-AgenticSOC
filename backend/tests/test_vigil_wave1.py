@@ -1,6 +1,11 @@
-"""Wave-1 overhaul tests (Vigil-inspired): agent personas, plain-text runbooks,
-hybrid RAG re-ranking, tool safety tiers, hardened untrusted fencing, and pricing
-provenance. All offline (fake ES + mock LLM)."""
+"""Wave-1 overhaul tests (Vigil-inspired): agent personas, runbooks, hybrid RAG
+re-ranking, tool safety tiers, hardened untrusted fencing, and pricing provenance.
+All offline (fake ES + mock LLM).
+
+Round 14 (SPEC §4.10) replaced the plain-text reference runbooks with the one
+Runbooks feature: the runbook tests below pin the bundled library that succeeded
+them, the legacy front-matter reader the migration still uses, and what the
+investigator receives from a runbook."""
 
 from __future__ import annotations
 
@@ -23,10 +28,13 @@ from app.constants import (
     Verdict,
 )
 from app.engine.correlation import cluster_from_events
-from app.engine.runbooks import (
-    corpus_items,
-    load_runbooks,
+from app.engine.runbook_model import (
+    MAX_RUNBOOK_PROMPT_CHARS,
+    builtin_runbook,
+    load_builtin_runbooks,
     parse_frontmatter,
+    render_runbook_prompt,
+    resolve_legacy_runbook_id,
 )
 from app.llm.pricing import cost_for, pricing_source
 from app.state import AppState
@@ -111,9 +119,11 @@ async def test_persona_recorded_on_case_and_in_prompt(app_state: AppState, mock_
 
 
 # --------------------------------------------------------------------------- #
-# 2. Plain-text runbooks
+# 2. Runbooks (the bundled library that replaced the plain-text reference runbooks)
 # --------------------------------------------------------------------------- #
 def test_parse_frontmatter_scalars_and_lists() -> None:
+    # The legacy front-matter reader moved into ``runbook_model`` (the migration reads
+    # stored procedures with it); it keeps the retired reader's results.
     text = (
         "---\n"
         "id: demo\n"
@@ -132,26 +142,28 @@ def test_parse_frontmatter_scalars_and_lists() -> None:
     assert body.startswith("## Body")
 
 
-def test_load_runbooks_ships_seed_files() -> None:
-    rbs = {rb.id for rb in load_runbooks()}
-    assert {
-        "brute_force",
-        "cloud_iam_compromise",
-        "data_exfiltration",
-        "web_attack",
-        "port_scan",
-        "malware",
-    } <= rbs
+def test_bundled_library_covers_every_retired_seed_runbook() -> None:
+    # Each retired seed runbook is merged into a built-in that ships in the library.
+    shipped = {rb.id for rb in load_builtin_runbooks()}
+    for legacy_id in ("brute_force", "cloud_iam_compromise", "data_exfiltration",
+                      "web_attack", "port_scan", "malware"):
+        successor = resolve_legacy_runbook_id(legacy_id)
+        assert successor in shipped, legacy_id
 
 
-def test_runbook_corpus_items_shape() -> None:
-    # Runbooks remain the RAG knowledge corpus (procedure injection moved to the
-    # playbook system — see tests/test_playbook_*.py and test_vigil_wave2.py).
-    items = corpus_items()
-    assert items and all(i["source"] == "runbook" for i in items)
-    assert all(i["doc_id"].startswith("runbook:") for i in items)
-    bf = next(i for i in items if i["metadata"]["runbook_id"] == "brute_force")
-    assert "ssh" in bf["text"].lower()
+def test_investigator_receives_the_brute_force_guidance_within_budget() -> None:
+    # What the investigator is given for the brute force built-in (the successor of
+    # the retired brute_force runbook): its own title, version and guidance lines,
+    # never the instructions meant for people, and always within the budget.
+    builtin = builtin_runbook(resolve_legacy_runbook_id("brute_force"))
+    assert builtin is not None
+    text = render_runbook_prompt(builtin.definition, builtin.version)
+    assert text.startswith(f"{builtin.title} (v{builtin.version})")
+    assert "password" in text.lower()
+    assert len(text) <= MAX_RUNBOOK_PROMPT_CHARS
+    for step in builtin.definition.steps:
+        if step.instructions and step.instructions.strip():
+            assert step.instructions.strip() not in text
 
 
 # --------------------------------------------------------------------------- #
@@ -193,7 +205,8 @@ async def test_hybrid_disabled_still_retrieves() -> None:
                     provider_overrides={"openai": mock, "mock": mock})
     rag = RagService(gw, prefs)
     await rag.ensure_seeded()
-    assert await rag.retrieve("ssh brute force failed login", top_k=3)
+    # Round 14: the built-in runbook corpus's own words (bag-of-words offline embeddings).
+    assert await rag.retrieve("brute force password spray against our accounts", top_k=3)
 
 
 # --------------------------------------------------------------------------- #
@@ -325,4 +338,6 @@ def test_personas_and_runbooks_endpoints(client) -> None:
     r2 = client.get("/api/runbooks")
     assert r2.status_code == 200
     rbs = {rb["id"] for rb in r2.json()["runbooks"]}
-    assert "brute_force" in rbs
+    # Round 14: the library lists the 12 built-ins under their new ids.
+    assert "brute-force-password-spray" in rbs
+    assert "brute_force" not in rbs

@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   changedKeys,
   changedPatch,
+  changedValueCount,
   isDirty,
   sectionChangedKeys,
   sectionIsDirty,
@@ -24,6 +25,95 @@ import {
   ALLOWED_TOKENS,
 } from '../../theme-tokens';
 import { accentContrastAdvisory, contrastRatio } from '../../components/branding.api';
+
+/* ------------------------------------------------------ changed values ---- */
+
+describe('changedValueCount (the save bar counts values, as the audit log does)', () => {
+  const chat = {
+    max_parallel: 12,
+    tool_timeout_s: 45,
+    model_call_timeout_s: 900,
+    max_concurrent_turns_per_user: 12,
+    max_concurrent_turns_global: 48,
+    internal_domains: ['corp.example'],
+  };
+
+  it('counts five edited fields of one section as five changes, not one', () => {
+    const saved = { chat_agent: chat, sources: [] };
+    const draft = {
+      chat_agent: {
+        ...chat,
+        max_parallel: 20,
+        tool_timeout_s: 60,
+        model_call_timeout_s: 1200,
+        max_concurrent_turns_per_user: 20,
+        max_concurrent_turns_global: 80,
+      },
+      sources: [],
+    };
+    expect(changedKeys(draft, saved).size).toBe(1);
+    expect(changedValueCount(draft, saved)).toBe(5);
+  });
+
+  it('is zero for an identical draft and for a draft with no saved snapshot', () => {
+    expect(changedValueCount({ chat_agent: chat }, { chat_agent: { ...chat } })).toBe(0);
+    expect(changedValueCount({ chat_agent: chat }, null)).toBe(0);
+  });
+
+  it('adds the values changed under every top-level key', () => {
+    const saved = { chat_agent: chat, severity_threshold: 3 };
+    const draft = { chat_agent: { ...chat, tool_timeout_s: 60 }, severity_threshold: 5 };
+    expect(changedValueCount(draft, saved)).toBe(2);
+  });
+
+  it('treats a plain list as one value and a list of named items item by item', () => {
+    // A plain list (no id or name): one value, however many entries changed.
+    expect(
+      changedValueCount(
+        { chat_agent: { ...chat, internal_domains: ['a.example', 'b.example'] } },
+        { chat_agent: chat },
+      ),
+    ).toBe(1);
+    // Items keyed by `id`: each changed field of each item counts, like `channels[pd].type`.
+    const channels = [
+      { id: 'pd', type: 'pagerduty', enabled: true },
+      { id: 'mail', type: 'email', enabled: true },
+    ];
+    expect(
+      changedValueCount(
+        {
+          notifications: {
+            channels: [
+              { id: 'pd', type: 'pagerduty', enabled: false },
+              { id: 'mail', type: 'smtp', enabled: false },
+            ],
+          },
+        },
+        { notifications: { channels } },
+      ),
+    ).toBe(3);
+  });
+
+  it('counts a keyed list that starts empty through its items only', () => {
+    const draft = { notifications: { channels: [{ id: 'pd', type: 'pagerduty' }] } };
+    const saved = { notifications: { channels: [] } };
+    // `channels[pd].id` and `channels[pd].type`, never an extra entry for the list itself.
+    expect(changedValueCount(draft, saved)).toBe(2);
+  });
+
+  it('leaves out bookkeeping stamps but still counts a changed key at least once', () => {
+    const saved = { branding: { org_name: 'Acme', updated_at: '2026-01-01' } };
+    expect(
+      changedValueCount({ branding: { org_name: 'Acme SOC', updated_at: '2026-02-02' } }, saved),
+    ).toBe(1);
+    // Only the stamp moved: the key still differs, so the bar never reads zero.
+    expect(changedValueCount({ branding: { org_name: 'Acme', updated_at: '2026-02-02' } }, saved)).toBe(1);
+  });
+
+  it('never counts the non-editable keys', () => {
+    expect(changedValueCount({ sources: [{ id: 'x' }], setup_complete: false }, { sources: [], setup_complete: true })).toBe(0);
+  });
+});
 
 /* ------------------------------------------------------------ dirty map ---- */
 

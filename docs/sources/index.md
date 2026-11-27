@@ -1,11 +1,11 @@
 ---
 title: Connect sources
-description: Add, validate, monitor, and safely expand an Agentic SOC 0.1 source.
+description: Add, validate, monitor, and safely expand an Agentic SOC 0.2 source.
 ---
 
 # Connect sources
 
-This guide applies to **Agentic SOC 0.1** and is for operators and integrators. A source is
+This guide applies to **Agentic SOC 0.2** and is for operators and integrators. A source is
 one configured connector instance: a particular cluster, sender, broker, bucket, or
 file input with its own identity, transport, feeds, mappings, and secret presence.
 
@@ -40,7 +40,9 @@ vendor names in the API do not imply a built-in runtime connector.
 The Sources page lets authorized operators create, update, enable, disable, and
 delete sources. A new enabled primary source unsets the previous primary. Only a
 pull/search connector can be primary; push receivers still participate fully in
-ingestion and cases.
+ingestion and cases. The Console offers Make primary only for a pull source, and says it
+worked only when the server confirms it. While Demo Mode is on, the Demo sources are
+read-only: a change to one is refused with `409 source_demo_readonly`.
 
 Editing a source reconciles its background receiver set. Rotating a pull credential
 rebuilds that source's query client for the next operation.
@@ -63,7 +65,7 @@ Use source health and coverage to answer:
 The per-source log view is bounded. Pull sources run a scoped read; push sources show
 a recent process-local live tail. Neither replaces the authoritative source archive.
 
-## Agentic SOC 0.1 boundaries
+## Agentic SOC 0.2 boundaries
 
 Operate one backend replica. Runtime-entered source secrets are memory-only. HTTP
 push has no durable receipt inbox before processing, and several receivers have

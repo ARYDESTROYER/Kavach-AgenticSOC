@@ -50,7 +50,7 @@ from dataclasses import dataclass, field
 
 from ..config import Preferences
 from ..constants import IndexRole
-from ..engine.risk import compute_routing_risk
+from ..engine.risk import _has_asset_context, compute_routing_risk
 from ..models import Cluster
 from ..utils import dotted_get
 
@@ -83,6 +83,20 @@ class ForwardingExplanation:
     source_id: str | None = None
     is_alert: bool = False
     notes: list[str] = field(default_factory=list)
+    # Round 16 ([comp] R3): the available-signal routing score, computed only when the
+    # walk reached the risk-floor gate (``None`` when an earlier gate decided), the
+    # configured floor, and whether the floor decided (an events-role cluster that is
+    # not on the allowlist). The stored case risk, scored after enrichment, is another
+    # number and never decided this (#3).
+    routing_total: float | None = None
+    risk_floor: float | None = None
+    routing_gate_applied: bool = False
+    # Round 16 (FXD2): the terms of the routing score, so the Console can print the
+    # arithmetic that gives ``routing_total``: each available signal's factor (the
+    # stored two-decimal value) and its weight, and the weights' sum it divides by.
+    # Empty when no routing score was computed.
+    routing_terms: list[dict] = field(default_factory=list)
+    routing_weight_total: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -93,6 +107,11 @@ class ForwardingExplanation:
             "source_id": self.source_id,
             "is_alert": self.is_alert,
             "notes": list(self.notes),
+            "routing_total": self.routing_total,
+            "risk_floor": self.risk_floor,
+            "routing_gate_applied": self.routing_gate_applied,
+            "routing_terms": [dict(term) for term in self.routing_terms],
+            "routing_weight_total": self.routing_weight_total,
         }
 
 
@@ -189,6 +208,34 @@ def _on_allowlist(cluster: Cluster, prefs: Preferences) -> bool:
     return any(r in allow for r in cluster.rule_values)
 
 
+def _score_text(value: float) -> str:
+    """A score as the sentence prints it: two decimals, trailing zeros dropped (32.63,
+    70, 70.5). Never cut to an integer: 32.63 is not "32"."""
+    text = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _routing_terms(cluster: Cluster, prefs: Preferences, routing) -> tuple[list[dict], float]:
+    """The signals the routing score averaged, in the order
+    :func:`app.engine.risk.compute_routing_risk` adds them, each with its weight and its
+    stored factor, and the sum of those weights. Reputation is unknown before
+    investigation, so it is never a term here; asset criticality is one only when the
+    entity has asset context. Read-only: the same inputs ``compute_routing_risk`` used."""
+    weights = prefs.risk_weights
+    terms = [
+        {"factor": "volume", "weight": float(weights.volume), "value": float(routing.volume)},
+        {"factor": "velocity", "weight": float(weights.velocity), "value": float(routing.velocity)},
+        {"factor": "diversity", "weight": float(weights.diversity), "value": float(routing.diversity)},
+    ]
+    if _has_asset_context(cluster.entity.value, prefs):
+        terms.append({
+            "factor": "asset_criticality",
+            "weight": float(weights.asset_criticality),
+            "value": float(routing.asset_criticality),
+        })
+    return terms, round(sum(term["weight"] for term in terms), 6)
+
+
 # --------------------------------------------------------------------------- #
 # The public narrator.
 # --------------------------------------------------------------------------- #
@@ -210,10 +257,16 @@ def explain_forwarding(cluster: Cluster, prefs: Preferences) -> ForwardingExplan
     if prefs.caps.kill_switch:
         notes.append("kill switch is engaged (all investigations are stopped)")
 
-    def _mk(gate: str, forwarded: bool, dropped: bool, sentence: str) -> ForwardingExplanation:
+    floor = float(prefs.auto_investigate_risk_floor)
+
+    def _mk(gate: str, forwarded: bool, dropped: bool, sentence: str,
+            routing_total: float | None = None, gate_applied: bool = False,
+            terms: list[dict] | None = None, weight_total: float | None = None) -> ForwardingExplanation:
         return ForwardingExplanation(
             gate=gate, forwarded=forwarded, dropped=dropped, sentence=sentence,
             source_id=sid, is_alert=is_alert, notes=notes,
+            routing_total=routing_total, risk_floor=floor, routing_gate_applied=gate_applied,
+            routing_terms=list(terms or []), routing_weight_total=weight_total,
         )
 
     # 1) IGNORE feed — the only role that DROPS entirely (no case, no candidate).
@@ -258,15 +311,20 @@ def explain_forwarding(cluster: Cluster, prefs: Preferences) -> ForwardingExplan
     # 6) Events clusters forward when explicitly allowlisted OR when their
     # available-signal routing score reaches the configured floor. Reputation is
     # unknown before investigation, exactly as in handle_clusters.
-    routing_score = compute_routing_risk(cluster, prefs, reputation=None).total
-    if not _on_allowlist(cluster, prefs) and routing_score < prefs.auto_investigate_risk_floor:
+    routing = compute_routing_risk(cluster, prefs, reputation=None)
+    routing_score = routing.total
+    terms, weight_total = _routing_terms(cluster, prefs, routing)
+    floor_applies = not _on_allowlist(cluster, prefs)
+    if floor_applies and routing_score < prefs.auto_investigate_risk_floor:
         return _mk(
             "risk_floor", forwarded=False, dropped=False,
             sentence=(
                 "Registered as a candidate: its rules are not on the auto-forward "
-                f"allowlist and its available-signal routing score {int(routing_score)} "
-                f"is below the configured floor {prefs.auto_investigate_risk_floor}."
+                f"allowlist and its available-signal routing score {_score_text(routing_score)} "
+                f"is below the configured floor {_score_text(prefs.auto_investigate_risk_floor)}."
             ),
+            routing_total=routing_score, gate_applied=True,
+            terms=terms, weight_total=weight_total,
         )
 
     # 7) All gates passed → auto-forwarded to the investigator.
@@ -276,11 +334,13 @@ def explain_forwarding(cluster: Cluster, prefs: Preferences) -> ForwardingExplan
         why = "its rules are on the auto-forward allowlist"
     else:
         why = (
-            f"its available-signal routing score {int(routing_score)} reaches the "
-            f"configured floor {prefs.auto_investigate_risk_floor}"
+            f"its available-signal routing score {_score_text(routing_score)} reaches the "
+            f"configured floor {_score_text(prefs.auto_investigate_risk_floor)}"
         )
     return _mk(
         "forwarded", forwarded=True, dropped=False,
         sentence=f"Auto-investigated: background scan is on, the cluster is above its "
                  f"severity_floor, Auto-Correlate is on, and {why}.",
+        routing_total=routing_score, gate_applied=floor_applies,
+        terms=terms, weight_total=weight_total,
     )

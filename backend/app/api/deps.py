@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import posixpath
 import re
+import time
+import weakref
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import HTTPException, Request
 
 from ..state import AppState
+from ..stored_text import audit_actor_key
 
 # Routes reachable WITHOUT a session even when auth is enabled. Kept deliberately
 # tiny (deny-by-default). Matched against the NORMALISED path (so `//`, `.`, `..`
@@ -33,10 +44,17 @@ PUBLIC_API_PATHS = frozenset(
         # single-use token/state (NOT a full session), so they are reachable before a
         # session exists WITHOUT weakening deny-by-default:
         #   * mfa/verify   — gated by the short-lived pending_token (mfa:"pending").
+        #   * mfa/enroll-setup + mfa/enroll-confirm — mandated-MFA enrollment DURING
+        #     login (required-but-not-enrolled): gated by the SAME short-lived
+        #     pending_token; enroll-confirm additionally proves TOTP possession
+        #     before any session is minted. A pending token remains rejected by
+        #     every full-session verify, so deny-by-default is not weakened.
         #   * sso/providers — read-only list of ENABLED providers (no secrets).
         #   * sso/authorize — builds the IdP redirect (stashes single-use state/nonce).
         #   * sso/callback  — validates state, exchanges the code server-side.
         "/api/auth/mfa/verify",
+        "/api/auth/mfa/enroll-setup",
+        "/api/auth/mfa/enroll-confirm",
         "/api/auth/sso/providers",
         "/api/auth/sso/authorize",
         "/api/auth/sso/callback",
@@ -55,6 +73,27 @@ PUBLIC_GET_PATHS = frozenset({"/api/branding"})
 # prefix — so a future nested route under /api/ingest can't be made public by
 # accident. (Also guarded by test_route_auth_coverage.)
 _PUBLIC_INGEST_RE = re.compile(r"^/api/ingest/[^/]+$")
+
+# Round 16 (B20): while an account carries ``must_change_password`` (an administrator
+# created it or reset its password), only these routes answer; every other /api route
+# answers 403 ``password_change_required``. Any method on the first set; the second set
+# are self-service reads with no case data that the Console reads once at sign-in.
+PASSWORD_CHANGE_ALLOWED_PATHS = frozenset({
+    "/api/auth/me",
+    "/api/auth/change-password",
+    "/api/auth/logout",
+    "/api/auth/refresh",
+    "/api/account/me",
+})
+PASSWORD_CHANGE_ALLOWED_GETS = frozenset({
+    "/api/account/permissions",
+    "/api/prefs/effective",
+    "/api/prefs/user",
+})
+PASSWORD_CHANGE_REQUIRED_DETAIL = {
+    "code": "password_change_required",
+    "message": "Change your temporary password to continue.",
+}
 
 
 def get_state(request: Request) -> AppState:
@@ -105,7 +144,20 @@ async def require_auth(request: Request):
     if user is None:
         raise HTTPException(status_code=401, detail="authentication required")
     await _session_check(request, state, auth, user, token)
+    # Round 16 (B20): the forced password change is enforced here, not only by the
+    # Console. The flag is read live from the synced account record, so it clears on
+    # the request after a successful change.
+    if bool(getattr(user, "must_change_password", False)) and not _password_change_exempt(
+        request.method, path
+    ):
+        raise HTTPException(status_code=403, detail=dict(PASSWORD_CHANGE_REQUIRED_DETAIL))
     return user
+
+
+def _password_change_exempt(method: str, path: str) -> bool:
+    if path in PASSWORD_CHANGE_ALLOWED_PATHS:
+        return True
+    return str(method or "").upper() in ("GET", "HEAD") and path in PASSWORD_CHANGE_ALLOWED_GETS
 
 
 # Map a SessionStore rejection reason → the {code} surfaced on the 401 body.
@@ -114,25 +166,107 @@ _SESSION_REASON_CODE = {
     "tv_mismatch": "reauth_required",
     "absolute_expired": "session_expired",
     "idle_expired": "session_expired",
+    "unknown": "session_invalid",
 }
 
 
-async def _session_check(request: Request, state: AppState, auth, user, token: str | None) -> None:
-    """The Wave-3 async session-registry check (see :func:`require_auth`).
+def live_session_limits(state: AppState, user: Any):
+    """The live standard + remembered session limits for ``user`` (Round 12).
 
-    DENIES only on an explicit negative signal; an unknown sid is lazily registered
-    and allowed. Best-effort: a SessionStore I/O failure NEVER hard-denies a
+    Every registry evaluation builds its limits here (or through
+    :func:`app.auth.session_limits.limits_for_username`) so the call sites cannot
+    drift. ``user`` is the verified principal: its LIVE role is checked against
+    ``remember_me.excluded_roles`` on every evaluation, so excluding a role (or
+    promoting someone into an excluded role) takes effect on their next request —
+    a remembered row of an excluded principal is judged by the standard limits,
+    exactly as when Remember me is turned off. The standard access-token lifetime
+    caps such a row too, so it ends where an ordinary sign-in would."""
+    from ..auth.session_limits import limits_for_principal, standard_token_seconds
+
+    return limits_for_principal(
+        getattr(state, "prefs", None), getattr(user, "role", ""),
+        token_seconds=standard_token_seconds(state),
+    )
+
+
+@dataclass
+class SessionVerdict:
+    """The outcome of one session-registry evaluation (non-raising form).
+
+    ``reason`` is ``None`` when the session may be used, else one of the
+    :class:`~app.stores.sessions.SessionStore` rejection reasons (``revoked``,
+    ``tv_mismatch``, ``idle_expired``, ``absolute_expired``, ``unknown``). ``row``
+    is the registry row when one was read (for ``/auth/me``'s session summary)."""
+
+    reason: str | None = None
+    row: dict[str, Any] | None = None
+    limits: Any = None
+
+
+def _issued_before_prune_grace(claims: dict[str, Any] | None) -> bool:
+    """Whether a token was issued longer ago than the session registry keeps a
+    revoked/expired row (``stores.sessions._PRUNE_GRACE_SECONDS``)."""
+    from ..stores.sessions import _PRUNE_GRACE_SECONDS
+
+    try:
+        iat = int((claims or {}).get("iat", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if iat <= 0:
+        return False
+    return (datetime.now(timezone.utc).timestamp() - iat) > _PRUNE_GRACE_SECONDS
+
+
+def _remember_seconds_from_claims(claims: dict[str, Any] | None) -> int:
+    """The lifetime a REMEMBERED token was minted with (``exp - iat``), else 0."""
+    if not isinstance(claims, dict) or claims.get("rm") is not True:
+        return 0
+    try:
+        return max(0, int(claims.get("exp", 0)) - int(claims.get("iat", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+async def evaluate_session(
+    request: Request, state: AppState, auth, user, token: str | None
+) -> SessionVerdict:
+    """The Wave-3 async session-registry check, as a NON-RAISING verdict.
+
+    Shared by :func:`require_auth` (which raises on a reason) and ``GET /auth/me``
+    (which reports the reason and clears the cookie, Round 12 — so a revoked or
+    expired session lands on the sign-in page instead of a console where every call
+    401s). DENIES only on an explicit negative signal; an unknown sid is lazily
+    registered and allowed. Best-effort: a SessionStore I/O failure NEVER denies a
     validly-signed token (the JWT remains the root of trust) — it is logged and the
-    request proceeds, so a transient store glitch can't lock everyone out."""
+    request proceeds, so a transient store glitch can't lock everyone out. The one
+    exception is the closed factory boundary, which fails closed with a 503."""
     sessions = getattr(state, "sessions", None)
     if sessions is None:
-        return
+        return SessionVerdict()
     sid = getattr(user, "sid", None)
     if not sid:
-        return  # a token minted before sessions existed — never reject for it (#back-compat)
-    policy = getattr(getattr(state, "prefs", None), "session_policy", None)
-    idle = int(getattr(policy, "idle_timeout", 0) or 0)
-    absolute = int(getattr(policy, "absolute_lifetime", 0) or 0)
+        return SessionVerdict()  # a token minted before sessions existed (#back-compat)
+    limits = live_session_limits(state, user)
+    # Once the factory boundary closes, even an authenticated GET must be
+    # read-only: the normal compatibility path touches known rows and lazily creates
+    # unknown signed sessions. Validate one strict snapshot instead and fail closed
+    # without either mutation. This also covers the narrowly allowed recovery POSTs.
+    if bool(getattr(getattr(state, "mutation_gate", None), "closed", False)):
+        claims = auth.claims_of(token) if token else None
+        stamped_tv = int((claims or {}).get("tv", 0) or 0)
+        try:
+            reason = await sessions.strict_request_authority(
+                sid=sid,
+                username=user.username,
+                token_version=stamped_tv,
+                **limits.kwargs(),
+            )
+        except Exception as exc:  # storage uncertainty cannot cross reset boundary
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "session_registry_unavailable"},
+            ) from exc
+        return SessionVerdict(reason=reason, limits=limits)
     try:
         row = await sessions.get(sid)
         # token_version (tv) check — a revoke-all bumps the user's tv so an old token
@@ -141,48 +275,87 @@ async def _session_check(request: Request, state: AppState, auth, user, token: s
         stamped_tv = int((claims or {}).get("tv", 0) or 0)
         current_tv = await sessions.token_version_for(user.username)
         if stamped_tv < current_tv:
-            raise HTTPException(
-                status_code=401, detail={"code": "reauth_required", "reason": "tv_mismatch"}
-            )
+            return SessionVerdict(reason="tv_mismatch", row=row, limits=limits)
         if row is None:
             # UNKNOWN sid on a validly-signed token → lazily register (first-seen) and
             # ALLOW. This keeps direct-mint tokens (auth tests, mint_session without a
-            # route hook) working. The JWT signature already vouched for it.
-            await _lazy_register(request, state, sessions, user, sid, stamped_tv, idle, absolute)
-            return
-        reason = sessions.is_active(row, idle_timeout=idle, absolute_lifetime=absolute)
+            # route hook) working. The JWT signature already vouched for it. A token
+            # minted by a "Remember me" sign-in (``rm``) registers as remembered so a
+            # failed registration write never silently changes its limits.
+            #
+            # Never for a token issued before the registry's prune grace: its row may
+            # have been revoked and then pruned, and re-registering it would resurrect
+            # a terminated session (ASVS 7.4.1). Current tokens never live that long
+            # (session_limits.MAX_SESSION_TOKEN_SECONDS); this guards tokens minted by
+            # an older build with a longer AUTH_TOKEN_HOURS.
+            if _issued_before_prune_grace(claims):
+                return SessionVerdict(reason="unknown", limits=limits)
+            row = await _lazy_register(request, state, sessions, user, sid, stamped_tv,
+                                       limits, claims)
+            return SessionVerdict(row=row, limits=limits)
+        reason = sessions.is_active(row, **limits.kwargs())
         if reason is not None:
-            code = _SESSION_REASON_CODE.get(reason, "session_invalid")
-            raise HTTPException(status_code=401, detail={"code": code, "reason": reason})
-        # Best-effort touch (only writes when >60s stale).
+            return SessionVerdict(reason=reason, row=row, limits=limits)
+        # Best-effort touch (only writes when >60s stale), sliding the idle window
+        # that applies to THIS row (remembered or standard).
         try:
+            idle, _absolute = limits.for_row(row)
             await sessions.touch(sid, idle_timeout=idle)
         except Exception:  # noqa: BLE001
             pass
+        return SessionVerdict(row=row, limits=limits)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — a store glitch must not lock everyone out
         import logging
 
         logging.getLogger("tlsoc.api.deps").warning("session check soft-failed: %s", exc)
+        return SessionVerdict(limits=limits)
+
+
+async def _session_check(request: Request, state: AppState, auth, user, token: str | None) -> None:
+    """The Wave-3 async session-registry check (see :func:`require_auth`): raise 401
+    on a negative :func:`evaluate_session` verdict."""
+    verdict = await evaluate_session(request, state, auth, user, token)
+    if verdict.reason is not None:
+        code = _SESSION_REASON_CODE.get(verdict.reason, "session_invalid")
+        raise HTTPException(status_code=401, detail={"code": code, "reason": verdict.reason})
 
 
 async def _lazy_register(request: Request, state: AppState, sessions, user, sid: str,
-                         tv: int, idle: int, absolute: int) -> None:
+                         tv: int, limits, claims: dict[str, Any] | None = None
+                         ) -> dict[str, Any] | None:
     """First-seen registration of an unknown-but-validly-signed sid. Records the
     session with best-effort request metadata + audits the create (#2). Never raises
-    into the caller."""
+    into the caller; returns the stored row (or ``None`` on failure)."""
     meta: dict[str, str] = session_metadata(request)
+    remember_seconds = _remember_seconds_from_claims(claims)
+    remembered = remember_seconds > 0
+    token_expires_at = ""
     try:
-        await sessions.create(
+        exp = int((claims or {}).get("exp", 0) or 0)
+        if exp > 0:
+            token_expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        token_expires_at = ""
+    if remembered and limits.remember_enabled:
+        idle, absolute = limits.remember_idle, limits.remember_absolute
+    else:
+        idle, absolute = limits.idle, limits.absolute
+    try:
+        row = await sessions.create(
             sid=sid, username=user.username, token_version=int(tv),
             idle_timeout=idle, absolute_lifetime=absolute,
+            remember=remembered, remember_seconds=remember_seconds,
+            token_expires_at=token_expires_at,
             **meta,
         )
         await _audit_session(state, "session_register", user.username, sid,
-                             "lazy first-seen session registration")
+                             "lazy first-seen session registration"
+                             + (" (remembered)" if remembered else ""))
+        return row
     except Exception:  # noqa: BLE001
-        pass
+        return None
 
 
 def session_metadata(request: Request) -> dict[str, str]:
@@ -191,9 +364,12 @@ def session_metadata(request: Request) -> dict[str, str]:
     lazy-register path here and the explicit session-create hooks in routes. Never
     raises — degrades to empty strings."""
     try:
-        from ..state import client_ip_from, geo_for_ip, parse_user_agent
+        from ..audit.context import audit_client_ip
+        from ..state import geo_for_ip, parse_user_agent
 
-        ip = client_ip_from(request)
+        # Round 16 (B22): the trusted-proxy resolution the audit trail uses, never the
+        # leftmost X-Forwarded-For entry, which the caller chooses.
+        ip = audit_client_ip(request).ip or ""
         ua_raw = (request.headers.get("user-agent") or "")[:512]
         ua = parse_user_agent(ua_raw)
         geo = geo_for_ip(ip)
@@ -335,6 +511,508 @@ async def _assigned_custom_roles(state: AppState, username: str) -> list[str]:
     return out
 
 
+@dataclass(frozen=True, eq=False)
+class AccessView:
+    """The caller's RBAC view for ONE request, resolved once and queried many times.
+
+    ``unrestricted`` covers the two allow-everything modes (auth disabled; auth on with
+    RBAC off, where an authenticated caller is treated as super_admin). Otherwise
+    ``matrix`` is the effective matrix (operator overrides + stored custom-role
+    definitions folded in) and ``assigned`` the caller's assigned custom roles, exactly
+    as :func:`_enforce` has always resolved them. :meth:`allows` never writes anything:
+    auditing a denial is the caller's decision (``_enforce`` audits its 403; the chat
+    catalogue does not, SPEC §5.1)."""
+
+    user: Any
+    role: str
+    unrestricted: bool
+    matrix: dict[str, dict[str, list[str]]] | None = None
+    assigned: tuple[str, ...] = ()
+
+    def allows(self, resource: str, action: str) -> bool:
+        if self.unrestricted:
+            return True
+        from ..rbac.policy import can_for_roles
+
+        return can_for_roles(
+            self.role, list(self.assigned), resource, action, matrix=self.matrix
+        )
+
+
+async def resolve_access(request: Request) -> AccessView:
+    """Run the auth gate once and resolve the caller's RBAC view, writing NO audit row.
+
+    The single non-auditing core behind both :func:`_enforce` (and so every
+    ``require_permission`` / ``has_permission`` / ``require_admin``) and
+    :func:`resolve_grants`, so a route gate and a chat grant can never disagree. Three
+    modes (see rbac/policy.py):
+
+    * auth DISABLED        → unrestricted (the no-auth "old version" default).
+    * auth ON, rbac OFF    → authenticated users are treated as super_admin →
+                              unrestricted.
+    * auth ON, rbac ON     → ``rbac.policy.can_for_roles(base_role,
+                              assigned_custom_roles, resource, action)`` against the
+                              matrix resolved here.
+
+    The auth gate's own session bookkeeping (first-seen lazy registration of an unknown
+    sid) still happens, exactly as for any authenticated request; that is session
+    lifecycle, not an authorization decision. A 401 for an unauthenticated caller
+    propagates when auth is on."""
+    user = await require_auth(request)
+    return await access_view_for(get_state(request), user)
+
+
+async def access_view_for(state: AppState, user: Any) -> AccessView:
+    """The RBAC view for an already-authenticated ``user`` (the core of
+    :func:`resolve_access`, without the request's auth gate). Used where no request
+    is present but the principal's LIVE grants must be re-resolved: a running chat
+    turn re-checks that it still holds the grants it was admitted with
+    (``routes_chat.turn_authority_lost``). Writes nothing."""
+    auth = getattr(state, "auth", None)
+    if auth is None or not auth.is_enabled:
+        return AccessView(user=user, role="", unrestricted=True)  # auth off → allow all
+    role = getattr(user, "role", "") or ""
+    if not _rbac_enabled(state):
+        # rbac off → authenticated == super_admin
+        return AccessView(user=user, role=role, unrestricted=True)
+    from ..rbac.policy import resolve_matrix
+
+    rbac_config = await _rbac_config_with_custom_roles(state)
+    # Resolve the effective matrix ONCE (folds operator overrides + stored custom-role
+    # definitions), then decide against the base role UNIONed with the user's assigned
+    # custom roles. Resolving the matrix here also lets the assigned-name fail-safe
+    # (drop unknown/deleted roles) key off the SAME matrix the grant union consults.
+    matrix = resolve_matrix(rbac_config)
+    assigned = await _assigned_custom_roles(state, getattr(user, "username", "") or "")
+    return AccessView(
+        user=user, role=role, unrestricted=False, matrix=matrix, assigned=tuple(assigned)
+    )
+
+
+async def resolve_grants(
+    request: Request, pairs: Iterable[tuple[str, str]]
+) -> frozenset[tuple[str, str]]:
+    """The subset of ``(resource, action)`` ``pairs`` the caller holds — WITHOUT auditing.
+
+    Chat revamp SPEC §5.1: the chat tool context, the ``/chat/context`` catalogue and
+    ``ConsoleLink.allowed`` need many permission answers per request. Probing them
+    through :func:`has_permission` would write one ``ACCESS_DENIED`` row per missing
+    grant on every page load; this runs the auth gate once, resolves the matrix and the
+    caller's custom roles once (deny-wins inside each custom role, union across roles,
+    super_admin lockout-proof — the exact ``_enforce`` semantics, through the same
+    :func:`resolve_access` core), evaluates every pair, and writes NOTHING. A refusal the
+    model actually triggers is audited separately, once, by
+    :func:`record_chat_tool_denial`. A 401 propagates when auth is on."""
+    view = await resolve_access(request)
+    return frozenset(
+        (str(resource), str(action))
+        for resource, action in pairs
+        if view.allows(str(resource), str(action))
+    )
+
+
+# Audit text is plain data, but a tool name in a refused call comes from MODEL output,
+# which injected log content can steer (#9). Keep only identifier characters and bound
+# the length so a forged "tool name" can never smuggle prose into the audit trail.
+_AUDIT_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.:\-]")
+
+# The actor is NOT model output: it is the authenticated principal's username, and
+# usernames are not identifier-shaped (an SSO account is keyed by its verified email,
+# an admin-created one is free text). It must be written exactly as ``_enforce`` and
+# every other audit writer write it, or ``records_for_actor``'s exact ``term`` query
+# (the account-activity feed) and the audit actor filter never find the row (#2). It is
+# ``app.stored_text.audit_actor_key``, the form ``AuditDoc`` records: control characters
+# removed, and a name longer than 160 characters ends in a digest of the whole name.
+
+
+def _audit_token(value: Any, limit: int = 64) -> str:
+    return _AUDIT_TOKEN_RE.sub("?", str(value if value is not None else ""))[:limit]
+
+
+def _audit_actor(actor: Any) -> str:
+    """The audit ``actor`` for a chat row: the username as given, minus control
+    characters, bounded; ``"default"`` when there is none (auth off, §5.2)."""
+    return audit_actor_key(str(actor if actor is not None else "")) or "default"
+
+
+def _missing_pairs(missing: Any) -> list[tuple[str, str]]:
+    """Normalise the refused grants to ``(resource, action)`` pairs.
+
+    Accepts both shapes the chat layer produces: ``"resource:action"`` strings (what
+    ``ChatToolContext.missing`` / ``ChatToolInfo.missing`` return) and ``(resource,
+    action)`` pairs (``ChatTool.requires``). A bare string is one entry, not an iterable
+    of characters. An entry of neither shape is skipped, never raised on: a malformed
+    "requires" note must not cost the denial its audit row."""
+    if missing is None:
+        return []
+    if isinstance(missing, str):
+        missing = [missing]
+    pairs: list[tuple[str, str]] = []
+    try:
+        items = list(missing)
+    except TypeError:
+        return []
+    for item in items:
+        if isinstance(item, str):
+            resource, _, action = item.partition(":")
+        elif isinstance(item, (tuple, list)) and len(item) == 2:
+            resource, action = item
+        else:
+            continue
+        pairs.append((str(resource), str(action)))
+    return pairs
+
+
+def _chat_denial_summary(
+    tool: str,
+    missing: Any,
+    turn_id: str | None,
+    step: Any,
+) -> str:
+    """The ``result_summary`` of a chat ``ACCESS_DENIED`` row. Never raises: each part
+    that cannot be rendered is left out on its own (a non-integer ``step`` drops only
+    ``step=``), so a bad argument never drops the whole row."""
+    needs = ", ".join(
+        f"{_audit_token(resource, 32)}:{_audit_token(action, 32)}" if action
+        else _audit_token(resource, 32)
+        for resource, action in _missing_pairs(missing)
+    )
+    prefix: list[str] = []
+    if turn_id:
+        prefix.append(f"turn={_audit_token(turn_id)}")
+    if step is not None and not isinstance(step, bool):
+        try:
+            prefix.append(f"step={int(step)}")
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return " ".join(
+        prefix + [f"denied chat tool {tool}" + (f" (requires {needs})" if needs else "")]
+    )
+
+
+async def record_chat_tool_denial(
+    control_audit: Any,
+    *,
+    actor: str,
+    tool_name: str,
+    missing: Iterable[str | tuple[str, str]] = (),
+    turn_id: str | None = None,
+    step: int | None = None,
+    case_id: str | None = None,
+) -> bool:
+    """Write ONE ``ACCESS_DENIED`` control-audit row for a chat tool call the engine
+    refused because the caller lacks a grant (SPEC §5.1: one row per refused step, and
+    only for a call the model actually requested — catalogue resolution never audits).
+
+    ``surface="chat"``; ``actor`` is the caller's username written as given
+    (``app.stored_text.audit_actor_key``: control characters removed, at most 160
+    characters; ``"default"`` when auth is off, matching the chat execution audit,
+    §5.2), so the row is attributed to the real account.
+    ``missing`` takes ``"resource:action"`` strings (``ChatToolContext.missing``) or
+    ``(resource, action)`` pairs. ``result_summary`` starts with the ``turn=<id>
+    step=<n>`` correlation prefix every chat audit row carries; the model-influenced
+    values in it (tool name, turn id, grants) are reduced to identifier characters and
+    bounded.
+
+    Takes the control audit logger rather than the request so the engine
+    (``agents/chat.py``, which only holds a ``ChatToolContext``) can call it. Import it
+    lazily there: ``app.api.deps`` imports ``app.state``, which imports the chat engine.
+    Best-effort (#2): returns True when the row was written, False when there is no
+    audit logger or the write raised (logged as a warning); it never raises into the
+    turn."""
+    if control_audit is None:
+        return False
+    from ..constants import ActionType
+
+    # Built outside the guarded write and non-raising by construction: argument shape
+    # can never be the reason a refusal goes unaudited.
+    tool = _audit_token(tool_name) or "?"
+    summary = _chat_denial_summary(tool, missing, turn_id, step)
+    try:
+        await control_audit.record(
+            action_type=ActionType.ACCESS_DENIED,
+            surface="chat",
+            actor=_audit_actor(actor),
+            case_id=case_id or None,
+            tool_name=tool,
+            result_summary=summary,
+            # The asking analyst's grants refused the call (an Access row).
+            outcome="denied",
+            actor_type="human",
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 — a denial must never fail the turn
+        import logging
+
+        logging.getLogger("tlsoc.api.deps").warning(
+            "chat tool denial audit write failed (tool=%s): %s", tool, exc
+        )
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# Access denied rows (Round 14 SPEC §4.5.1 "Access denied" quick view, §4.5.5)
+# --------------------------------------------------------------------------- #
+#: A refused READ repeated within this many seconds adds no row: one row per user,
+#: permission and route per window, the audit-view coalescing rule (SPEC §4.5.5, D8)
+#: applied to denials, so a page that a role may open, a poll or a retry loop can
+#: never flood the audit log with the same refusal. A refused WRITE is always
+#: recorded on its own row.
+DENIAL_COALESCE_SECONDS = 300.0
+#: The most refused-read keys one process remembers (least recently seen first out).
+DENIAL_COALESCE_MAX_KEYS = 10_000
+#: The request methods that only read (the RFC 9110 safe methods).
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+#: A route template keeps identifier and template characters only, bounded.
+_ROUTE_TEXT_RE = re.compile(r"[^A-Za-z0-9_.:/{}\-]")
+_ROUTE_TEXT_MAX = 200
+_PERMISSION_TEXT_MAX = 200
+
+_denials_logger = logging.getLogger("tlsoc.api.deps.denials")
+
+
+@dataclass
+class _DenialWindow:
+    """One refused-read key: when its last row was written (``None`` before the first
+    one) and how many refusals since then were coalesced into no row."""
+
+    written_at: float | None = None
+    repeats: int = 0
+
+
+@dataclass(eq=False)
+class AccessDenialRecorder:
+    """Writes the ``ACCESS_DENIED`` audit rows of refused requests (#2).
+
+    A refused write is recorded on its own row every time. A refused read is recorded
+    once per user, permission, method and route template per
+    :data:`DENIAL_COALESCE_SECONDS`; the refusals inside the window add no row, and the
+    next row written for the same key says how many there were since the previous one
+    (``tool_input.repeats_since_previous``). That count lives only in this map until
+    such a row is written: if the key is never refused again, or the process restarts,
+    or the key is evicted, the refusals coalesced since its last row are not recorded
+    (:attr:`unrecorded` counts the evicted ones). The map is bounded
+    (:data:`DENIAL_COALESCE_MAX_KEYS`, least recently seen evicted first) and lives
+    with the process state, so a restart, or another replica, may also write one extra
+    row for a key. Best-effort: a row that cannot be appended is logged and counted
+    (:attr:`dropped`) and never changes the 403."""
+
+    clock: Callable[[], float] = time.monotonic
+    window: float = DENIAL_COALESCE_SECONDS
+    max_keys: int = DENIAL_COALESCE_MAX_KEYS
+    written: int = 0
+    coalesced: int = 0
+    dropped: int = 0
+    #: Coalesced refusals whose key was evicted before a row could carry their count.
+    unrecorded: int = 0
+    _seen: OrderedDict[str, _DenialWindow] = field(default_factory=OrderedDict, repr=False)
+    _pending: set[str] = field(default_factory=set, repr=False)
+
+    @staticmethod
+    def key(actor: str, permission: str, method: str, route: str) -> str:
+        raw = json.dumps([actor, permission, method, route], ensure_ascii=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _entry(self, key: str) -> _DenialWindow:
+        entry = self._seen.get(key)
+        if entry is None:
+            entry = _DenialWindow()
+            self._seen[key] = entry
+        self._seen.move_to_end(key)
+        while len(self._seen) > max(1, self.max_keys):
+            _evicted, gone = self._seen.popitem(last=False)
+            self.unrecorded += gone.repeats
+        return entry
+
+    async def record(
+        self,
+        *,
+        read: bool,
+        actor: str,
+        permission: str,
+        method: str,
+        route: str,
+        write_row: Callable[[int], Awaitable[None]],
+    ) -> bool:
+        """Write the denial row through ``write_row(repeats_since_previous)`` unless it
+        is a read the same user was refused on the same route within the window.
+        Returns whether a row was written. Never raises."""
+        if not read:
+            try:
+                await write_row(0)
+            except Exception as exc:  # noqa: BLE001 (best effort: the 403 stands)
+                self.dropped += 1
+                _denials_logger.warning("access denied row dropped (%d so far): %s", self.dropped, exc)
+                return False
+            self.written += 1
+            return True
+        key = self.key(actor, permission, method, route)
+        now = self.clock()
+        entry = self._seen.get(key)
+        if key in self._pending or (
+            entry is not None and entry.written_at is not None and now - entry.written_at < self.window
+        ):
+            self._entry(key).repeats += 1
+            self.coalesced += 1
+            return False
+        repeats = entry.repeats if entry is not None else 0
+        self._pending.add(key)
+        try:
+            await write_row(repeats)
+        except Exception as exc:  # noqa: BLE001 (best effort: the 403 stands)
+            # Not recorded: the refusal counts toward the next row of the same key.
+            self._entry(key).repeats += 1
+            self.dropped += 1
+            _denials_logger.warning("access denied row dropped (%d so far): %s", self.dropped, exc)
+            return False
+        finally:
+            self._pending.discard(key)
+        current = self._seen.get(key)
+        # Refusals coalesced while this row was being written belong to the next row.
+        during = max(0, current.repeats - repeats) if current is not None else 0
+        entry = self._entry(key)
+        entry.written_at = now
+        entry.repeats = during
+        self.written += 1
+        return True
+
+    def reset(self) -> None:
+        self._seen.clear()
+        self._pending.clear()
+        self.written = self.coalesced = self.dropped = self.unrecorded = 0
+
+
+#: One recorder per application state (so each test app, and each Demo-free state,
+#: starts with an empty map); a state that cannot be weakly referenced shares one.
+_DENIAL_RECORDERS: "weakref.WeakKeyDictionary[Any, AccessDenialRecorder]" = weakref.WeakKeyDictionary()
+_SHARED_DENIALS = AccessDenialRecorder()
+
+
+def denial_recorder(state: Any) -> AccessDenialRecorder:
+    """The :class:`AccessDenialRecorder` of ``state`` (made on first use)."""
+    try:
+        recorder = _DENIAL_RECORDERS.get(state)
+        if recorder is None:
+            recorder = AccessDenialRecorder()
+            _DENIAL_RECORDERS[state] = recorder
+        return recorder
+    except TypeError:  # not hashable or not weakly referenceable
+        return _SHARED_DENIALS
+
+
+def _request_route(request: Any) -> tuple[str, str]:
+    """``(method, route)`` of a refused request: the matched route's template
+    (``/api/users/{username}``), never the values in the path, or the path itself when
+    no route matched. Reduced to identifier and template characters and bounded."""
+    scope = getattr(request, "scope", None)
+    scope = scope if isinstance(scope, dict) else {}
+    method = str(scope.get("method") or getattr(request, "method", "") or "").upper()
+    method = re.sub(r"[^A-Z]", "", method)[:16] or "?"
+    route = scope.get("route")
+    template = getattr(route, "path_format", None) or getattr(route, "path", None)
+    if not isinstance(template, str) or not template:
+        template = str(scope.get("path") or "")
+    return method, _ROUTE_TEXT_RE.sub("?", template)[:_ROUTE_TEXT_MAX] or "?"
+
+
+def _permission_text(missing: Any) -> str:
+    """``users:manage`` (several joined by ``, ``), in the audit token alphabet."""
+    pairs = _missing_pairs(missing)
+    text = ", ".join(
+        f"{_audit_token(resource, 32)}:{_audit_token(action, 32)}" if action
+        else _audit_token(resource, 32)
+        for resource, action in pairs
+    )
+    return text[:_PERMISSION_TEXT_MAX] or "?"
+
+
+def _denial_summary(permission: str, role: str, method: str, route: str, repeats: int) -> str:
+    """``denied users:manage for role analyst_tier2 on GET /api/users``, and, when
+    refusals of the same read were coalesced since the previous row, how many."""
+    text = f"denied {permission} for role {_audit_token(role) or '?'} on {method} {route}"
+    if repeats > 0:
+        times = "time" if repeats == 1 else "times"
+        text += f" (refused {repeats:,} more {times} since the previous record)"
+    return text
+
+
+async def record_access_denied(
+    request: Request,
+    missing: Iterable[str | tuple[str, str]] | str | tuple[str, str],
+    *,
+    view: AccessView | None = None,
+    case_id: str | None = None,
+    target: Any = None,
+) -> bool:
+    """Record that ``request`` was refused for lacking the ``missing`` grants (#2).
+
+    The one writer of the RBAC ``ACCESS_DENIED`` row: the route gate's 403
+    (:func:`_enforce`) and every in-body refusal that decided with the side-effect
+    free :func:`has_permission` (a thread edit by someone who is neither the author nor
+    a moderator, a job file whose grant has gone). A refused read is coalesced (one
+    row per user, permission and route per :data:`DENIAL_COALESCE_SECONDS`); a refused
+    write is recorded on its own row (:class:`AccessDenialRecorder`). The row always
+    goes to the real control audit (SPEC §3.5), names the request's route and carries
+    the request's audit context (client, session reference, role at the time, request
+    id). ``view`` is the caller's resolved access when the caller has it, else the
+    request's principal is used. Best-effort: returns whether a row was written and
+    never raises, so a refusal is never turned into another error."""
+    try:
+        state = get_state(request)
+        audit = getattr(state, "control_audit", None)
+        if audit is None:
+            return False
+        user = view.user if view is not None else current_user(request)
+        raw_role = getattr(view, "role", "") if view is not None else getattr(user, "role", "")
+        role = str(getattr(raw_role, "value", raw_role) or "")
+        actor = _audit_actor(getattr(user, "username", "") or "") if user is not None else "default"
+        permission = _permission_text(missing)
+        method, route = _request_route(request)
+        read = method in _READ_METHODS
+        try:
+            from ..audit.context import audit_context
+
+            context_fields = audit_context(request, user=user, actor_role=role or None).record_fields()
+        except Exception:  # noqa: BLE001 (the row is written without its context)
+            context_fields = {}
+        from ..constants import ActionType
+
+        strict = getattr(audit, "record_strict", None) if read else None
+        recorder = denial_recorder(state)
+
+        async def write_row(repeats: int) -> None:
+            tool_input: dict[str, Any] = {"permission": permission, "method": method, "route": route}
+            if read:
+                tool_input["coalesce_seconds"] = int(recorder.window)
+                tool_input["repeats_since_previous"] = repeats
+            fields = {
+                "surface": "rbac",
+                "actor": actor,
+                "case_id": case_id or None,
+                "target": target,
+                "tool_input": tool_input,
+                "result_summary": _denial_summary(permission, role, method, route, repeats),
+                **context_fields,
+            }
+            if strict is not None:
+                # A coalesced read must know whether its row landed: one that did not
+                # is not remembered, so the next refusal writes it (and counts this one).
+                await strict(action_type=ActionType.ACCESS_DENIED, outcome="denied",
+                             actor_type="human", **fields)
+            else:
+                # A signed-in person was refused (auth off never reaches a denial).
+                await audit.record(action_type=ActionType.ACCESS_DENIED, outcome="denied",
+                                   actor_type="human", **fields)
+
+        return await recorder.record(
+            read=read, actor=actor, permission=permission, method=method, route=route,
+            write_row=write_row,
+        )
+    except Exception as exc:  # noqa: BLE001 (a denial row never fails the refusal)
+        _denials_logger.warning("access denied row not written: %s", exc)
+        return False
+
+
 async def _enforce(request: Request, resource: str, action: str):
     """Shared RBAC enforcement core. Three modes (see rbac/policy.py):
 
@@ -353,38 +1031,15 @@ async def _enforce(request: Request, resource: str, action: str):
     unknown/deleted assigned role fails safe to the base role; and a user with NO
     assigned custom roles is byte-identical to the prior ``can(base_role, …)`` gate.
 
-    Always runs the auth gate first (401s an unauthenticated caller when auth is on)."""
-    user = await require_auth(request)
-    state = get_state(request)
-    auth = getattr(state, "auth", None)
-    if auth is None or not auth.is_enabled:
-        return user  # auth off → everything allowed
-    if not _rbac_enabled(state):
-        return user  # rbac off → authenticated == super_admin
-    from ..rbac.policy import can_for_roles, resolve_matrix
-
-    role = getattr(user, "role", "") or ""
-    rbac_config = await _rbac_config_with_custom_roles(state)
-    # Resolve the effective matrix ONCE (folds operator overrides + stored custom-role
-    # definitions), then decide against the base role UNIONed with the user's assigned
-    # custom roles. Resolving the matrix here also lets the assigned-name fail-safe
-    # (drop unknown/deleted roles) key off the SAME matrix the grant union consults.
-    matrix = resolve_matrix(rbac_config)
-    assigned = await _assigned_custom_roles(state, getattr(user, "username", "") or "")
-    if can_for_roles(role, assigned, resource, action, matrix=matrix):
-        return user
-    # Append-only audit of the denial (#2) — best-effort, never blocks the 403.
-    try:
-        from ..constants import ActionType
-
-        await state.control_audit.record(
-            action_type=ActionType.ACCESS_DENIED,
-            surface="rbac",
-            actor=getattr(user, "username", "") or "",
-            result_summary=f"denied {resource}:{action} for role {role or '?'}",
-        )
-    except Exception:  # noqa: BLE001
-        pass
+    Always runs the auth gate first (401s an unauthenticated caller when auth is on).
+    The resolution itself is :func:`resolve_access` (shared with :func:`resolve_grants`
+    so the two cannot drift); only the 403 path below writes an audit row, through
+    :func:`record_access_denied` (a refused read is coalesced, a refused write is
+    recorded on its own row). The row is best-effort and never blocks the 403."""
+    view = await resolve_access(request)
+    if view.allows(resource, action):
+        return view.user
+    await record_access_denied(request, [(resource, action)], view=view)
     raise HTTPException(status_code=403, detail=f"permission denied: {resource}:{action}")
 
 
@@ -399,18 +1054,17 @@ def require_permission(resource: str, action: str):
 
 
 async def has_permission(request: Request, resource: str, action: str) -> bool:
-    """Non-raising boolean form of :func:`require_permission` — for INLINE, in-body
-    authorization decisions (e.g. "author OR a moderator grant"). Returns True when the
-    caller holds ``resource:action`` (always True when auth is off / rbac off /
-    super_admin), False on a denial. Never raises for a denial (a 401 for an
-    unauthenticated caller still propagates when auth is on)."""
-    try:
-        await _enforce(request, resource, action)
-        return True
-    except HTTPException as exc:
-        if exc.status_code == 403:
-            return False
-        raise
+    """Non-raising, side-effect free form of :func:`require_permission`, for INLINE,
+    in-body authorization decisions (e.g. "author OR a moderator grant", or what a
+    listing may include). Returns True when the caller holds ``resource:action``
+    (always True when auth is off / rbac off / super_admin), False otherwise. Never
+    raises for a missing grant (a 401 for an unauthenticated caller still propagates
+    when auth is on) and writes NO audit row: asking is not being refused, so a
+    response that answers 200 never leaves an Access denied row behind (Round 14
+    roles-02). A caller that refuses the request because of the answer records the
+    refusal itself with :func:`record_access_denied`."""
+    view = await resolve_access(request)
+    return view.allows(resource, action)
 
 
 def require_role(*roles: str):
@@ -568,8 +1222,7 @@ def require_system_update_operator(window: int | None = None):
             ) from exc
 
         policy = getattr(getattr(state, "prefs", None), "session_policy", None)
-        idle = int(getattr(policy, "idle_timeout", 0) or 0)
-        absolute = int(getattr(policy, "absolute_lifetime", 0) or 0)
+        limits = live_session_limits(state, user)
         win = int(
             window
             if window is not None
@@ -611,9 +1264,7 @@ def require_system_update_operator(window: int | None = None):
                 detail={"code": "reauth_required", "reason": "tv_mismatch"},
             )
         try:
-            reason = sessions.is_active(
-                row, idle_timeout=idle, absolute_lifetime=absolute
-            )
+            reason = sessions.is_active(row, **limits.kwargs())
             age = sessions.reauth_age_seconds(row)
         except Exception as exc:
             raise HTTPException(

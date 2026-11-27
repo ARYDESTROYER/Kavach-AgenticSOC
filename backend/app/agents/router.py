@@ -11,11 +11,13 @@ import logging
 from dataclasses import dataclass
 
 from ..audit.audit_log import AuditLogger
+from ..audit.changes import redact_text
 from ..config import Preferences
 from ..constants import ActionType, Role, TriageBucket
-from ..llm.gateway import GatewayError, LLMGateway
+from ..llm.gateway import BudgetBlocked, GatewayError, LLMGateway
 from ..models import Cluster, EnrichmentResult
 from ..utils import extract_json, truncate
+from ..evidence_fields import ROUTER_EVIDENCE_MAX_CHARS
 from .prompts import ROUTER_SYSTEM, render_cluster
 
 logger = logging.getLogger("tlsoc.agents.router")
@@ -46,7 +48,19 @@ class Router:
         # Per-rule model selection (C3-6b): resolve via the cluster's primary rule;
         # identical to ``prefs.router_model`` when no per-rule override exists.
         model_cfg = prefs.model_for_rule(Role.ROUTER, cluster.primary_rule())
-        user = render_cluster(cluster, enrichment, None, max_events=6)
+        # Same shared evidence projection as the investigator (one definition, so
+        # triage and investigation cannot disagree about what the alert contains),
+        # resolved from the operator's config for this cluster's own sources.
+        user = render_cluster(
+            cluster, enrichment, None, max_events=6,
+            evidence_fields=prefs.evidence_fields_for(cluster.contributing_source_ids()),
+            # Same evidence FIELDS as the investigator; a tighter per-event ceiling,
+            # because cheap triage runs on every cluster.
+            evidence_max_chars=min(
+                prefs.evidence_budget_for(cluster.contributing_source_ids()),
+                ROUTER_EVIDENCE_MAX_CHARS,
+            ),
+        )
         messages = [
             {"role": "system", "content": ROUTER_SYSTEM},
             {"role": "user", "content": user},
@@ -60,8 +74,26 @@ class Router:
                 Role.ROUTER, messages, model_cfg, surface=surface, case_id=case_id
             )
         except GatewayError as exc:
-            logger.warning("Router unavailable (%s); defaulting to UNCERTAIN", exc)
-            return TriageResult(TriageBucket.UNCERTAIN, 0.0, f"router unavailable: {exc}")
+            failure_class = getattr(exc, "failure_class", "") or ""
+            logger.warning(
+                "Router unavailable (class=%s): %s; defaulting to UNCERTAIN",
+                failure_class or "unclassified", exc,
+            )
+            detail = f" [{failure_class}]" if failure_class else ""
+            # The prompt row above was written before the call; record that the call
+            # failed, so the audit log's Failed filter finds a router outage (#2).
+            await self._audit.record(
+                action_type=ActionType.ERROR, surface=surface, actor=Role.ROUTER.value,
+                case_id=case_id, model=model_cfg.model,
+                # The AI budget refusing the call is a policy refusal, not a fault.
+                outcome="denied" if isinstance(exc, BudgetBlocked) else "failure",
+                result_summary=truncate(redact_text(
+                    f"router unavailable{detail}: {exc}; triage defaulted to uncertain"
+                )[0], 1000),
+            )
+            return TriageResult(
+                TriageBucket.UNCERTAIN, 0.0, f"router unavailable{detail}: {exc}"
+            )
 
         obj = extract_json(res.text) or {}
         bucket = _parse_bucket(obj.get("bucket"))
@@ -70,9 +102,21 @@ class Router:
         await self._audit.record(
             action_type=ActionType.DECISION, surface=surface, actor=Role.ROUTER.value,
             case_id=case_id, model=model_cfg.model,
+            # A reply that names no known bucket falls back to UNCERTAIN (never a
+            # dismissal): the triage ran but did not classify, so it is partial.
+            outcome="success" if _is_bucket(obj.get("bucket")) else "partial",
             result_summary=f"bucket={bucket.value} confidence={confidence} reason={reason}",
         )
         return TriageResult(bucket, confidence, reason, res.cost)
+
+
+def _is_bucket(value: object) -> bool:
+    """Whether the router's reply named one of the known triage buckets."""
+    try:
+        TriageBucket(str(value))
+    except ValueError:
+        return False
+    return True
 
 
 def _parse_bucket(value: object) -> TriageBucket:

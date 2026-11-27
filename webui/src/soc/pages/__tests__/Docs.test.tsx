@@ -1,4 +1,6 @@
 import type { ComponentProps } from 'react';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { axe, toHaveNoViolations } from 'jest-axe';
@@ -7,6 +9,7 @@ import type { ReleaseIdentity } from '@/lib/release';
 import Docs, {
   DEVELOPMENT_DOCS_URL,
   PUBLIC_STABLE_DOCS_URL,
+  RELEASE_LINE_PAGE,
   documentationSourceUrl,
   docsArticleUrl,
   docsVersionLine,
@@ -29,10 +32,11 @@ describe('Help Center', () => {
     renderDocs();
 
     expect(screen.getByRole('heading', { level: 1, name: 'Help Center' })).toBeVisible();
-    expect(screen.getByText('Documentation for this installation')).toBeVisible();
-    expect(screen.getAllByText('v0.1.8').length).toBeGreaterThan(0);
-    expect(screen.getByText('0.1')).toBeVisible();
-    expect(screen.getAllByText('Testing').length).toBeGreaterThan(0);
+    // Round 14 (HC2): one muted line in the header actions, no band or pill.
+    expect(screen.getByTestId('docs-release-line')).toHaveTextContent(
+      'Version 0.1.8 · docs 0.1 · Testing',
+    );
+    expect(screen.queryByText('Documentation for this installation')).not.toBeInTheDocument();
   });
 
   it('defaults to product guidance and opens versioned articles on the same origin', () => {
@@ -64,6 +68,19 @@ describe('Help Center', () => {
       'href',
       '/docs/0.1/analyst/analytics/',
     );
+  });
+
+  it('describes Workspace Chat as it is now and finds it by reports, tokens, cost and export', () => {
+    renderDocs();
+
+    expect(screen.getByRole('link', { name: /workspace chat/i })).toHaveTextContent(
+      'Ask read-only questions, follow each lookup, track tokens and cost, and build reports from answers.',
+    );
+    const search = screen.getByRole('searchbox', { name: 'Search documentation' });
+    for (const term of ['report', 'reports', 'tokens', 'cost', 'export']) {
+      fireEvent.change(search, { target: { value: term } });
+      expect(screen.getByRole('link', { name: /workspace chat/i })).toHaveAttribute('href', '/docs/0.1/analyst/chat/');
+    }
   });
 
   it('navigates categories without leaving the Help Center', () => {
@@ -117,11 +134,33 @@ describe('Help Center', () => {
       expect(link.getAttribute('href')).toMatch(/^\/docs\/0\.1\//);
     }
 
-    expect(screen.queryByRole('link', { name: /latest stable/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/Stable site publishes with the first Stable release/i)).toBeVisible();
+    // B54: a Testing build links the published Stable site; it never claims that
+    // the site does not exist yet.
+    expect(screen.getByRole('link', { name: /latest stable/i })).toHaveAttribute(
+      'href',
+      'https://arydestroyer.github.io/Kavach-AgenticSOC/stable/',
+    );
+    expect(screen.getByRole('link', { name: /latest stable/i })).toHaveAttribute('target', '_blank');
+    expect(screen.queryByText(/Stable site publishes with the first Stable release/i)).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: /development source/i })).toHaveAttribute(
       'href',
       DEVELOPMENT_DOCS_URL,
+    );
+  });
+
+  it('opens the release notes of the line this Console ships in, never an earlier line', () => {
+    // The Console and its bundled Help Center are built from one VERSION, so the
+    // Release notes card follows that line (releases/0.2/ for 0.2.x), never releases/0.1/.
+    const repoRoot = path.resolve(__dirname, '../../../../..');
+    const line = docsVersionLine(readFileSync(path.join(repoRoot, 'VERSION'), 'utf8').trim());
+    expect(RELEASE_LINE_PAGE).toBe(`releases/${line}/`);
+    expect(existsSync(path.join(repoRoot, 'docs', 'releases', `${line}.md`))).toBe(true);
+
+    render(<Docs backendInfo={null} />);
+    fireEvent.click(screen.getByRole('button', { name: /reference & releases/i }));
+    expect(screen.getByRole('link', { name: /^Release notes/ })).toHaveAttribute(
+      'href',
+      `/docs/${line}/releases/${line}/`,
     );
   });
 
@@ -131,10 +170,11 @@ describe('Help Center', () => {
     expect(docsArticleUrl('/analyst/cases/', '2.4.19')).toBe('/docs/2.4/analyst/cases/');
     expect(documentationSourceUrl(testingRelease)).toBe(DEVELOPMENT_DOCS_URL);
     expect(documentationSourceUrl({ ...testingRelease, version: '2.4.19', channel: 'stable' }))
-      .toBe('https://github.com/ARYDESTROYER/Agentic-Kibana/tree/v2.4.19/docs');
+      .toBe('https://github.com/ARYDESTROYER/Kavach-AgenticSOC/tree/v2.4.19/docs');
+    expect(DEVELOPMENT_DOCS_URL).toBe('https://github.com/ARYDESTROYER/Kavach-AgenticSOC/tree/Testing/docs');
   });
 
-  it('offers the public Stable site only from an explicitly Stable Console build', () => {
+  it('offers the public Stable site from an explicitly Stable Console build', () => {
     renderDocs({
       releaseIdentity: { ...testingRelease, channel: 'stable' },
       backendInfo: {
@@ -162,15 +202,63 @@ describe('Help Center', () => {
       },
     });
 
-    expect(screen.getAllByText('Testing').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('docs-release-line')).toHaveTextContent(/· Testing$/);
     expect(
       screen.getByText(/Console and backend build identities differ/i),
     ).toBeVisible();
-    expect(screen.queryByRole('link', { name: /latest stable/i })).not.toBeInTheDocument();
+    // The Stable site link is an external reference on every channel (B54); the
+    // fail-safe is the Testing release line and the mismatch notice above.
+    expect(screen.getByRole('link', { name: /latest stable/i })).toHaveAttribute(
+      'href',
+      PUBLIC_STABLE_DOCS_URL,
+    );
   });
 
   it('has no detectable accessibility violations', async () => {
     const { container } = renderDocs();
     expect(await axe(container)).toHaveNoViolations();
+  });
+});
+
+describe('Help Center on the Round 14 console grammar (HC1 to HC3)', () => {
+  it('heads the page with a help tip and no breadcrumb, icon, description or pill', () => {
+    const { container } = renderDocs();
+    expect(screen.getByRole('button', { name: 'About Help Center' })).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: /breadcrumb/i })).toBeNull();
+    expect(screen.queryByText(/Guidance for using, administering/)).toBeNull();
+    // PageContainer owns the rhythm: no space-y on the page root.
+    expect(screen.getByTestId('docs-page').className).not.toMatch(/space-y-/);
+    expect(container.querySelector('[data-page-header] svg.lucide-book-open-text')).toBeNull();
+  });
+
+  it('puts the directory and the other versions in panels', () => {
+    renderDocs();
+    expect(screen.getByRole('region', { name: 'Find guidance' })).toHaveClass('surface-panel');
+    expect(screen.getByRole('region', { name: 'Other documentation versions' })).toHaveClass('surface-panel');
+  });
+
+  it('marks the selected category like the selected navigation item, with no border', () => {
+    renderDocs();
+    const selected = screen.getByRole('button', { name: /use the product/i });
+    expect(selected).toHaveAttribute('aria-current', 'page');
+    expect(selected).toHaveAttribute('data-active');
+    expect(selected).toHaveClass('text-primary');
+    expect(selected.className).not.toMatch(/border-l-2|border-primary/);
+  });
+
+  it('makes the whole guide row the link, without an "Open guide" label on every row', () => {
+    renderDocs();
+    expect(screen.queryByText('Open guide')).toBeNull();
+    const link = screen.getByRole('link', { name: /case manager/i });
+    expect(link).toHaveTextContent('Work the split queue');
+  });
+
+  it('labels search results by category in sentence case, never tracked capitals', () => {
+    renderDocs();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search documentation' }), {
+      target: { value: 'backup' },
+    });
+    const label = screen.getAllByText('Deploy & operate')[0];
+    expect(label.className).not.toMatch(/uppercase|tracking-/);
   });
 });

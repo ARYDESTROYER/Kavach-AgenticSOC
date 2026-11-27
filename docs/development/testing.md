@@ -1,6 +1,6 @@
 ---
 title: Testing
-description: Backend, Console, API-contract, version, documentation, and release validation gates for Agentic SOC 0.1.
+description: Backend, Console, API-contract, version, documentation, and release validation gates for Agentic SOC 0.2.
 ---
 
 # Testing
@@ -8,17 +8,18 @@ description: Backend, Console, API-contract, version, documentation, and release
 Agentic SOC changes are accepted on `Testing` only after the relevant offline, contract,
 build, and documentation gates pass. Stable promotion moves that accepted source
 tree through a protected pull request to `main`; the resulting commit is gated again
-before application version `v0.1.12` is tagged.
+before application version `v0.2.0` is tagged.
 
-The latest fully recorded local baseline is **2,306 backend tests** and **1,935/1,935
-Console tests across 286 files**. The
+The latest fully recorded local baseline is **14,043 backend tests** passed (29 skipped)
+and **9,955 Console tests** passed (19 skipped) across 786 files. The
 Console baseline also has zero stderr bytes and zero Vitest-captured console stdout
 blocks under `npm run test:strict`. Counts rise as coverage is added; the commands
-and zero-failure result are the contract, not a frozen target.
+and zero-failure result are the contract, not a frozen target. These are the Round 16
+closing figures.
 
-The remote uses `Testing` for integration and default `main` for accepted Stable
-source. Version 0.1.12 is a candidate on `Testing` and is Stable only when the
-resulting verified `main` commit has the immutable `v0.1.12` tag and matching
+The remote uses `Testing` for integration and `main` for accepted Stable
+source. Version 0.2.0 is a candidate on `Testing` and is Stable only when the
+resulting verified `main` commit has the immutable `v0.2.0` tag and matching
 artifacts. Branch protection, required checks,
 Pages source selection, and `github-pages` environment policy are repository settings;
 verify them independently before treating a merge or deployment as accepted.
@@ -31,14 +32,16 @@ bootstrap from it.
 
 ## GitHub merge gate
 
-Every pull request receives nineteen visible statuses from
-`.github/workflows/ci.yml`: eighteen independently diagnosable quality lanes plus the
+Every pull request receives twenty-one visible statuses from
+`.github/workflows/ci.yml`: twenty independently diagnosable quality lanes plus the
 aggregate **CI passed** result. In addition to repository, backend, Console, API,
-design, documentation, and package checks, the gate boots the supported
-PostgreSQL+pgvector/Redis state path, validates workflows and shell separately from
-deploy/updater contracts, rejects fatal Python correctness faults, and builds all
+design, documentation, and package checks, the gate runs the verdict stability gate in
+its own lane, boots the supported PostgreSQL+pgvector/Redis state path and runs every
+PostgreSQL-only test module against it, boots the previous release on this release's
+PostgreSQL data (the N to N-1 rollback lane), validates workflows and shell separately
+from deploy/updater contracts, rejects fatal Python correctness faults, and builds all
 three shipping images. The aggregate runs even when a dependency fails or is
-cancelled and succeeds only when all eighteen
+cancelled and succeeds only when all twenty
 report success.
 
 Branch protection needs only the stable aggregate name **CI passed**. Requiring that
@@ -71,6 +74,30 @@ python -m pytest tests/test_api.py::test_name -q
 Tests that touch pipeline behavior should assert fail-safe human routing, audit writes,
 usage ledger writes, cursor/idempotency behavior, and the deterministic case-manager
 boundary as applicable. Every new state-changing route needs an authorization test.
+
+### Verdict stability gate
+
+`backend/tests/test_verdict_stability_gate.py` runs frozen synthetic fixtures
+(`backend/tests/fixtures/verdict_stability/cases.json`) through the real pipeline in two
+arms: this build's defaults, and the same build with
+`runbooks.investigator_guidance: false`. The model is a deterministic sensitivity model
+whose verdict is a declared function of the prompt (benign cues inside the untrusted
+evidence against the `Escalate if:` lines in trusted context), not a measurement of a
+real model. The gate fails when the FALSE_POSITIVE-verdict rate or the close-eligible
+rate moves between the arms by more than 15 percentage points, when either arm's rate
+moves by more than 15 points from the rate recorded in the fixture file (`recorded`, so a
+prompt or retrieval change that moves both arms alike also fails), or when that threshold
+does not clear the measured replicate floor. It needs no key and no network, and runs in
+the complete suite and in its own CI lane:
+
+```bash
+python -m pytest -q tests/test_verdict_stability_gate.py
+```
+
+A guidance or prompt change that is meant to move the verdict mix is a product
+decision: record it in the changelog and the upgrade notes, and update `recorded` (or the
+fixtures, or the threshold) in the same reviewed change, never only to make the build
+pass.
 
 ## Console suite
 
@@ -109,10 +136,15 @@ the receipt or linked automated evidence.
 | Area | Required browser path |
 | --- | --- |
 | Identity and setup | Sign-in username → password flow, optional demo/SSO controls when configured, theme switch, error/retry, software-keyboard-safe narrow layout, first-run setup progress/content/footer, and close/re-run behavior |
-| Overview | Dashboard time/refresh controls, KPI and case drill-down, Latest Cases hover and focus detail, Noise Reduction expand/close, custom Dashboards, and Standup |
-| Triage | Cases filters/table/loading and exact Case Manager handoff; Case Manager Active/All queue, resize/keyboard reset, selection/bulk menu, Overview/Timeline/Investigation/Threat context/Collaboration/Chat tabs, Campaigns, Logs, Workspace Chat/history, Entity investigation, and Approvals |
-| Intelligence and analytics | Knowledge corpus, Reference runbooks, Operator memory, Response playbooks, Agent personas, Metrics, Agent effectiveness, Cost, Models, Baseline, Batch jobs, and Auto-tuning Operations/Outcomes/Policy & history |
-| Platform and help | Sources catalog/detail/health, Audit log, Settings section search/deep links/dirty state/sticky actions, narrow Settings Sheet, appearance/branding isolation, and the in-app Help Center plus an installed `/docs/<major.minor>/` article |
+| Sign-in page | The heading with the organization name, one entrance and no motion after paint, Remember me with no duration (its confirmation dialog the first time, and the disabled row with its reason when turned off or insecure), the six-box second-factor step and its return to the password step after five wrong codes, a fixed sentence for an `sso_error` link, at 1440 by 900 and 390 by 844 in both themes |
+| AI work on a case | The case header chip ("AI working · m:ss", "AI queued") and its popover across a full Reinvestigate (`202`, the finish toast and Inbox item, a second request refused), the queue row mark, the Case Manager navigation count and band line, the close and bulk dialogs' AI notes, Take action with Reinvestigate unavailable during a run, and one EventSource per tab |
+| Explainable numbers | Every explainable number on hover, focus and click: the risk score with its recorded inputs (and "not recorded" on an older case), the Decision card and its gate, severity, priority, the SLA line, cost and the usage popover, an Overview KPI panel and Show all samples, and Copy calculation; the queue row hover line is mouse-only |
+| Case records | The Evidence events table and its side sheet (Table and JSON, NDJSON download, Open in Logs, an aged-out or push-source reason), View all fields with and without `cost:view`, trace Details, History reasons, and Cites N events narrowing the table |
+| What's new and Communication | The welcome on the first sign-in after an update and not again after dismissal, a new account that starts with it seen, Show What's new after updates off, the Communication group with Inbox and What's new, the release tracker with a release's screenshots and the earlier release records, the release badge link, and the Help Center What's new page |
+| Overview | Cyber Defence Center time/refresh controls, KPI and case drill-down, Latest Cases hover and focus detail, Noise Reduction expand/close, the Dashboards library with each built-in board and a personal board in Edit mode, and Standup |
+| Triage | Cases filters/table/loading and exact Case Manager handoff; Case Manager Active/Mine/Review/All queue, resize/keyboard reset, the `[` queue fold and the empty pane, selection/bulk menu, the compact case header with its meta strip, Brief/Evidence/AI investigation/Response/Activity/Chat tabs on Alt+1 to Alt+6 (including a legacy `tab=timeline` or `tab=threat` link landing on its Evidence section), the case facts column and its `]` toggle (a side sheet in a narrow pane), the close dialog, case Files (add, paste, view, delete), an auto-close review, Campaigns, Logs, Workspace Chat/history, Entity investigation, and Approvals |
+| Intelligence and analytics | Knowledge corpus, Runbooks (library, editor, history, a run on a case with its Next step card), Operator memory, Agent personas, Metrics, Team activity (range, chart, person sheet), Agent effectiveness (with its auto-close review module), Cost, Models, Baseline, Jobs, and Auto-tuning Operations/Outcomes/Policy & history |
+| Platform and help | Sources catalog/detail/health, Audit log, Settings section search/deep links/dirty state/sticky actions, the Role-based access switch on Roles & permissions (both dialogs), narrow Settings Sheet, appearance/branding isolation, and the in-app Help Center plus an installed `/docs/<major.minor>/` article |
 | Release update | Current release badge/popover; mutable Stable candidate versus signed preflight; unsupported-supervisor/manual boundary; blocker remediation; reauth and known-dirty blocking; durable progress/reconnect; cancellation-before-switch; automatic rollback; post-success image-only rollback; successful same-hash-route activation |
 | Compatibility paths | Hidden or consolidated bookmarked routes load or redirect to their documented replacement without reappearing in primary navigation |
 
@@ -159,18 +191,18 @@ dump remains available for an explicit break-glass recovery rehearsal, but is ne
 consumed automatically. Any plan with a migration strategy other than `none` must fail
 preflight.
 
-Verify the one-time pre-supervisor/source-built→v0.1.12 bootstrap separately from
+Verify the one-time pre-supervisor/source-built to v0.2.0 bootstrap separately from
 later Console updates:
 it must refuse a dirty checkout, a lightweight/mismatched tag, a tag whose commit is
 not contained in `origin/main`, missing durable secrets, an unsupported running
 topology, an active job, and unreadable/invalid existing supervisor state. Prove it
 reuses a protocol-compatible idle supervisor only when its reported updater version
-also exactly matches 0.1.12, and replaces an inspectable idle older supervisor while
+also exactly matches 0.2.0, and replaces an inspectable idle older supervisor while
 preserving/restoring the active digest override. Repeat the replacement test
 without an active override and prove bootstrap captures the exact immutable prior
 updater image ID, restores it after an injected replacement failure, and removes the
 temporary recovery override only after confirmed success. Its happy path installs only
-the initial supervisor transport before delegating the full v0.1.12 transition to the
+the initial supervisor transport before delegating the full v0.2.0 transition to the
 signed state machine. Afterward, prove
 `scripts/agentic-soc-compose.sh` layers the active digest override and document raw
 Compose lifecycle commands as unsupported. Verify a known dirty Runbook or Settings
@@ -220,6 +252,29 @@ do not add a global warning filter or weaken the strict runner. A test that deli
 exercises logging should install a local spy, assert the expected call, and restore it
 before the test ends.
 
+### Round 14 guards
+
+Round 14 added guards that read the source rather than render it, so a regression fails
+in the ordinary suites:
+
+- **Console grammar** (`webui/src/soc/__tests__/console-grammar.guard.test.ts`) fails
+  when a page brings back what the one console grammar removed: a header overline or a
+  removed `PageHeader` prop, tracked capitals, an arbitrary radius, a card inside a
+  panel, a hand-made spinning refresh, a raw number input, a permanent info alert, a red
+  icon button at rest, text below 11 px, or a prototype leftover. Existing violations are
+  counted per package in `guard-allow/<package>.json`; each count is a ratchet that must
+  fall to zero as the package migrates, and `backlog.json` lists files no package owns.
+- **Retired procedure modules** (`backend/tests/test_runbook_removals.py`) fails when any
+  backend module imports, or names for a dynamic import, a removed procedure module, and
+  pins that `playbooks` left the permission vocabulary while a stored `playbooks` grant
+  or deny keeps its `runbooks` meaning in every layer.
+- **Console copy**: Round 14 page and component tests assert that Console-authored text
+  holds no em dash, no en dash used as punctuation, and never the word "playbook". Stored
+  data shown verbatim (an audit record, a transcript, runbook text) is exempt, and a
+  separate test pins that a legacy row's raw value is shown unchanged in Raw record.
+- **Bundled runbooks**: every file in `backend/app/runbooks/library/` validates and fits
+  the 3,000-character investigator guidance budget unchanged.
+
 ## API contract drift
 
 The OpenAPI document and generated TypeScript contract are committed artifacts.
@@ -247,9 +302,20 @@ Run the repository's standard-library metadata gate from the root:
 python3 scripts/check_version.py
 ```
 
-For the 0.1 line it checks that the root `VERSION` (`0.1.12`) agrees with backend,
+For the 0.2 line it checks that the root `VERSION` (`0.2.0`) agrees with backend,
 Console, lockfile, OpenAPI, Compose image/build metadata, release records, and the
-MkDocs/Mike documentation line (`0.1`).
+MkDocs/Mike documentation line (`0.2`). It also requires the Apache-2.0 license label in
+all three shipping Dockerfiles and the curated What's new notes
+`docs/releases/notes/<VERSION>.json` (schema 1, naming `VERSION`). On `main`, on a `v*`
+tag, and on a pull request into `main` (`GITHUB_BASE_REF=main`), it further requires
+the `[Unreleased]` body to read exactly `No changes yet.`, the GitHub Release body to
+stay at most 100,000 characters, and the notes to read `"status": "released"`, to carry
+the date of the dated CHANGELOG heading, and to give every update a date. To rehearse
+those release checks locally:
+
+```bash
+TLSOC_SOURCE_REF=refs/heads/main TLSOC_RELEASE_CHANNEL=stable python3 scripts/check_version.py
+```
 
 ## Documentation
 
@@ -268,7 +334,8 @@ The final `npm run build` is the canonical docs-plus-application acceptance gate
 `npm run build:app` alone is insufficient for release acceptance. Strict mode catches
 missing pages, invalid internal links, and configuration warnings.
 Review the rendered desktop and narrow layouts, dark/light themes, search, navigation,
-code copy, the installed `/docs/0.1/` base path, and the public 0.1 version selector.
+code copy, the installed `/docs/0.2/` base path, the `/docs/0.1/` redirect pages, and
+the public 0.2 version selector.
 Confirm that **Use the product** is the default navigation path and that in-app links
 stay on the application origin. Internal development records are deliberately excluded
 from the Help Center build.
@@ -325,6 +392,32 @@ updater images without publishing them and verifies their immutable candidate la
 healthchecks, ports, runtime user or updater protocol as applicable. These are
 required lanes, not advisory previews.
 
+The N to N-1 rollback lane runs against its own PostgreSQL service. It boots this release
+on a scratch database, writes the data it introduces, boots the previous release pinned
+in `scripts/rollback_previous_release.json` on that data, and boots this release again;
+any safe-stop, refused knowledge projection, re-embedding on every retrieval, failed
+health check or lost `runbooks.*` setting fails it. Run it locally against any
+PostgreSQL server (it creates and drops its own database):
+
+```bash
+backend/.venv/bin/python scripts/rollback_lane.py \
+  --database-url postgresql+asyncpg://user:password@127.0.0.1:5432/postgres
+python3 -m unittest scripts.test_rollback_lane -v
+```
+
+Each run has two scenarios on separate scratch databases: the pinned previous release,
+and this checkout as the previous release with synthetic future data planted (an unknown
+job kind, unknown preference keys, a marker-identified corpus) that a release carrying
+the forward-compatibility contract must keep. The second scenario is what fails the lane
+if this build's own forward contract regresses while the pinned release still
+understands everything this release writes. `--pinned-only` skips it;
+`--previous-backend` or `--previous-release` runs one rehearsal against that backend
+directory or commit instead (add `--forward-contract` to plant the future data there).
+The forward direction also has offline tests
+(`backend/tests/test_rollback_forward_compat.py`) and PostgreSQL tests
+(`backend/tests/test_postgres_rollback_compat.py`, skipped without
+`POSTGRES_TEST_DB_URL`).
+
 The raw Compose invocation above is a read-only CI render, not a deployed-lifecycle
 command. After updater bootstrap, manual start/stop/build/restart operations must use
 `scripts/agentic-soc-compose.sh` so the active release override remains layered.
@@ -347,8 +440,8 @@ Before promoting `Testing` to Stable:
    release gate again on the resulting `main` commit.
 5. Build and stamp the verified commit with the correct channel, exact SHA, build
    date, and source URL.
-6. Create the immutable `v0.1.12` tag and publish matching application artifacts by
-   digest; let the Documentation workflow publish the accepted public 0.1 line from
+6. Create the immutable `v0.2.0` tag and publish matching application artifacts by
+   digest; let the Documentation workflow publish the accepted public 0.2 line from
    `main`.
 7. Verify all three GHCR packages are public and anonymously pullable by the exact
    backend, Web, and updater digests in the signed plan. Confirm the GitHub Release
@@ -361,7 +454,7 @@ Before promoting `Testing` to Stable:
    unexpected published asset inventory and prove the retry fails closed without
    upload, overwrite, or publication.
 9. Verify `/api/health/build-info`, image metadata, the native Pages deployment, and
-   the 0.1 Stable docs selector and aliases.
+   the 0.2 Stable docs selector and aliases.
 
 See [Development](index.md), [Compatibility](../reference/compatibility.md), and
 [Release channels](../releases/channels.md).

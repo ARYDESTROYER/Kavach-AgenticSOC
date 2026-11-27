@@ -21,6 +21,7 @@
 // pure helper never drags the heavy Settings renderer tree into an eager import chain
 // (Round-5 Coupling-A — keeps the first-paint entry chunk slim).
 import { SECTION_KEYS } from './settings/settings-sections-meta';
+import { deepEqual } from '@/lib/deep-equal';
 
 /** A loose Preferences view — we only ever index it by string key here. */
 export type PrefsRecord = Record<string, unknown>;
@@ -44,35 +45,12 @@ export const NON_EDITABLE_KEYS: ReadonlySet<string> = new Set(['sources', 'setup
  */
 export { SECTION_KEYS };
 
-/** Stable, order-insensitive structural equality for two JSON-able values. */
-export function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a === null || b === null) return a === b;
-  if (typeof a !== typeof b) return false;
-  if (typeof a !== 'object') return false;
-
-  const aArr = Array.isArray(a);
-  const bArr = Array.isArray(b);
-  if (aArr !== bArr) return false;
-  if (aArr && bArr) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i += 1) {
-      if (!deepEqual(a[i], b[i])) return false;
-    }
-    return true;
-  }
-
-  const ao = a as Record<string, unknown>;
-  const bo = b as Record<string, unknown>;
-  const aKeys = Object.keys(ao);
-  const bKeys = Object.keys(bo);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const k of aKeys) {
-    if (!Object.prototype.hasOwnProperty.call(bo, k)) return false;
-    if (!deepEqual(ao[k], bo[k])) return false;
-  }
-  return true;
-}
+/**
+ * Stable, order-insensitive structural equality for two JSON-able values. Lives in
+ * `lib/deep-equal.ts` (dependency-free, so the eager draft hook can share it without this
+ * module's Settings metadata); re-exported here for the page and this module's spec.
+ */
+export { deepEqual };
 
 /**
  * The set of EDITABLE top-level keys whose value diverges from the saved snapshot.
@@ -95,6 +73,124 @@ export function changedKeys(
     if (!deepEqual(dv, sv)) out.add(k);
   }
   return out;
+}
+
+/* ------------------------------------------------------ changed values ---- */
+
+/**
+ * Leaves a store stamps on every save (`created_at`, `updated_at`): bookkeeping, never a
+ * change a person made. The audit log leaves them out (`backend/app/audit/changes.py`
+ * `_BOOKKEEPING_KEYS`), so the count here does too.
+ */
+const BOOKKEEPING_LEAVES: ReadonlySet<string> = new Set(['created_at', 'updated_at']);
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A list item's stable key: its `id`, else its `name` (non-empty text), else none. */
+function itemKey(item: unknown): string | null {
+  if (!isPlainObject(item)) return null;
+  for (const name of ['id', 'name']) {
+    const value = item[name];
+    if (typeof value === 'string' && value) return value;
+  }
+  return null;
+}
+
+/** `key -> item` when every item of a non-empty list has a unique key, else null. */
+function keyedItems(items: readonly unknown[]): Map<string, unknown> | null {
+  if (items.length === 0) return null;
+  const out = new Map<string, unknown>();
+  for (const item of items) {
+    const key = itemKey(item);
+    if (key === null || out.has(key)) return null;
+    out.set(key, item);
+  }
+  return out;
+}
+
+/** The last named segment of a path (`a.b[id].c` gives `c`). */
+function leafName(path: string): string {
+  const keys = path.replace(/\[[^\]]*\]/g, '').split('.').filter(Boolean);
+  return keys[keys.length - 1] ?? '';
+}
+
+/**
+ * Every leaf under `value`, by path, exactly as the audit log walks a document: a plain
+ * object recurses (an empty one is a leaf), a list whose items all carry a unique `id`
+ * or `name` is walked item by item (`channels[pagerduty].type`), and any other list or
+ * scalar is one value. An absent value (`undefined`) has no leaves.
+ */
+function flattenLeaves(value: unknown, path: string, out: Map<string, unknown>): void {
+  if (value === undefined) return;
+  if (isPlainObject(value)) {
+    const keys = Object.keys(value);
+    if (keys.length === 0) {
+      out.set(path, {});
+      return;
+    }
+    for (const key of keys) flattenLeaves(value[key], path ? `${path}.${key}` : key, out);
+    return;
+  }
+  if (Array.isArray(value)) {
+    const keyed = keyedItems(value);
+    if (keyed) {
+      for (const [key, item] of keyed) flattenLeaves(item, `${path}[${key}]`, out);
+      return;
+    }
+  }
+  out.set(path, value);
+}
+
+/** An empty list or object (`[]`, `{}`). */
+function isEmptyContainer(value: unknown): boolean {
+  return Array.isArray(value) ? value.length === 0 : isPlainObject(value) && Object.keys(value).length === 0;
+}
+
+/**
+ * How many VALUES differ between the draft and the saved snapshot: the number of
+ * changes a person made, as the audit log counts them for the same save (one entry per
+ * changed field, `backend/app/audit/changes.py`). Editing five fields of the Chat
+ * assistant section counts five, although they all live under one top-level key.
+ *
+ * Mirrors the audit walk: missing and `null` read alike; store bookkeeping stamps are
+ * left out; an empty list or object on one side whose other side holds keyed items is
+ * counted through those items only. A top-level key that differs always counts at least
+ * once, so the count is never zero while the page holds an unsaved change.
+ */
+export function changedValueCount(
+  draft: PrefsRecord | null | undefined,
+  saved: PrefsRecord | null | undefined,
+): number {
+  let total = 0;
+  for (const key of changedKeys(draft, saved)) {
+    const before = new Map<string, unknown>();
+    const after = new Map<string, unknown>();
+    flattenLeaves(saved?.[key], key, before);
+    flattenLeaves(draft?.[key], key, after);
+    let count = 0;
+    for (const path of new Set([...before.keys(), ...after.keys()])) {
+      const was = before.get(path) ?? null;
+      const now = after.get(path) ?? null;
+      if (deepEqual(was, now)) continue;
+      if (BOOKKEEPING_LEAVES.has(leafName(path))) continue;
+      // `channels: []` before and `channels[pd].type` after: the items carry the change.
+      if (was === null || now === null) {
+        const present = was ?? now;
+        const other = was === null ? before : after;
+        if (
+          isEmptyContainer(present) &&
+          [...other.keys()].some((p) => p.startsWith(`${path}[`) || p.startsWith(`${path}.`))
+        ) {
+          continue;
+        }
+      }
+      count += 1;
+    }
+    total += Math.max(count, 1);
+  }
+  return total;
 }
 
 /**

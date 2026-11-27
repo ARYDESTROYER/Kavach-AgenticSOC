@@ -4,14 +4,14 @@
  *  - Roles `draftFromRow`           — data-loss guard (edit/clone must not blank a role).
  *  - NotificationBell `severityDot` — severity dot uses the SEVERITY axis, not brand/status.
  *  - Knowledge `computeImportCanSubmit` — enable guard matches what submit() indexes.
- *  - Memory `mergePendingTag`       — a typed-but-uncommitted tag isn't dropped on save.
+ *  (Memory's `mergePendingTag` flush was retired in the Round 12 polish: a submit with
+ *  pending tag text now stops and asks, see TagInput.pending.test.tsx.)
  */
 import { describe, it, expect } from 'vitest';
 
 import { draftFromRow } from '../pages/Roles';
 import { severityDot } from '../components/NotificationBell';
 import { computeImportCanSubmit } from '../pages/Knowledge';
-import { mergePendingTag } from '../pages/Memory';
 
 describe('Roles draftFromRow — RBAC data-loss guard', () => {
   const matrix = {
@@ -53,6 +53,43 @@ describe('Roles draftFromRow — RBAC data-loss guard', () => {
     expect(d.grants).toEqual({ cases: ['read', 'write'], sources: ['read'] });
     expect(Object.keys(d.grants).length).toBeGreaterThan(0);
     expect(d.name).toBe('tier1_plus');
+  });
+
+  it('folds a stored retired `playbooks` key into `runbooks` so no hidden key survives', () => {
+    // SPEC §3.7: the editor has no `playbooks` row. A key left in the draft would be
+    // invisible, and the server would read it as a `runbooks` grant again once an
+    // administrator cleared every `runbooks` cell.
+    const legacyOnly = {
+      name: 'legacy_runner', builtin: false, description: '', resourceCount: 1,
+      custom: {
+        name: 'legacy_runner', description: '', inherits: [],
+        grants: { playbooks: ['read', 'manage'], cases: ['read'] },
+        denies: { playbooks: ['run'] },
+      },
+    };
+    const folded = draftFromRow(legacyOnly, {});
+    expect(folded.grants).toEqual({ cases: ['read'], runbooks: ['read', 'manage', 'publish'] });
+    expect(folded.denies).toEqual({ runbooks: ['run'] });
+
+    // A `runbooks` entry that is present wins, as on the server: the stale key adds
+    // nothing, so clearing `runbooks` later cannot resurrect it.
+    const both = {
+      name: 'echo_role', builtin: false, description: '', resourceCount: 1,
+      custom: {
+        name: 'echo_role', description: '', inherits: [],
+        grants: { playbooks: ['read', 'run', 'manage'], runbooks: ['read'] },
+        denies: {},
+      },
+    };
+    const kept = draftFromRow(both, {});
+    expect(kept.grants).toEqual({ runbooks: ['read'] });
+    expect(kept.grants.playbooks).toBeUndefined();
+
+    const wildcard = draftFromRow(
+      { ...legacyOnly, custom: { ...legacyOnly.custom, grants: { playbooks: ['*'] }, denies: {} } },
+      {},
+    );
+    expect(wildcard.grants).toEqual({ runbooks: ['*'] });
   });
 
   it('returns a deep copy so editing the draft never mutates the source matrix', () => {
@@ -117,24 +154,3 @@ describe('Knowledge computeImportCanSubmit — enable guard matches submit()', (
   });
 });
 
-describe('Memory mergePendingTag — flush typed-but-uncommitted tag', () => {
-  it('appends a pending tag', () => {
-    expect(mergePendingTag(['a'], 'b')).toEqual(['a', 'b']);
-  });
-
-  it('trims and ignores blank input', () => {
-    expect(mergePendingTag(['a'], '   ')).toEqual(['a']);
-    expect(mergePendingTag(['a'], '')).toEqual(['a']);
-    expect(mergePendingTag(['a'], '  b ')).toEqual(['a', 'b']);
-  });
-
-  it('does not duplicate an already-present tag', () => {
-    expect(mergePendingTag(['a', 'b'], 'b')).toEqual(['a', 'b']);
-  });
-
-  it('does not mutate the input array', () => {
-    const t = ['a'];
-    mergePendingTag(t, 'b');
-    expect(t).toEqual(['a']);
-  });
-});

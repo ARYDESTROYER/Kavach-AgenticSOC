@@ -33,7 +33,7 @@ def _config(**updates) -> ReleaseUpdateConfig:
 def test_release_update_defaults_are_public_and_channel_specific() -> None:
     config = Preferences().release_updates
     assert config.enabled is True
-    assert config.repository_url == "https://github.com/ARYDESTROYER/Agentic-Kibana"
+    assert config.repository_url == "https://github.com/ARYDESTROYER/Kavach-AgenticSOC"
     assert config.stable_branch == "main"
     assert config.testing_branch == "Testing"
     assert config.check_interval_minutes == 360
@@ -43,8 +43,8 @@ def test_release_update_defaults_are_public_and_channel_specific() -> None:
     "raw,expected",
     [
         (
-            "https://github.com/ARYDESTROYER/Agentic-Kibana.git/",
-            "https://github.com/ARYDESTROYER/Agentic-Kibana",
+            "https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git/",
+            "https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
         ),
         (
             "  https://github.com/owner/repository  ",
@@ -54,6 +54,39 @@ def test_release_update_defaults_are_public_and_channel_specific() -> None:
 )
 def test_repository_url_is_canonicalised(raw: str, expected: str) -> None:
     assert _config(repository_url=raw).repository_url == expected
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "https://github.com/ARYDESTROYER/Agentic-Kibana",
+        "https://github.com/arydestroyer/Agentic-Kibana.git/",
+        "https://github.com/ARYDESTROYER/agentic-kibana.git",
+        "https://github.com/aryDestroyer/AGENTIC-KIBANA/",
+    ],
+)
+def test_a_stored_former_repository_moves_to_the_current_one(stored: str) -> None:
+    """GitHub redirects the former API path, and discovery refuses redirects, so a
+    stored former name would hide every release (the repository was renamed)."""
+    assert _config(repository_url=stored).repository_url == (
+        "https://github.com/ARYDESTROYER/Kavach-AgenticSOC"
+    )
+    prefs = Preferences.model_validate({"release_updates": {"repository_url": stored}})
+    assert prefs.release_updates.repository_url == (
+        "https://github.com/ARYDESTROYER/Kavach-AgenticSOC"
+    )
+
+
+@pytest.mark.parametrize(
+    "kept",
+    [
+        "https://github.com/example-org/Agentic-Kibana",
+        "https://github.com/ARYDESTROYER/Agentic-Kibana-fork",
+        "https://github.com/example-org/Kavach-AgenticSOC",
+    ],
+)
+def test_any_other_repository_is_kept(kept: str) -> None:
+    assert _config(repository_url=kept).repository_url == kept
 
 
 @pytest.mark.parametrize(
@@ -139,14 +172,14 @@ async def test_discovery_returns_both_channels_and_uses_ttl_cache() -> None:
         "version": "0.1.2",
         "commit_sha": _SHA_STABLE,
         "commit_url": (
-            "https://github.com/ARYDESTROYER/Agentic-Kibana/commit/" + _SHA_STABLE
+            "https://github.com/ARYDESTROYER/Kavach-AgenticSOC/commit/" + _SHA_STABLE
         ),
         "release_commit_sha": _SHA_STABLE_RELEASE,
         "release_commit_url": (
-            "https://github.com/ARYDESTROYER/Agentic-Kibana/commit/"
+            "https://github.com/ARYDESTROYER/Kavach-AgenticSOC/commit/"
             + _SHA_STABLE_RELEASE
         ),
-        "source_url": "https://github.com/ARYDESTROYER/Agentic-Kibana/tree/main",
+        "source_url": "https://github.com/ARYDESTROYER/Kavach-AgenticSOC/tree/main",
         "checked_at": first.checked_at,
         "stale": False,
         "error_code": None,

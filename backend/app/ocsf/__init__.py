@@ -26,6 +26,8 @@ from .model import (
     Observable,
     Product,
     User,
+    project_severity_magnitude,
+    resolve_severity_scale_max,
     score_to_severity_id,
     severity_id_to_score,
 )
@@ -44,4 +46,6 @@ __all__ = [
     "source_scoped_event_uid",
     "severity_id_to_score",
     "score_to_severity_id",
+    "project_severity_magnitude",
+    "resolve_severity_scale_max",
 ]

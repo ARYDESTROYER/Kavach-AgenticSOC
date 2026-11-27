@@ -78,8 +78,10 @@ _SECTION_TITLES: dict[str, str] = {
     "fp_auto_close": "Auto-Close (legacy)",
     "enrichment": "Enrichment",
     "personas": "Personas",
+    # Round 14 (SPEC §4.10.19): one Runbooks feature. The retired procedure section
+    # (``Preferences.playbooks``) is accepted on load but is no setting, so it has no
+    # label and is left out of the schema (:data:`_RETIRED_SECTIONS`).
     "runbooks": "Runbooks",
-    "playbooks": "Playbooks",
     "caps": "Caps / Kill Switch",
     "standup": "Standup",
     "trace": "Trace",
@@ -95,10 +97,35 @@ _SECTION_TITLES: dict[str, str] = {
     "customization": "Customization",
     # Round 4 additions.
     "threshold_tuning": "Threshold Tuning",
-    "batch": "Batch Inference",
+    # Round 14 (wro-03): the Console section that saves ``batch`` is "Discounted
+    # inference" (D30), so an audit row names the section the person saved in and a
+    # search of the audit log for that name finds it. Sentence case, as chat_agent.
+    "batch": "Discounted inference",
     "baseline": "Anomaly Baseline",
     "campaign": "Campaign Clustering",
+    # Rule-identity precedent (promotion / window fairness / futility reporting).
+    "precedent": "Analyst Precedent",
+    # Chat revamp (SPEC §4.2). Sentence case on purpose: it is the same name the
+    # curated Settings section and the Help Center use.
+    "chat_agent": "Chat assistant",
+    # Round 15 (SPEC D3.4, D6.2): the names the curated Settings groups use, so a
+    # settings audit row names the group the person saved in.
+    "team_activity": "Team activity",
+    "auto_close_review": "Auto-close review",
 }
+
+
+# Sections accepted on load for compatibility but no longer settings (Round 14 SPEC
+# §4.10.19): never described, so no Settings surface renders them.
+_RETIRED_SECTIONS: frozenset[str] = frozenset({"playbooks"})
+
+
+def _is_retired_field(field: FieldInfo) -> bool:
+    """A field kept only as a read-only mirror of its successor (marked
+    ``json_schema_extra={"deprecated_alias": True}``, for example ``rag.use_runbooks``
+    after Round 14): left out of the schema, since editing it would change nothing."""
+    extra = field.json_schema_extra
+    return isinstance(extra, dict) and bool(extra.get("deprecated_alias"))
 
 
 def _humanise(key: str) -> str:
@@ -220,6 +247,7 @@ def _describe_model_fields(model: type[BaseModel], depth: int = 0) -> list[dict[
     return [
         _describe_field(fn, ff, getattr(inst, fn, None) if inst is not None else None, depth)
         for fn, ff in model.model_fields.items()
+        if not _is_retired_field(ff)
     ]
 
 
@@ -235,6 +263,24 @@ def _describe_field(
         "choices": _choices(ann),
         "description": (field.description or "").strip() or None,
     }
+    # DECLARED BOUNDS (additive; omitted when a field declares none, so every existing
+    # descriptor is byte-identical). The schema-driven "Advanced (all settings)" renderer
+    # is the only surface some sections have, and without these it offered an unbounded
+    # integer control for a field the API now rejects below its floor — the operator only
+    # learned the bound from a 422.
+    for meta in field.metadata:
+        for attr, out_key in (("ge", "minimum"), ("le", "maximum")):
+            bound = getattr(meta, attr, None)
+            if bound is None or out_key in desc:
+                continue
+            if isinstance(bound, bool):  # bools are ints in Python; never a bound
+                continue
+            try:
+                desc[out_key] = bound if isinstance(bound, (int, float)) else float(bound)
+            except (TypeError, ValueError):
+                # A non-numeric constraint on an exotic annotated type. Describing the
+                # field without a bound is always safe; failing the whole schema is not.
+                continue
     # ELEMENT-MODEL DESCENT (additive): a list/dict OF a Pydantic model grows an
     # `element` descriptor so the generic renderer can describe rule collections. The
     # `type` above stays "array"/"object" (byte-identical for existing consumers).
@@ -267,6 +313,8 @@ def settings_schema() -> dict[str, Any]:
     general_fields: list[dict[str, Any]] = []
 
     for name, field in Preferences.model_fields.items():
+        if name in _RETIRED_SECTIONS or _is_retired_field(field):
+            continue
         ann = field.annotation
         live_value = getattr(live, name, None)
         if _is_object_section(ann):
@@ -282,6 +330,7 @@ def settings_schema() -> dict[str, Any]:
             fields = [
                 _describe_field(fn, ff, getattr(sub_live, fn, None) if sub_live is not None else None)
                 for fn, ff in sub_model.model_fields.items()
+                if not _is_retired_field(ff)
             ]
             object_sections.append(
                 {

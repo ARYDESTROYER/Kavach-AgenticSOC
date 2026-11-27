@@ -2,7 +2,7 @@
  * Round-6 auth-login compatibility for the minimal Login shell.
  *
  *  - finding 5  (glitch): every stored legacy layout uses the same quiet,
- *    theme-native minimal identity column.
+ *    theme-native identity column (Round 16 WP04: on the Console's own canvas).
  *  - finding 17 (ux): the first paint is held until the setup-status probe settles,
  *    so a first-run install doesn't flash the 'signin' form before 'setup'.
  */
@@ -91,7 +91,8 @@ describe('Login — legacy full layout converges on the minimal identity shell (
 
     await screen.findByLabelText('Username');
     expect(container.querySelector('[data-login-layout="full"]')).toHaveClass(
-      'login-auth-canvas',
+      'login-canvas',
+      'bg-canvas',
       'relative',
       'overflow-x-hidden',
     );
@@ -100,7 +101,8 @@ describe('Login — legacy full layout converges on the minimal identity shell (
       'minimal',
     );
     expect(container.querySelector('[data-login-identity-pane]')).not.toBeNull();
-    expect(container.querySelector('[data-login-panel]')).toHaveAttribute('data-login-surface', 'minimal');
+    // No card, slab or hero: the column sits straight on the canvas.
+    expect(container.querySelector('[data-login-panel], [data-login-slab]')).toBeNull();
 
     const support = screen.getByRole('link', { name: /help/i });
     expect(support).toHaveClass('text-muted-foreground');
@@ -119,15 +121,24 @@ describe('Login — setup-status gate avoids the signin→setup flash (finding 1
     );
     renderLogin();
 
-    // Before status settles the sign-in form is NOT painted (no flash).
+    // Before status settles the sign-in form is NOT painted (no flash), but the final
+    // shell is already there: the canvas, the appearance control and a small glyph that
+    // reveals only after 300ms. No page-shaped skeleton.
     expect(screen.getByText('Loading sign-in')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
+    expect(screen.queryByLabelText('Username')).toBeNull();
+    expect(screen.getByRole('group', { name: 'Appearance' })).toBeInTheDocument();
+    const gate = document.querySelector('[data-login-loading]');
+    expect(gate).toHaveClass('login-canvas', 'bg-canvas');
+    expect(screen.getByTestId('console-loading-glyph')).toHaveClass('login-delayed-reveal');
+    expect(document.querySelector('[data-loading-shape]')).toBeNull();
 
     await act(async () => {
       resolveStatus({ setup_complete: true, seeded_default: false });
     });
     // Once settled, the resolved form paints.
     expect(await screen.findByLabelText('Username')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
+    expect(screen.queryByText('Loading sign-in')).toBeNull();
   });
 });

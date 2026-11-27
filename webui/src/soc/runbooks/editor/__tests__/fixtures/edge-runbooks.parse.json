@@ -1,0 +1,481 @@
+{
+ "$comment": "Generated from backend/app/engine/runbook_model.py parse_runbook_markdown over edge-case sources (see markdown.parity.test.ts).",
+ "cases": [
+  {
+   "name": "quoting_and_lists",
+   "source": "---\nid: edge-quoting\ntitle: \"Quoted: title with colon\"\nsummary: 'It''s a summary'\nuse_when: plain text with # hash\nowner: \"soc-leads\"\npriority: 70\nreview_every_days: 90\nmitre: [t1110, \"T1059.001\"]\napplies_when:\n  rule_ids: [\"rule, with comma\", plain_rule]\n  entity_types: [ip, user]\n  severity_at_least: medium\n  sources: [src-1, \"type:elastic\"]\n  verdicts: [TRUE_POSITIVE]\n  statuses: [open]\n  any_tags: [vip]\n  min_event_count: 5\nretrieval_queries:\n  - first query\n  - \"second: query\"\nreferences:\n  - https://example.com/a\n---\n\n## Triage\n\n### Is it real? {#is-real kind=check optional owner=\"Tier 2\" target=4h react=RA3101 d3fend=D3-NI evidence=note}\n\nfocus:  look at the host\nEscalate If: it spreads\nbenign if: it is a test\n\nSome instructions.\n\n```\n### not a heading inside a fence\n```\n\n### Count it {#count kind=lookup}\n~~~lookup\ntool: log_stats\nfilter:\n  \"source.ip\": \"{{entity.ip}}\"\n  event.outcome: failure\ngroup_by: [user.name]\nwindow: now-7d\nlimit: 25\nrun: on_demand\n~~~\nAfter the block.\n\n## Investigate\n\n### Decide {#decide kind=decision}\nOptions:\n\n- yes: Confirmed\n- no: Benign | skips: block, notify\n- maybe: Suspicious\n\n## Close\n\n### Record it {#record kind=record approval=incident_lead target=90m}\nWrite the outcome.\n",
+   "version": null,
+   "ok": true,
+   "issues": [],
+   "definition": {
+    "id": "edge-quoting",
+    "title": "Quoted: title with colon",
+    "summary": "It's a summary",
+    "use_when": "plain text with # hash",
+    "prerequisites": "",
+    "applies_when": {
+     "rule_ids": [
+      "rule, with comma",
+      "plain_rule"
+     ],
+     "mitre": [],
+     "entity_types": [
+      "ip",
+      "user"
+     ],
+     "severity_at_least": "medium",
+     "sources": [
+      "src-1",
+      "type:elastic"
+     ],
+     "verdicts": [
+      "TRUE_POSITIVE"
+     ],
+     "statuses": [
+      "open"
+     ],
+     "any_tags": [
+      "vip"
+     ],
+     "min_event_count": 5,
+     "always": false
+    },
+    "priority": 70,
+    "mitre": [
+     "T1110",
+     "T1059.001"
+    ],
+    "phases": [
+     "triage",
+     "investigate",
+     "close"
+    ],
+    "steps": [
+     {
+      "id": "is-real",
+      "phase": "triage",
+      "kind": "check",
+      "title": "Is it real?",
+      "instructions": "Some instructions.\n\n```\n### not a heading inside a fence\n```",
+      "focus": "look at the host",
+      "escalate_if": "it spreads",
+      "benign_if": "it is a test",
+      "required": false,
+      "evidence": "note",
+      "owner_role": "Tier 2",
+      "approval_role": null,
+      "target_minutes": 240,
+      "lookup": null,
+      "options": [],
+      "react": "RA3101",
+      "d3fend": "D3-NI"
+     },
+     {
+      "id": "count",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Count it",
+      "instructions": "After the block.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "source.ip": "{{entity.ip}}",
+        "event.outcome": "failure"
+       },
+       "group_by": [
+        "user.name"
+       ],
+       "indicator": null,
+       "window": "now-7d",
+       "limit": 25,
+       "run": "on_demand"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "decide",
+      "phase": "investigate",
+      "kind": "decision",
+      "title": "Decide",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "yes",
+        "label": "Confirmed",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "no",
+        "label": "Benign",
+        "marks_not_applicable": [
+         "block",
+         "notify"
+        ]
+       },
+       {
+        "id": "maybe",
+        "label": "Suspicious",
+        "marks_not_applicable": []
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "record",
+      "phase": "close",
+      "kind": "record",
+      "title": "Record it",
+      "instructions": "Write the outcome.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": "incident_lead",
+      "target_minutes": 90,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "first query",
+     "second: query"
+    ],
+    "owner": "soc-leads",
+    "review_every_days": 90,
+    "references": [
+     "https://example.com/a"
+    ]
+   },
+   "export": "---\nid: edge-quoting\ntitle: \"Quoted: title with colon\"\nsummary: It's a summary\nuse_when: \"plain text with # hash\"\npriority: 70\nowner: soc-leads\nreview_every_days: 90\nmitre: [T1110, T1059.001]\napplies_when:\n  rule_ids: [\"rule, with comma\", plain_rule]\n  entity_types: [ip, user]\n  severity_at_least: medium\n  sources: [src-1, type:elastic]\n  verdicts: [TRUE_POSITIVE]\n  statuses: [open]\n  any_tags: [vip]\n  min_event_count: 5\nretrieval_queries:\n  - first query\n  - \"second: query\"\nreferences:\n  - https://example.com/a\n---\n\n## Triage\n\n### Is it real? {#is-real kind=check optional owner=\"Tier 2\" evidence=note target=4h react=RA3101 d3fend=D3-NI}\nFocus: look at the host\nEscalate if: it spreads\nBenign if: it is a test\n\nSome instructions.\n\n```\n### not a heading inside a fence\n```\n\n### Count it {#count kind=lookup}\n\n```lookup\ntool: log_stats\nfilter:\n  source.ip: \"{{entity.ip}}\"\n  event.outcome: failure\ngroup_by: [user.name]\nwindow: now-7d\nlimit: 25\nrun: on_demand\n```\n\nAfter the block.\n\n## Investigate\n\n### Decide {#decide kind=decision}\nOptions:\n- yes: Confirmed\n- no: Benign | skips: block, notify\n- maybe: Suspicious\n\n## Close and learn\n\n### Record it {#record kind=record approval=incident_lead target=90m}\n\nWrite the outcome.\n"
+  },
+  {
+   "name": "fallback_always",
+   "source": "---\nid: edge-fallback\ntitle: Fallback\nsummary: Generic\napplies_when:\n  always: true\n---\n\n## Triage\n\n### What happened? {#what kind=check}\n",
+   "version": null,
+   "ok": true,
+   "issues": [],
+   "definition": {
+    "id": "edge-fallback",
+    "title": "Fallback",
+    "summary": "Generic",
+    "use_when": "",
+    "prerequisites": "",
+    "applies_when": {
+     "rule_ids": [],
+     "mitre": [],
+     "entity_types": [],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": true
+    },
+    "priority": 50,
+    "mitre": [],
+    "phases": [
+     "triage"
+    ],
+    "steps": [
+     {
+      "id": "what",
+      "phase": "triage",
+      "kind": "check",
+      "title": "What happened?",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [],
+    "owner": null,
+    "review_every_days": 180,
+    "references": []
+   },
+   "export": "---\nid: edge-fallback\ntitle: Fallback\nsummary: Generic\npriority: 50\nreview_every_days: 180\napplies_when:\n  always: true\n---\n\n## Triage\n\n### What happened? {#what kind=check}\n"
+  },
+  {
+   "name": "err_no_front_matter",
+   "source": "## Triage\n\n### X {#x kind=check}\n",
+   "version": null,
+   "ok": false,
+   "issues": [
+    {
+     "path": "source",
+     "code": "parse",
+     "message": "The source must start with front matter: a line '---', the header keys, then '---'."
+    }
+   ],
+   "definition": null,
+   "export": null
+  },
+  {
+   "name": "err_bad_kind",
+   "source": "---\nid: a\ntitle: t\nsummary: s\n---\n\n## Triage\n\n### X {#x kind=nope}\n",
+   "version": null,
+   "ok": false,
+   "issues": [
+    {
+     "path": "steps[0].kind",
+     "code": "parse",
+     "message": "Step 'X' kind 'nope' is not one of check, lookup, decision, action, record."
+    }
+   ],
+   "definition": null,
+   "export": null
+  },
+  {
+   "name": "err_no_braces",
+   "source": "---\nid: a\ntitle: t\nsummary: s\n---\n\n## Triage\n\n### X\n",
+   "version": null,
+   "ok": false,
+   "issues": [
+    {
+     "path": "steps[0].id",
+     "code": "parse",
+     "message": "Step 'X' needs an id and a kind: end its heading with {#an-id kind=check}."
+    }
+   ],
+   "definition": null,
+   "export": null
+  },
+  {
+   "name": "err_unknown_phase",
+   "source": "---\nid: a\ntitle: t\nsummary: s\n---\n\n## Hunt\n\n### X {#x kind=check}\n",
+   "version": null,
+   "ok": false,
+   "issues": [
+    {
+     "path": "phases",
+     "code": "parse",
+     "message": "Line 7: 'Hunt' is not a phase. Use Triage, Investigate, Contain, Eradicate, Recover, Close and learn."
+    },
+    {
+     "path": "steps",
+     "code": "parse",
+     "message": "Line 9: a step must be under a phase heading such as '## Triage'."
+    }
+   ],
+   "definition": null,
+   "export": null
+  },
+  {
+   "name": "warn_unknown_keys",
+   "source": "---\nid: a\ntitle: t\nsummary: s\nversion: 3\ncolour: blue\napplies_when:\n  rule_ids: [r]\n  colour: red\n---\n\n## Triage\n\n### X {#x kind=check wat=1}\n",
+   "version": 3,
+   "ok": true,
+   "issues": [
+    {
+     "path": "colour",
+     "code": "unknown_key",
+     "message": "The front matter has the unknown key 'colour'. Known keys: id, title, summary, use_when, prerequisites, version, priority, owner, review_every_days, mitre, applies_when, retrieval_queries, references."
+    },
+    {
+     "path": "applies_when.colour",
+     "code": "unknown_key",
+     "message": "applies_when has the unknown key 'colour'. Known keys: rule_ids, mitre, entity_types, severity_at_least, sources, verdicts, statuses, any_tags, min_event_count, always."
+    },
+    {
+     "path": "steps[0].attributes",
+     "code": "unknown_key",
+     "message": "Step 'X' has the unknown attribute 'wat=1'. Known attributes: #id, kind=, optional, owner=, approval=, evidence=, target=, react=, d3fend=."
+    }
+   ],
+   "definition": {
+    "id": "a",
+    "title": "t",
+    "summary": "s",
+    "use_when": "",
+    "prerequisites": "",
+    "applies_when": {
+     "rule_ids": [
+      "r"
+     ],
+     "mitre": [],
+     "entity_types": [],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 50,
+    "mitre": [],
+    "phases": [
+     "triage"
+    ],
+    "steps": [
+     {
+      "id": "x",
+      "phase": "triage",
+      "kind": "check",
+      "title": "X",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [],
+    "owner": null,
+    "review_every_days": 180,
+    "references": []
+   },
+   "export": "---\nid: a\ntitle: t\nsummary: s\nversion: 3\npriority: 50\nreview_every_days: 180\napplies_when:\n  rule_ids: [r]\n---\n\n## Triage\n\n### X {#x kind=check}\n"
+  },
+  {
+   "name": "err_tabs",
+   "source": "---\nid: a\n\ttitle: t\n---\n",
+   "version": null,
+   "ok": false,
+   "issues": [
+    {
+     "path": "source",
+     "code": "parse",
+     "message": "Front matter, line 3: Indent with spaces, not tabs."
+    }
+   ],
+   "definition": null,
+   "export": null
+  },
+  {
+   "name": "err_stray_text",
+   "source": "---\nid: a\ntitle: t\nsummary: s\n---\nstray text\n\n## Triage\n\n### X {#x kind=check}\n",
+   "version": null,
+   "ok": false,
+   "issues": [
+    {
+     "path": "source",
+     "code": "parse",
+     "message": "Line 6: text outside a step is not kept. Put it in a step's instructions or remove it."
+    }
+   ],
+   "definition": null,
+   "export": null
+  },
+  {
+   "name": "err_lookup_bad_tool",
+   "source": "---\nid: a\ntitle: t\nsummary: s\n---\n\n## Triage\n\n### X {#x kind=lookup}\n```lookup\ntool: grep\n```\n",
+   "version": null,
+   "ok": false,
+   "issues": [
+    {
+     "path": "steps[0].lookup.tool",
+     "code": "parse",
+     "message": "Step 'X' lookup tool 'grep' is not one of log_stats, log_search, enrich, related_cases, campaign, mitre."
+    }
+   ],
+   "definition": null,
+   "export": null
+  },
+  {
+   "name": "bad_version",
+   "source": "---\nid: a\ntitle: t\nsummary: s\nversion: two\n---\n\n## Triage\n\n### X {#x kind=check}\n",
+   "version": null,
+   "ok": true,
+   "issues": [
+    {
+     "path": "version",
+     "code": "parse",
+     "message": "version is not a whole number of 1 or more, so it is ignored."
+    }
+   ],
+   "definition": {
+    "id": "a",
+    "title": "t",
+    "summary": "s",
+    "use_when": "",
+    "prerequisites": "",
+    "applies_when": {
+     "rule_ids": [],
+     "mitre": [],
+     "entity_types": [],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 50,
+    "mitre": [],
+    "phases": [
+     "triage"
+    ],
+    "steps": [
+     {
+      "id": "x",
+      "phase": "triage",
+      "kind": "check",
+      "title": "X",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [],
+    "owner": null,
+    "review_every_days": 180,
+    "references": []
+   },
+   "export": "---\nid: a\ntitle: t\nsummary: s\npriority: 50\nreview_every_days: 180\n---\n\n## Triage\n\n### X {#x kind=check}\n"
+  }
+ ]
+}

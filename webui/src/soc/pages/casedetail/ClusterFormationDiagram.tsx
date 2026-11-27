@@ -9,7 +9,12 @@ import { ArrowRight, Bell, GitMerge, Link2, ShieldCheck } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
-import { humanizeToken } from '@/lib/format';
+import { middleEllipsis } from './caseFacts';
+import { triggerSentenceText } from '@/soc/components/caseActivityText';
+import { DASH, caseLabel, humanizeToken } from '@/lib/format';
+import { isSafeCaseId } from '@/soc/case-result-route';
+import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
+import { pageHash } from '@/soc/router';
 import { Badge } from '@/ui/badge';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/ui/hover-card';
 
@@ -26,6 +31,8 @@ type ClusterCorrelation = {
 
 type RelatedClusterCase = {
   case_id?: string;
+  /** The case number ("CASE-000049"), the row's label; "" when the store had none. */
+  case_number?: string;
   relationship?: string;
   reason?: string;
   verdict?: string;
@@ -51,6 +58,36 @@ export type ClusterExplanation = {
   limitations?: string;
 };
 
+/**
+ * A related case, named by its case number (the internal id is only its tooltip), as a
+ * link that opens it in Case Manager through the router. Plain text when the id cannot
+ * be a safe route.
+ */
+function RelatedCaseLink({ row }: { row: RelatedClusterCase }) {
+  const id = String(row.case_id);
+  const label = caseLabel(row);
+  const href = isSafeCaseId(id) ? safeRouteHref(pageHash('case_manager', { caseId: id })) : undefined;
+  const onClick = useRouteLinkClick(href);
+  if (!href) {
+    return (
+      <span className="break-all font-mono text-foreground" title={id}>
+        {label}
+      </span>
+    );
+  }
+  return (
+    <a
+      href={href}
+      onClick={onClick}
+      title={id}
+      aria-label={`Open case ${label}`}
+      className="inline-flex min-h-6 items-center break-all rounded-sm font-mono text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {label}
+    </a>
+  );
+}
+
 function secondsLabel(seconds: number): string {
   if (seconds <= 0) return 'No persisted window';
   if (seconds % 60 === 0) return `${seconds / 60} min window`;
@@ -59,7 +96,7 @@ function secondsLabel(seconds: number): string {
 
 function NodeCard({
   icon: Icon,
-  eyebrow,
+  label,
   title,
   summary,
   tone = 'default',
@@ -67,7 +104,8 @@ function NodeCard({
   hover,
 }: {
   icon: LucideIcon;
-  eyebrow: string;
+  /** The node's role in the flow ("Input alerts"), a sentence-case label above its title. */
+  label: string;
   title: string;
   summary: string;
   tone?: 'default' | 'primary' | 'success';
@@ -80,7 +118,7 @@ function NodeCard({
         <button
           type="button"
           className={cn(
-            'group min-h-32 w-full min-w-0 rounded-[4px] border bg-surface-sunken p-4 text-left',
+            'group min-h-32 w-full min-w-0 rounded-md border bg-surface-sunken p-4 text-left',
             'transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             tone === 'primary' && 'border-primary/35',
             tone === 'success' && 'border-success/35',
@@ -90,7 +128,7 @@ function NodeCard({
           <div className="flex items-start gap-3">
             <span
               className={cn(
-                'mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[4px] border border-border bg-background text-muted-foreground',
+                'mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground',
                 tone === 'primary' && 'border-primary/30 text-primary',
                 tone === 'success' && 'border-success/30 text-success-text',
               )}
@@ -98,10 +136,12 @@ function NodeCard({
               <Icon className="h-4 w-4" aria-hidden="true" />
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-                {eyebrow}
+              <span className="block text-xs font-medium text-muted-foreground">
+                {label}
               </span>
-              <span className="mt-1 block truncate text-base font-semibold text-foreground">
+              {/* Wraps instead of clipping: an already middle-ellipsised id must not be
+                  cut a second time by CSS (CM-8). */}
+              <span className="mt-1 line-clamp-2 block text-base font-semibold text-foreground [overflow-wrap:anywhere]">
                 {title}
               </span>
               <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
@@ -130,8 +170,13 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
   const sources = Object.entries(data.source_breakdown || {}).filter(([, count]) => count > 0);
   const related = (data.related_cases || []).filter((row) => row.case_id);
   const clusterLabel = data.cluster_id ? `cluster-${data.cluster_id.slice(0, 12)}` : 'Cluster details unavailable';
-  const caseLabel = data.opened_case?.display_id || data.opened_case?.case_id || 'Opened case';
-  const correlationSummary = correlation.reason || [
+  const caseFullLabel = data.opened_case?.display_id || data.opened_case?.case_id || '';
+  // Middle-ellipsis keeps the distinguishing tail of a long id visible (CM-8); the full
+  // id stays in the hover detail.
+  const caseLabel = caseFullLabel ? middleEllipsis(caseFullLabel, 12, 6) : 'Opened case';
+  // The stored trigger sentence, as the Brief and Evidence show it (equal severity ends
+  // read as one value).
+  const correlationSummary = triggerSentenceText(correlation.reason) || [
     correlation.group_by ? `Grouped by ${humanizeToken(correlation.group_by)}` : '',
     correlation.window_seconds ? secondsLabel(correlation.window_seconds) : '',
   ].filter(Boolean).join(' · ') || 'Persisted correlation details are limited for this older case.';
@@ -144,9 +189,11 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
     >
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 id="cluster-formation-heading" className="text-base font-semibold text-foreground">
+          {/* A part of the Investigation tab's Threat context section (its only host), so a
+              part heading under that section's h2, as the parts beside it are. */}
+          <h3 id="cluster-formation-heading" className="text-sm font-semibold text-foreground">
             How this case was clustered
-          </h2>
+          </h3>
           <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
             A redacted view of the persisted alert inputs, deterministic correlation rule, and case created from the cluster.
           </p>
@@ -159,7 +206,7 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
       <div className="grid min-w-0 items-center gap-3 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1.1fr)_auto_minmax(0,1fr)]">
         <NodeCard
           icon={Bell}
-          eyebrow="Input alerts"
+          label="Input alerts"
           title={`${inputCount || observed} matched signal${(inputCount || observed) === 1 ? '' : 's'}`}
           summary={sources.length ? `${sources.length} contributing source${sources.length === 1 ? '' : 's'}` : 'Source detail was not persisted for this case.'}
           hover={(
@@ -197,7 +244,7 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
 
         <NodeCard
           icon={GitMerge}
-          eyebrow="Correlation cluster"
+          label="Correlation cluster"
           title={clusterLabel}
           summary={correlationSummary}
           tone="primary"
@@ -206,7 +253,7 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
               <p className="text-sm font-semibold text-foreground">Why these alerts clustered</p>
               <dl className="space-y-1.5 border-t border-border pt-2 text-xs">
                 <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Mode</dt><dd className="font-mono text-foreground">{humanizeToken(correlation.mode || 'Unavailable')}</dd></div>
-                <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Observed / threshold</dt><dd className="font-mono text-foreground">{observed || inputCount} / {threshold || '—'}</dd></div>
+                <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Observed / threshold</dt><dd className="font-mono text-foreground">{observed || inputCount} / {threshold || DASH}</dd></div>
                 <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Window</dt><dd className="font-mono text-foreground">{secondsLabel(Number(correlation.window_seconds || 0))}</dd></div>
                 <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Group</dt><dd className="font-mono text-foreground">{humanizeToken(correlation.group_by || 'Unavailable')}</dd></div>
               </dl>
@@ -228,7 +275,7 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
 
         <NodeCard
           icon={ShieldCheck}
-          eyebrow="Opened case"
+          label="Opened case"
           title={caseLabel}
           summary="One case preserves the cluster identity so repeated polling attaches instead of duplicating it."
           tone="success"
@@ -236,8 +283,11 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
             <>
               <p className="text-sm font-semibold text-foreground">Case created from this cluster</p>
               <dl className="space-y-1.5 border-t border-border pt-2 text-xs">
+                {caseFullLabel ? (
+                  <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Case</dt><dd className="break-all text-right font-mono text-foreground">{caseFullLabel}</dd></div>
+                ) : null}
                 <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Status</dt><dd className="text-foreground">{humanizeToken(data.opened_case?.status || 'Unavailable')}</dd></div>
-                <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Verdict</dt><dd className="text-foreground">{humanizeToken(data.opened_case?.verdict || 'Pending')}</dd></div>
+                <div className="flex justify-between gap-3"><dt className="text-muted-foreground">AI verdict</dt><dd className="text-foreground">{humanizeToken(data.opened_case?.verdict || 'Pending')}</dd></div>
                 <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Related cases</dt><dd className="font-mono text-foreground">{related.length}</dd></div>
               </dl>
             </>
@@ -246,20 +296,41 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
       </div>
 
       {related.length ? (
-        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
-          <span className="inline-flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+        <div className="mt-4 border-t border-border pt-3">
+          <h4 className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <Link2 className="h-3.5 w-3.5" aria-hidden /> Related cases
-          </span>
-          {related.map((row) => (
-            <span key={`${row.relationship}-${row.case_id}`} title={row.reason || undefined}>
-              <Badge variant="outline" className="font-mono">{row.case_id}</Badge>
-            </span>
-          ))}
+            <span className="tabular-nums">{related.length}</span>
+          </h4>
+          {/* Each row names its case by number and opens it (the internal id stays in
+              the tooltip), with the relationship, the AI verdict and the reason beside
+              it. Plain text only (#9). */}
+          <ul className="mt-2 divide-y divide-border/70" data-testid="cluster-related-cases">
+            {related.map((row) => {
+              const id = String(row.case_id);
+              return (
+                <li
+                  key={`${row.relationship}-${id}`}
+                  className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5 text-xs"
+                >
+                  <RelatedCaseLink row={row} />
+                  {row.relationship ? (
+                    <span className="text-muted-foreground">{humanizeToken(row.relationship)}</span>
+                  ) : null}
+                  {row.verdict ? (
+                    <span className="text-muted-foreground">AI verdict: {humanizeToken(row.verdict)}</span>
+                  ) : null}
+                  {row.reason ? (
+                    <span className="min-w-0 basis-full text-muted-foreground">{row.reason}</span>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
         </div>
       ) : null}
 
       {data.limitations ? (
-        <p className="mt-3 text-2xs leading-relaxed text-muted-foreground">{data.limitations}</p>
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{data.limitations}</p>
       ) : null}
     </section>
   );

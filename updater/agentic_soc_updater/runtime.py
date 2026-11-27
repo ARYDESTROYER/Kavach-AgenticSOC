@@ -137,11 +137,17 @@ class ComposeRuntime:
         webui = self._container(self.config.webui_container)
         backend_labels = self._labels(backend)
         webui_labels = self._labels(webui)
+        backend_state_schema = backend_labels.get(
+            "io.agentic-soc.state.schema", "unknown"
+        )
+        webui_state_schema = webui_labels.get(
+            "io.agentic-soc.state.schema", "unknown"
+        )
         fields = {
             "version": backend_labels.get("org.opencontainers.image.version", "unknown"),
             "channel": backend_labels.get("dev.tlsoc.release.channel", "unknown"),
             "commit_sha": backend_labels.get("org.opencontainers.image.revision", "unknown"),
-            "state_schema": backend_labels.get("io.agentic-soc.state.schema", "unknown"),
+            "state_schema": backend_state_schema,
             "backend_image_id": str(backend.get("Image", "")),
             "webui_image_id": str(webui.get("Image", "")),
         }
@@ -149,7 +155,7 @@ class ComposeRuntime:
             webui_labels.get("org.opencontainers.image.version") != fields["version"]
             or webui_labels.get("org.opencontainers.image.revision") != fields["commit_sha"]
             or webui_labels.get("dev.tlsoc.release.channel") != fields["channel"]
-            or webui_labels.get("io.agentic-soc.state.schema") != fields["state_schema"]
+            or webui_state_schema != fields["state_schema"]
         ):
             raise RuntimeFailure("installed backend and Web release identities disagree")
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", fields["backend_image_id"]):

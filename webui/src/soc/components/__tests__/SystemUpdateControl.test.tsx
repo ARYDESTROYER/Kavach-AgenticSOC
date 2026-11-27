@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import * as React from 'react';
 import type { ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   SystemUpdateJob,
@@ -9,7 +10,8 @@ import type {
 } from '@/lib/types';
 import type { DeploymentUpgradeState } from '@/soc/hooks/useDeploymentUpgrade';
 
-vi.mock('@/soc/hooks/usePrefersReducedMotion', () => ({ usePrefersReducedMotion: () => true }));
+const motion = vi.hoisted(() => ({ reduced: true }));
+vi.mock('@/soc/hooks/usePrefersReducedMotion', () => ({ usePrefersReducedMotion: () => motion.reduced }));
 vi.mock('@/ui/tooltip', () => ({
   Tooltip: ({ children }: { children: ReactNode }) => children,
   TooltipTrigger: ({ children }: { children: ReactNode }) => children,
@@ -27,7 +29,7 @@ const release = {
   tag: 'v0.1.3',
   commit_sha: 'd'.repeat(40),
   channel: 'stable' as const,
-  repository_url: 'https://github.com/ARYDESTROYER/Agentic-Kibana',
+  repository_url: 'https://github.com/ARYDESTROYER/Kavach-AgenticSOC',
 };
 
 const observedRelease = {
@@ -336,6 +338,74 @@ describe('SystemUpdateControl', () => {
     expect(bootstrap.setProgressOpen).toHaveBeenCalledWith(true);
   });
 
+  it('says "Updates unavailable" when the state backend can never update itself', () => {
+    const manual = upgrade({
+      status: {
+        ...status,
+        capability: {
+          ...capability,
+          supported: false,
+          bootstrap_required: false,
+          supervisor: { available: false },
+          scope: { ...capability.scope, state_backend: 'sqlite' },
+          blockers: [
+            {
+              code: 'postgres_state_required',
+              message: 'One-click updates currently support only PostgreSQL application state.',
+              remediation: 'Use the documented manual upgrade procedure for this state backend.',
+            },
+          ],
+        },
+      },
+      progressOpen: true,
+    });
+    render(<SystemUpdateControl upgrade={manual} hasUnsavedChanges={false} canRollback />);
+    expect(screen.getAllByText('Updates unavailable').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Enable updates')).not.toBeInTheDocument();
+    expect(screen.getByText('This deployment cannot update itself')).toBeInTheDocument();
+    // No job exists, so the panel does not talk about one.
+    expect(
+      screen.queryByText('Closing this panel does not stop the durable update job.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('returns focus to the top-bar control when the panel closes', async () => {
+    const manual = upgrade({
+      status: {
+        ...status,
+        capability: { ...capability, supported: false, bootstrap_required: false },
+      },
+    });
+    function Host() {
+      const [open, setOpen] = React.useState(false);
+      return (
+        <SystemUpdateControl
+          upgrade={{ ...manual, progressOpen: open, setProgressOpen: setOpen }}
+          hasUnsavedChanges={false}
+          canRollback
+        />
+      );
+    }
+    render(<Host />);
+    const control = screen.getByTestId('system-update-button');
+    control.focus();
+    fireEvent.click(control);
+    const panel = await screen.findByRole('dialog');
+    fireEvent.keyDown(panel, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    // The sheet opens from state, so without an explicit return the focus fell to the body.
+    expect(control).toHaveFocus();
+  });
+
+  it('keeps the closing note while a durable job exists', () => {
+    render(
+      <SystemUpdateControl upgrade={upgrade({ job, progressOpen: true })} hasUnsavedChanges={false} canRollback />,
+    );
+    expect(
+      screen.getByText('Closing this panel does not stop the durable update job.'),
+    ).toBeInTheDocument();
+  });
+
   it('does not let a mutable candidate outrank an unsupported runtime', () => {
     const unsupported = upgrade({
       status: {
@@ -396,5 +466,60 @@ describe('SystemUpdateControl', () => {
     fireEvent.click(screen.getByRole('button', { name: /system update status is unavailable/i }));
     expect(unavailable.setProgressOpen).toHaveBeenCalledWith(true);
     expect(screen.queryByText(/one-time setup required/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('SystemUpdateControl spinners (Round 14, SPEC §4.9.2)', () => {
+  beforeEach(() => {
+    motion.reduced = false;
+  });
+  afterEach(() => {
+    motion.reduced = true;
+  });
+
+  /** A refresh glyph turning anywhere outside RefreshButton breaks the console grammar. */
+  const spinningRefreshGlyphs = () => document.querySelectorAll('svg.lucide-refresh-cw.animate-spin');
+
+  it('shows a running update as progress, never a spinning refresh glyph', () => {
+    const state = upgrade({ job, progressOpen: true, connection: 'reconnecting' });
+    render(<SystemUpdateControl upgrade={state} hasUnsavedChanges={false} canRollback />);
+    const trigger = screen.getByTestId('system-update-button');
+    const progress = trigger.querySelector('[data-update-progress]');
+    expect(progress).not.toBeNull();
+    expect(progress).toHaveClass('animate-spin');
+    expect(trigger.querySelector('svg.lucide-refresh-cw')).toBeNull();
+    // The reconnect notice turns a progress ring too.
+    expect(screen.getByText('Reconnecting to the updated services')).toBeVisible();
+    expect(spinningRefreshGlyphs()).toHaveLength(0);
+  });
+
+  it('rests the update glyph when nothing is running', () => {
+    render(<SystemUpdateControl upgrade={upgrade()} hasUnsavedChanges={false} canRollback />);
+    const trigger = screen.getByTestId('system-update-button');
+    expect(trigger.querySelector('[data-update-progress]')).toBeNull();
+    expect(trigger.querySelector('svg.lucide-refresh-cw')).not.toBeNull();
+    expect(spinningRefreshGlyphs()).toHaveLength(0);
+  });
+
+  it('says "Checking" while the release check runs, busy and disabled, with a resting glyph', () => {
+    const checking = upgrade({
+      checking: true,
+      status: {
+        ...status,
+        release_discovery: {
+          state: 'error',
+          branch: 'main',
+          checked_at: '2026-08-03T03:45:00Z',
+          observed_release: null,
+          issue: { code: 'release_discovery_failed', message: 'The check failed.', remediation: null },
+        },
+      },
+      progressOpen: true,
+    });
+    render(<SystemUpdateControl upgrade={checking} hasUnsavedChanges={false} canRollback />);
+    const button = screen.getByRole('button', { name: 'Checking…' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('aria-busy', 'true');
+    expect(spinningRefreshGlyphs()).toHaveLength(0);
   });
 });

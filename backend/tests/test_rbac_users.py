@@ -25,6 +25,7 @@ from app.rbac.policy import DEFAULT_MATRIX, can, effective_matrix, resolve_matri
 from app.state import AppState
 from app.stores.memory import EsKVStore
 from app.stores.users import UserStore
+from tests._auth_helpers import ready_user
 
 
 # --------------------------------------------------------------------------- #
@@ -51,15 +52,19 @@ def test_auditor_is_read_only() -> None:
 
 
 def test_tier_grants() -> None:
-    # tier2 may close + reinvestigate + run playbooks; tier1 may not.
+    # tier2 may close + reinvestigate; tier1 may not. Round 14 (SPEC E8): both run
+    # runbooks (working a case's checklist is the analyst's core task); neither
+    # publishes one.
     assert can(UserRole.ANALYST_TIER2.value, "cases", "close")
     assert can(UserRole.ANALYST_TIER2.value, "cases", "reinvestigate")
-    assert can(UserRole.ANALYST_TIER2.value, "playbooks", "run")
+    assert can(UserRole.ANALYST_TIER2.value, "runbooks", "run")
     assert not can(UserRole.ANALYST_TIER1.value, "cases", "close")
-    assert not can(UserRole.ANALYST_TIER1.value, "playbooks", "run")
+    assert can(UserRole.ANALYST_TIER1.value, "runbooks", "run")
+    assert not can(UserRole.ANALYST_TIER1.value, "runbooks", "publish")
+    assert not can(UserRole.ANALYST_TIER2.value, "runbooks", "publish")
     assert can(UserRole.ANALYST_TIER1.value, "cases", "write")
-    # responder = tier1 + playbooks:run + proposals:approve
-    assert can(UserRole.RESPONDER.value, "playbooks", "run")
+    # responder = tier1 + runbooks:run + proposals:approve
+    assert can(UserRole.RESPONDER.value, "runbooks", "run")
     assert can(UserRole.RESPONDER.value, "proposals", "approve")
     assert not can(UserRole.RESPONDER.value, "cases", "close")
     # no role except super_admin/soc_manager may manage users
@@ -129,7 +134,35 @@ async def test_user_public_view_hides_hash() -> None:
     u = await store.create(username="bob", password_hash="SECRET-HASH")
     pub = u.public()
     assert "password_hash" not in pub
+    assert "SECRET" not in str(pub)
     assert pub["username"] == "bob"
+    # The admin-managed contact fields + the MFA mandate ride in public() with
+    # clean defaults (additive — old docs project the same keys).
+    assert pub["display_name"] == ""
+    assert pub["email"] == ""
+    assert pub["phone"] == ""
+    assert pub["mfa_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_user_store_create_and_update_new_admin_fields() -> None:
+    store = UserStore(EsKVStore(InMemoryESClient()))
+    u = await store.create(
+        username="carla", password_hash="h",
+        display_name="Carla C", email="carla@example.com", phone="+1 555 0100",
+        mfa_required=True, prefs={"custom_roles": ["closer"]},
+    )
+    assert u.display_name == "Carla C"
+    assert u.email == "carla@example.com"
+    assert u.phone == "+1 555 0100"
+    assert u.mfa_required is True
+    assert u.prefs == {"custom_roles": ["closer"]}
+    # The new fields are in the update() allowlist (a patch actually persists).
+    await store.update("carla", email="new@x.io", phone="+44 20", mfa_required=False)
+    got = await store.get("carla")
+    assert got.email == "new@x.io"
+    assert got.phone == "+44 20"
+    assert got.mfa_required is False
 
 
 # --------------------------------------------------------------------------- #
@@ -224,6 +257,7 @@ def test_rbac_denies_low_role_and_allows_admin() -> None:
             "username": "tier1", "password": "tier1-pass-1", "role": UserRole.ANALYST_TIER1.value,
         })
         assert r.status_code == 200
+        ready_user(c, "tier1", "tier1-pass-1")
         assert r.json()["user"]["must_change_password"] is True
         # New tier1 user logs in → cannot manage users (403) but can read cases.
         c.cookies.clear()
@@ -292,6 +326,7 @@ def test_disabled_user_cannot_login_and_sessions_invalidated() -> None:
         c.post("/api/users", json={
             "username": "victim", "password": "victim-pass-1", "role": UserRole.ANALYST_TIER2.value,
         })
+        ready_user(c, "victim", "victim-pass-1")
         # Disable the user.
         assert c.put("/api/users/victim", json={"active": False}).status_code == 200
         c.cookies.clear()

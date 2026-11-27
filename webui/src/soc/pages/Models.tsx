@@ -1,5 +1,5 @@
 /**
- * Models — first-class LLM model administration (Round 3 / Feature 9).
+ * Models: first-class LLM model administration (Round 3 / Feature 9).
  *
  * Promoted out of the Settings subsection into its own admin page. Three tabs:
  *   - Catalog            — every model with capability badges, pricing, provenance,
@@ -9,6 +9,11 @@
  *                          GET /api/budget/status) using the Stage-1 chart primitives.
  *   - Providers          — the provider registry (anthropic/openai/azure/bedrock/
  *                          vertex/openai_compatible/mock) + configured booleans.
+ *
+ * Round 14 (MO1 to MO4): the header is the title "Models" with a help tip and an icon
+ * Refresh; the counts are a compact `KpiStrip`; the tabs are the underline style; the
+ * catalog, the local models, the estimator and the providers are panels; the remove
+ * action is a neutral icon; the price override uses `NumberField`s.
  *
  * RBAC: gated behind <ProtectedRoute resource="models" action="read">; the mutating
  * controls (price override, budget save, test call) additionally require
@@ -20,25 +25,10 @@
  * call RUNS (enforced in the gateway, which fails to NEEDS_HUMAN).
  */
 import * as React from 'react';
-import {
-  Cpu,
-  RefreshCw,
-  Loader2,
-  DollarSign,
-  Calculator,
-  Server,
-  CheckCircle2,
-  XCircle,
-  Save,
-  Plus,
-  Trash2,
-  HardDrive,
-  Radar,
-} from 'lucide-react';
+import { Loader2, Server, Save, Plus, Trash2, Radar } from 'lucide-react';
 import { toast } from 'sonner';
 import { ApiError } from '@/lib/api';
-import { fmtMoney } from '@/lib/format';
-import { Card } from '@/ui/card';
+import { DASH, fmtMoney } from '@/lib/format';
 import { Button } from '@/ui/button';
 import { Badge } from '@/ui/badge';
 import { Input } from '@/ui/input';
@@ -63,16 +53,20 @@ import {
 } from '@/ui/dialog';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { PageContainer } from '@/soc/components/PageContainer';
+import { RefreshButton } from '@/soc/components/RefreshButton';
+import { KpiStrip } from '@/soc/components/KpiStrip';
 import { KpiTile } from '@/soc/components/KpiTile';
 import { CodeBlock } from '@/soc/components/CodeBlock';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { ProtectedRoute, useCan } from '@/soc/components/Can';
 import { NumberField } from '@/soc/components/NumberField';
+import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { SecretField } from '@/soc/components/SecretField';
 import { ModelsCatalog } from '@/soc/components/ModelsCatalog';
+import { useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { BudgetCard } from '@/soc/components/BudgetCard';
-import { LoadingState } from '@/design-system';
+import { LoadingState, Panel, StatusDot } from '@/design-system';
 import {
   modelsApi,
   providerLabel,
@@ -84,9 +78,18 @@ import {
   type CostEstimateResult,
 } from './Models.api';
 
+/** The page help: what the page holds (the description that used to sit under the title). */
+const PAGE_HELP =
+  'The model catalog, per-role routing, pricing and the cost budget. Every model the ' +
+  'gateway can route is listed with its pricing provenance; an operator override pins ' +
+  'a contract rate. A budget only governs whether an AI call runs; it never decides a case.';
+
 function errMsg(e: unknown, fallback: string): string {
   return e instanceof ApiError && e.message ? e.message : fallback;
 }
+
+/** A tab body: the panel rhythm under the underline tabs. */
+const TAB_BODY = 'mt-6 flex flex-col gap-4 xl:gap-5 3xl:gap-6';
 
 export default function Models() {
   return (
@@ -112,6 +115,15 @@ export function ModelsInner() {
   const [testFor, setTestFor] = React.useState<ModelCatalogRow | null>(null);
   // "Add local model" (self-hosted / LiteLLM) dialog + per-row remove busy id.
   const [addLocalOpen, setAddLocalOpen] = React.useState(false);
+  // The three dialogs open from state (a row button or the panel action), so each
+  // remembers the control that opened it and hands focus back on close (SPEC §3.3).
+  const priceOpener = useReturnFocus();
+  const testOpener = useReturnFocus();
+  const addLocalOpener = useReturnFocus();
+  const openAddLocal = () => {
+    addLocalOpener.remember();
+    setAddLocalOpen(true);
+  };
   const [removingId, setRemovingId] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
@@ -160,6 +172,8 @@ export function ModelsInner() {
   const assignedCount = models.filter((m) => m.assigned_roles.length > 0).length;
   const overrideCount = models.filter((m) => m.price_overridden).length;
   const localModels = models.filter((m) => m.is_custom);
+  const visibleCount =
+    providerFilter === 'all' ? models.length : models.filter((m) => m.provider === providerFilter).length;
 
   const removeLocal = React.useCallback(
     async (row: ModelCatalogRow) => {
@@ -178,17 +192,17 @@ export function ModelsInner() {
   );
 
   return (
-    <div className="space-y-6">
+    <>
       <PageHeader
-        icon={Cpu}
-        eyebrow="Administration"
-        title="Models & LLMs"
-        description="The model catalog, per-role routing, pricing, and the cost-budget ceiling."
-        actions={
-          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-            <RefreshCw className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} aria-hidden />
-            Refresh
-          </Button>
+        title="Models"
+        help={PAGE_HELP}
+        controls={
+          <RefreshButton
+            onClick={() => void load()}
+            refreshing={loading}
+            label="Refresh models"
+            display="icon"
+          />
         }
       />
 
@@ -201,40 +215,45 @@ export function ModelsInner() {
           description="Preparing model routing, pricing, and provider status."
         />
       ) : error && !catalog ? (
-        <LoadError error={error} title="Couldn't load models" onRetry={() => void load()} />
+        <LoadError error={error} title="Could not load models" onRetry={() => void load()} />
       ) : (
       <>
-      <div className="grid border-y border-border/70 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiTile label="Models" value={models.length} icon={Cpu} accent="primary" variant="strip" className="border-b border-border/70 sm:border-r lg:border-b-0" />
-        <KpiTile label="Verified pricing" value={exactCount} accent="success" sub="exact rates" variant="strip" className="border-b border-border/70 lg:border-b-0 lg:border-r" />
-        <KpiTile label="Assigned" value={assignedCount} accent="info" sub="to a role" variant="strip" className="border-b border-border/70 sm:border-b-0 sm:border-r" />
-        <KpiTile label="Overrides" value={overrideCount} accent="medium" sub="operator prices" variant="strip" />
-      </div>
+      <KpiStrip label="Model summary" density="compact" data-testid="models-summary">
+        <KpiTile label="Models" value={models.length} context="in the catalog" />
+        <KpiTile label="Verified pricing" value={exactCount} context="exact rates" />
+        <KpiTile label="Assigned" value={assignedCount} context="to a role" />
+        <KpiTile label="Overrides" value={overrideCount} context="operator prices" />
+      </KpiStrip>
 
       <Tabs defaultValue="catalog">
-        <TabsList>
+        <TabsList variant="underline">
           <TabsTrigger value="catalog">Catalog</TabsTrigger>
           <TabsTrigger value="cost">Cost &amp; budget</TabsTrigger>
           <TabsTrigger value="providers">Providers</TabsTrigger>
         </TabsList>
 
         {/* --- Catalog --- */}
-        <TabsContent value="catalog" className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-muted-foreground">
-              Every model the gateway can route. Pricing provenance is badged; an operator
-              override pins a contract rate.
-            </p>
-            <div className="flex items-center gap-2">
-              {canManage ? (
-                <Button size="sm" variant="outline" onClick={() => setAddLocalOpen(true)}>
-                  <Plus className="h-4 w-4" aria-hidden />
-                  Add local model
-                </Button>
-              ) : null}
-              <div className="w-48">
+        <TabsContent value="catalog" className={TAB_BODY}>
+          <LocalModelsPanel
+            rows={localModels}
+            canManage={canManage}
+            removingId={removingId}
+            onRemove={removeLocal}
+            onAdd={openAddLocal}
+          />
+          <Panel
+            title="Catalog"
+            count={
+              providerFilter !== 'all' && visibleCount !== models.length
+                ? `${visibleCount.toLocaleString()} of ${models.length.toLocaleString()} shown`
+                : models.length
+            }
+            padding="none"
+            data-testid="models-catalog-panel"
+            actions={
+              <>
                 <Select value={providerFilter} onValueChange={setProviderFilter}>
-                  <SelectTrigger aria-label="Filter by provider">
+                  <SelectTrigger aria-label="Filter by provider" className="h-8 w-44">
                     <SelectValue placeholder="All providers" />
                   </SelectTrigger>
                   <SelectContent>
@@ -246,34 +265,41 @@ export function ModelsInner() {
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-            </div>
-          </div>
-          <LocalModelsPanel
-            rows={localModels}
-            canManage={canManage}
-            removingId={removingId}
-            onRemove={removeLocal}
-            onAdd={() => setAddLocalOpen(true)}
-          />
-          <ModelsCatalog
-            rows={models}
-            loading={loading}
-            providerFilter={providerFilter}
-            canManage={canManage}
-            onEditPrice={(r) => setPriceFor(r)}
-            onTest={(r) => setTestFor(r)}
-          />
+                {canManage ? (
+                  <Button size="sm" variant="outline" onClick={openAddLocal}>
+                    <Plus className="h-4 w-4" aria-hidden />
+                    Add local model
+                  </Button>
+                ) : null}
+              </>
+            }
+          >
+            <ModelsCatalog
+              rows={models}
+              loading={loading}
+              providerFilter={providerFilter}
+              canManage={canManage}
+              surface="panel"
+              onEditPrice={(r) => {
+                priceOpener.remember();
+                setPriceFor(r);
+              }}
+              onTest={(r) => {
+                testOpener.remember();
+                setTestFor(r);
+              }}
+            />
+          </Panel>
         </TabsContent>
 
         {/* --- Cost & budget --- */}
-        <TabsContent value="cost" className="space-y-6">
+        <TabsContent value="cost" className={TAB_BODY}>
           <CostEstimator models={models} />
           <BudgetCard canManage={canManage} />
         </TabsContent>
 
         {/* --- Providers --- */}
-        <TabsContent value="providers" className="space-y-4">
+        <TabsContent value="providers" className={TAB_BODY}>
           <ProvidersGrid
             providers={providers}
             loading={loading}
@@ -288,6 +314,7 @@ export function ModelsInner() {
       {priceFor ? (
         <PriceOverrideDialog
           model={priceFor}
+          onCloseAutoFocus={priceOpener.onCloseAutoFocus}
           onClose={() => setPriceFor(null)}
           onSaved={() => {
             setPriceFor(null);
@@ -297,11 +324,16 @@ export function ModelsInner() {
       ) : null}
 
       {testFor ? (
-        <TestCallDialog model={testFor} onClose={() => setTestFor(null)} />
+        <TestCallDialog
+          model={testFor}
+          onClose={() => setTestFor(null)}
+          onCloseAutoFocus={testOpener.onCloseAutoFocus}
+        />
       ) : null}
 
       {addLocalOpen ? (
         <AddLocalModelDialog
+          onCloseAutoFocus={addLocalOpener.onCloseAutoFocus}
           onClose={() => setAddLocalOpen(false)}
           onSaved={() => {
             setAddLocalOpen(false);
@@ -309,7 +341,7 @@ export function ModelsInner() {
           }}
         />
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -334,40 +366,31 @@ function LocalModelsPanel({
 }) {
   if (!rows.length) return null;
   return (
-    <Card className="space-y-3 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <HardDrive className="h-4 w-4 text-primary" aria-hidden />
-          <h2 className="text-sm font-semibold text-foreground">Local &amp; self-hosted models</h2>
-          <Badge variant="secondary" className="text-2xs">
-            {rows.length}
-          </Badge>
-        </div>
-        {canManage ? (
-          <Button size="sm" variant="ghost" onClick={onAdd}>
+    <Panel
+      title="Local and self-hosted models"
+      count={rows.length}
+      caption="OpenAI-compatible endpoints (LiteLLM, vLLM, Ollama, LM Studio), metered at $0."
+      data-testid="local-models-panel"
+      actions={
+        canManage ? (
+          <Button size="sm" variant="outline" onClick={onAdd}>
             <Plus className="h-4 w-4" aria-hidden />
             Add
           </Button>
-        ) : null}
-      </div>
-      <p className="text-xs text-muted-foreground">
-        Served over an OpenAI-compatible endpoint (LiteLLM / vLLM / Ollama / LM Studio).
-        Metered at $0.
-      </p>
-      <ul className="divide-y divide-border">
+        ) : undefined
+      }
+    >
+      <ul className="-my-2 divide-y divide-border/70">
         {rows.map((r) => (
           <li key={r.id} className="flex items-center justify-between gap-3 py-2">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="truncate text-sm font-medium text-foreground">{r.label}</span>
-                <Badge variant="info" className="text-2xs">
-                  Local
-                </Badge>
-                <Badge variant="secondary" className="text-2xs">
+                <Badge variant="secondary" className="text-xs">
                   $0
                 </Badge>
               </div>
-              <div className="truncate font-mono text-2xs text-muted-foreground">
+              <div className="truncate font-mono text-xs text-muted-foreground">
                 {r.id}
                 {r.base_url ? ` · ${r.base_url}` : ''}
               </div>
@@ -376,7 +399,7 @@ function LocalModelsPanel({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-critical"
+                className="h-8 w-8 text-muted-foreground hover:text-critical-text focus-visible:text-critical-text"
                 onClick={() => onRemove(r)}
                 disabled={removingId === r.id}
                 aria-label={`Remove ${r.id}`}
@@ -392,7 +415,7 @@ function LocalModelsPanel({
           </li>
         ))}
       </ul>
-    </Card>
+    </Panel>
   );
 }
 
@@ -405,9 +428,12 @@ function LocalModelsPanel({
 function AddLocalModelDialog({
   onClose,
   onSaved,
+  onCloseAutoFocus,
 }: {
   onClose: () => void;
   onSaved: () => void;
+  /** Hands focus back to the control that opened the dialog (SPEC §3.3). */
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const [label, setLabel] = React.useState('');
   const [baseUrl, setBaseUrl] = React.useState('');
@@ -435,7 +461,7 @@ function AddLocalModelDialog({
           if (!modelId.trim()) setModelId(res.models[0]);
           toast.success(res.message || `Found ${res.models.length} model(s).`);
         } else {
-          toast.info('Reachable, but no models were returned — enter the model id manually.');
+          toast.info('Reachable, but no models were returned. Enter the model id manually.');
         }
       } else {
         toast.error(res.error || 'Could not reach the endpoint.');
@@ -472,7 +498,7 @@ function AddLocalModelDialog({
 
   return (
     <Dialog open onOpenChange={(o) => (!o ? onClose() : undefined)}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Add a local model</DialogTitle>
           <DialogDescription>
@@ -489,7 +515,8 @@ function AddLocalModelDialog({
               <Input
                 id="local-base-url"
                 value={baseUrl}
-                placeholder="http://localhost:4000/v1"
+                placeholder="http://host.docker.internal:4000/v1"
+                aria-describedby="local-base-url-help"
                 onChange={(e) => setBaseUrl(e.target.value)}
                 disabled={busy}
               />
@@ -508,10 +535,18 @@ function AddLocalModelDialog({
                 Fetch models
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Usually ends in <span className="font-mono">/v1</span> — e.g.{' '}
-              <span className="font-mono">http://localhost:4000/v1</span> (LiteLLM),{' '}
-              <span className="font-mono">http://localhost:11434/v1</span> (Ollama).
+            {/* Round 16 ([oss] B3): in the Compose stack, localhost is the backend
+                container itself, so the examples name the host the container sees. The
+                browser may run elsewhere, so the hint says the Docker host, and the
+                Linux step goes in an override because the base Compose file is pinned. */}
+            <p id="local-base-url-help" className="text-xs text-muted-foreground" data-testid="local-base-url-help">
+              Usually ends in <span className="font-mono">/v1</span>. In the Compose stack, localhost is the
+              backend container itself. For a server on the Docker host, use{' '}
+              <span className="font-mono">http://host.docker.internal:4000/v1</span> (LiteLLM) or{' '}
+              <span className="font-mono">http://host.docker.internal:11434/v1</span> (Ollama). On Linux, first map{' '}
+              <span className="font-mono">host.docker.internal</span> to{' '}
+              <span className="font-mono">host-gateway</span> under the backend&apos;s{' '}
+              <span className="font-mono">extra_hosts</span>, in a Compose override file.
             </p>
           </div>
 
@@ -522,7 +557,7 @@ function AddLocalModelDialog({
             {fetched && fetched.length ? (
               <Select value={modelId || undefined} onValueChange={setModelId}>
                 <SelectTrigger aria-label="Fetched model id">
-                  <SelectValue placeholder="— pick a model —" />
+                  <SelectValue placeholder="Pick a model" />
                 </SelectTrigger>
                 <SelectContent>
                   {fetched.map((m) => (
@@ -559,7 +594,7 @@ function AddLocalModelDialog({
 
           <SecretField
             label="API key (optional)"
-            description="Leave blank for a no-auth local server. Stored as a secret — never shown."
+            description="Leave blank for a no-auth local server. Stored as a secret and never shown."
             configured={false}
             value={apiKey}
             onChange={setApiKey}
@@ -577,13 +612,13 @@ function AddLocalModelDialog({
 
           <div className="flex items-center justify-between gap-4 rounded-md border border-border bg-surface px-4 py-3">
             <div className="min-w-0 space-y-0.5">
-              <p className="text-sm font-medium text-foreground">Free / $0</p>
+              <p className="text-sm font-medium text-foreground">Free ($0)</p>
               <p className="text-xs text-muted-foreground">
                 A self-hosted model is metered at $0 (tokens are still recorded).
               </p>
             </div>
             {/* Always-on + disabled: a local model is $0 by contract. */}
-            <Switch checked disabled aria-label="Free / $0 (local models are always free)" />
+            <Switch checked disabled aria-label="Free, $0 (local models are always free)" />
           </div>
         </div>
         <DialogFooter className="gap-2">
@@ -611,18 +646,21 @@ function PriceOverrideDialog({
   model,
   onClose,
   onSaved,
+  onCloseAutoFocus,
 }: {
   model: ModelCatalogRow;
   onClose: () => void;
   onSaved: () => void;
+  /** Hands focus back to the row's price button (SPEC §3.3). */
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
-  const [input, setInput] = React.useState(String(model.input_per_million));
-  const [output, setOutput] = React.useState(String(model.output_per_million));
+  const [input, setInput] = React.useState<number>(model.input_per_million);
+  const [output, setOutput] = React.useState<number>(model.output_per_million);
   const [busy, setBusy] = React.useState(false);
 
   const save = async () => {
-    const inp = Number(input);
-    const out = Number(output);
+    const inp = input;
+    const out = output;
     if (!Number.isFinite(inp) || inp < 0 || !Number.isFinite(out) || out < 0) {
       toast.error('Enter non-negative numbers for both rates.');
       return;
@@ -654,7 +692,7 @@ function PriceOverrideDialog({
 
   return (
     <Dialog open onOpenChange={(o) => (!o ? onClose() : undefined)}>
-      <DialogContent>
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Override pricing</DialogTitle>
           <DialogDescription>
@@ -663,30 +701,30 @@ function PriceOverrideDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-1 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="price-in">Input / 1M</Label>
-            <Input
-              id="price-in"
-              type="number"
-              min={0}
-              step="0.01"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={busy}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="price-out">Output / 1M</Label>
-            <Input
-              id="price-out"
-              type="number"
-              min={0}
-              step="0.01"
-              value={output}
-              onChange={(e) => setOutput(e.target.value)}
-              disabled={busy}
-            />
-          </div>
+          <NumberField
+            label="Input per 1M"
+            value={input}
+            onChange={setInput}
+            min={0}
+            step="any"
+            stepperStep={0.01}
+            unit="USD"
+            empty="keep"
+            steppers={false}
+            disabled={busy}
+          />
+          <NumberField
+            label="Output per 1M"
+            value={output}
+            onChange={setOutput}
+            min={0}
+            step="any"
+            stepperStep={0.01}
+            unit="USD"
+            empty="keep"
+            steppers={false}
+            disabled={busy}
+          />
         </div>
         <DialogFooter className="gap-2">
           {model.price_overridden ? (
@@ -710,8 +748,18 @@ function PriceOverrideDialog({
 // --------------------------------------------------------------------------- //
 // Test-call dialog (POST /api/llm/models/test) — metered; fenced output (#9).
 // --------------------------------------------------------------------------- //
-function TestCallDialog({ model, onClose }: { model: ModelCatalogRow; onClose: () => void }) {
+function TestCallDialog({
+  model,
+  onClose,
+  onCloseAutoFocus,
+}: {
+  model: ModelCatalogRow;
+  onClose: () => void;
+  /** Hands focus back to the row's Test button (SPEC §3.3). */
+  onCloseAutoFocus?: (event: Event) => void;
+}) {
   const [prompt, setPrompt] = React.useState('Reply with the single word: ok');
+  const [mode, setMode] = React.useState<'chat' | 'embedding'>('chat');
   const [busy, setBusy] = React.useState(false);
   const [result, setResult] = React.useState<ModelTestResult | null>(null);
 
@@ -723,10 +771,11 @@ function TestCallDialog({ model, onClose }: { model: ModelCatalogRow; onClose: (
         model: model.id,
         provider: model.provider,
         prompt: prompt.slice(0, 2000),
+        mode,
       });
       setResult(res);
       if (res.ok) toast.success(`${model.id} responded.`);
-      else toast.error('Test call failed — see the response below.');
+      else toast.error('Test call failed. See the response below.');
     } catch (e) {
       toast.error(errMsg(e, 'The test call could not be sent.'));
     } finally {
@@ -736,27 +785,50 @@ function TestCallDialog({ model, onClose }: { model: ModelCatalogRow; onClose: (
 
   return (
     <Dialog open onOpenChange={(o) => (!o ? onClose() : undefined)}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Test model</DialogTitle>
           <DialogDescription>
-            Routes a tiny prompt through the one gateway against{' '}
-            <span className="font-mono">{model.id}</span>. This is metered and hits the cost
-            ledger.
+            Routes one tiny call through the one gateway against{' '}
+            <span className="font-mono">{model.id}</span>: a completion or the embedding
+            probe. Either way it is metered and hits the cost ledger.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-1">
           <div className="space-y-1.5">
-            <Label htmlFor="test-prompt">Prompt</Label>
-            <Textarea
-              id="test-prompt"
-              rows={3}
-              value={prompt}
-              maxLength={2000}
-              onChange={(e) => setPrompt(e.target.value)}
-              disabled={busy}
+            <Label>What to test</Label>
+            <SegmentedControl
+              aria-label="What to test"
+              size="sm"
+              value={mode}
+              onValueChange={(v) => {
+                setMode(v);
+                setResult(null);
+              }}
+              options={[
+                { value: 'chat', label: 'Completion' },
+                { value: 'embedding', label: 'Embedding' },
+              ]}
             />
+            <p className="text-xs text-muted-foreground">
+              {mode === 'chat'
+                ? 'Sends the prompt as a completion.'
+                : 'Embeds three fixed probe strings and reports what the endpoint actually returned. That is the evidence a self-hosted embedding endpoint is judged on, since the bundled catalog can hold no opinion about it.'}
+            </p>
           </div>
+          {mode === 'chat' ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="test-prompt">Prompt</Label>
+              <Textarea
+                id="test-prompt"
+                rows={3}
+                value={prompt}
+                maxLength={2000}
+                onChange={(e) => setPrompt(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+          ) : null}
 
           {result ? (
             <div className="space-y-2">
@@ -764,7 +836,13 @@ function TestCallDialog({ model, onClose }: { model: ModelCatalogRow; onClose: (
                 <Badge variant={result.ok ? 'success' : 'critical'}>
                   {result.ok ? 'OK' : 'Error'}
                 </Badge>
-                {result.ok ? (
+                {result.mode === 'embedding' ? (
+                  <span className="text-xs text-muted-foreground">
+                    {result.observed?.dimensions ?? DASH} dims ·{' '}
+                    {result.observed?.provider || 'unknown provider'}
+                  </span>
+                ) : null}
+                {result.ok && result.mode !== 'embedding' ? (
                   <>
                     <span className="text-xs text-muted-foreground">
                       {result.prompt_tokens ?? 0} in · {result.completion_tokens ?? 0} out ·{' '}
@@ -784,13 +862,52 @@ function TestCallDialog({ model, onClose }: { model: ModelCatalogRow; onClose: (
                   </>
                 ) : null}
               </div>
-              {/* The reply / error is UNTRUSTED model output → fenced CodeBlock (#9). */}
-              <CodeBlock
-                value={result.ok ? result.reply || '(empty reply)' : result.error || 'Unknown error'}
-                caption={result.ok ? 'Model reply' : 'Error'}
-                wrap
-                maxHeightClassName="max-h-56"
-              />
+              {result.mode === 'embedding' ? (
+                <>
+                  {/* Every row is an OBSERVATION, so a refusal is arguable against
+                      evidence rather than against a bundled capability list. */}
+                  <ul className="space-y-1 text-xs">
+                    {(result.checks ?? []).map((check) => (
+                      <li key={check.id} className="flex items-start gap-2">
+                        <Badge
+                          variant={check.passed ? 'success' : 'critical'}
+                          className="shrink-0 text-xs"
+                        >
+                          {check.passed ? 'pass' : 'fail'}
+                        </Badge>
+                        <span className="text-muted-foreground">
+                          <span className="font-mono">{check.id}</span>: {check.detail}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  {result.catalog_declaration ? (
+                    <p className="text-xs text-muted-foreground">
+                      Bundled catalog: {result.catalog_declaration.state}
+                      {result.catalog_declaration.state === 'unknown'
+                        ? '. This is normal for a self-hosted model; the probe above is the evidence.'
+                        : null}
+                    </p>
+                  ) : null}
+                  {/* Provider-derived text → fenced CodeBlock (#9). */}
+                  <CodeBlock
+                    value={result.message || result.error || '(no detail)'}
+                    caption="What was observed"
+                    wrap
+                    maxHeightClassName="max-h-56"
+                  />
+                </>
+              ) : (
+                /* The reply / error is UNTRUSTED model output → fenced CodeBlock (#9). */
+                <CodeBlock
+                  value={
+                    result.ok ? result.reply || '(empty reply)' : result.error || 'Unknown error'
+                  }
+                  caption={result.ok ? 'Model reply' : 'Error'}
+                  wrap
+                  maxHeightClassName="max-h-56"
+                />
+              )}
             </div>
           ) : null}
         </div>
@@ -843,20 +960,17 @@ function CostEstimator({ models }: { models: ModelCatalogRow[] }) {
   };
 
   return (
-    <Card className="space-y-4 p-6">
-      <div className="flex items-center gap-2">
-        <Calculator className="h-4 w-4 text-primary" aria-hidden />
-        <h2 className="text-sm font-semibold text-foreground">Cost estimator</h2>
-      </div>
-      <p className="text-sm text-muted-foreground">
-        A pre-flight USD estimate for a prompt size + completion budget on one model.
-      </p>
+    <Panel
+      title="Cost estimator"
+      caption="A pre-flight USD estimate for a prompt size and completion budget on one model."
+      data-testid="cost-estimator"
+    >
       <div className="grid gap-3 sm:grid-cols-4">
         <div className="space-y-1.5">
           <Label>Model</Label>
           <Select value={model || undefined} onValueChange={setModel}>
             <SelectTrigger aria-label="Model to estimate">
-              <SelectValue placeholder="— model —" />
+              <SelectValue placeholder="Pick a model" />
             </SelectTrigger>
             <SelectContent>
               {models.map((m) => (
@@ -891,13 +1005,10 @@ function CostEstimator({ models }: { models: ModelCatalogRow[] }) {
         </div>
       </div>
       {result ? (
-        <div className="flex flex-wrap items-center gap-4 rounded-md border border-border bg-surface px-4 py-3">
-          <div className="flex items-center gap-2">
-            <DollarSign className="h-4 w-4 text-success" aria-hidden />
-            <span className="text-lg font-semibold tabular-nums text-foreground">
-              {fmtMoney(result.estimated_cost, result.currency)}
-            </span>
-          </div>
+        <div className="mt-4 flex flex-wrap items-center gap-4 rounded-md bg-muted px-4 py-3">
+          <span className="text-lg font-semibold tabular-nums text-foreground">
+            {fmtMoney(result.estimated_cost, result.currency)}
+          </span>
           <span className="text-xs text-muted-foreground">
             {result.prompt_chars.toLocaleString()} chars · {result.max_tokens.toLocaleString()} max tokens
           </span>
@@ -909,7 +1020,7 @@ function CostEstimator({ models }: { models: ModelCatalogRow[] }) {
           </Badge>
         </div>
       ) : null}
-    </Card>
+    </Panel>
   );
 }
 
@@ -940,44 +1051,46 @@ function ProvidersGrid({
   // A providers-only fetch failure surfaces its own error+retry instead of the
   // misleading "No providers" empty state (which reads as an empty registry).
   if (error && !providers) {
-    return <LoadError error={error} title="Couldn't load providers" onRetry={onRetry} />;
+    return <LoadError error={error} title="Could not load providers" onRetry={onRetry} />;
   }
   const rows = providers?.providers ?? [];
   if (!rows.length) {
     return (
-      <EmptyState
-        state="first-use"
-        icon={Server}
-        title="No model providers are registered"
-        description="Provider configuration has not been added yet. Open Settings → Secret keys to configure a hosted provider, or add a compatible self-hosted model from the Catalog tab."
-      />
+      <Panel as="div">
+        <EmptyState
+          state="first-use"
+          icon={Server}
+          title="No model providers are registered"
+          description="Provider configuration has not been added yet. Open Settings, Secret keys to configure a hosted provider, or add a compatible self-hosted model from the Catalog tab."
+        />
+      </Panel>
     );
   }
+  const configured = rows.filter((p) => p.configured).length;
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      {rows.map((p) => (
-        <Card key={p.name} className="space-y-2 p-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Server className="h-4 w-4 text-muted-foreground" aria-hidden />
-              <span className="font-medium text-foreground">{providerLabel(p.name)}</span>
-            </div>
-            {p.configured ? (
-              <Badge variant="success" className="gap-1">
-                <CheckCircle2 className="h-3 w-3" aria-hidden /> Configured
-              </Badge>
-            ) : (
-              <Badge variant="secondary" className="gap-1">
-                <XCircle className="h-3 w-3" aria-hidden /> Not set
-              </Badge>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span className="tabular-nums">{p.models.length} models</span>
-            {p.supports_base_url ? <Badge variant="outline">Custom base URL</Badge> : null}
-          </div>
-        </Card>
-      ))}
-    </div>
+    <Panel
+      title="Providers"
+      count={`${configured.toLocaleString()} of ${rows.length.toLocaleString()} configured`}
+      padding="none"
+      data-testid="providers-panel"
+    >
+      <ul className="divide-y divide-border/70 border-t border-border/70" aria-label="Model providers">
+        {rows.map((p) => (
+          <li key={p.name} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 xl:px-5 3xl:px-6">
+            <span className="min-w-0 flex-1 font-medium text-foreground">{providerLabel(p.name)}</span>
+            <span className="text-sm tabular-nums text-muted-foreground">
+              {p.models.length.toLocaleString()} {p.models.length === 1 ? 'model' : 'models'}
+            </span>
+            {p.supports_base_url ? (
+              <span className="text-sm text-muted-foreground">Custom base URL</span>
+            ) : null}
+            {/* Both states are normal (most installs configure one provider): neutral. */}
+            <StatusDot data-testid={`provider-status-${p.name}`}>
+              {p.configured ? 'Configured' : 'Not set'}
+            </StatusDot>
+          </li>
+        ))}
+      </ul>
+    </Panel>
   );
 }

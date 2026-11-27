@@ -6,7 +6,9 @@ READ-ONLY surfaces over the campaign list the deterministic clustering pass
 * ``GET  /api/campaigns``               — the running campaign list (newest first),
                                           each with its member case ids / entities /
                                           MITRE / severity rollup.
-* ``GET  /api/campaigns/{id}``          — one campaign (404 when absent).
+* ``GET  /api/campaigns/{id}``          — one campaign (404 when absent), with the
+                                          display number of each member case
+                                          (``case_numbers``) for the detail sheet.
 * ``GET  /api/cases/{id}/campaign``     — the campaign a case belongs to, or ``null``.
 * ``POST /api/campaigns/recorrelate``   — trigger the deterministic pass ON DEMAND;
                                           returns the freshly-built campaigns. It is a
@@ -34,32 +36,53 @@ into a prompt. Values are returned as plain, length-bounded strings.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from ..audit.context import audit_context
+from ..audit.settings_write import ExecutionStack, audited_settings_write, demo_mode_changed
+from ..audit.write import audited_write
 from ..config import CampaignConfig
 from ..constants import ActionType
-from ..models import Campaign
+
+# ``_safe`` and ``_campaign_json`` moved to ``engine/views.py`` (chat revamp SPEC §5.3)
+# so the chat ``list_campaigns`` tool serialises campaigns the same way; re-exported
+# here under their historical names.
+from ..engine.views import campaign_json as _campaign_json
+from ..engine.views import safe_text as _safe
+from ..models import AuditTarget, Campaign
 from ..state import AppState
 from .deps import current_username, get_state, require_admin, require_permission
 
 logger = logging.getLogger("tlsoc.api.campaigns")
 
+#: The target of every campaign row (the settings and each rebuild), so the audit log's
+#: target filter finds them together.
+CAMPAIGN_TARGET = AuditTarget(type="setting", id="campaign", label="Campaigns")
+
+_RECORRELATE_DEMO_MESSAGE = (
+    "Demo Mode was turned on or off while the campaigns were rebuilt, so nothing was "
+    "saved. Try again."
+)
+
 router = APIRouter(prefix="/api")
+
+
+def _actor(request: Request) -> str:
+    """The authenticated username, or ``""`` when no principal resolves (sign-in off,
+    or a caller without one): the row is then written anonymously, never refused."""
+    try:
+        return current_username(request) or ""
+    except Exception:  # noqa: BLE001 (no resolvable principal; audit anonymously)
+        return ""
 
 
 # --------------------------------------------------------------------------- #
 # Helpers — plain-data serialisation (#9)
 # --------------------------------------------------------------------------- #
-def _safe(value: Any) -> str:
-    """Return ``value`` as a plain, length-bounded string for the client (#9): the UI
-    renders it escaped and it is never fed back into a prompt. Bounds a runaway,
-    source-influenceable string so a hostile upstream can't blow up the response."""
-    return str(value)[:2000]
-
-
 def _deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     """In-place recursive merge of ``src`` INTO ``dst`` — a PUT deep-merges only the
     keys the caller sent (mirrors ``routes.py:_deep_update`` + the ``PUT /api/settings``
@@ -71,30 +94,6 @@ def _deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
         else:
             dst[key] = value
     return dst
-
-
-def _campaign_json(campaign: Campaign) -> dict[str, Any]:
-    """One campaign as a plain, #9-fenced dict.
-
-    Entity ``value``s + MITRE ids + the display name are source-derived — each is
-    coerced to a bounded plain string so nothing attacker-influenceable is echoed
-    raw. Numeric/id fields pass through; ``case_ids`` are plain ids."""
-    return {
-        "id": _safe(campaign.id),
-        "name": _safe(campaign.name),
-        "status": str(getattr(campaign.status, "value", campaign.status)),
-        "case_ids": [_safe(cid) for cid in campaign.case_ids],
-        "case_count": len(campaign.case_ids),
-        "entities": [
-            {"entity_type": _safe(e.entity_type), "value": _safe(e.value)}
-            for e in campaign.entities
-        ],
-        "mitre": [_safe(t) for t in campaign.mitre],
-        "severity_rollup": _safe(campaign.severity_rollup) if campaign.severity_rollup else None,
-        "first_seen": campaign.first_seen,
-        "last_seen": campaign.last_seen,
-        "created_at": campaign.created_at,
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -157,21 +156,36 @@ async def put_campaign_config(
     the live config (mirrors the ``PUT /api/settings`` contract). Additive + validated
     by the Pydantic model; a campaign is ADVISORY — nothing here calls ``decide()`` (#3)
     or touches a ``cluster_signature`` (#4). Admin-gated (a tenant-wide clustering-policy
-    change is an operator action, matching the recorrelate route). Audited (#2)."""
-    active_prefs = state.execution_prefs
-    current = (getattr(active_prefs, "campaign", None) or CampaignConfig()).model_dump(mode="json")
-    merged = _deep_update(current, body or {})
-    try:
-        cfg = CampaignConfig.model_validate(merged)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail=f"Invalid campaign config: {exc}") from exc
-    prefs = active_prefs.model_copy(update={"campaign": cfg})
-    await state.update_execution_prefs(prefs)
-    await _audit(
-        state, request, "campaign_config_update",
-        f"enabled={cfg.enabled} cadence={cfg.cadence}",
+    change is an operator action, matching the recorrelate route).
+
+    Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+    naming every changed field is appended first, and a failed append answers ``503
+    audit_unavailable`` with nothing saved. The campaign policy follows the active
+    execution stack, so in Demo Mode the edit stays in the Demo sandbox and its row goes
+    to the Demo audit (SPEC §3.5)."""
+    saved: dict[str, CampaignConfig] = {}
+
+    def _apply(current):
+        cfg_now = (getattr(current, "campaign", None) or CampaignConfig()).model_dump(mode="json")
+        merged = _deep_update(cfg_now, body or {})
+        try:
+            cfg = CampaignConfig.model_validate(merged)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=422, detail=f"Invalid campaign config: {exc}") from exc
+        saved["cfg"] = cfg
+        return current.model_copy(update={"campaign": cfg})
+
+    def _summary(_changes, _total) -> str:
+        cfg = saved["cfg"]
+        return f"campaign_config_update: enabled={cfg.enabled} cadence={cfg.cadence}"[:500]
+
+    await audited_settings_write(
+        state, transform=_apply, scope="execution", actor=_actor(request),
+        context=audit_context(request), summary=_summary,
+        action_type=ActionType.USER_MGMT, surface="campaigns",
+        target=CAMPAIGN_TARGET,
     )
-    return {"ok": True, "config": cfg.model_dump(mode="json")}
+    return {"ok": True, "config": saved["cfg"].model_dump(mode="json")}
 
 
 # --------------------------------------------------------------------------- #
@@ -184,7 +198,12 @@ async def get_campaign(
     _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     """One campaign by its (content-hash) id — its member case ids, shared entities,
-    MITRE union and severity rollup. 404 when absent. Read-only advisory (#3/#4)."""
+    MITRE union and severity rollup. 404 when absent. Read-only advisory (#3/#4).
+
+    ``case_numbers`` (Round 13 polish, additive) maps a member case id to its display
+    number ("CASE-000045"), so the Campaigns detail sheet names members the way the rest
+    of the console does. Bounded (:data:`_MEMBER_NUMBER_READS` reads); a member without
+    a number, past the bound or whose read fails is simply absent and keeps its id."""
     try:
         campaign = await state.campaign_store.get(campaign_id)
     except Exception as exc:  # noqa: BLE001
@@ -192,7 +211,40 @@ async def get_campaign(
         campaign = None
     if campaign is None:
         raise HTTPException(status_code=404, detail="campaign not found")
-    return {"campaign": _campaign_json(campaign)}
+    return {
+        "campaign": _campaign_json(campaign),
+        "case_numbers": await _member_numbers(state, campaign.case_ids),
+    }
+
+
+#: The most member cases one campaign read resolves display numbers for.
+_MEMBER_NUMBER_READS = 200
+#: Member reads in flight at once.
+_MEMBER_NUMBER_CONCURRENCY = 8
+
+
+async def _member_numbers(state: AppState, case_ids: list[str]) -> dict[str, str]:
+    """``{case_id: display number}`` for up to :data:`_MEMBER_NUMBER_READS` distinct
+    members. Read-only (one bounded ``get`` each); a failed read or a case without a
+    number is left out. NEVER raises."""
+    cases = getattr(state, "cases", None)
+    if cases is None:
+        return {}
+    ids = list(dict.fromkeys(str(c) for c in case_ids if c))[:_MEMBER_NUMBER_READS]
+    gate = asyncio.Semaphore(_MEMBER_NUMBER_CONCURRENCY)
+
+    async def one(cid: str) -> tuple[str, str | None]:
+        async with gate:
+            try:
+                case = await cases.get(cid)
+            except Exception as exc:  # noqa: BLE001 — the id alone still names it
+                logger.info("campaign member read failed (%s)", exc)
+                return cid, None
+        number = _safe(getattr(case, "case_number", "") or "") if case is not None else ""
+        return cid, (number or None)
+
+    pairs = await asyncio.gather(*(one(cid) for cid in ids))
+    return {_safe(cid): number for cid, number in pairs if number and number != cid}
 
 
 # --------------------------------------------------------------------------- #
@@ -236,50 +288,67 @@ async def recorrelate_campaigns(
     UPSERTS the result into ``campaign_store`` (idempotent — same members → same id),
     and returns them. It NEVER investigates a case, calls an LLM (#6), touches a
     ``cluster_signature`` (#4), or calls ``decide()`` (#3) — a case's status is
-    untouched. Admin-gated (a tenant-wide manual re-correlate is an operator action);
-    audited (#2). NEVER raises — a store glitch degrades to an empty result."""
+    untouched. Admin-gated (a tenant-wide manual re-correlate is an operator action).
+
+    Audited before the new set is stored (#2, Round 14 SPEC §3.6): the pass is a read,
+    then a ``campaign.recorrelated`` row is appended, then the set replaces the stored
+    one. A failed append answers ``503 audit_unavailable`` and the stored set is
+    unchanged; a failed store write appends ``campaign.recorrelate_failed`` and answers
+    ``503``. The campaign store follows the active execution stack, so in Demo Mode the
+    row goes to the Demo audit (SPEC §3.5).
+
+    The pass, its row and the store it replaces belong to one execution stack, bound
+    before the pass reads anything: campaigns built from Demo cases never replace the
+    real set, nor real campaigns the sandbox's. When Demo Mode is turned on or off while
+    the pass runs, nothing is recorded or stored; when it moves after the row, the store
+    write is refused and paired with its failure row. Either way the request answers
+    ``409 demo_mode_changed``."""
+    # One synchronous step: the generation, the audit log, the case store the pass
+    # reads, the settings it reads and the campaign store it replaces.
+    stack = ExecutionStack(state)
+    correlate = state.campaign_correlator
+    prefs = state.execution_prefs
+    store = state.campaign_store
     try:
-        campaigns = await state.campaign_correlator(None, state.execution_prefs)
-        # A full pass is authoritative. Persist the exact set even when it is empty,
-        # otherwise stale campaigns survive forever after their graph disappears.
-        stored: list[Campaign] = await state.campaign_store.replace_all(
-            list(campaigns or [])
-        )
+        campaigns = list(await correlate(None, prefs) or [])
     except Exception as exc:  # noqa: BLE001 — return truthful failure, never false success
         logger.warning("campaign recorrelate failed (%s)", exc)
+        if stack.moved():
+            raise demo_mode_changed(_RECORRELATE_DEMO_MESSAGE) from exc
         raise HTTPException(
             status_code=503,
             detail="campaign reconciliation could not be completed or persisted",
         ) from exc
-    await _audit(
-        state, request, "campaigns_recorrelate",
-        f"built {len(stored)} campaign(s) over {sum(len(c.case_ids) for c in stored)} case-links",
-    )
-    return {"ok": True, "count": len(stored), "campaigns": [_campaign_json(c) for c in stored]}
+    links = sum(len(c.case_ids) for c in campaigns)
 
+    async def _store() -> list[Campaign]:
+        stack.check(_RECORRELATE_DEMO_MESSAGE)
+        # A full pass is authoritative. Persist the exact set even when it is empty,
+        # otherwise stale campaigns survive forever after their graph disappears.
+        return await store.replace_all(campaigns)
 
-# --------------------------------------------------------------------------- #
-# Audit helper (#2 — append-only)
-# --------------------------------------------------------------------------- #
-async def _audit(state: AppState, request: Request, event: str, detail: str) -> None:
-    """Append-only audit of an operator campaign action (#2). Best-effort.
-
-    Uses ``USER_MGMT`` with ``surface="campaigns"`` — constants are frozen this wave so
-    no new ActionType is introduced. The actor is the authenticated username when
-    present. NEVER raises."""
-    audit = getattr(state, "audit", None)
-    if audit is None:
-        return
     try:
-        actor = current_username(request) or ""
-    except Exception:  # noqa: BLE001 — no resolvable principal; audit anonymously
-        actor = ""
-    try:
-        await audit.record(
-            action_type=ActionType.USER_MGMT,
-            surface="campaigns",
-            actor=actor,
-            result_summary=f"{event}: {detail}"[:500],
+        stored: list[Campaign] = await audited_write(
+            state, sink=stack.audit, action="campaign.recorrelated",
+            failure="campaign.recorrelate_failed", target=CAMPAIGN_TARGET,
+            expected_revision=None, changes=None, write=_store,
+            action_type=ActionType.USER_MGMT, actor=_actor(request),
+            surface="campaigns", context=audit_context(request),
+            result_summary=(
+                f"campaigns_recorrelate: built {len(campaigns)} campaign(s) "
+                f"over {links} case-links"
+            )[:500],
+            tool_input={"campaigns": len(campaigns), "case_links": links},
+            # Built from another stack's cases: nothing attempted, so no row.
+            precheck=lambda: stack.check(_RECORRELATE_DEMO_MESSAGE),
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except HTTPException:
+        # 503 audit_unavailable (nothing changed) or 409 demo_mode_changed.
+        raise
+    except Exception as exc:  # noqa: BLE001 (the failure row is written; never false success)
+        logger.warning("campaign recorrelate store failed (%s)", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="campaign reconciliation could not be completed or persisted",
+        ) from exc
+    return {"ok": True, "count": len(stored), "campaigns": [_campaign_json(c) for c in stored]}

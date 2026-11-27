@@ -1,34 +1,35 @@
 /**
- * TimelinePanel — the "what happened" narrative (task 5 split).
+ * TimelinePanel: the "what happened" narrative (task 5 split).
  *
- * Task 5 split the old merged "Timeline" tab into two: this panel is the CLEAN,
- * standalone "what happened" story — ONLY the six-stage <StageTimeline> narrative
- * (input → correlate → risk → triage → investigate → decide). The AI-assessment, the
- * pinned deterministic DecisionCard, and the full ReAct trace now live on the sibling
- * <InvestigationPanel> (the "Investigation" tab), so this tab reads as one uncluttered
- * chronological account of how one alert became a case.
+ * The six-stage <StageTimeline> narrative (input → correlate → risk → triage →
+ * investigate → decide). Since Round 16 (SPEC D8) it has two homes, and owns the content
+ * rail of neither:
+ *
+ *   - the Brief's folded "How this case was built": every stage, the one place where the
+ *     source, AI and code lanes meet;
+ *   - Evidence's "What happened": only the ingestion stage (`kinds={['input']}`), the
+ *     source evidence blocks, so the source lane never shows the AI's or the code's work.
  *
  * SECURITY (#9): this panel only composes the read-only <StageTimeline>, which renders
  * its own source/log-derived step bodies as plain text or inside an escaped CodeBlock.
  * Nothing here decides or mutates a case (#3).
  */
 import * as React from 'react';
-import { GitMerge } from 'lucide-react';
 
 import type { TimelineStagesResponse } from '@/soc/pages/CaseDetail.api';
 
 import { StageTimeline } from './StageTimeline';
-import { CASE_MANAGER_PANEL_PADDING, type CasePanelPresentation } from './shared';
 
 export interface TimelinePanelProps {
-  /** FACTS — the six-stage pipeline narrative. */
+  /** FACTS: the six-stage pipeline narrative. */
   stages: TimelineStagesResponse | null;
   stagesLoading: boolean;
   stagesError: unknown;
   onRetryStages: () => void;
-  presentation?: CasePanelPresentation;
-  /** Case Manager's final timeline event deep-links to the existing Investigation tab. */
+  /** The final timeline event deep-links to the AI investigation tab. */
   onOpenInvestigation?: () => void;
+  /** Only these stage kinds (Evidence shows the `input` stage); omitted shows every stage. */
+  kinds?: readonly string[];
 }
 
 export const TimelinePanel: React.FC<TimelinePanelProps> = ({
@@ -36,54 +37,29 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   stagesLoading,
   stagesError,
   onRetryStages,
-  presentation = 'default',
   onOpenInvestigation,
+  kinds,
 }) => {
-  if (presentation === 'case-manager') {
-    return (
-      <div
-        className={CASE_MANAGER_PANEL_PADDING}
-        data-case-panel="timeline"
-        data-presentation="case-manager"
-      >
-        <StageTimeline
-          data={stages}
-          loading={stagesLoading}
-          error={stagesError}
-          onRetry={onRetryStages}
-          presentation="case-manager"
-          onOpenInvestigation={onOpenInvestigation}
-        />
-      </div>
+  const shown = React.useMemo<TimelineStagesResponse | null>(() => {
+    if (!stages || !kinds) return stages;
+    const kept = (Array.isArray(stages.stages) ? stages.stages : []).filter((stage) =>
+      kinds.includes(String(stage?.kind)),
     );
-  }
-
+    return { ...stages, stages: kept, total: kept.length };
+  }, [stages, kinds]);
+  // Narrowed to stages a case has not reached yet: nothing to show, and no empty state
+  // that would claim the whole story is missing.
+  if (kinds && stages && shown && shown.stages.length === 0 && !stagesLoading && !stagesError) return null;
   return (
-    <div className="space-y-4 p-6">
-      <div className="flex items-center gap-2.5">
-        <span
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground"
-          aria-hidden
-        >
-          <GitMerge className="h-5 w-5" />
-        </span>
-        <div className="min-w-0">
-          <h3 className="text-lg font-semibold tracking-tight text-foreground">What happened</h3>
-          <p className="text-sm text-muted-foreground">
-            Source-asserted facts + the deterministic engine steps — the story of how this
-            alert became a case.
-          </p>
-        </div>
-      </div>
-      {/* StageTimeline carries its own padding + skeleton/error/empty states. */}
-      <div className="rounded-lg border border-border bg-card">
-        <StageTimeline
-          data={stages}
-          loading={stagesLoading}
-          error={stagesError}
-          onRetry={onRetryStages}
-        />
-      </div>
+    // No padding of its own: it is a section of a tab, which owns the content rail.
+    <div data-case-panel="timeline" data-presentation="case-manager" data-stage-kinds={kinds ? kinds.join(' ') : undefined}>
+      <StageTimeline
+        data={shown}
+        loading={stagesLoading}
+        error={stagesError}
+        onRetry={onRetryStages}
+        onOpenInvestigation={onOpenInvestigation}
+      />
     </div>
   );
 };

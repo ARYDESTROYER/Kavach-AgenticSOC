@@ -6,6 +6,7 @@ records (no LLM). All offline (fake ES + mock LLM), mirroring conftest patterns.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from app.api.routes import _build_rationale, case_rationale, case_trace
 from app.config import SourceInstance
@@ -13,6 +14,7 @@ from app.constants import ActionType, EntityType, SourceSurface, SourceType
 from app.engine.correlation import cluster_from_events
 from app.models import RagChunk, TriggerReason
 from app.stores.tuning import TuningRecord
+from app.tools.rag import RagRetrievalObservation
 
 from tests.conftest import make_raw_event
 
@@ -63,12 +65,16 @@ async def _run_investigation(state, mock_provider, *, with_memory=True, with_rag
 
     if with_rag:
         async def _fake_retrieve(query, top_k=None):
-            return [RagChunk(
-                text="Internal vuln scanner runs planned testing; benign scanning is expected.",
-                source="runbook", score=0.9,
-            )]
+            return RagRetrievalObservation(
+                [RagChunk(
+                    text="Internal vuln scanner runs planned testing; benign scanning is expected.",
+                    source="runbook", score=0.9,
+                )],
+                True,
+                "completed",
+            )
         # Patch the live rag service the pipeline holds.
-        state.rag.retrieve = _fake_retrieve  # type: ignore[method-assign]
+        state.rag.retrieve_observed = _fake_retrieve  # type: ignore[method-assign]
 
     mock_provider.push("router", json.dumps(
         {"bucket": "needs_strong_model", "confidence": 0.9, "reason": "serious"}
@@ -143,10 +149,20 @@ async def test_rationale_endpoint_assembles_why(app_state, mock_provider):
     assert out["status"]  # closed or needs_human, but populated
     # persona is deterministically assigned.
     assert out["persona"]
-    # playbook block present (id may be empty if no match, but reason is recorded).
-    assert "id" in out["playbook"] and "reason" in out["playbook"]
-    assert out["playbook"]["reason"]  # playbook_selector DECISION captured
-    assert "consulted" in out["playbook"]
+    # Round 14: the runbook that guided this run, and why (the runbook_selector
+    # DECISION). 'linux_auth' is one of the brute force built-in's rules.
+    assert out["runbook"]["id"] == "brute-force-password-spray"
+    assert out["runbook"]["version"] == 1
+    assert out["runbook"]["title"] == "Brute force and password spray"
+    assert out["runbook"]["consulted"] is True
+    assert out["runbook"]["tier"] == 3
+    assert out["runbook"]["reason"].startswith("Matched rule linux_auth")
+    assert out["runbook"]["explanation"]["matched"][0]["criterion"] == "rule_ids"
+    assert out["procedure_provenance"]["runbook"]["consulted"] is True
+    groups = [g["group"] for g in out["procedure_provenance"]["retrieval_query_groups"]]
+    assert groups[0] == "cluster" and "runbook:1" in groups
+    # The pre-Round 14 projection keeps its stable empty shape on a new run.
+    assert out["playbook"] == {"id": "", "version": "", "reason": "", "consulted": False}
 
     # knowledge with source.
     assert any(k["source"] == "runbook" for k in out["knowledge"])
@@ -271,6 +287,202 @@ def test_rationale_projects_only_latest_investigation_run():
     assert out["playbook"]["id"] == ""
     assert out["playbook"]["consulted"] is False
     assert out["platform_tuning"][0]["record_id"] == "tune-new"
+    # No latest-run procedure telemetry is historical uncertainty, not proof
+    # that a retrieval ran and returned zero references.
+    assert out["procedure_provenance"]["retrieval_status"] == "unavailable"
+    assert out["procedure_provenance"]["retrieval_reason"] == "historical_provenance_missing"
+
+
+def test_rationale_preselector_pipeline_failure_does_not_inherit_prior_run():
+    """A newer fail-to-human run cannot present the prior run as its provenance."""
+    rows = [
+        {
+            "actor": "playbook_selector",
+            "action_type": ActionType.DECISION.value,
+            "result_summary": "reason=old selection",
+        },
+        {
+            "actor": "procedure_provenance",
+            "action_type": ActionType.CONTEXT.value,
+            "tool_input": {
+                "retrieval_status": "measured",
+                "retrieval_reason": "completed",
+                "knowledge": [{"source": "runbook", "snippet": "old reference"}],
+            },
+        },
+        {
+            "actor": "investigator",
+            "action_type": ActionType.TOOL_CALL.value,
+            "tool_name": "es_query",
+            "query_text": "old query",
+        },
+        {
+            "actor": "investigator",
+            "action_type": ActionType.VERDICT.value,
+            "result_summary": "reasoning=old reasoning",
+        },
+        {
+            "actor": "case_manager",
+            "action_type": ActionType.DECISION.value,
+            "result_summary": "old deterministic decision",
+        },
+        {
+            "actor": "pipeline",
+            "action_type": ActionType.ERROR.value,
+            "result_summary": "pipeline error: failed before procedure selection",
+        },
+    ]
+
+    out = _build_rationale("case-preselector-failure", None, rows)
+
+    assert out["procedure_provenance"]["retrieval_status"] == "unavailable"
+    assert (
+        out["procedure_provenance"]["retrieval_reason"]
+        == "pipeline_failed_before_provenance"
+    )
+    assert out["knowledge"] == []
+    assert out["tools"] == []
+    assert out["reasoning"] == ""
+    assert out["decision_rationale"] == ""
+
+
+def test_rationale_error_case_without_new_audit_boundary_fails_closed():
+    """A lost terminal audit append cannot expose an older run as current."""
+    rows = [
+        {
+            "ts": "2026-08-11T01:00:00+00:00",
+            "actor": "playbook_selector",
+            "action_type": ActionType.DECISION.value,
+        },
+        {
+            "ts": "2026-08-11T01:00:01+00:00",
+            "actor": "procedure_provenance",
+            "action_type": ActionType.CONTEXT.value,
+            "tool_input": {
+                "retrieval_status": "measured",
+                "retrieval_reason": "completed",
+                "knowledge": [{"source": "runbook", "snippet": "old reference"}],
+            },
+        },
+        {
+            "ts": "2026-08-11T01:00:02+00:00",
+            "actor": "case_manager",
+            "action_type": ActionType.DECISION.value,
+            "result_summary": "old deterministic decision",
+        },
+    ]
+    failed_case = SimpleNamespace(
+        error="new pipeline failure",
+        updated_at="2026-08-11T02:00:00+00:00",
+        verdict=None,
+        confidence=0.0,
+        status=None,
+        decision_by=None,
+        agent_persona="",
+        playbook_id="",
+        mitre=[],
+        evidence=[],
+        history=[],
+    )
+
+    out = _build_rationale("case-missing-error-audit", failed_case, rows)
+
+    assert out["procedure_provenance"]["retrieval_status"] == "unavailable"
+    assert (
+        out["procedure_provenance"]["retrieval_reason"]
+        == "pipeline_failure_provenance_missing"
+    )
+    assert out["knowledge"] == []
+    assert out["tools"] == []
+    assert out["reasoning"] == ""
+    assert out["decision_rationale"] == ""
+
+
+def test_rationale_keeps_current_provenance_across_nonterminal_timeout_error():
+    """Timeout telemetry inside a run is not mistaken for a new run boundary."""
+    rows = [
+        {
+            "actor": "playbook_selector",
+            "action_type": ActionType.DECISION.value,
+        },
+        {
+            "actor": "pipeline",
+            "action_type": ActionType.ERROR.value,
+            "result_summary": "investigation timed out after 30s; capped to NEEDS_HUMAN",
+        },
+        {
+            "actor": "procedure_provenance",
+            "action_type": ActionType.CONTEXT.value,
+            "tool_input": {
+                "retrieval_status": "measured",
+                "retrieval_reason": "completed",
+                "knowledge": [{"source": "runbook", "snippet": "current reference"}],
+            },
+        },
+        {
+            "actor": "case_manager",
+            "action_type": ActionType.DECISION.value,
+            "result_summary": "current deterministic decision",
+        },
+    ]
+
+    out = _build_rationale("case-timeout", None, rows)
+
+    assert out["procedure_provenance"]["retrieval_status"] == "measured"
+    assert out["knowledge"] == [{
+        "source": "runbook",
+        "score": None,
+        "document_id": "",
+        "revision": None,
+        "content_hash": "",
+        "query_groups": [],
+        "snippet": "current reference",
+    }]
+    assert out["decision_rationale"] == "current deterministic decision"
+
+
+def test_rationale_distinguishes_measured_zero_from_not_attempted_and_unavailable():
+    def _procedure_row(status: str | None, reason: str | None = None):
+        tool_input = {
+            "persona": {"selected_id": "generalist", "consulted": False},
+            "playbook": {"selected_id": None, "consulted": False},
+            "consultation_path": "strong_investigator",
+            "knowledge": [],
+            "retrieval_query_groups": [],
+        }
+        if status is not None:
+            tool_input["retrieval_status"] = status
+        if reason is not None:
+            tool_input["retrieval_reason"] = reason
+        return {
+            "actor": "procedure_provenance",
+            "action_type": ActionType.CONTEXT.value,
+            "tool_input": tool_input,
+        }
+
+    measured = _build_rationale(
+        "case-measured-zero", None, [_procedure_row("measured", "completed")]
+    )
+    assert measured["knowledge"] == []
+    assert measured["procedure_provenance"]["retrieval_status"] == "measured"
+    assert measured["procedure_provenance"]["retrieval_reason"] == "completed"
+
+    not_attempted = _build_rationale(
+        "case-not-attempted",
+        None,
+        [_procedure_row("not_attempted", "router_benign_shortcut")],
+    )
+    assert not_attempted["knowledge"] == []
+    assert not_attempted["procedure_provenance"]["retrieval_status"] == "not_attempted"
+    assert (
+        not_attempted["procedure_provenance"]["retrieval_reason"]
+        == "router_benign_shortcut"
+    )
+
+    legacy = _build_rationale("case-legacy", None, [_procedure_row(None)])
+    assert legacy["knowledge"] == []
+    assert legacy["procedure_provenance"]["retrieval_status"] == "unavailable"
+    assert legacy["procedure_provenance"]["retrieval_reason"] == "historical_provenance_missing"
 
 
 def test_rationale_projects_structured_procedure_provenance():
@@ -310,6 +522,8 @@ def test_rationale_projects_structured_procedure_provenance():
                     "consulted": True,
                 },
                 "consultation_path": "strong_investigator",
+                "retrieval_status": "measured",
+                "retrieval_reason": "completed",
                 "retrieval_query_groups": [
                     {"group": "cluster", "query": "ip scanner evidence"},
                     {"group": "playbook:1", "query": "approved scanner ranges"},
@@ -340,7 +554,14 @@ def test_rationale_projects_structured_procedure_provenance():
             "selection_reason": "exact rule match",
             "consulted": True,
         },
+        # A run before Round 14 carries no runbook: the stable empty shape.
+        "runbook": {
+            "selected_id": "", "version": None, "title": "", "selection_reason": "",
+            "consulted": False,
+        },
         "consultation_path": "strong_investigator",
+        "retrieval_status": "measured",
+        "retrieval_reason": "completed",
         "retrieval_query_groups": [
             {"group": "cluster", "query": "ip scanner evidence"},
             {"group": "playbook:1", "query": "approved scanner ranges"},
@@ -361,7 +582,187 @@ def test_rationale_projects_structured_procedure_provenance():
         "reason": "exact rule match",
         "consulted": True,
     }
+    assert out["runbook"]["id"] == "" and out["runbook"]["consulted"] is False
     assert out["knowledge"] == out["procedure_provenance"]["knowledge"]
+
+
+# --------------------------------------------------------------------------- #
+# Round 14: runbook provenance rows (SPEC §4.10.9). Old and new rows are both read,
+# forever; the attachment rows a run writes after the decision are not a run start.
+# --------------------------------------------------------------------------- #
+def _runbook_run_rows(*, consulted: bool = True) -> list[dict]:
+    explanation = {
+        "tier": 3,
+        "matched": [{"criterion": "rule_ids", "value": ["ssh_auth_failed"]}],
+        "missed": [],
+        "tie": False,
+    }
+    return [
+        {
+            "actor": "runbook_selector",
+            "action": "runbook.selected",
+            "action_type": ActionType.DECISION.value,
+            "result_summary": "runbook=brute-force-password-spray v1 persona=generalist reason=matched: ...",
+            "tool_input": {
+                "runbook_selection": {
+                    "id": "brute-force-password-spray",
+                    "version": 1,
+                    "title": "Brute force and password spray",
+                    "origin": "builtin",
+                    "status": "matched",
+                    "used": True,
+                    "reason": "Matched rule ssh_auth_failed.",
+                    "tier": 3,
+                    "explanation": explanation,
+                    "tied": 0,
+                    "prompt_chars": 1234,
+                },
+                "runbook_status": "matched",
+                "runbook_reason": "Matched rule ssh_auth_failed.",
+            },
+        },
+        {
+            "actor": "context",
+            "action_type": ActionType.CONTEXT.value,
+            "tool_input": (
+                {
+                    "runbook": "brute-force-password-spray v1",
+                    "runbook_detail": {
+                        "id": "brute-force-password-spray", "version": 1,
+                        "title": "Brute force and password spray", "origin": "builtin",
+                    },
+                    "knowledge": [{"source": "runbook", "snippet": "lockout policy"}],
+                }
+                if consulted
+                else {"knowledge": []}
+            ),
+        },
+        {
+            "actor": "investigator",
+            "action_type": ActionType.TOOL_CALL.value,
+            "tool_name": "es_query",
+            "query_text": "current query",
+        },
+        {
+            "actor": "procedure_provenance",
+            "action_type": ActionType.CONTEXT.value,
+            "tool_input": {
+                "persona": {"selected_id": "identity_access", "selection_reason": "rule", "consulted": True},
+                "runbook": {
+                    "selected_id": "brute-force-password-spray" if consulted else None,
+                    "version": 1 if consulted else None,
+                    "title": "Brute force and password spray" if consulted else "",
+                    "selection_reason": "Matched rule ssh_auth_failed.",
+                    "consulted": consulted,
+                },
+                "consultation_path": "strong_investigator" if consulted else "router_benign_shortcut",
+                "retrieval_status": "measured",
+                "retrieval_reason": "completed",
+                "retrieval_query_groups": [
+                    {"group": "cluster", "query": "ssh brute force"},
+                    {"group": "runbook:1", "query": "brute force lockout policy runbook"},
+                ],
+                "knowledge": [],
+            },
+        },
+        {
+            "actor": "case_manager",
+            "action_type": ActionType.DECISION.value,
+            "result_summary": "current deterministic decision",
+        },
+    ]
+
+
+def test_rationale_reads_a_round14_runbook_run():
+    out = _build_rationale("case-runbook", None, _runbook_run_rows())
+
+    assert out["runbook"] == {
+        "id": "brute-force-password-spray",
+        "version": 1,
+        "title": "Brute force and password spray",
+        "reason": "Matched rule ssh_auth_failed.",
+        "consulted": True,
+        "selected_id": "brute-force-password-spray",
+        "status": "matched",
+        "tier": 3,
+        "explanation": {
+            "tier": 3,
+            "matched": [{"criterion": "rule_ids", "value": ["ssh_auth_failed"]}],
+            "missed": [],
+            "tie": False,
+        },
+    }
+    assert out["procedure_provenance"]["runbook"] == {
+        "selected_id": "brute-force-password-spray",
+        "version": 1,
+        "title": "Brute force and password spray",
+        "selection_reason": "Matched rule ssh_auth_failed.",
+        "consulted": True,
+    }
+    assert out["procedure_provenance"]["retrieval_query_groups"][1]["group"] == "runbook:1"
+    # A new run never fills the pre-Round 14 projection.
+    assert out["playbook"] == {"id": "", "version": "", "reason": "", "consulted": False}
+    assert out["tools"] == [{"tool": "es_query", "query": "current query", "summary": ""}]
+
+
+def test_rationale_keeps_selection_apart_from_consultation_for_runbooks():
+    # The cheap router path selects a runbook but never sends it: not "used".
+    out = _build_rationale("case-runbook-cheap", None, _runbook_run_rows(consulted=False))
+    assert out["runbook"]["id"] == "" and out["runbook"]["consulted"] is False
+    assert out["runbook"]["version"] is None and out["runbook"]["title"] == ""
+    # The matcher's choice is still named, with why.
+    assert out["runbook"]["selected_id"] == "brute-force-password-spray"
+    assert out["runbook"]["reason"] == "Matched rule ssh_auth_failed."
+
+
+def test_attachment_rows_after_the_decision_do_not_start_a_new_run():
+    # ``runbook_selector`` also writes ``run.attached`` (action type runbook) after the
+    # decision; it must not become the latest run boundary and hide the run it follows.
+    rows = _runbook_run_rows() + [{
+        "actor": "runbook_selector",
+        "action": "run.attached",
+        "action_type": "runbook",
+        "result_summary": "Runbook Brute force and password spray v1 attached.",
+        "tool_input": {"run_id": "run-1", "runbook_id": "brute-force-password-spray"},
+    }]
+    out = _build_rationale("case-runbook-attached", None, rows)
+    assert out["runbook"]["id"] == "brute-force-password-spray"
+    assert out["tools"] and out["decision_rationale"] == "current deterministic decision"
+
+
+def test_rationale_projects_only_the_latest_run_across_the_upgrade():
+    # An investigation before Round 14 (playbook_selector), then one after it: only
+    # the latest is projected, and each projection reads its own vocabulary.
+    legacy = [
+        {
+            "actor": "playbook_selector",
+            "action_type": ActionType.DECISION.value,
+            "result_summary": "playbook=brute_force_login v1 persona=identity_access reason=rules",
+            "tool_input": {"playbook_selection": {"id": "brute_force_login", "reason": "rules"}},
+        },
+        {
+            "actor": "context",
+            "action_type": ActionType.CONTEXT.value,
+            "tool_input": {"playbook_detail": {"id": "brute_force_login", "version": "1"}},
+        },
+        {
+            "actor": "investigator",
+            "action_type": ActionType.TOOL_CALL.value,
+            "tool_name": "es_query",
+            "query_text": "old query",
+        },
+    ]
+    out = _build_rationale("case-upgraded", None, legacy + _runbook_run_rows())
+    assert out["runbook"]["id"] == "brute-force-password-spray"
+    assert out["playbook"]["id"] == "" and out["playbook"]["consulted"] is False
+    assert [t["query"] for t in out["tools"]] == ["current query"]
+
+    # The legacy run alone still reads exactly as before Round 14.
+    only_legacy = _build_rationale("case-legacy-only", None, legacy)
+    assert only_legacy["playbook"] == {
+        "id": "brute_force_login", "version": "1", "reason": "rules", "consulted": True,
+    }
+    assert only_legacy["runbook"]["id"] == "" and only_legacy["runbook"]["reason"] == ""
 
 
 async def test_tuning_snapshot_does_not_resurrect_an_older_threshold(app_state):

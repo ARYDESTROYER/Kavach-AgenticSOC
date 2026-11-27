@@ -1,11 +1,11 @@
 ---
 title: Configuration reference
-description: Configuration authorities, environment wiring, durable preferences, runtime-only secrets, and state backends in Agentic SOC 0.1.
+description: Configuration authorities, environment wiring, durable preferences, runtime-only secrets, and state backends in Agentic SOC 0.2.
 ---
 
 # Configuration reference
 
-Agentic SOC 0.1 separates credentials and process wiring from validated application
+Agentic SOC 0.2 separates credentials and process wiring from validated application
 preferences. Keep that boundary intact: a secret is never an ordinary setting.
 
 ## Configuration authorities
@@ -48,20 +48,45 @@ rule. The image/build pipeline passes these names directly:
 
 | Variable | Meaning |
 |---|---|
-| `TLSOC_VERSION` | Compose image tag/build argument; must match the code's Semantic Version (`0.1.12`) |
+| `TLSOC_VERSION` | Compose image tag/build argument; must match the code's Semantic Version (`0.2.0`) |
 | `TLSOC_RELEASE_CHANNEL` | `testing` by default; set to `stable` only for the accepted `main`/tag build |
-| `TLSOC_BUILD_SHA` | Exact source commit embedded in `/api/health/build-info` and image metadata |
-| `TLSOC_BUILD_DATE` | Build timestamp embedded in `/api/health/build-info` and image metadata |
+| `TLSOC_BUILD_SHA` | Exact source commit embedded in `/api/health/build-info`, image metadata, and newly produced operational records. The shipped Compose and demo wrappers derive it from the checkout via `scripts/lib/build-identity.sh`; a value supplied by the supervised bootstrap, or pinned to a non-empty, non-`unknown` value in `.env`, is used unchanged. Only when every source is absent does it remain the literal `unknown` |
+| `TLSOC_BUILD_DATE` | Build timestamp embedded in `/api/health/build-info` and image metadata, derived on the same terms as `TLSOC_BUILD_SHA`. Supply BOTH or neither: a half-stamped pair identifies no reproducible build |
 | `TLSOC_SOURCE_URL` | Dockerfile build argument for the canonical source URL embedded in OCI image metadata; the reference Compose files currently use the Dockerfile's repository default |
 
 The release channel is independent of SemVer: both the accepted Testing candidate and
-its Stable promotion are application `0.1.12`. Promotion changes provenance/channel,
+its Stable promotion are application `0.2.0`. Promotion changes provenance/channel,
 not the source version.
+
+`GET /api/health/build-info` answers two deliberately different questions about the
+same revision:
+
+* `provenance_complete` / `provenance_missing`: **was it stamped at all?** Any
+  non-blank, non-`unknown` value passes, so a tarball, Nix, Bazel, or CI build
+  identifier counts as honest provenance.
+* `provenance_advisories`: **is it an exact source revision an upgrade can be
+  pinned to?** A build may be complete and still carry
+  `commit_sha_not_exact_source_revision` (an abbreviated revision, a `<sha>-dirty`
+  suffix, a tag name, a build number) or `build_identity_partially_stamped` (only one
+  of the SHA/date pair supplied). Supervised updates require an exact 40-character
+  commit id, so the advisory is what explains a refusal that the completeness fields
+  alone cannot. Both are also logged as startup warnings; neither blocks boot.
+
+Never derive the SHA from an abbreviated `git rev-parse --short`: it is not an exact
+object id, so the resulting build is complete but unpinnable. `scripts/check_version.py`
+fails the build if a shipped script or document does.
 
 The Console compiles version/channel/SHA/date into its own build and displays an
 always-visible `vX.Y.Z · Testing|Stable` badge. Opening the badge compares Console
 and `/api/health/build-info` identities. A channel/version/known-SHA mismatch is
 shown as Testing; Stable is never inferred from SemVer or a branch name.
+
+New cases copy this non-secret identity once as immutable creation-build
+`app_version` and `build_sha`. New append-only audit and usage rows copy the build
+that first writes them; idempotent retries preserve that first-writer stamp. Updating
+or re-investigating a case never replaces its creation-build identity, and legacy
+records remain `null` rather than being backfilled by the first upgraded build that
+touches them. These additive fields do not require a version bump or SQL migration.
 
 ## Common backend environment variables
 
@@ -74,16 +99,51 @@ shown as Testing; Stable is never inferred from SemVer or a branch name.
 | Enrichment | provider-specific API keys plus `EMBEDDING_API_KEY` | Keyless providers need no key; enabled/keyed filtering happens at dispatch |
 | Cache | `REDIS_URL` | Enrichment caching degrades to an in-process cache when Redis is unavailable |
 | Server | `BACKEND_HOST`, `BACKEND_PORT`, `LOG_LEVEL` | Uvicorn bind and logging configuration |
+| Job artifacts | `JOBS_ARTIFACT_DIR` (legacy merge Compose: `TLSOC_JOBS_ARTIFACT_DIR`) | Private ZIP root; local and updater-managed standalone default `./data/job-artifacts`, legacy merge Compose default `/var/lib/agentic-soc/jobs` on `agentic-soc-job-artifacts` |
 | Release identity | `TLSOC_VERSION`, `TLSOC_RELEASE_CHANNEL`, `TLSOC_BUILD_SHA`, `TLSOC_BUILD_DATE`, `TLSOC_SOURCE_URL` | Direct prefixed build metadata; channel/SHA/date also reach the API runtime as non-secret identity. Source URL is an OCI-only Docker build argument and is not mapped from `.env` by the reference Compose files |
 | Authentication | `AUTH_ENABLED`, `AUTH_JWT_SECRET`, `AUTH_TOKEN_HOURS`, `AUTH_COOKIE_SECURE`, bootstrap user fields | Use a stable signing key and secure cookies behind HTTPS |
 | Security middleware | `SECURITY_HEADERS_ENABLED`, `RATE_LIMIT_ENABLED`, `RATE_LIMIT_CAPACITY`, `RATE_LIMIT_REFILL_PER_SECOND`, `CSRF_ENABLED` | Headers default on; rate limiting and CSRF default off |
 | Secret maps | `CONNECTOR_SECRETS`, `SSO_CLIENT_SECRETS`, `NOTIFICATION_SECRETS` | JSON objects parsed directly by the backend; mapping support differs by Compose file |
 | MFA protection | `MFA_OBFUSCATION_KEY` | Stable key for TOTP-secret obfuscation; distinct from user preferences |
+| Audit client address | `TRUSTED_PROXIES` | Proxies whose forwarded address the audit log believes; default `tlsoc-webui`, the bundled Web UI service |
 
 The reference standalone Compose file maps the SSO and notification JSON maps. It
-does **not** map a `TLSOC_CONNECTOR_SECRETS` variable in 0.1. To boot per-source
+does **not** map a `TLSOC_CONNECTOR_SECRETS` variable in 0.2. To boot per-source
 connector secrets from the environment, pass the backend's unprefixed
 `CONNECTOR_SECRETS` explicitly or add a deliberate Compose mapping.
+
+`JOBS_ARTIFACT_DIR` is not a StateStore selector. Job metadata and CAS leases remain in
+the selected state backend; only downloadable ZIP bytes live in this directory. The
+server creates private modes, verifies size/SHA-256 at download, and retains at most 50
+attached artifacts. Changing the path does not migrate old files. See
+[Background jobs](../operations/background-jobs.md).
+
+The updater-managed standalone Compose file is intentionally byte-pinned by its v1
+upgrade protocol and does not gain a new volume in this release. Its files survive a
+backend process or ordinary container restart, but not a container replacement. Use a
+reviewed Compose override/bind mount when that installation needs longer retention;
+do not repurpose the updater control/state volumes.
+
+### Trusted proxies for the audit log
+
+The audit log records each request's client address. `TRUSTED_PROXIES` is a comma list
+of host names, IP addresses or CIDR ranges. Only when a request arrives from one of them
+does the backend read `X-Forwarded-For`, and then it records the rightmost entry that is
+not itself a trusted proxy (it reads at most the last 32 entries; an entry it cannot
+parse stops the walk and the connection address is recorded instead). Any other request
+is recorded with its connection address, whatever headers it carries, and the raw header
+is kept beside it, labelled as untrusted, cut to its last 256 characters when longer.
+
+The default, `tlsoc-webui`, is the bundled Web UI service, so the standalone (agnostic)
+Compose stack needs no setting. The legacy ELK attachment has no Web UI service: run the
+Web UI there as `tlsoc-webui` on the backend's network, or set `TRUSTED_PROXIES` to the
+proxy that fronts the backend, or every audit row records that proxy's address as the
+client. A deployment with another proxy or a load balancer in front adds it here. Host names are resolved at startup and every 5 minutes; a name that does not
+resolve yet (the Web UI starts after the backend is healthy) is retried within seconds,
+and a name that stops resolving keeps its last addresses for three rounds. The setting
+is audit metadata only and never grants access. Uvicorn's own `FORWARDED_ALLOW_IPS`
+(loopback by default) only affects Uvicorn's scheme handling; the audit log does not
+trust an address Uvicorn rewrote from a loopback peer.
 
 ## State backends
 
@@ -92,7 +152,7 @@ cursors, users/sessions, collaboration, baselines, campaigns, rule versions, and
 knowledge/vector records. Connector credentials and external telemetry remain outside
 that store.
 
-| Value | Connection | 0.1 behavior |
+| Value | Connection | 0.2 behavior |
 |---|---|---|
 | `postgres` | `postgresql+asyncpg://...` | Recommended standalone persistent profile; pgvector backs vector retrieval |
 | `elasticsearch` | `ES_URL` plus `ES_MGMT_API_KEY` | Stores state in dedicated `tlsoc-agent-*` indices; the default when running the backend directly |
@@ -127,7 +187,7 @@ always off.
 This is desired policy, not a cross-provider promise. The status/preview API reports
 the effective state and blockers before any mutation:
 
-| State backend | Effective 0.1.12 behavior |
+| State backend | Effective 0.2.0 behavior |
 |---|---|
 | Elasticsearch | Explicit Apply can install ILM for append-only `tlsoc-agent-audit-*` and `tlsoc-agent-usage-*` only, after the cluster/privilege/tier probe succeeds |
 | PostgreSQL | Advisory; no built-in partitions, tablespace movement, or archive scheduler |
@@ -148,7 +208,7 @@ repository. It is enabled on fresh installations with this configuration:
 {
   "release_updates": {
     "enabled": true,
-    "repository_url": "https://github.com/ARYDESTROYER/Agentic-Kibana",
+    "repository_url": "https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
     "stable_branch": "main",
     "testing_branch": "Testing",
     "check_interval_minutes": 360
@@ -156,7 +216,10 @@ repository. It is enabled on fresh installations with this configuration:
 }
 ```
 
-Only a canonical public `https://github.com/owner/repository` URL is accepted. Branch
+Only a canonical public `https://github.com/owner/repository` URL is accepted. A stored
+value that names the old repository, `ARYDESTROYER/Agentic-Kibana` in any letter case,
+is read as `https://github.com/ARYDESTROYER/Kavach-AgenticSOC`; any other value is kept
+as stored. Branch
 refs are bounded and reject ambiguous Git syntax. The discovery client is pinned to
 `api.github.com`, rejects redirects and oversized/malformed responses, and reads the
 branch head plus root `VERSION`. Stable discovery additionally requires the exact
@@ -183,10 +246,14 @@ Every `Preferences` field has a default. Major blocks include:
 
 - sources, feeds, OCSF field mappings, polling, and data scope;
 - correlation, risk, rules, baselines, campaigns, threshold tuning, and autopilot;
-- model routing, concurrency caps, batch processing, budgets, and pricing overlays;
-- deterministic auto-close policy, case ID format, priority, and SLA targets;
-- playbooks, RAG, memory, enrichment, threat context, and personas;
-- auth policy, MFA/SSO metadata, RBAC, sessions, notifications, and realtime events;
+- model routing, concurrency caps, batch processing, budgets, pricing overlays, and the
+  chat assistant's bounds;
+- deterministic auto-close policy, the auto-close review sample, analyst rule policies,
+  case ID format, priority, and SLA targets;
+- runbooks, RAG, memory, enrichment, threat context, personas, and analyst-precedent
+  promotion, window fairness, and futility reporting;
+- auth policy, MFA/SSO metadata, RBAC, sessions, the Team activity page, notifications,
+  and realtime events;
 - branding, terminology, themes, saved views, dashboard defaults, and the desired
   own-state storage lifecycle;
 - public release-source discovery repository, Stable/Testing refs, and cache interval.
@@ -194,8 +261,240 @@ Every `Preferences` field has a default. Major blocks include:
 `PUT /api/settings` deep-merges a JSON object and validates the resulting complete
 preferences model. Prefer small section-specific changes and re-read after updating.
 A malformed value is rejected rather than persisted. General preference updates do
-not provide a universal revision history in 0.1; detection rules have their own
+not provide a universal revision history in 0.2; detection rules have their own
 version ledger and rollback endpoints.
+
+### Chat assistant bounds
+
+`chat_agent` controls Workspace and Case Manager chat. Edit it under
+**Settings → General → Chat assistant**. Unlike most blocks, an out-of-range or malformed
+stored value is clamped into its range (or replaced by the default) instead of rejected,
+so one bad knob can never reset the whole preferences document. None of these knobs can
+widen what chat may do; the assistant is read-only by construction.
+
+`limits_mode` decides whether the per-question limits apply at all:
+
+- `unlimited` (default): a question runs until the assistant answers or the user presses
+  Stop. `max_model_calls`, `max_tool_calls`, `turn_token_ceiling`,
+  `final_reserve_tokens`, `turn_timeout_s`, `final_max_tokens`, and `observation_chars`
+  are kept but not applied. Correctness guards still apply: an identical lookup is never
+  re-run in one question, three model steps without progress force a final answer, a
+  model call that stays silent for `model_step_timeout_s` is retried once, and a hidden
+  runaway fuse (200 model calls or 60 minutes per question) makes the assistant answer
+  from what it gathered. Each model step asks for the model's maximum output on a
+  streaming provider; a provider that answers in one blocking request (Azure OpenAI,
+  Bedrock, Vertex) gets 4,000 output tokens per step, and a longer answer continues in
+  further steps.
+- `bounded`: the behaviour before this build's chat changes (the earlier per-question
+  limits), with every knob below applied as a per-question limit.
+
+| Key | Default | Range | Applies in | Meaning |
+|---|---|---|---|---|
+| `limits_mode` | `unlimited` | `unlimited`, `bounded` | Always | Whether the per-question limits apply |
+| `max_model_calls` | 5 | 1–12 | Bounded | Model calls per question, including the final answer |
+| `max_tool_calls` | 10 | 1–40 | Bounded | Lookups per question |
+| `turn_token_ceiling` | 60,000 | 4,000–1,000,000 | Bounded | Input plus output tokens across one question's model calls |
+| `final_reserve_tokens` | 12,000 | 1,000–200,000 | Bounded | Tokens always kept inside the ceiling for writing the answer |
+| `final_max_tokens` | 4,000 | 256–32,000 | Bounded | Output tokens for the final answer |
+| `observation_chars` | 6,000 | 1,500–60,000 | Bounded | Characters of aggregated lookup results sent to the model per step |
+| `turn_timeout_s` | 90 | 10–600 | Bounded | Wall-clock seconds per question; no new lookup starts after it, and a model call then gets at most the time left (at least 30 seconds) |
+| `max_parallel` | 12 | 1–24 | Both | Lookups run side by side in one step; in Bounded mode never more than `max_tool_calls` (applied at run time, the stored value is kept) |
+| `tool_timeout_s` | 45 | 1–120 | Both | Seconds one lookup may take; aggregate lookups (case counts and breakdowns, log statistics, metrics, and cost) get up to 10 minutes, never less than this value |
+| `model_step_timeout_s` | 900 | 5–1,800 | Both | Seconds one model call may stay silent before it counts as stalled and is retried once |
+| `max_concurrent_turns_per_user` | 12 | 1–24 | Both | Questions one user may run at once (Workspace and case chat together) |
+| `max_concurrent_turns_global` | 48 | 1–100 | Both | Questions one backend process runs at once |
+| `max_indicator_lookups` | 3 | 0–10 | Both | Third-party indicator lookups per question; 0 turns the lookup off |
+| `max_indicator_lookups_per_conversation` | 10 | 0–50 | Both | Third-party indicator lookups per conversation |
+| `chat_daily_cap_usd` | `null` | ≥ 0 | Both | Optional daily chat spending limit in US dollars (UTC day); `null` or 0 is off |
+| `default_stream_mode` | `steps` | `steps`, `text` | Both | Live mode for viewers who have not chosen one |
+| `allow_text_streaming` | `true` | `true`, `false` | Both | Allow answers to be typed out word by word |
+| `animated_brand` | `true` | `true`, `false` | Both | Turn a ring around the logo while chat works (a custom logo itself never moves) |
+| `dynamic_starters` | `true` | `true`, `false` | Both | New chats open with suggested questions computed by code from data each viewer can read, at no AI cost; off serves only the everyday questions and no catch-up line |
+| `internal_domains` | `[]` | ≤ 100 suffixes | Both | Domain suffixes never sent to enrichment providers |
+| `allow_email_lookup` | `false` | `true`, `false` | Both | Allow e-mail addresses to be sent to enrichment providers |
+| `chat_limits_version` | 2 | 0–2 | Always | Internal marker of the staged limits migration below |
+
+The editor shows `allow_text_streaming` and `default_stream_mode` as one **Typed-out
+answers** control: **Off** stores `allow_text_streaming: false` and
+`default_stream_mode: steps`; **Allowed (off by default)** stores `true` and `steps`;
+**Allowed (on by default)** stores `true` and `text`. `dynamic_starters` is repaired like
+`animated_brand`: only an explicit off value turns it off, and a stored block without
+the key reads as on.
+
+Chat is outside the AI budget (`budget`), both `budget.daily_usd` and
+`budget.monthly_usd`: a chat call is never blocked by either and its spend is not counted
+toward either. `chat_daily_cap_usd` is the only spending bound for chat; there is no
+monthly chat bound.
+
+**Staged migration.** A stored `chat_agent` block is migrated when it is read, once per
+step above its `chat_limits_version` (a block without the marker is version 0), and then
+stamped with the current version, so a later choice is never re-decided.
+
+- **Version 1** (Round 12). An explicit `limits_mode` is kept. Otherwise the block becomes
+  `bounded` if any of the seven per-question knobs differs from its shipped default (5,
+  10, 60,000, 12,000, 4,000, 6,000, and 90 seconds) and `unlimited` if not. In a stored
+  block, the old defaults of three knobs move to the new ones: `model_step_timeout_s` 30
+  to 300 (only when the block becomes `unlimited`), `max_concurrent_turns_per_user` 2 to
+  4, and `max_concurrent_turns_global` 8 to 16.
+- **Version 2** (Round 14). Every "Timeouts and capacity" default is tripled, in both
+  modes: `max_parallel` 4 to 12, `tool_timeout_s` 15 to 45, `model_step_timeout_s` 300 to
+  900, `max_concurrent_turns_per_user` 4 to 12 and `max_concurrent_turns_global` 16 to
+  48. A stored value moves only when it equals the Round 12 default. A Bounded question
+  is still cut at its remaining time, so a longer stall timeout never lengthens it.
+
+Each step moves only a value that equals the default of the release the block was stored
+by; a value an administrator chose is kept through every later step, even when it
+happens to equal a later default (a block from before Round 12 that chose 4 questions per
+user keeps 4). Only blocks stored as a whole are migrated. One limitation: an
+administrator who deliberately chose exactly the default of the release that stored the
+block cannot be told apart from it, and that value moves once. The client's five-minute
+wait for a free chat slot is unchanged, and the report summary wait stays capped at 280
+seconds, below the Web UI proxy's 300-second limit.
+
+### Runbooks
+
+`runbooks` holds the switches of the one Runbooks feature, edited under **Settings →
+Integrations → Runbooks**. None of them changes the close or escalate decision: that is
+made in code against the case policy, which never reads a runbook. Investigator guidance
+does change what the agent sees, so it can change the verdict the agent returns, and with
+it which cases the policy closes automatically.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | The feature: the library, runs on cases and investigator guidance. Off stops every run write (`409 runbook_state`) |
+| `auto_attach` | `true` | Attach the matching Published runbook to each case that needs a person |
+| `fallback` | `true` | Attach the Generic incident runbook when nothing else matches. It is a checklist for people and is never given to the investigator as guidance; while `rag_corpus` is on, its text stays in the knowledge search like any Published runbook |
+| `investigator_guidance` | `true` | Give the Published runbook that specifically matches a case (its rules, techniques or other conditions; never the Generic incident fallback) to the investigator as trusted, advisory guidance. `false` removes the runbook block and the runbook's search phrases from every investigation |
+| `rag_corpus` | `true` | Index Published runbooks for the knowledge search |
+| `ai_suggest` | `true` | Offer **Suggest a runbook** on a case (one metered model call per click) |
+| `ai_step_drafts` | `true` | Offer **Draft note** on a step (one metered model call per click) |
+| `require_distinct_approver` | `false` | Nobody who wrote or edited a version may publish it |
+| `step_approvals` | `false` | Honour the approver role an Action or Record step names |
+| `review_every_days_default` | 180 | Review cadence of a new operator runbook, 30 to 730 days |
+| `runbooks_config_version` | 1 | Internal marker of the one-time mapping below |
+
+Stored values are repaired, never rejected: a malformed switch takes its default and an
+out-of-range cadence is clamped.
+
+**Keys accepted from earlier versions.** A stored configuration from before Round 14 is
+mapped once, by meaning, when it is read, and then stamped:
+
+| Earlier key | Becomes |
+|---|---|
+| `playbooks.enabled: false` (procedures off in the investigator) | `runbooks.investigator_guidance: false` |
+| `runbooks.enabled: false` (the earlier meaning: stop reference runbook retrieval) | `runbooks.rag_corpus: false` |
+| `rag.use_runbooks: false` | `runbooks.rag_corpus: false` |
+
+An earlier `true` maps to nothing, because the new defaults are on, and the new
+`runbooks.enabled` is never derived from an earlier key. After the mapping,
+`playbooks.enabled` and `rag.use_runbooks` stay readable as mirrors of
+`investigator_guidance` and `rag_corpus`: a settings write that changes only a mirror is
+carried onto its successor, and a write that names the successor too keeps the
+successor's value. A case-automation rule keeps the stored action value `run_playbook`;
+it now attaches a runbook (see [Detection and rules](../automation/rules.md)).
+
+### Personal preferences and dashboards
+
+Each user's preferences (`PUT /api/prefs/user`) carry two Round 14 lists in `misc`,
+normalised when read (a bad value is removed, never rejected):
+
+| Key | Holds |
+|---|---|
+| `misc.dashboards_hidden` | Built-in dashboard ids the user hid from the Dashboards library (`builtin:<name>`, at most 8; the Cyber Defence Center cannot be hidden) |
+| `misc.dismissed_intros` | Ids of the introductory notes the user dismissed (lower-case ids, at most 50) |
+| `misc.whats_new_seen` | The newest release-notes update id the user has seen in **What's new** (the same id grammar); absent means the account predates the feature, so the welcome shows once |
+| `misc.whats_new_auto` | `false` turns off the **What's new** welcome after updates (**Show What's new after updates**); absent means on |
+
+A change to `dashboards_hidden`, `dismissed_intros` or `whats_new_seen` is recorded in
+the audit log before it is saved. A new account starts with `whats_new_seen` set to the
+newest update id this build ships, and the setup wizard sets it when it completes. With
+sign-in off, every caller shares one set of preferences, so the marker counts once per
+installation.
+
+The organization's default theme has one home: `branding.default_theme`, edited under
+**Settings → Organization → Branding**. The older `customization.default_theme` is read
+once on load: while Branding is still at its factory default, a non-`system` value is
+copied into Branding, and the older key becomes `system`. A personal
+dashboard (`DashboardLayout`) gains two optional fields: `default_window`, the window
+its time-range picker starts on (`now-24h`, `now-7d`, `now-30d` or `now-90d`; absent means
+the last 24 hours), and `derived_from`, the built-in board it was copied from. A request
+with another value is refused (`422`); a stored value a later release added reads as
+absent. The built-in boards are defined by the Console and are not stored.
+
+### Session policy and Remember me
+
+`session_policy` sets session lifetimes; edit it under **Settings → Security & access →
+Single sign-on & policy**. Its `remember_me` block controls the **Remember me** option on
+the sign-in page:
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `remember_me.enabled` | `true` | `true`, `false` | Offer Remember me on the sign-in page; turning it off ends existing remembered sessions where an ordinary sign-in would (at the standard token lifetime, `AUTH_TOKEN_HOURS`) |
+| `remember_me.duration_seconds` | 86,400 | 3,600–86,400 | How long a remembered device stays signed in; the console offers 6, 12, and 24 hours. Never longer than `absolute_lifetime` |
+| `remember_me.idle_seconds` | `null` | 300–86,400 | Optional separate inactivity limit for remembered sessions; `null` uses `idle_timeout` |
+| `remember_me.excluded_roles` | `[]` | ≤ 50 roles | Roles that are never remembered |
+| `remember_me.allow_insecure_http` | `false` | `true`, `false` | Allow a persistent cookie on plain HTTP when secure cookies are off (not recommended) |
+
+Stored values are repaired, not rejected, but a settings write with an out-of-range or
+malformed `remember_me` value is refused with HTTP 422, so an administrator never gets a
+looser policy than the one requested. See
+[Security hardening](../operations/security.md#session-lifetimes).
+
+### Role-based access
+
+`rbac.enabled` (default `false`) decides whether roles are enforced; while it is off,
+every signed-in account is treated as Super admin. It is changed only in **Settings →
+Security & access → Roles & permissions** or with `PUT /api/rbac`, by an account whose
+stored role is Super admin after a recent sign-in. `PUT /api/settings` answers `409
+rbac_switch_moved` to a body that would change it, and changing any other `rbac` field
+(`roles`, `resources`, `custom_roles`, `denies`, `default_role`) through it needs
+`roles:manage` and a fresh sign-in. See
+[Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access).
+
+### Single sign-on
+
+A `PUT /api/settings` that changes the `sso` block (a provider added, removed or edited in
+any field, or `sso.enabled` changed) needs an account whose stored role is Super admin,
+with a strict fresh sign-in; so does `POST /api/auth/sso/providers/{provider_id}/secret`.
+Anyone else gets `403` with "Only a Super admin can change single sign-on." A provider's
+`default_role` and each `group_role_map` value must be a built-in role; a custom role
+name is refused with `422` when the provider is saved. A provider saved before 0.2.0 with
+a custom role value is kept as stored until it is next changed.
+
+### Team activity
+
+`team_activity` has one switch, edited under **Settings → Security & access → Single
+sign-on & policy → Team activity**:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `team_activity.enabled` | `true` | Show the Team activity page. Off, nobody can open it and its routes answer `409 team_activity_off` |
+
+Reading the page also needs `team:view`, and while role-based access is off a stored role
+of Super admin, SOC manager or Auditor. That limit covers this page only and is not an
+access control: while role-based access is off every account still holds `audit:view`
+and `users:manage`, so it can read the same rows in the Audit log or change its own role.
+Turn role-based access on to keep per-person work private. A malformed stored value is
+repaired to `true`, never rejected. See [Team activity](../analyst/team-activity.md).
+
+### Auto-close review
+
+`auto_close_review` controls the random review of automatic closes, edited in the
+**Auto-close review** group of **Settings → General → Detection**:
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `auto_close_review.enabled` | `true` | `true`, `false` | Send a small random sample of the cases the AI agent closed automatically to a person for review |
+| `auto_close_review.sample_rate` | 0.05 | 0 to 0.5 | The share of automatic closes picked; each case has a fixed score, and the cases scoring below the rate are picked |
+| `auto_close_review.daily_cap` | 10 | 0 to 200 | The most cases picked in one day, in the SLA time zone |
+| `auto_close_review.per_rule_daily_cap` | 3 | 1 to 50 | The most cases of one detection rule picked in one day |
+| `auto_close_review.expiry_days` | 7 | 1 to 30 | Days a picked case waits before it is shown as expired (it can still be reviewed) |
+
+Stored values are repaired on load (a value out of range is clamped, a malformed one takes
+its default), but a settings write with an out-of-range or malformed value is refused
+with HTTP 422, so an administrator never gets a value they did not type. None of these
+values is read by the close or escalate decision, and a review never changes a case's
+status, decider or disposition. See [Auto-close review](../automation/auto-close-review.md).
 
 ### Discounted alert inference
 
@@ -219,6 +518,11 @@ providers/models remain standard before the call. `batch.fallback_to_standard`
 defaults to `true`, so an OpenAI 429 or Flex/service-tier-specific 400 retries at
 standard service and is metered as standard. Chat, standup, embeddings, and
 model-test calls are not automatically moved to Flex.
+
+These switches are edited under **Settings → General → Discounted inference** and save
+with the other preferences, so changing them needs `settings:manage`. (Before Round 14
+they were on the Jobs page and saved through `PUT /api/batch/config`, which needs
+`models:manage`; that route still exists.)
 
 The existing `batch.enabled` switch remains the separate, true asynchronous provider
 Batch path for the aggregated event-feed funnel. Ordinary case investigations require
@@ -249,7 +553,9 @@ keys.
 4. Configure one model provider and set a daily budget before enabling broad automation.
 5. Review deterministic auto-close thresholds, RBAC, receiver authentication, and notification targets.
 6. Back up state and deployment secrets through separate controlled procedures.
-7. Record `/api/health/build-info` with the deployment inventory.
+7. Record `/api/health/build-info` with the deployment inventory, and confirm a newly
+   created case plus newly appended audit/usage rows carry that build identity. Do not
+   treat `null` legacy provenance or an honest `unknown` SHA as a different build.
 
 See [Operations configuration](../operations/configuration.md),
 [Security](security.md), and [Models and spend](../administration/models-spend.md).

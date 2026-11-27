@@ -54,7 +54,7 @@ from agentic_soc_updater.runtime import (  # noqa: E402
 )
 
 
-REPOSITORY = "ARYDESTROYER/Agentic-Kibana"
+REPOSITORY = "ARYDESTROYER/Kavach-AgenticSOC"
 CURRENT_SHA = "1" * 40
 TARGET_SHA = "2" * 40
 
@@ -88,7 +88,7 @@ def plan_dict() -> dict:
         },
         "components": {
             name: {
-                "image": f"ghcr.io/arydestroyer/agentic-kibana/{name}@sha256:{digit * 64}",
+                "image": f"ghcr.io/arydestroyer/kavach-agenticsoc/{name}@sha256:{digit * 64}",
                 "digest": f"sha256:{digit * 64}",
                 "labels": labels,
             }
@@ -388,7 +388,7 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "requires updater protocol 2"):
             validate_plan(bad, REPOSITORY)
         bad = plan_dict()
-        bad["components"]["backend"]["image"] = "ghcr.io/arydestroyer/agentic-kibana/backend:latest"
+        bad["components"]["backend"]["image"] = "ghcr.io/arydestroyer/kavach-agenticsoc/backend:latest"
         with self.assertRaises(ContractError):
             validate_plan(bad, REPOSITORY)
 
@@ -409,9 +409,9 @@ class ContractTests(unittest.TestCase):
                 "--commit-sha", TARGET_SHA,
                 "--published-at", "2026-08-03T00:00:00Z",
                 "--repository", REPOSITORY,
-                "--updater-image", f"ghcr.io/arydestroyer/agentic-kibana/updater@sha256:{'a' * 64}",
-                "--backend-image", f"ghcr.io/arydestroyer/agentic-kibana/backend@sha256:{'b' * 64}",
-                "--webui-image", f"ghcr.io/arydestroyer/agentic-kibana/webui@sha256:{'c' * 64}",
+                "--updater-image", f"ghcr.io/arydestroyer/kavach-agenticsoc/updater@sha256:{'a' * 64}",
+                "--backend-image", f"ghcr.io/arydestroyer/kavach-agenticsoc/backend@sha256:{'b' * 64}",
+                "--webui-image", f"ghcr.io/arydestroyer/kavach-agenticsoc/webui@sha256:{'c' * 64}",
                 "--output", str(output),
             ]
             subprocess.run(command, cwd=ROOT, check=True, capture_output=True)
@@ -421,6 +421,10 @@ class ContractTests(unittest.TestCase):
             )
             self.assertEqual(
                 generated["compatibility"]["from"]["min_inclusive"], "0.1.1"
+            )
+            # A 0.2.x install must accept the next 0.2 patch plan.
+            self.assertEqual(
+                generated["compatibility"]["from"]["max_exclusive"], "0.3.0"
             )
             self.assertTrue(
                 all(
@@ -445,9 +449,9 @@ class ContractTests(unittest.TestCase):
                     "--commit-sha", target_sha,
                     "--published-at", "2026-08-03T00:00:00Z",
                     "--repository", REPOSITORY,
-                    "--updater-image", f"ghcr.io/arydestroyer/agentic-kibana/updater@sha256:{'a' * 64}",
-                    "--backend-image", f"ghcr.io/arydestroyer/agentic-kibana/backend@sha256:{'b' * 64}",
-                    "--webui-image", f"ghcr.io/arydestroyer/agentic-kibana/webui@sha256:{'c' * 64}",
+                    "--updater-image", f"ghcr.io/arydestroyer/kavach-agenticsoc/updater@sha256:{'a' * 64}",
+                    "--backend-image", f"ghcr.io/arydestroyer/kavach-agenticsoc/backend@sha256:{'b' * 64}",
+                    "--webui-image", f"ghcr.io/arydestroyer/kavach-agenticsoc/webui@sha256:{'c' * 64}",
                     "--output", str(output),
                 ]
                 subprocess.run(command, cwd=ROOT, check=True, capture_output=True)
@@ -612,6 +616,39 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeFailure, "immutable image ID"):
             runtime.installed_identity()
 
+    def test_installed_identity_accepts_matching_missing_legacy_schema_labels(
+        self,
+    ) -> None:
+        legacy_labels = {
+            "org.opencontainers.image.version": "0.1.1",
+            "org.opencontainers.image.revision": CURRENT_SHA,
+            "dev.tlsoc.release.channel": "stable",
+        }
+        containers = {
+            self.config.backend_container: {
+                "Image": f"sha256:{'d' * 64}",
+                "Config": {"Labels": legacy_labels},
+            },
+            self.config.webui_container: {
+                "Image": f"sha256:{'e' * 64}",
+                "Config": {"Labels": legacy_labels},
+            },
+        }
+        runtime = ComposeRuntime(self.config, self.runner)
+        runtime._container = lambda name: containers[name]  # type: ignore[method-assign]
+
+        identity = runtime.installed_identity()
+
+        self.assertEqual(identity["version"], "0.1.1")
+        self.assertEqual(identity["state_schema"], "unknown")
+
+        containers[self.config.webui_container]["Config"]["Labels"] = {
+            **legacy_labels,
+            "io.agentic-soc.state.schema": "1",
+        }
+        with self.assertRaisesRegex(RuntimeFailure, "identities disagree"):
+            runtime.installed_identity()
+
     def test_preflight_requires_managed_stable_identity_after_v011(self) -> None:
         self.environment.write_text(
             "TLSOC_AUTH_ENABLED=true\n"
@@ -699,6 +736,12 @@ class RuntimeTests(unittest.TestCase):
             return result
 
         self.runner.run = run_with_capacity  # type: ignore[method-assign]
+        disk_capacity = mock.patch(
+            "agentic_soc_updater.runtime.shutil.disk_usage",
+            return_value=mock.Mock(free=1024 * 1024 * 1024),
+        )
+        disk_capacity.start()
+        self.addCleanup(disk_capacity.stop)
         self.runtime.installed_identity = lambda: {  # type: ignore[method-assign]
             "version": installed["version"],
             "channel": "stable",

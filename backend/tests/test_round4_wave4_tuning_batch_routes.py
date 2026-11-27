@@ -353,6 +353,32 @@ def test_batch_jobs_list_and_get(state_and_client) -> None:
     assert client.get("/api/batch/jobs/nope").status_code == 404
 
 
+def test_batch_jobs_preserve_terminal_aggregate_counts_after_compaction(
+    state_and_client,
+) -> None:
+    state, client = state_and_client
+    job = BatchJob(
+        provider="openai",
+        provider_batch_id="batch_terminal",
+        state=BatchJobState.RETRIEVED,
+        model="gpt-test",
+        custom_ids={
+            "c1": {"retrieved": True, "result_state": "succeeded"},
+            "c2": {"retrieved": True, "result_state": "errored"},
+        },
+        submitted_at="2026-07-02T00:00:00+00:00",
+    )
+    stored = _run(client, state.batch_job_store.save(job))
+    assert stored.terminal_compacted is True
+    assert stored.custom_ids == {}
+
+    response = client.get("/api/batch/jobs")
+    assert response.status_code == 200, response.text
+    row = response.json()["jobs"][0]
+    assert row["requests"] == 2
+    assert row["retrieved"] == 2
+
+
 def test_batch_registry_outage_is_503_not_empty_or_not_found(
     state_and_client, monkeypatch,
 ) -> None:
@@ -439,3 +465,48 @@ def test_every_non_get_route_carries_an_authz_gate() -> None:
 # --------------------------------------------------------------------------- #
 def _run(client: TestClient, coro):
     return client.portal.call(lambda: coro)  # type: ignore[attr-defined]
+
+
+def test_recommendations_explain_an_inert_correlation_n_rule(state_and_client) -> None:
+    """A rule over target with no correlation_n recommendation must say WHY.
+
+    Silence is what made the reported defect invisible: the tuner kept "applying"
+    correlation_n raises that an alerts-role feed discards on every poll, so the FP
+    rate never moved and the same rules were re-drafted forever. The dry-run must
+    surface the structural reason instead of just omitting the recommendation.
+    """
+    from app.config import CorrelationMode, CorrelationRule
+
+    state, client = state_and_client
+    _run(client, _seed_noisy(state))
+
+    # Configure the noisy rule as EVERY — mode=EVERY never consults n, so a raise is
+    # dead configuration exactly as the alerts-role override makes it.
+    state.prefs.correlation_rules["noisy_rule"] = CorrelationRule(
+        mode=CorrelationMode.EVERY, n=1
+    )
+
+    body = client.get("/api/tuning/recommendations").json()
+    noise = {row["rule_id"]: row for row in body["rule_noise"]}
+    row = noise["noisy_rule"]
+    assert row["over_target"] is True
+    assert row["correlation_n_inert"] is True
+    assert row["correlation_n_inert_reason"] == "correlation_mode_every"
+    assert "never consults n" in row["correlation_n_inert_detail"]
+
+    # ...and no correlation_n recommendation is offered for it.
+    recos = {p["rule_id"]: p for p in body["recommendations"]}
+    assert recos.get("noisy_rule", {}).get("kind") != "correlation_n"
+
+
+def test_recommendations_do_not_flag_a_tunable_rule_as_inert(state_and_client) -> None:
+    """The ordinary path is unchanged: a normal rule is never reported inert."""
+    state, client = state_and_client
+    _run(client, _seed_noisy(state))
+
+    body = client.get("/api/tuning/recommendations").json()
+    noise = {row["rule_id"]: row for row in body["rule_noise"]}
+    assert noise["noisy_rule"]["correlation_n_inert"] is False
+    assert noise["noisy_rule"]["correlation_n_inert_reason"] == ""
+    recos = {p["rule_id"]: p for p in body["recommendations"]}
+    assert recos["noisy_rule"]["kind"] == "correlation_n"

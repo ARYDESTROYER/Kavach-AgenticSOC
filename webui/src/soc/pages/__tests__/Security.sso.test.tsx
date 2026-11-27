@@ -26,6 +26,11 @@ vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
 }));
 
+// Round 15: SecuritySsoInner reads the live RBAC state for its Remember-me note.
+vi.mock('@/soc/auth', () => ({
+  useAuth: () => ({ authEnabled: true, rbacEnabled: true, role: 'super_admin', hasPermission: () => true }),
+}));
+
 import { TooltipProvider } from '@/ui/tooltip';
 import { api } from '@/lib/api';
 import { SecuritySsoInner } from '../Security';
@@ -86,5 +91,32 @@ describe('Security SSO group→role map', () => {
     fireEvent.click(within(alert as HTMLElement).getByRole('button', { name: 'Retry' }));
 
     expect(await screen.findByLabelText('Enable single sign-on')).toBeInTheDocument();
+  });
+});
+
+describe('Security SSO add buttons', () => {
+  it('names each provider as its maker writes it, never the lower-case type id', () => {
+    renderSso();
+    for (const name of ['Add Google', 'Add Microsoft', 'Add generic OIDC']) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: /^Add (google|microsoft)$/ })).toBeNull();
+  });
+
+  it('adds a provider of the type the button names', () => {
+    const update = vi.fn();
+    render(
+      <TooltipProvider>
+        <SecuritySsoInner
+          prefs={{ sso: { enabled: true, providers: [] }, session_policy: {} } as any}
+          update={update}
+          configured={{}}
+        />
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add Microsoft' }));
+    const sso = update.mock.calls.at(-1)?.[0]?.sso;
+    expect(sso.providers).toHaveLength(1);
+    expect(sso.providers[0]).toMatchObject({ type: 'microsoft', display_name: 'Microsoft' });
   });
 });

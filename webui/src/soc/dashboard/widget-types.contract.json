@@ -1,5 +1,5 @@
 {
-  "_comment": "CANONICAL custom-dashboard widget-type allowlist (Round 5 / G7). The SINGLE source of truth both the client widget registry (webui/src/soc/dashboard/registry.ts -> WIDGET_TYPES) and the server allowlist (backend/app/api/routes_dashboards.py -> WIDGET_TYPES) MUST equal. Two contract tests pin to this file and FAIL CI if either side drifts: webui dashboard-widget-types.contract.test.ts + backend test_round5_dashboards_widget_type_contract.py. Add a widget = add ONE value here + one registry entry + one lazy body + (only if a new rollup) one DashboardDataProvider source. See audit C1/H1.",
+  "_comment": "CANONICAL custom-dashboard widget-type allowlist (Round 5 / G7; Round 14 SPEC §4.4.3 adds the built-in boards' modules). The SINGLE source of truth both the client widget registry (webui/src/soc/dashboard/registry.ts -> WIDGET_TYPES) and the server allowlist (backend/app/api/routes_dashboards.py -> WIDGET_TYPES) MUST equal. Two contract tests pin to this file and FAIL CI if either side drifts: webui dashboard-widget-types.contract.test.ts + backend test_round5_dashboards_widget_type_contract.py. Add a widget = add ONE value here + one registry entry + one lazy body + (only if a new rollup) one DashboardDataProvider source. See audit C1/H1.",
   "widget_types": [
     "kpi.needs_human",
     "kpi.cost_budget",
@@ -9,6 +9,22 @@
     "table.connector_health",
     "table.recent_cases",
     "mitre.heatmap",
-    "gauge.active_risk"
+    "gauge.active_risk",
+    "kpi.strip",
+    "chart.case_trend",
+    "chart.case_breakdown",
+    "chart.severity_trend",
+    "chart.backlog_aging",
+    "chart.noise_funnel",
+    "table.attention_queue",
+    "table.workload",
+    "table.sla_breaches",
+    "table.top_rules",
+    "table.noisy_rules",
+    "table.top_techniques",
+    "kpi.auto_close_health",
+    "table.campaigns",
+    "table.telemetry_gaps",
+    "kpi.agent_quality"
   ]
 }

@@ -12,7 +12,6 @@
  */
 import * as React from 'react';
 import {
-  Activity,
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
@@ -20,14 +19,12 @@ import {
   ChevronRight,
   Clock3,
   DatabaseZap,
-  History,
   Info,
   Loader2,
   Play,
   Radar,
   Search,
   ShieldCheck,
-  SlidersHorizontal,
   Undo2,
   X,
 } from 'lucide-react';
@@ -69,15 +66,17 @@ import { AgentEffectivenessSummary } from './AgentEffectiveness';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { RefreshButton } from '@/soc/components/RefreshButton';
 import { PageHeader } from '@/soc/components/PageHeader';
-import { LoadingState } from '@/design-system';
+import { LoadingState, Panel, StatusDot } from '@/design-system';
+import { KpiStrip } from '@/soc/components/KpiStrip';
 import { LoadingBar } from '@/soc/components/LoadingBar';
-import { KpiTile, type KpiAccent } from '@/soc/components/KpiTile';
+import { KpiTile } from '@/soc/components/KpiTile';
 import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { InlineCode } from '@/soc/components/CodeBlock';
 import { HelpTip } from '@/soc/components/HelpTip';
 import { Can, ProtectedRoute, useCan } from '@/soc/components/Can';
+import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
 import { Field } from '@/soc/components/Field';
 import { NumberField } from '@/soc/components/NumberField';
 import { LabeledSlider } from '@/soc/components/LabeledSlider';
@@ -86,6 +85,9 @@ import { EffectiveConfigPreview } from '@/soc/components/rules/EffectiveConfigPr
 import { StickySaveBar } from '@/soc/components/SettingsGrid';
 import { useMediaQuery } from '@/soc/hooks/useMediaQuery';
 import { useUnsavedChanges } from '@/soc/hooks/useDirtyDraft';
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainWilson, wilsonInterval } from '@/lib/explain/stats';
+import type { Explanation } from '@/lib/explain/types';
 
 import {
   DEFAULT_TUNING_CONFIG,
@@ -150,9 +152,132 @@ function ChangeArrow({ before, after }: { before: unknown; after: unknown }) {
   );
 }
 
+/** The page's explanation, shown in the header help tip (C8: no description line). */
+const PAGE_HELP =
+  'Find noisy rules, understand the evidence and review one bounded change at a time. Tuning never decides a case: it changes only which future candidates enter investigation, learns from analyst-confirmed outcomes and never sets a verdict, closes or escalates a case.';
+
+/** A tab body: the modules stacked one panel gutter apart (the page rhythm). */
+const TAB_BODY = 'mt-6 flex flex-col gap-4 xl:gap-5 3xl:gap-6';
+
+/**
+ * A review row built from a recommendation that outlived its feedback row. When the
+ * recommendation did not record its confirmed counts, `counts_recorded` is false and the
+ * page says "not recorded" instead of deriving counts from the Wilson lower bound
+ * (research explainability D6): `fp_rate` is that bound, never the observed ratio.
+ */
+type ReviewRule = RuleNoise & { counts_recorded?: boolean };
+
+/** False only for a synthetic row whose confirmed counts were not recorded (D6). */
+export function countsRecorded(rule: RuleNoise): boolean {
+  return (rule as ReviewRule).counts_recorded !== false;
+}
+
+/** The observed false-positive ratio as shown, or "not recorded" (D6). */
+export function observedRatioText(rule: RuleNoise): string {
+  return countsRecorded(rule) ? fmtPercent(observedFpRate(rule.total, rule.fp)) : 'not recorded';
+}
+
+/**
+ * The conservative estimate explained: the Wilson lower bound of the confirmed false
+ * positives among the analyst-confirmed cases, at the configured z. Never derived from a
+ * row whose counts were not recorded.
+ */
+export function conservativeEstimateExplanation(rule: RuleNoise, z: number): Explanation {
+  const display = fmtPercent(rule.fp_rate);
+  if (!countsRecorded(rule) || !(rule.total > 0)) {
+    return {
+      metric: 'tuning_conservative_fp_rate',
+      title: 'Conservative estimate',
+      value: rule.fp_rate,
+      display,
+      summary: `Conservative false-positive estimate ${display}. The confirmed counts behind it were not recorded for this recommendation.`,
+      formula: 'Wilson lower bound of confirmed false positives / analyst-confirmed cases',
+      inputs: [{ key: 'fp_rate', label: 'Stored estimate', value: display, source: 'The tuner' }],
+      steps: [],
+      provenance: 'not_recorded',
+      caveats: ['The counts are not derived from the estimate, because the estimate is a lower bound, not the observed ratio.'],
+    };
+  }
+  const base = explainWilson(rule.fp, rule.total, z);
+  const interval = wilsonInterval(rule.fp, rule.total, z);
+  const caveats = [...(base?.caveats ?? [])];
+  if (interval && Math.abs(interval.low - rule.fp_rate) > 0.001) {
+    caveats.push(`The tuner stored ${display}; it may come from an earlier evaluation than these counts.`);
+  }
+  // The generic Wilson inputs in this page's words: what was counted, out of what.
+  const inputLabels: Record<string, string> = {
+    successes: 'Confirmed false positives',
+    n: 'Analyst-confirmed cases',
+  };
+  return {
+    ...(base as Explanation),
+    inputs: (base?.inputs ?? []).map((input) =>
+      inputLabels[input.key] ? { ...input, label: inputLabels[input.key], source: 'This rule' } : input,
+    ),
+    metric: 'tuning_conservative_fp_rate',
+    title: 'Conservative estimate',
+    value: rule.fp_rate,
+    display,
+    summary: `${display} is the Wilson lower bound of ${fmtNumber(rule.fp)} false positives in ${fmtNumber(rule.total)} analyst-confirmed cases at z = ${z}.`,
+    caveats,
+  };
+}
+
 function ruleState(rule: RuleNoise, minSamples: number): RuleState {
   if (rule.total < minSamples) return 'collecting';
   return rule.over_target ? 'attention' : 'within';
+}
+
+/**
+ * The ONE table of the tuner's `correlation_n` INERTNESS reason codes, each a short
+ * label and a plain sentence (Round 14, SPEC §5 F12).
+ *
+ * A noisy rule can sit over target and still get no correlation-threshold
+ * recommendation, because the live pipeline would discard the raise. Leaving that
+ * silent is the exact failure mode the backend fix exists to end, so the reason is
+ * always shown next to the rule. The backend's own `correlation_n_inert_detail` is
+ * engineering text ("configured mode=EVERY ...") and is never rendered.
+ */
+export const INERT_REASONS: Record<string, InertNote> = {
+  alerts_role_every_override: {
+    label: 'Alerts feed sends every alert',
+    detail:
+      'This rule reads an alerts feed, which sends every alert to triage, so raising its threshold would change nothing.',
+  },
+  correlation_mode_every: {
+    label: 'Fires on every event',
+    detail: 'This rule fires on every event, so raising its threshold would change nothing.',
+  },
+  inline_rule_definition_correlation: {
+    label: 'Correlation set on the rule',
+    detail:
+      'This rule sets its own correlation, so raising the shared threshold would change nothing. Change the rule instead.',
+  },
+};
+
+/** The sentence for a reason code this Console does not know yet. */
+export const INERT_FALLBACK_DETAIL =
+  'Raising this rule\u2019s threshold would not take effect in the pipeline, so no change is proposed.';
+
+export interface InertNote {
+  label: string;
+  detail: string;
+}
+
+/**
+ * The rule's inertness note, or null when a correlation-threshold raise would work
+ * normally. A code a newer backend adds and this Console does not know yet keeps its
+ * signal: its name (humanised) with the fallback sentence, never the raw detail.
+ */
+export function inertNote(rule: RuleNoise): InertNote | null {
+  if (!rule.correlation_n_inert) return null;
+  const code = (rule.correlation_n_inert_reason ?? '').trim();
+  return (
+    INERT_REASONS[code] ?? {
+      label: code ? humanizeToken(code) : 'Threshold change would not take effect',
+      detail: INERT_FALLBACK_DETAIL,
+    }
+  );
 }
 
 function RuleStateBadge({ state }: { state: RuleState }) {
@@ -208,7 +333,7 @@ function explainRuleState(
   target: number,
 ): RuleExplanation {
   const state = ruleState(rule, minSamples);
-  const observed = observedFpRate(rule.total, rule.fp);
+  const observed = observedRatioText(rule);
 
   if (state === 'attention') {
     const gap = Math.max(0, rule.fp_rate - target);
@@ -216,11 +341,12 @@ function explainRuleState(
       heading: 'Why this rule needs attention',
       lead:
         `${analystCaseLabel(rule.total)} meet the ${fmtNumber(minSamples)}-case evidence minimum. ` +
-        `The conservative false-positive estimate is ${fmtPercent(rule.fp_rate)} — ` +
+        `The conservative false-positive estimate is ${fmtPercent(rule.fp_rate)}, ` +
         `${percentagePointLabel(gap)} above the ${fmtPercent(target)} policy target.`,
-      support:
-        `Observed false-positive ratio: ${fmtPercent(observed)} ` +
-        `(${fmtNumber(rule.fp)} marked false positive or benign).`,
+      support: countsRecorded(rule)
+        ? `Observed false-positive ratio: ${observed} ` +
+          `(${fmtNumber(rule.fp)} marked false positive or benign).`
+        : 'Observed false-positive ratio: not recorded. This recommendation did not record its confirmed counts.',
     };
   }
 
@@ -233,7 +359,7 @@ function explainRuleState(
         `have been collected. ${fmtNumber(remaining)} more ${remaining === 1 ? 'is' : 'are'} ` +
         'required before tuning can recommend a change.',
       support:
-        `Current observed ratio ${fmtPercent(observed)} and conservative estimate ` +
+        `Current observed ratio ${observed} and conservative estimate ` +
         `${fmtPercent(rule.fp_rate)} are context only until the evidence minimum is met.`,
     };
   }
@@ -319,6 +445,19 @@ function explainNoRecommendation(
     };
   }
 
+  const inert = inertNote(rule);
+  if (inert) {
+    return {
+      title: 'Correlation threshold cannot help this rule',
+      // The reason-code sentence: exactly WHY the raise would be discarded.
+      instruction: inert.detail,
+      effect:
+        'No correlation threshold change is proposed. A raise here would be written to ' +
+        'configuration the live pipeline never reads for this rule.',
+      safety: 'The rule remains unchanged. Adjust the feed or the rule’s correlation instead.',
+    };
+  }
+
   return {
     title: 'Review the rule configuration',
     instruction: 'This rule exceeds policy, but no bounded tuning target is currently available.',
@@ -341,7 +480,20 @@ export default function Tuning({ onNavigate }: TuningProps) {
   );
 }
 
-export function TuningInner({ onNavigate }: TuningProps) {
+/**
+ * The page body. Its rule links (the inspector header and the ledger) share one rule sheet
+ * that lives with the page (Round 14, SPEC §4.6.5), so a reload that drops the inspected
+ * rule or re-renders the ledger never closes the sheet being read.
+ */
+export function TuningInner(props: TuningProps) {
+  return (
+    <RuleSheetHost>
+      <TuningBody {...props} />
+    </RuleSheetHost>
+  );
+}
+
+function TuningBody({ onNavigate }: TuningProps) {
   const contextNavigate = useNavigateOptional();
   const navigate = onNavigate ?? contextNavigate;
   const canManage = useCan('automation', 'manage');
@@ -530,19 +682,22 @@ export function TuningInner({ onNavigate }: TuningProps) {
   // resurrecting a second recommendations queue. The recommendation carries the same
   // independently-confirmed counters needed for an honest, synthetic evidence row.
   const reviewRules = React.useMemo(() => {
-    const rows = new Map(ruleNoise.map((rule) => [rule.rule_id, rule]));
+    const rows = new Map<string, ReviewRule>(ruleNoise.map((rule) => [rule.rule_id, rule]));
     for (const [ruleId, ruleRecommendations] of recommendationsByRule) {
       if (rows.has(ruleId) || !ruleRecommendations.length) continue;
       const recommendation = ruleRecommendations[0];
       const analystSamples =
         recommendation.analyst_samples ?? recommendation.samples ?? 0;
-      const falsePositives =
-        recommendation.confirmed_false_positives ??
-        Math.max(0, Math.round(recommendation.fp_rate * analystSamples));
-      const truePositives =
-        recommendation.confirmed_true_positives ??
-        Math.max(0, analystSamples - falsePositives);
+      // D6: never derive counts from `fp_rate`, the Wilson LOWER BOUND. Without the
+      // recorded confirmed counts the row says "not recorded".
+      const recordedFp = recommendation.confirmed_false_positives;
+      const counted = typeof recordedFp === 'number' && Number.isFinite(recordedFp);
+      const falsePositives = counted ? recordedFp : 0;
+      const truePositives = counted
+        ? recommendation.confirmed_true_positives ?? Math.max(0, analystSamples - falsePositives)
+        : 0;
       rows.set(ruleId, {
+        counts_recorded: counted,
         rule_id: ruleId,
         observed: recommendation.observed_cases ?? analystSamples,
         total: analystSamples,
@@ -669,9 +824,13 @@ export function TuningInner({ onNavigate }: TuningProps) {
         className: 'min-w-[14rem] max-w-[22rem]',
         cell: (row) => (
           <div className="min-w-0 space-y-0.5">
-            <span className="block truncate font-mono text-xs text-foreground" title={row.rule_id}>
-              {row.rule_id}
-            </span>
+            {/* Round 14 (SPEC §4.6.5): the rule opens its picture, the rule sheet. */}
+            <RuleLink
+              rule={row.rule_id}
+              origin="Auto-tuning"
+              title={row.rule_id}
+              className="block max-w-full truncate text-xs text-foreground"
+            />
             <span className="text-xs text-muted-foreground">
               {KIND_LABELS[row.target] ?? humanizeToken(row.target)}
             </span>
@@ -745,44 +904,33 @@ export function TuningInner({ onNavigate }: TuningProps) {
     [busyKeys, newestActiveRowByRule, rollbackRule],
   );
 
-  const kpis: Array<{
-    label: string;
-    value: number;
-    sub: string;
-    icon: typeof Radar;
-    accent: KpiAccent;
-  }> = [
+  const kpis: Array<{ label: string; value: number; sub: string }> = [
     {
       label: 'Needs attention',
       value: needsAttention,
       sub: `${fmtNumber(recommendations.length)} bounded ${recommendations.length === 1 ? 'change' : 'changes'}`,
-      icon: AlertTriangle,
-      accent: 'high',
     },
     {
       label: 'Collecting evidence',
       value: collecting,
       sub: `Below ${fmtNumber(data?.min_samples ?? 0)} samples`,
-      icon: Clock3,
-      accent: 'info',
     },
     {
       label: 'Within target',
       value: withinTarget,
-      sub: 'Enough evidence · no change',
-      icon: ShieldCheck,
-      accent: 'success',
+      sub: 'Enough evidence, no change',
     },
   ];
 
+  // The page's modules are direct children of the default export's PageContainer, which
+  // owns the rhythm (header to first module, one panel gutter between modules).
   return (
-    <div className="space-y-5">
+    <>
       <PageHeader
         title="Auto-tuning"
-        description="Find noisy rules, understand the evidence, and review one bounded change at a time. Tuning never decides a case."
-        actions={
-          <RefreshButton onClick={refreshPage} refreshing={loading} />
-        }
+        help={PAGE_HELP}
+        controls={<RefreshButton onClick={refreshPage} refreshing={loading} label="Refresh auto-tuning" display="icon" />}
+        actions={data ? <OperatingPolicyLine data={data} /> : undefined}
       />
 
       <LoadingBar
@@ -820,122 +968,43 @@ export function TuningInner({ onNavigate }: TuningProps) {
             />
           ) : null}
 
-          <section
-            aria-label="Tuning operating status"
-            className="flex flex-col gap-3 border-y border-border/70 py-3 lg:flex-row lg:items-center lg:justify-between"
-          >
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="text-sm font-semibold text-foreground">Operating policy</span>
-              <HelpTip
-                label="What auto-tuning can change"
-                text="Auto-tuning changes only which future candidates enter investigation. It learns from analyst-confirmed outcomes and never sets a verdict, closes, or escalates a case."
-              />
-            </div>
-            <dl className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-              <div className="flex items-center gap-2">
-                <dt className="text-muted-foreground">Policy</dt>
-                <dd>
-                  <Badge variant={data.enabled ? 'success' : 'secondary'}>
-                    {data.enabled ? 'Active' : 'Paused'}
-                  </Badge>
-                </dd>
-              </div>
-              <div className="flex items-center gap-2">
-                <dt className="text-muted-foreground">Writes</dt>
-                <dd>
-                  <Badge variant={data.auto_apply_confirmed ? 'warning' : 'info'}>
-                    {data.auto_apply_confirmed ? 'Confirmed auto-apply' : 'Approval-first'}
-                  </Badge>
-                </dd>
-              </div>
-              <div className="flex items-center gap-2">
-                <dt className="text-muted-foreground">Cadence</dt>
-                <dd className="font-medium text-foreground">
-                  {humanizeToken(data.cadence)}
-                </dd>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <dt className="text-muted-foreground">Evidence</dt>
-                <dd className="font-medium tabular-nums text-foreground">
-                  {fmtNumber(data.window_cases)} closed cases
-                </dd>
-              </div>
-            </dl>
-          </section>
-
           <Tabs
             value={workspaceTab}
             onValueChange={(value) =>
               setWorkspaceTab(value as 'operations' | 'outcomes' | 'policy')
             }
           >
-            <div className="overflow-x-auto border-b border-border/70 pb-2">
-              <TabsList
-                aria-label="Auto-tuning workspace"
-                className="min-w-max"
-                data-testid="tuning-workspace-tabs"
-              >
-                <TabsTrigger value="operations" className="gap-1 px-2.5 sm:gap-2 sm:px-3">
-                  <SlidersHorizontal className="hidden size-4 sm:block" aria-hidden />
-                  Operations
-                </TabsTrigger>
-                <Can resource="metrics" action="view">
-                  <TabsTrigger value="outcomes" className="gap-1 px-2.5 sm:gap-2 sm:px-3">
-                    <Activity className="hidden size-4 sm:block" aria-hidden />
-                    Outcomes
-                  </TabsTrigger>
-                </Can>
-                <TabsTrigger value="policy" className="gap-1 px-2.5 sm:gap-2 sm:px-3">
-                  <History className="hidden size-4 sm:block" aria-hidden />
-                  Policy &amp; history
-                </TabsTrigger>
-              </TabsList>
-            </div>
+            <TabsList
+              variant="underline"
+              aria-label="Auto-tuning workspace"
+              data-testid="tuning-workspace-tabs"
+            >
+              <TabsTrigger value="operations">Operations</TabsTrigger>
+              <Can resource="metrics" action="view">
+                <TabsTrigger value="outcomes">Outcomes</TabsTrigger>
+              </Can>
+              <TabsTrigger value="policy">Policy &amp; history</TabsTrigger>
+            </TabsList>
 
-            <TabsContent value="operations" className="mt-5 space-y-7">
-              <section
-                aria-label="Health summary"
-                data-testid="tuning-health-strip"
-                className="grid grid-cols-1 border-y border-border/70 sm:grid-cols-3"
-              >
-                {kpis.map((kpi, index) => (
-                  <div
-                    key={kpi.label}
-                    className={cn(
-                      index > 0 && 'border-t border-border/70',
-                      index > 0 && 'sm:border-l sm:border-t-0',
-                    )}
-                  >
-                    <KpiTile
-                      label={kpi.label}
-                      value={fmtNumber(kpi.value)}
-                      sub={kpi.sub}
-                      icon={kpi.icon}
-                      accent={kpi.accent}
-                      variant="strip"
-                      density="compact"
-                    />
-                  </div>
+            <TabsContent value="operations" className={TAB_BODY}>
+              <KpiStrip label="Health summary" density="compact" data-testid="tuning-health-strip">
+                {kpis.map((kpi) => (
+                  <KpiTile key={kpi.label} label={kpi.label} value={fmtNumber(kpi.value)} context={kpi.sub} />
                 ))}
-              </section>
+              </KpiStrip>
 
-              <section className="space-y-3" aria-label="Rule review">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-base font-semibold tracking-tight text-foreground">
-                        Rule review
-                      </h2>
-                      <HelpTip
-                        label="How rules are ordered"
-                        text="Needs-attention rules appear first, followed by rules still collecting evidence and rules within target. The conservative Wilson estimate is the policy gate; observed rate is supporting context."
-                      />
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {fmtNumber(reviewRules.length)} monitored {reviewRules.length === 1 ? 'rule' : 'rules'}. Select one to see why it is in this state, the next step, expected effect, and safety replay.
-                    </p>
-                  </div>
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Panel
+                title="Rule review"
+                count={`${fmtNumber(reviewRules.length)} monitored ${reviewRules.length === 1 ? 'rule' : 'rules'}`}
+                aside={
+                  <HelpTip
+                    label="How rules are ordered"
+                    text="Rules that need attention come first, then rules still collecting evidence, then rules within target. Select one to see why it is in that state, the next step, its expected effect and the safety replay. The conservative Wilson estimate is the policy gate; the observed rate is context."
+                  />
+                }
+                className="space-y-4"
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                     <div className="relative min-w-0 sm:w-64">
                       <Search
                         className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
@@ -957,7 +1026,6 @@ export function TuningInner({ onNavigate }: TuningProps) {
                       options={RULE_FILTERS}
                       className="max-w-full overflow-x-auto"
                     />
-                  </div>
                 </div>
 
                 {approvalChangeCount ? (
@@ -1021,6 +1089,7 @@ export function TuningInner({ onNavigate }: TuningProps) {
                       target={data.fp_rate_target}
                       shadowEvalEnabled={saved.shadow_eval}
                       autoApplyConfirmed={saved.auto_apply_confirmed}
+                      wilsonZ={saved.wilson_z}
                       processing={busyKeys.has(`rule:${selectedRule.rule_id}`)}
                       onApplyRule={(ruleId) => void applyRule(ruleId)}
                       onOpenApprovals={() => navigate('approvals')}
@@ -1069,6 +1138,7 @@ export function TuningInner({ onNavigate }: TuningProps) {
                           target={data.fp_rate_target}
                           shadowEvalEnabled={saved.shadow_eval}
                           autoApplyConfirmed={saved.auto_apply_confirmed}
+                          wilsonZ={saved.wilson_z}
                           processing={busyKeys.has(`rule:${selectedRule.rule_id}`)}
                           onApplyRule={(ruleId) => void applyRule(ruleId)}
                           onOpenApprovals={() => navigate('approvals')}
@@ -1078,7 +1148,7 @@ export function TuningInner({ onNavigate }: TuningProps) {
                     ) : null}
                   </SheetContent>
                 </Sheet>
-              </section>
+              </Panel>
 
               {lastRollback ? (
                 <section
@@ -1116,19 +1186,19 @@ export function TuningInner({ onNavigate }: TuningProps) {
             </TabsContent>
 
             <Can resource="metrics" action="view">
-              <TabsContent value="outcomes" className="mt-5">
-                <div className="space-y-8">
+              <TabsContent value="outcomes" className={TAB_BODY}>
+                <>
                   <AgentEffectivenessSummary
                     refreshKey={effectivenessRefreshKey}
                     changes={outcomeChanges}
-                    onOpenFull={() => navigate('metrics', { tab: 'effectiveness' })}
+                    onOpenFull={() => navigate('effectiveness')}
                   />
                   <TelemetryOpportunities data={telemetryRecommendations} />
-                </div>
+                </>
               </TabsContent>
             </Can>
 
-            <TabsContent value="policy" className="mt-5 space-y-8">
+            <TabsContent value="policy" className={TAB_BODY}>
               {loadedOnce ? (
                 <TuningPolicy
                   draft={draft}
@@ -1139,30 +1209,31 @@ export function TuningInner({ onNavigate }: TuningProps) {
 
               <SchedulerHealth health={schedulerHealth} />
 
-              <section className="space-y-3" aria-label="Tuning audit history">
-                <div>
-                  <h2 className="text-base font-semibold tracking-tight text-foreground">
-                    Audit history
-                  </h2>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Applied changes are append-only. Rollback is offered only for the newest
-                    active change the API can reverse for a rule.
-                  </p>
-                </div>
+              <Panel
+                title="Audit history"
+                padding="none"
+                aside={
+                  <HelpTip
+                    label="About the audit history"
+                    text="Applied changes are append-only. Rollback is offered only for the newest active change the API can reverse for a rule."
+                  />
+                }
+              >
                 {ledger.length ? (
                   <DataTable
                     columns={ledgerColumns}
                     rows={ledger}
                     getRowId={(row) => row.id}
                     density="compact"
+                    surface="panel"
                     ariaLabel="Applied tuning changes"
                   />
                 ) : (
-                  <div className="border-y border-border/70 py-4 text-sm text-muted-foreground">
+                  <p className="px-4 pb-4 text-sm text-muted-foreground xl:px-5 xl:pb-5 3xl:px-6 3xl:pb-6">
                     No applied tuning changes were returned for this view.
-                  </div>
+                  </p>
                 )}
-              </section>
+              </Panel>
 
               <Can resource="automation" action="manage">
                 <StickySaveBar
@@ -1177,7 +1248,48 @@ export function TuningInner({ onNavigate }: TuningProps) {
           </Tabs>
         </>
       ) : null}
-    </div>
+    </>
+  );
+}
+
+/**
+ * The operating policy as one muted line in the header (no third band between the
+ * header and the tabs, [uib] TU4): "Active · Approval-first · Nightly · 99 closed cases".
+ * Each fact keeps its name for assistive technology.
+ */
+function OperatingPolicyLine({ data }: { data: TuningRecommendationsResponse }) {
+  const facts: Array<[string, React.ReactNode]> = [
+    ['Policy', data.enabled ? 'Active' : 'Paused'],
+    ['Writes', data.auto_apply_confirmed ? 'Confirmed auto-apply' : 'Approval-first'],
+    ['Cadence', humanizeToken(data.cadence)],
+    [
+      'Evidence',
+      <>
+        <span className="tabular-nums">{fmtNumber(data.window_cases)}</span> closed{' '}
+        {data.window_cases === 1 ? 'case' : 'cases'}
+      </>,
+    ],
+  ];
+  return (
+    <dl
+      aria-label="Operating policy"
+      className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground"
+      data-testid="tuning-operating-policy"
+    >
+      {/* The separator ends each fact but the last, so a phone-width wrap leaves it at
+          the end of the line above and never opens a line with "·" (closing QA qa2-09). */}
+      {facts.map(([term, value], index) => (
+        <div key={term} className="flex items-center gap-1.5">
+          <dt className="sr-only">{term}</dt>
+          <dd>{value}</dd>
+          {index < facts.length - 1 ? (
+            <span aria-hidden="true" data-separator="">
+              ·
+            </span>
+          ) : null}
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -1248,7 +1360,7 @@ function RuleList({
 }) {
   if (!rules.length && total === 0) {
     return (
-      <div className="border-y border-border/70">
+      <div className="border-t border-border/70">
         <EmptyState
           icon={Radar}
           title={emptyQuery ? 'No matching rules' : 'No rules monitored yet'}
@@ -1264,8 +1376,8 @@ function RuleList({
   }
 
   return (
-    <div className="min-w-0 border-y border-border/70" aria-label="Monitored rules">
-      <div className="hidden grid-cols-[minmax(13rem,0.9fr)_minmax(15rem,1fr)_minmax(15rem,0.85fr)_auto] gap-5 border-b border-border/70 px-3 py-2 text-2xs font-semibold uppercase tracking-wider text-muted-foreground xl:grid">
+    <div className="min-w-0 border-t border-border/70" aria-label="Monitored rules">
+      <div className="hidden grid-cols-[minmax(13rem,0.9fr)_minmax(15rem,1fr)_minmax(15rem,0.85fr)_auto] gap-5 border-b border-border/70 px-3 py-2 text-xs font-medium text-muted-foreground xl:grid" aria-hidden="true">
         <span>Rule and state</span>
         <span>Policy evidence</span>
         <span>Next step</span>
@@ -1279,14 +1391,33 @@ function RuleList({
           const action = recs.length
             ? explainRecommendation(recs[0], shadowEvalEnabled)
             : explainNoRecommendation(state, rule, minSamples);
-          const observed = observedFpRate(rule.total, rule.fp);
+          const observed = observedRatioText(rule);
+          const rowInert = inertNote(rule);
           const actionLabel = recs.length > 1
             ? `${fmtNumber(recs.length)} bounded changes`
             : action.title;
           const selected = selectedRuleId === rule.rule_id;
           const descriptionId = `${ruleTriggerId(rule.rule_id)}-description`;
           return (
-            <div key={rule.rule_id} role="listitem">
+            // Round 14 (SPEC §4.6.5, closing QA qa2-03): the row's inspect control and the
+            // rule's RuleLink are siblings, never nested. The inspect button covers the
+            // whole row (a click anywhere still opens the evidence, the signal bar
+            // included) and comes first in tab order; the RuleLink sits above it and opens
+            // the one rule sheet. `isolate` keeps both layers inside the row. The selection
+            // accent is the inspect button's left border, never the row's: the row is a
+            // child of the `divide-y` list, whose border colour rule outranks any
+            // `border-l-*` class on it and would draw a grey rule beside every row but
+            // the first.
+            <div
+              key={rule.rule_id}
+              role="listitem"
+              data-rule-row={rule.rule_id}
+              className={cn(
+                'relative isolate grid w-full min-w-0 gap-3 px-3 py-3.5 text-left transition-colors',
+                'hover:bg-accent/20 xl:grid-cols-[minmax(13rem,0.9fr)_minmax(15rem,1fr)_minmax(15rem,0.85fr)_auto] xl:items-center xl:gap-5',
+                selected && 'bg-accent/25',
+              )}
+            >
               <button
                 id={ruleTriggerId(rule.rule_id)}
                 type="button"
@@ -1295,89 +1426,97 @@ function RuleList({
                 aria-expanded={selected}
                 aria-controls={selected ? 'tuning-rule-detail' : undefined}
                 onClick={() => onSelect(rule.rule_id)}
+                data-rule-inspect=""
                 className={cn(
-                  'grid w-full min-w-0 gap-3 border-l-2 border-l-transparent px-3 py-3.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-                  'hover:bg-accent/20 xl:grid-cols-[minmax(13rem,0.9fr)_minmax(15rem,1fr)_minmax(15rem,0.85fr)_auto] xl:items-center xl:gap-5',
-                  selected && 'border-l-primary/70 bg-accent/25',
+                  'absolute inset-0 z-10 border-l-2 border-l-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                  selected && 'border-l-primary/70',
                 )}
-              >
-                <span id={descriptionId} className="sr-only">
-                  {explanation.lead} {explanation.support} {action.title}. {action.instruction}
-                </span>
+              />
+              {/* The inspect button's description, read only through aria-describedby:
+                  the row's own text is already on the page for a screen reader. */}
+              <span id={descriptionId} hidden>
+                {explanation.lead} {explanation.support} {action.title}. {action.instruction}
+                {rowInert ? ` A threshold change would not help: ${rowInert.detail}` : ''}
+              </span>
 
-                <span className="min-w-0">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span
-                      className="block min-w-0 flex-1 truncate font-mono text-xs font-semibold text-foreground"
+              <span className="min-w-0">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="flex min-w-0 flex-1">
+                    <RuleLink
+                      rule={rule.rule_id}
+                      origin="Auto-tuning"
                       title={rule.rule_id}
+                      className="relative z-20 block max-w-full truncate text-xs font-semibold text-foreground"
+                    />
+                  </span>
+                  <RuleStateBadge state={state} />
+                </span>
+                {/* Tabular figures on the number only: on prose Inter's tabular hyphen
+                    opens a gap ("analyst - confirmed", [uib] TU2). */}
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  <span className="tabular-nums">{fmtNumber(rule.total)}</span> analyst-confirmed cases
+                  {lastTunedByRule.get(rule.rule_id)
+                    ? ` · tuned ${humanizeAge(lastTunedByRule.get(rule.rule_id))}`
+                    : ''}
+                </span>
+              </span>
+
+              <span className="min-w-0">
+                <span className="mb-1 block text-xs font-medium text-muted-foreground xl:hidden">
+                  Policy evidence
+                </span>
+                <span className="flex items-baseline justify-between gap-3 text-xs">
+                  <span className="font-semibold tabular-nums text-foreground">
+                    {state === 'collecting'
+                      ? `${fmtNumber(rule.total)} / ${fmtNumber(minSamples)} confirmed`
+                      : `${fmtPercent(rule.fp_rate)} conservative`}
+                  </span>
+                  <span className="shrink-0 tabular-nums text-muted-foreground">
+                    target {fmtPercent(target)}
+                  </span>
+                </span>
+                <span className="mt-2 block">
+                  <PolicySignalBar value={rule.fp_rate} target={target} state={state} />
+                </span>
+                <span className="mt-1.5 block text-xs text-muted-foreground">
+                  <span className="tabular-nums">{observed}</span> observed false-positive ratio
+                </span>
+              </span>
+
+              <span className="min-w-0">
+                <span className="mb-1 block text-xs font-medium text-muted-foreground xl:hidden">
+                  Next step
+                </span>
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold text-foreground">
+                    {actionLabel}
+                  </span>
+                  {recs.length ? (
+                    <Badge
+                      variant={recs.every((rec) => rec.auto_apply) ? 'info' : 'warning'}
                     >
-                      {rule.rule_id}
-                    </span>
-                    <RuleStateBadge state={state} />
-                  </span>
-                  <span className="mt-1 block text-xs tabular-nums text-muted-foreground">
-                    {fmtNumber(rule.total)} analyst-confirmed cases
-                    {lastTunedByRule.get(rule.rule_id)
-                      ? ` · tuned ${humanizeAge(lastTunedByRule.get(rule.rule_id))}`
-                      : ''}
-                  </span>
+                      {recs.every((rec) => rec.auto_apply)
+                        ? 'Safety check eligible'
+                        : 'Approval required'}
+                    </Badge>
+                  ) : null}
+                  {/* Why a noisy rule gets NO correlation_n recommendation. */}
+                  {rowInert ? <Badge variant="secondary">Threshold change would not help</Badge> : null}
                 </span>
+                <span className="mt-1 block line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+                  {action.instruction}
+                </span>
+              </span>
 
-                <span className="min-w-0">
-                  <span className="mb-1 block text-2xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
-                    Policy evidence
-                  </span>
-                  <span className="flex items-baseline justify-between gap-3 text-xs">
-                    <span className="font-semibold tabular-nums text-foreground">
-                      {state === 'collecting'
-                        ? `${fmtNumber(rule.total)} / ${fmtNumber(minSamples)} confirmed`
-                        : `${fmtPercent(rule.fp_rate)} conservative`}
-                    </span>
-                    <span className="shrink-0 tabular-nums text-muted-foreground">
-                      target {fmtPercent(target)}
-                    </span>
-                  </span>
-                  <span className="mt-2 block">
-                    <PolicySignalBar value={rule.fp_rate} target={target} state={state} />
-                  </span>
-                  <span className="mt-1.5 block text-xs tabular-nums text-muted-foreground">
-                    {fmtPercent(observed)} observed false-positive ratio
-                  </span>
-                </span>
-
-                <span className="min-w-0">
-                  <span className="mb-1 block text-2xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
-                    Next step
-                  </span>
-                  <span className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold text-foreground">
-                      {actionLabel}
-                    </span>
-                    {recs.length ? (
-                      <Badge
-                        variant={recs.every((rec) => rec.auto_apply) ? 'info' : 'warning'}
-                      >
-                        {recs.every((rec) => rec.auto_apply)
-                          ? 'Safety check eligible'
-                          : 'Approval required'}
-                      </Badge>
-                    ) : null}
-                  </span>
-                  <span className="mt-1 block line-clamp-2 text-xs leading-relaxed text-muted-foreground">
-                    {action.instruction}
-                  </span>
-                </span>
-
-                <span className="flex items-center justify-end self-center">
-                  <ChevronRight
-                    className={cn(
-                      'size-4 shrink-0 text-muted-foreground transition-transform',
-                      selected && 'rotate-90',
-                    )}
-                    aria-hidden
-                  />
-                </span>
-              </button>
+              <span className="flex items-center justify-end self-center">
+                <ChevronRight
+                  className={cn(
+                    'size-4 shrink-0 text-muted-foreground transition-transform',
+                    selected && 'rotate-90',
+                  )}
+                  aria-hidden
+                />
+              </span>
             </div>
           );
         })}
@@ -1445,6 +1584,7 @@ function RuleDetailPanel({
   onApplyRule,
   onOpenApprovals,
   onClose,
+  wilsonZ = DEFAULT_TUNING_CONFIG.wilson_z,
 }: {
   id?: string;
   variant?: 'aside' | 'sheet';
@@ -1459,10 +1599,13 @@ function RuleDetailPanel({
   onApplyRule: (ruleId: string) => void;
   onOpenApprovals: () => void;
   onClose: () => void;
+  /** The configured Wilson z the conservative estimate uses (1.96 by default). */
+  wilsonZ?: number;
 }) {
   const state = ruleState(rule, minSamples);
   const Root = variant === 'aside' ? 'aside' : 'div';
   const explanation = explainRuleState(rule, minSamples, target);
+  const inert = inertNote(rule);
   const actionExplanations = recommendations.length
     ? recommendations.map((recommendation) => ({
         recommendation,
@@ -1473,12 +1616,19 @@ function RuleDetailPanel({
   const hasRestrictedChange = recommendations.some((recommendation) => !recommendation.auto_apply);
   const headlineStats = [
     { label: 'Analyst outcomes', value: fmtNumber(rule.total) },
-    { label: 'Conservative estimate', value: fmtPercent(rule.fp_rate) },
+    {
+      label: 'Conservative estimate',
+      value: (
+        <ExplainTrigger explanation={conservativeEstimateExplanation(rule, wilsonZ)}>
+          {fmtPercent(rule.fp_rate)}
+        </ExplainTrigger>
+      ),
+    },
     { label: 'Policy target', value: fmtPercent(target) },
   ];
   const technicalStats = [
     { label: 'Observed cases', value: fmtNumber(rule.observed ?? rule.total) },
-    { label: 'Observed FP ratio', value: fmtPercent(observedFpRate(rule.total, rule.fp)) },
+    { label: 'Observed FP ratio', value: observedRatioText(rule) },
     { label: 'Unconfirmed', value: fmtNumber(rule.unconfirmed ?? 0) },
     {
       label: 'Recent average volume',
@@ -1492,17 +1642,17 @@ function RuleDetailPanel({
       className={cn(
         'min-w-0 space-y-5',
         variant === 'aside' &&
-          'border-y border-border/70 py-4 xl:sticky xl:top-4 xl:self-start xl:border-l xl:border-y-0 xl:py-1 xl:pl-5',
+          'border-y border-border/70 py-4 xl:sticky xl:top-[calc(var(--header-h)+1rem)] xl:self-start xl:border-l xl:border-y-0 xl:py-1 xl:pl-5',
       )}
       aria-label={`Detail for rule ${rule.rule_id}`}
     >
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <p className="text-xs font-medium text-muted-foreground">
             Rule review
           </p>
-          <p className="mt-1 break-all font-mono text-sm font-semibold text-foreground">
-            {rule.rule_id}
+          <p className="mt-1 break-all text-sm font-semibold text-foreground">
+            <RuleLink rule={rule.rule_id} origin="Auto-tuning" />
           </p>
           <div className="mt-2">
             <RuleStateBadge state={state} />
@@ -1528,7 +1678,7 @@ function RuleDetailPanel({
       >
         <h3
           id="tuning-rule-why-heading"
-          className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+          className="text-sm font-semibold text-foreground"
         >
           {explanation.heading}
         </h3>
@@ -1538,10 +1688,28 @@ function RuleDetailPanel({
         </p>
       </section>
 
+      {/* Why a noisy rule gets no correlation_n recommendation. Shown independently of
+          the recommended action, because the rule can also carry a RE-TARGETED change
+          (a severity floor) whose copy would otherwise hide the structural reason. */}
+      {inert ? (
+        <section className="space-y-1.5" aria-labelledby="tuning-rule-inert-heading">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3
+              id="tuning-rule-inert-heading"
+              className="text-sm font-semibold text-foreground"
+            >
+              A threshold change would not help
+            </h3>
+            <Badge variant="secondary">{inert.label}</Badge>
+          </div>
+          <p className="text-sm leading-relaxed text-muted-foreground">{inert.detail}</p>
+        </section>
+      ) : null}
+
       <section className="space-y-3" aria-labelledby="tuning-rule-action-heading">
         <h3
           id="tuning-rule-action-heading"
-          className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+          className="text-sm font-semibold text-foreground"
         >
           Recommended action
         </h3>
@@ -1567,7 +1735,7 @@ function RuleDetailPanel({
               </div>
 
               <div>
-                <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
+                <p className="text-xs font-medium text-muted-foreground">
                   Expected operational effect
                 </p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
@@ -1576,7 +1744,7 @@ function RuleDetailPanel({
               </div>
 
               <div>
-                <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
+                <p className="text-xs font-medium text-muted-foreground">
                   Safety replay
                 </p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
@@ -1625,7 +1793,7 @@ function RuleDetailPanel({
         <div>
           <h3
             id="tuning-rule-measurements-heading"
-            className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+            className="text-sm font-semibold text-foreground"
           >
             Supporting measurements
           </h3>
@@ -1646,7 +1814,7 @@ function RuleDetailPanel({
                 index === 0 && 'sm:pl-0',
               )}
             >
-              <dt className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
+              <dt className="text-xs font-medium text-muted-foreground">
                 {stat.label}
               </dt>
               <dd className="mt-1.5 text-sm font-semibold tabular-nums text-foreground">
@@ -1675,7 +1843,7 @@ function RuleDetailPanel({
       </section>
 
       <div className="space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <h3 className="text-sm font-semibold text-foreground">
           Recent history
         </h3>
         {history.length ? (
@@ -1708,29 +1876,17 @@ function TelemetryOpportunities({
   data: TelemetryRecommendationsResponse | null;
 }) {
   return (
-    <section className="space-y-3" aria-label="Telemetry opportunities">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-base font-semibold tracking-tight text-foreground">
-              Telemetry opportunities
-            </h2>
-            <HelpTip
-              label="How telemetry opportunities are found"
-              text="Recommendations require query-backed evidence from recent analyst-confirmed cases. A connector being absent is never enough to create a recommendation."
-            />
-          </div>
-          <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
-            Missing fields that materially limited a recent investigation, with the cases
-            and evidence query that support each recommendation.
-          </p>
-        </div>
-        {data ? (
-          <Badge variant={data.recommendations.length ? 'info' : 'secondary'}>
-            {fmtNumber(data.recommendations.length)} evidence-backed
-          </Badge>
-        ) : null}
-      </div>
+    <Panel
+      title="Telemetry opportunities"
+      count={data ? `${fmtNumber(data.recommendations.length)} evidence-backed` : undefined}
+      aside={
+        <HelpTip
+          label="How telemetry opportunities are found"
+          text="Missing fields that materially limited a recent investigation, with the cases and evidence query behind each one. A recommendation needs query-backed evidence from recent analyst-confirmed cases; a connector being absent is never enough."
+        />
+      }
+      className="space-y-3"
+    >
 
       {!data ? (
         <div className="flex items-start gap-3 border-y border-border/70 py-4 text-sm text-muted-foreground">
@@ -1776,7 +1932,7 @@ function TelemetryOpportunities({
                 </Badge>
               </div>
               <div>
-                <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
+                <p className="text-xs font-medium text-muted-foreground">
                   Expected investigation benefit
                 </p>
                 <p className="mt-1.5 text-sm leading-relaxed text-foreground">{row.benefit}</p>
@@ -1788,7 +1944,7 @@ function TelemetryOpportunities({
                 ) : null}
               </div>
               <div>
-                <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
+                <p className="text-xs font-medium text-muted-foreground">
                   Evidence
                 </p>
                 <ul className="mt-1.5 space-y-2">
@@ -1813,7 +1969,7 @@ function TelemetryOpportunities({
           complete evidence path.
         </p>
       ) : null}
-    </section>
+    </Panel>
   );
 }
 
@@ -1827,21 +1983,22 @@ function SchedulerHealth({ health }: { health: SchedulerHealthResponse | null })
   };
 
   return (
-    <section className="space-y-3" aria-label="Continuous-improvement worker health">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-base font-semibold tracking-tight text-foreground">
-            Continuous-improvement workers
-          </h2>
-          <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
-            Runtime evidence for the jobs that learn from feedback, reconcile campaigns,
-            and retrieve asynchronous inference results.
-          </p>
-        </div>
-        <Badge variant={health?.scheduler_runtime_running ? 'success' : 'secondary'}>
-          {health?.scheduler_runtime_running ? 'Scheduler running' : 'Scheduler unavailable'}
-        </Badge>
-      </div>
+    <Panel
+      title="Continuous-improvement workers"
+      aria-label="Continuous-improvement worker health"
+      aside={
+        <>
+          <HelpTip
+            label="About the continuous-improvement workers"
+            text="Runtime evidence for the jobs that learn from feedback, reconcile campaigns and retrieve asynchronous inference results."
+          />
+          <StatusDot tone={health?.scheduler_runtime_running ? 'neutral' : 'warning'}>
+            {health?.scheduler_runtime_running ? 'Scheduler running' : 'Scheduler unavailable'}
+          </StatusDot>
+        </>
+      }
+      className="space-y-3"
+    >
 
       {!health ? (
         <div className="flex items-start gap-3 border-y border-border/70 py-4 text-sm text-muted-foreground">
@@ -1904,7 +2061,7 @@ function SchedulerHealth({ health }: { health: SchedulerHealthResponse | null })
           })}
         </div>
       )}
-    </section>
+    </Panel>
   );
 }
 
@@ -1918,24 +2075,23 @@ function TuningPolicy({
   onChange: React.Dispatch<React.SetStateAction<TuningConfig>>;
 }) {
   return (
-    <section className="space-y-4" aria-label="Tuning policy">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-base font-semibold tracking-tight text-foreground">
-            Tuning policy
-          </h2>
-          <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
-            Define when enough analyst-confirmed evidence exists and how far a bounded
-            adjustment may move. Review-first is the default.
-          </p>
-        </div>
-        <Badge variant={draft.enabled ? 'success' : 'secondary'}>
-          {draft.enabled ? 'Automation active' : 'Automation paused'}
-        </Badge>
-      </div>
-
-      <fieldset disabled={!canManage} className="border-y border-border/70">
-        <div className="grid gap-5 py-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.75fr)]">
+    <Panel
+      title="Tuning policy"
+      aside={
+        <>
+          <HelpTip
+            label="About the tuning policy"
+            text="Define when enough analyst-confirmed evidence exists and how far a bounded adjustment may move. Review-first is the default."
+          />
+          <StatusDot tone={draft.enabled ? 'neutral' : 'warning'}>
+            {draft.enabled ? 'Automation active' : 'Automation paused'}
+          </StatusDot>
+        </>
+      }
+      className="space-y-4"
+    >
+      <fieldset disabled={!canManage} className="min-w-0 border-t border-border/70">
+        <div className="grid gap-5 pt-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.75fr)]">
           <div className="space-y-5">
             <div className="flex items-start justify-between gap-4 border-b border-border/70 pb-5">
               <div>
@@ -2137,6 +2293,6 @@ function TuningPolicy({
           You have read-only access. Ask an administrator with automation management access to edit this policy.
         </p>
       ) : null}
-    </section>
+    </Panel>
   );
 }

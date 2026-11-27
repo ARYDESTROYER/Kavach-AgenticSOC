@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -136,6 +137,78 @@ def model_capabilities(model: str) -> list[str]:
 def model_supports_capability(model: str, capability: str) -> bool:
     """Whether the bundled registry explicitly declares ``capability``."""
     return str(capability) in model_capabilities(model)
+
+
+# --------------------------------------------------------------------------- #
+# Capability EVIDENCE, not a capability allowlist.
+# --------------------------------------------------------------------------- #
+# ``model_supports_capability`` answers one question — "does the bundled catalog
+# declare this?" — and a boolean cannot carry the answer a configuration gate needs,
+# because it collapses two completely different states into ``False``:
+#
+#   * the catalog KNOWS this model and does not list the capability (evidence of
+#     incapability — a completion model in the embedding slot), and
+#   * the catalog has never heard of this model (no evidence at all — every
+#     self-hosted / LiteLLM / vLLM / Ollama / aggregator embedding model ever
+#     registered at runtime, and every model released after this build).
+#
+# Treating the second as the first makes a bundled 23-row JSON file the authority on
+# what a vendor-agnostic product may embed with, and the file declares the capability
+# for exactly three ids. That is not a guard: a deployment's real embedding endpoint
+# is unconfigurable while an unknown completion id sails through whichever gate reads
+# the boolean the other way round. The portable answer is an EMPIRICAL PROBE (see
+# ``api/routes_models.probe_embedding_model``); these helpers only report what the
+# catalog can and cannot speak for, so a caller can tell a refusal backed by evidence
+# from one backed by ignorance.
+CAPABILITY_DECLARED = "declared"
+CAPABILITY_DECLARED_ABSENT = "declared_absent"
+CAPABILITY_UNKNOWN = "unknown"
+
+EMBEDDING_CAPABILITY = "embedding"
+
+
+def capability_state(model: str, capability: str) -> str:
+    """What the bundled catalog can say about ``model`` and ``capability``.
+
+    One of :data:`CAPABILITY_DECLARED` (the row lists it),
+    :data:`CAPABILITY_DECLARED_ABSENT` (a row exists and does NOT list it — the only
+    catalog-backed evidence of incapability), or :data:`CAPABILITY_UNKNOWN` (no row:
+    a runtime-registered, self-hosted or newer model the bundled file predates).
+    """
+    entry = registry_entry(model)
+    if not entry:
+        return CAPABILITY_UNKNOWN
+    if str(capability) in model_capabilities(model):
+        return CAPABILITY_DECLARED
+    return CAPABILITY_DECLARED_ABSENT
+
+
+def model_may_embed(model: str) -> bool:
+    """Whether ``model`` may be ACCEPTED into an embedding slot on catalog evidence.
+
+    False only on positive evidence of incapability — a catalog row that declares
+    other capabilities and not ``embedding``. An unknown id returns True because the
+    bundled catalog holds no evidence either way; it is the empirical probe, not this
+    lookup, that decides such a model. Refusing the unknown case here is what makes
+    every self-hosted embedding endpoint unconfigurable on a vendor-agnostic product.
+    """
+    return capability_state(model, EMBEDDING_CAPABILITY) != CAPABILITY_DECLARED_ABSENT
+
+
+def capability_coverage(capability: str = EMBEDDING_CAPABILITY) -> dict[str, int]:
+    """How much of the bundled catalog a capability allowlist could speak for.
+
+    ``{"catalog_models": N, "declaring_models": K}``. Published beside a probe result
+    so an operator can see the size of the population the declaration covers rather
+    than reading a catalog silence as a verdict.
+    """
+    registry = load_registry()
+    declaring = sum(
+        1
+        for mid in registry
+        if str(capability) in model_capabilities(mid)
+    )
+    return {"catalog_models": len(registry), "declaring_models": declaring}
 
 
 def registry_price(model: str) -> tuple[float, float] | None:
@@ -345,3 +418,50 @@ def cost_for(model: str, prompt_tokens: int, completion_tokens: int,
     if batch:
         total *= 0.5
     return round(total, 8)
+
+
+# --------------------------------------------------------------------------- #
+# Round 16 (SPEC §3.4, §4.5 WP13): the rates behind one call's cost, so a ledger row
+# can carry the inputs of its price. Pure, and read-only over the same lookups
+# ``cost_for`` makes: ``cost_for`` itself is unchanged, so no stored or new cost moves.
+# --------------------------------------------------------------------------- #
+#: The cache-write TTL ``cost_for`` bills when its caller names none (the gateway never
+#: names one today).
+DEFAULT_CACHE_WRITE_TTL = "5m"
+
+
+@dataclass(frozen=True)
+class CallRates:
+    """The undiscounted USD-per-million rates ``cost_for`` bills one call at.
+
+    ``cache_write_per_million`` is the rate for ``cache_write_ttl`` (the 5 minute or
+    the 1 hour write). The Batch factor is not folded in: a ledger row's own ``batch``
+    flag applies it, so the cost re-derives as
+    ``round((prompt * input + completion * output + cache_read * cache_read_rate +
+    cache_write * cache_write_rate) / 1e6 * (0.5 if batch else 1), 8)``."""
+
+    input_per_million: float
+    output_per_million: float
+    cache_read_per_million: float
+    cache_write_per_million: float
+    cache_write_ttl: str = DEFAULT_CACHE_WRITE_TTL
+
+
+def rates_for(model: str, overlay: tuple[float, float] | None = None, *,
+              cache_write_ttl: str = DEFAULT_CACHE_WRITE_TTL) -> CallRates:
+    """The rates :func:`cost_for` resolves for ``model`` with the same ``overlay``:
+    ``resolve_price`` for input and output, ``cache_rates`` of that input rate for the
+    cache read and the ``cache_write_ttl`` write. The mock provider is free, every rate
+    ``0.0``, as ``cost_for`` returns ``0.0`` for it whatever the overlay says."""
+    ttl = "1h" if str(cache_write_ttl) == "1h" else DEFAULT_CACHE_WRITE_TTL
+    if model.startswith("mock"):
+        return CallRates(0.0, 0.0, 0.0, 0.0, ttl)
+    in_price, out_price = resolve_price(model, overlay)
+    read_rate, write_5m, write_1h = cache_rates(model, in_price)
+    return CallRates(
+        input_per_million=float(in_price),
+        output_per_million=float(out_price),
+        cache_read_per_million=float(read_rate),
+        cache_write_per_million=float(write_1h if ttl == "1h" else write_5m),
+        cache_write_ttl=ttl,
+    )

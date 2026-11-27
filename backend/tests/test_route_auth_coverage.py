@@ -17,6 +17,7 @@ closes the gap that let ``set_status→RESOLVED`` reach a terminal status withou
 from __future__ import annotations
 
 import inspect
+import types
 
 from fastapi.routing import APIRoute
 from starlette.routing import Mount, WebSocketRoute
@@ -63,15 +64,31 @@ def _has_authz_dependency(route: APIRoute) -> bool:
     return False
 
 
+def _code_names(code: types.CodeType) -> set[str]:
+    """Every global/attribute/imported name the compiled ``code`` (and any nested
+    function or comprehension inside it) refers to."""
+    names = set(code.co_names)
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            names |= _code_names(const)
+    return names
+
+
 def _enforces_in_body(route: APIRoute) -> bool:
     """True when the endpoint enforces RBAC INLINE via ``_enforce(...)`` rather than a
     dependency (the case_action / bulk / comment / tags / assign pattern, which must
-    resolve the principal + grant from the request body, e.g. a target-aware grant)."""
-    try:
-        src = inspect.getsource(route.endpoint)
-    except (OSError, TypeError):  # pragma: no cover - source always available offline
+    resolve the principal + grant from the request body, e.g. a target-aware grant).
+
+    Reads the LOADED bytecode, not the source file: ``inspect.getsource`` re-reads the
+    file from disk and maps it with the import-time line numbers, so an edit to
+    ``routes.py`` after import (while a suite is running) shifted the window onto a
+    neighbouring function and reported real gates as missing. A comment mentioning
+    ``_enforce(`` no longer counts either; only a real reference in the code does."""
+    endpoint = inspect.unwrap(route.endpoint)
+    code = getattr(endpoint, "__code__", None)
+    if code is None:  # pragma: no cover - every endpoint here is a plain function
         return False
-    return "_enforce(" in src
+    return "_enforce" in _code_names(code)
 
 
 def test_every_api_route_is_auth_covered() -> None:
@@ -109,6 +126,10 @@ _AUTHZ_EXEMPT_AUTH_FLOW = frozenset({
     "/api/auth/refresh", "/api/auth/reauth",
     "/api/auth/mfa/setup", "/api/auth/mfa/confirm", "/api/auth/mfa/verify",
     "/api/auth/mfa/disable",
+    # Mandated-MFA enrollment DURING login (required-but-not-enrolled): both are
+    # gated by the short-lived single-use pending token (mfa:"pending"), NOT an RBAC
+    # grant — a full session does not exist yet at that point of the login flow.
+    "/api/auth/mfa/enroll-setup", "/api/auth/mfa/enroll-confirm",
     # /api/setup/complete + /api/setup/secrets now carry require_permission("settings",
     # "manage") (audit #2): a no-op when auth is off (OOBE default), a real grant when
     # auth is on — so they are gated, not exempt.
@@ -171,6 +192,88 @@ def test_state_changing_routes_declare_authz() -> None:
         "and no in-body _enforce) and are not on the reviewed _AUTHZ_EXEMPT "
         "allowlist: " + ", ".join(sorted(ungated))
     )
+
+
+# --------------------------------------------------------------------------- #
+# AuthZ coverage of READ routes (Round 16, B01).
+# --------------------------------------------------------------------------- #
+# Every /api GET that is not public must declare a permission dependency or an
+# in-body ``_enforce``, or sit on one of the two reviewed lists below. A new read
+# that is neither fails ``test_read_routes_declare_authz``.
+#
+# Reviewed GET allowlist: authentication only, each with its reason.
+_GET_AUTHZ_EXEMPT: dict[str, str] = {
+    # Self-service reads of the caller's own bucket.
+    "/api/account/me": "the caller's own account record",
+    "/api/account/activity": "the caller's own audit rows only",
+    "/api/account/permissions": "the Console's permission bootstrap for the caller",
+    "/api/prefs/effective": "the caller's own preference cascade, read on every page",
+    "/api/prefs/user": "the caller's own personal preferences",
+    "/api/prefs/org": "the organisation defaults the preference cascade needs",
+    "/api/sessions": "the caller's own sessions",
+    "/api/views": "the caller's own saved views and the shared ones",
+    "/api/terminology": "the labels every page needs",
+    "/api/notifications/prefs": "the caller's own notification preferences",
+    "/api/notifications/inbox": "the caller's own inbox",
+    "/api/notifications/inbox/unread-count": "the caller's own unread count",
+    # Static catalogs with no tenant data.
+    "/api/connectors": "the static connector catalog, no tenant data",
+    "/api/connectors/{source_type}": "one static connector manifest, no tenant data",
+    "/api/personas": "the static persona catalog, no case data",
+    # The SSE endpoint: each topic is gated separately (_REALTIME_TOPIC_GRANTS).
+    "/api/events": "the realtime stream; every topic checks its own grant",
+}
+# Reviewed "gated in body" list: these GETs choose their grant from the request and
+# enforce it inside the handler, so the code must still reference the gate.
+_GET_GATED_IN_BODY: dict[str, tuple[str, ...]] = {
+    "/api/metrics/breakdown": ("require_permission",),
+    "/api/rules/summary": ("resolve_access",),
+}
+
+
+def _get_routes() -> list[APIRoute]:
+    return [
+        r for r in app.routes
+        if isinstance(r, APIRoute) and r.path.startswith("/api") and "GET" in r.methods
+    ]
+
+
+def test_read_routes_declare_authz() -> None:
+    """Every non-public /api GET declares a permission dependency or an in-body
+    ``_enforce``, or is on a reviewed list. This is the rule that would have caught
+    the case export, trace, rationale, collaboration, scans, standup and settings
+    reads answering a role that lacks their read grant (B01)."""
+    ungated: list[str] = []
+    for route in _get_routes():
+        if route.path in PUBLIC_API_PATHS or route.path in PUBLIC_GET_PATHS:
+            continue
+        if _has_authz_dependency(route) or _enforces_in_body(route):
+            continue
+        if route.path in _GET_AUTHZ_EXEMPT or route.path in _GET_GATED_IN_BODY:
+            continue
+        ungated.append(route.path)
+    assert not ungated, (
+        "these /api GET routes declare no authZ gate and are not on the reviewed "
+        "GET allowlist or the gated-in-body list: " + ", ".join(sorted(ungated))
+    )
+
+
+def test_read_route_lists_are_reviewed_and_current() -> None:
+    """Each listed GET is a real route, has a reason, and is not already gated (a
+    listed route that gained a gate should leave the list). A gated-in-body route
+    must still reference its gate in its compiled code, so it cannot lose it
+    silently."""
+    routes = {r.path: r for r in _get_routes()}
+    assert not (set(_GET_AUTHZ_EXEMPT) & set(_GET_GATED_IN_BODY))
+    for path, reason in _GET_AUTHZ_EXEMPT.items():
+        assert path in routes, f"stale GET allowlist entry {path}"
+        assert reason.strip(), f"{path} needs a reason"
+        assert not _has_authz_dependency(routes[path]), f"{path} is gated; drop it from the list"
+    for path, names in _GET_GATED_IN_BODY.items():
+        assert path in routes, f"stale gated-in-body entry {path}"
+        endpoint = inspect.unwrap(routes[path].endpoint)
+        code_names = _code_names(endpoint.__code__)
+        assert any(n in code_names for n in names), f"{path} lost its in-body gate"
 
 
 def test_case_action_paths_are_enforced_in_body() -> None:
@@ -240,6 +343,7 @@ from app.llm.providers import MockProvider
 from app.state import AppState
 from app.utils import now_utc, to_millis
 from tests.conftest import make_log_event
+from tests._auth_helpers import ready_user
 
 
 @asynccontextmanager
@@ -314,6 +418,7 @@ def test_fix1_set_status_resolved_requires_cases_close() -> None:
             "role": UserRole.ANALYST_TIER1.value,
         })
         assert r.status_code == 200, r.text
+        ready_user(c, "tier1", "tier1-pass-1")
 
         _login(c, "tier1", "tier1-pass-1")
         # A non-terminal set_status is fine (cases:write).
@@ -345,6 +450,7 @@ def test_fix1_cases_close_role_can_set_status_resolved() -> None:
             "role": UserRole.ANALYST_TIER2.value,
         })
         assert r.status_code == 200, r.text
+        ready_user(c, "tier2", "tier2-pass-1")
         _login(c, "tier2", "tier2-pass-1")
         r = c.post(f"/api/cases/{cid}/action",
                    json={"action": "set_status", "status": "resolved"})
@@ -362,6 +468,7 @@ def test_setup_secrets_requires_settings_manage() -> None:
             "role": UserRole.ANALYST_TIER1.value,
         })
         assert r.status_code == 200, r.text
+        ready_user(c, "tier1", "tier1-pass-1")
         _login(c, "tier1", "tier1-pass-1")
         r = c.post("/api/setup/secrets", json={"es_url": "https://evil:9200"})
         assert r.status_code == 403, r.text
@@ -384,6 +491,7 @@ def test_investigate_routes_require_cases_reinvestigate() -> None:
             "role": UserRole.ANALYST_TIER1.value,
         })
         assert r.status_code == 200, r.text
+        ready_user(c, "tier1", "tier1-pass-1")
         _login(c, "tier1", "tier1-pass-1")
         assert c.post(f"/api/cases/{cid}/investigate").status_code == 403
         assert c.post(f"/api/cases/{cid}/reinvestigate", json={}).status_code == 403
@@ -404,6 +512,8 @@ def test_public_paths_are_minimal_and_known() -> None:
         "/api/setup/status", "/api/setup/account",
         # Wave 2 — each guarded by a single-use token/state, not a session.
         "/api/auth/mfa/verify",
+        # Mandated-MFA login-phase enrollment — guarded by the same pending token.
+        "/api/auth/mfa/enroll-setup", "/api/auth/mfa/enroll-confirm",
         "/api/auth/sso/providers", "/api/auth/sso/authorize", "/api/auth/sso/callback",
         # Wave 3 — refresh is self-authenticating via the opaque refresh token (the
         # access token may have expired); guarded by the refresh-hash match + reuse
@@ -540,6 +650,18 @@ def test_wave7_org_routes_are_admin_gated() -> None:
     assert require_admin not in _calls("/api/prefs/user", "PUT")
     assert require_admin not in _calls("/api/views", "POST")
     assert require_admin not in _calls("/api/prefs/user/tables/{table_id}", "PUT")
+
+
+def test_mandated_mfa_enroll_routes_registered_and_public() -> None:
+    # The mandated-MFA login-phase enrollment routes exist on the real app AND are
+    # deliberately on the public allowlist: they run BEFORE a session exists and are
+    # gated by the short-lived pending token (mfa:"pending") instead — the same
+    # trust model as /api/auth/mfa/verify. (A pending token is still rejected by
+    # every full-session verify, covered by the mandate flow tests.)
+    paths = {r.path for r in app.routes if isinstance(r, APIRoute)}
+    for expected in ("/api/auth/mfa/enroll-setup", "/api/auth/mfa/enroll-confirm"):
+        assert expected in paths, f"missing mandated-MFA enroll route {expected}"
+        assert expected in PUBLIC_API_PATHS, f"{expected} must be pending-token public"
 
 
 def test_wave5_demo_routes_registered_and_not_public() -> None:

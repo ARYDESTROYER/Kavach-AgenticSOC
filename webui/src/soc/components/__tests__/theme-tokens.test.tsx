@@ -151,8 +151,8 @@ describe('applyBranding — accent + material + token overrides', () => {
 
   it('quiet branding does NOT pin --glass-opacity (lets the per-theme stylesheet value win)', () => {
     // Regression for the a11y/branding re-audit: 'quiet' must be byte-identical to
-    // the pre-wave look in BOTH themes. The dark stylesheet's --glass-opacity is 0.78
-    // while light's is 0.82, so force-writing 0.82 inline would darken the dark chrome.
+    // the pre-wave look in BOTH themes. Each theme's stylesheet owns its --glass-opacity
+    // (0.97 in both today), so force-writing one inline would override a theme's own.
     // 'quiet' therefore leaves --glass-opacity UNSET inline so the stylesheet decides.
     const mat = applyBranding({ material: 'quiet' }, root);
     expect(mat).toBe('quiet');
@@ -174,7 +174,7 @@ describe('applyBranding — accent + material + token overrides', () => {
     expect(root.style.getPropertyValue('--glass-opacity')).toBe(MATERIAL_PACKS.command['--glass-opacity']);
     applyMaterial('quiet', root);
     // The quiet applier actively removes the stale inline value so the stylesheet's
-    // per-theme default (0.82 light / 0.78 dark) governs again.
+    // per-theme default (0.97 in both themes) governs again.
     expect(root.style.getPropertyValue('--glass-opacity')).toBe('');
   });
 

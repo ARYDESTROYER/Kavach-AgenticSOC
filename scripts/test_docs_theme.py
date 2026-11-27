@@ -11,6 +11,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+#: The installed documentation line, derived from VERSION as the bundler does.
+DOCS_LINE = ".".join(
+    (ROOT / "VERSION").read_text(encoding="utf-8").strip().split("-", 1)[0].split(".")[:2]
+)
 
 
 class DocsThemeContractTests(unittest.TestCase):
@@ -30,6 +34,13 @@ class DocsThemeContractTests(unittest.TestCase):
         self.assertIn("fonts.gstatic.com", override)
         self.assertEqual(2, len(re.findall(r"^\s+accent: lime$", config, re.MULTILINE)))
         self.assertNotRegex(config, r"^\s+accent: deep-purple$")
+
+    def test_the_channel_banner_has_no_long_dashes(self) -> None:
+        override = (ROOT / "overrides/main.html").read_text(encoding="utf-8")
+        start = override.index("{% block announce %}")
+        banner = override[start : override.index("{% endblock %}", start)]
+        self.assertIn("PROMOTES TO STABLE ON MAIN", banner)
+        self.assertNotRegex(banner, "[\u2013\u2014]")
 
     def test_console_theme_bridge_covers_light_dark_and_system(self) -> None:
         override = (ROOT / "overrides/main.html").read_text(encoding="utf-8")
@@ -66,7 +77,7 @@ class DocsThemeContractTests(unittest.TestCase):
             )
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
-            index = (output / "0.1" / "index.html").read_text(encoding="utf-8")
+            index = (output / DOCS_LINE / "index.html").read_text(encoding="utf-8")
             head_end = index.index("</head>")
             body_start = index.index("<body")
             bridge = index.index('localStorage.getItem("soc.theme")')

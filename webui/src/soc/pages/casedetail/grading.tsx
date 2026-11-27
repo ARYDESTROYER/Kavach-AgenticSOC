@@ -1,28 +1,40 @@
 /**
- * CaseDetail — AI-decision grading module (Round-7 #10, DERIVED model).
+ * CaseDetail: the AI-decision grading module (Round-7 #10, DERIVED model; Round 15 D4.4).
  *
- * Round-7 folds AI-decision feedback INTO the close flow (W1.E wires this into
- * `ConfirmActionDialog`); the standalone Feedback tab is retired. This module is the
- * pure + presentational library only — it does NOT wire into the dialog itself.
- *
- * DERIVED agree/override model (§A.10): instead of the analyst manually picking an
- * "agree / partial / disagree" assessment, we DERIVE it from the diff between the AI
- * verdict and the disposition the analyst is committing on close, using the fixed map:
+ * The close dialog asks ONE classification question, the disposition (D4.1). Whether
+ * that disposition agrees with the AI verdict is DERIVED, shown as text and never asked,
+ * from the fixed map:
  *   TRUE_POSITIVE  ↔ true_positive
  *   FALSE_POSITIVE ↔ { false_positive, benign }
  *   NEEDS_HUMAN    ↔ { suspicious, undetermined }
+ *   NEEDS_HUMAN    → { true_positive, false_positive, benign } = RESOLVED (Round 12, D15):
+ *                    the model handed the call to a person, so a concrete outcome settles
+ *                    that hand-off. It is NOT an agreement signal either way: it is never
+ *                    counted as the analyst overriding the AI, and never as agreeing with
+ *                    it (the model made no call to agree with), so it carries no
+ *                    assessment and the close posts no grade unless the analyst gave one
  *   duplicate      → no comparison (administrative outcome, not an agree/override signal)
- * A match reads "Matches AI verdict"; a mismatch reads "Overrides AI verdict (X → Y)"
- * and only THEN reveals an optional "What did the AI miss?" line. The 3 detailed quality
- * stars stay behind a "Rate in detail →" disclosure.
+ *
+ * Today's grading rule stands (D4.4): on a close, resolve or set-disposition whose
+ * disposition matches or overrides the AI verdict, the orchestrator posts ONE feedback
+ * entry carrying the derived assessment, with or without stars. Stars and "What did the
+ * AI miss?" sit in the collapsed "Rate the AI (optional)" disclosure ({@link RateTheAi}).
+ *
+ * GROUND TRUTH: the derived agree/override signal is not a label, and the Console never
+ * sets `actual_outcome` (D4.4). The declared disposition already labels the case
+ * (`explicit_analyst_disposition`); a feedback label would pin ground truth against a
+ * later reclassification. The "What actually happened?" select left the dialog (D4.1),
+ * so the draft no longer carries an outcome at all. {@link OUTCOME_OPTIONS} stays as the
+ * vocabulary a STORED grade is read with (the grading history).
  *
  * SECURITY (#9): analyst-authored comments render as PLAIN TEXT, never markup.
- * #3: producing a `CaseFeedbackInput` never changes verdict/status/disposition — the
- * caller (W1.E) POSTs the grading as a SEPARATE call after the deterministic close.
+ * #3: producing a `CaseFeedbackInput` never changes verdict/status/disposition: the
+ * caller POSTs the grading as a SEPARATE call after the deterministic close.
  */
 import * as React from 'react';
-import { AlertTriangle, CheckCircle2, ChevronRight, Clock, Star } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Clock, Star } from 'lucide-react';
 
+import type { components } from '@/lib/api-types.gen';
 import type { CaseFeedbackInput } from '@/lib/api';
 import type { CaseFeedback, Disposition } from '@/lib/types';
 import { DASH, humanizeAge, humanizeToken } from '@/lib/format';
@@ -31,17 +43,59 @@ import { cn } from '@/lib/cn';
 import { Badge } from '@/ui/badge';
 import { Label } from '@/ui/label';
 import { Textarea } from '@/ui/textarea';
-import { Separator } from '@/ui/separator';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 
-import { tsValue } from './shared';
+import { DURABLE_CONTEXT_NOTE, tsValue } from './shared';
+
+/* --------------------------------------------------- ground-truth vocabulary --- */
+
+/**
+ * The analyst-outcome vocabulary, taken STRAIGHT off the generated OpenAPI schema
+ * (`webui/openapi.json` -> `src/lib/api-types.gen.ts`, produced by `npm run gen:types`
+ * and drift-gated by `npm run check:types`). Type-only import: erased at compile time.
+ */
+export type FeedbackOutcome = components['schemas']['FeedbackOutcome'];
+
+/**
+ * The words for each stored outcome. The Console no longer asks this question (D4.1);
+ * the list is how a recorded grade's `actual_outcome` is read back. `as const satisfies`
+ * rejects a value not in the generated union, and {@link FeedbackOutcomeCoverage} proves
+ * nothing is missing.
+ */
+export const OUTCOME_OPTIONS = [
+  { value: 'unknown', text: 'Not stated' },
+  { value: 'true_positive', text: 'True positive: the alert was real' },
+  { value: 'false_positive', text: 'False positive: the alert was wrong' },
+  { value: 'true_negative', text: 'True negative: correctly quiet' },
+  { value: 'false_negative', text: 'False negative: the detection missed it' },
+] as const satisfies ReadonlyArray<{ value: FeedbackOutcome; text: string }>;
+
+/** Fails to typecheck unless `T` is `never`. */
+type MustBeNever<T extends never> = T;
+
+/**
+ * Compile-time drift guard: if `FeedbackOutcome` gains a member that
+ * {@link OUTCOME_OPTIONS} does not word, `Exclude` stops being `never` and `tsc` fails.
+ */
+export type FeedbackOutcomeCoverage = MustBeNever<
+  Exclude<FeedbackOutcome, (typeof OUTCOME_OPTIONS)[number]['value']>
+>;
+
+/** The short words for a stored outcome ("True positive"), or the token as written. */
+export function outcomeWords(value: unknown): string {
+  const token = typeof value === 'string' ? value.trim() : '';
+  if (!token) return '';
+  const option = OUTCOME_OPTIONS.find((o) => o.value === token);
+  return option ? option.text.split(':')[0] : humanizeToken(token);
+}
 
 /* ------------------------------------------------------------------ types --- */
 
 /**
- * Draft grading state held by the close dialog (W1.E). All fields optional so an
- * un-touched close still produces a valid {@link CaseFeedbackInput}. Star fields carry
- * a RAW 1-5 count (0 = unset) — {@link gradingToFeedbackInput} maps them to 0..1.
+ * Draft grading state held by the close dialog. All fields optional so an untouched close
+ * still produces a valid {@link CaseFeedbackInput}. Star fields carry a RAW 1-5 count
+ * (0 = unset); {@link gradingToFeedbackInput} maps them to 0..1. There is deliberately no
+ * outcome field (D4.4): the Console never sets `actual_outcome`.
  */
 export interface GradingDraft {
   assessment?: CaseFeedbackInput['assessment'];
@@ -49,7 +103,6 @@ export interface GradingDraft {
   accuracy?: number;
   reasoning_quality?: number;
   action_appropriateness?: number;
-  actual_outcome?: string;
   time_saved_minutes?: number;
   comment?: string;
 }
@@ -58,6 +111,9 @@ export interface GradingDraft {
 export type GradingAgreement =
   | { kind: 'match'; assessment: 'agree' }
   | { kind: 'override'; assessment: 'disagree'; fromLabel: string; toLabel: string }
+  // NEEDS_HUMAN settled with a concrete outcome: the AI deferred to a person. No
+  // assessment: neither a disagreement nor an "agree" the analyst never stated.
+  | { kind: 'resolved'; toLabel: string }
   | { kind: 'none' };
 
 /* -------------------------------------------------------------- pure logic --- */
@@ -74,16 +130,14 @@ export function starsToScore(n?: number): number | undefined {
 }
 
 /**
- * True when the analyst has entered ANY signal beyond a plain "agree" default. Not
- * used to gate auto-submit (the derived model always submits alongside a
- * close-with-verdict) — a convenience predicate for optional UI affordances.
+ * True when the analyst entered ANY signal beyond a plain "agree" default: then a grade
+ * is posted even when the disposition does not compare with the AI verdict.
  */
 export function isGradingDirty(g: GradingDraft): boolean {
   return Boolean(
     (g.accuracy && g.accuracy > 0) ||
       (g.reasoning_quality && g.reasoning_quality > 0) ||
       (g.action_appropriateness && g.action_appropriateness > 0) ||
-      g.actual_outcome ||
       (typeof g.time_saved_minutes === 'number' && g.time_saved_minutes > 0) ||
       (g.comment && g.comment.trim()) ||
       (g.assessment && g.assessment !== 'agree'),
@@ -99,6 +153,9 @@ const VERDICT_MATCH_DISPOSITIONS: Record<string, readonly string[]> = {
   FALSE_POSITIVE: ['false_positive', 'benign'],
   NEEDS_HUMAN: ['suspicious', 'undetermined'],
 };
+
+/** Concrete outcomes that RESOLVE a NEEDS_HUMAN hand-off rather than override it. */
+const NEEDS_HUMAN_RESOLUTIONS: readonly string[] = ['true_positive', 'false_positive', 'benign'];
 
 function normVerdict(v?: string | null): string {
   return String(v ?? '')
@@ -131,6 +188,9 @@ export function deriveAgreement(
   const allowed = VERDICT_MATCH_DISPOSITIONS[v];
   if (!allowed) return { kind: 'none' };
   if (allowed.includes(d)) return { kind: 'match', assessment: 'agree' };
+  if (v === 'NEEDS_HUMAN' && NEEDS_HUMAN_RESOLUTIONS.includes(d)) {
+    return { kind: 'resolved', toLabel: humanizeToken(d) };
+  }
   return {
     kind: 'override',
     assessment: 'disagree',
@@ -139,28 +199,48 @@ export function deriveAgreement(
   };
 }
 
-/** Human-facing text for the derived agreement (null when not comparable). */
+/**
+ * Human-facing text for the derived agreement (null when not comparable), in the close
+ * dialog's voice (SPEC D4.4: "Your classification agrees with the AI"). The Needs human
+ * verdict reads "Needs human review", the Console's word for it.
+ */
 export function agreementText(a: GradingAgreement): string | null {
-  if (a.kind === 'match') return 'Matches AI verdict';
-  if (a.kind === 'override') return `Overrides AI verdict (${a.fromLabel} → ${a.toLabel})`;
+  if (a.kind === 'match') return 'Your classification agrees with the AI';
+  if (a.kind === 'override') return `Your classification overrides the AI (${a.fromLabel} → ${a.toLabel})`;
+  if (a.kind === 'resolved') return `Your classification settles the AI's hand-off (Needs human review → ${a.toLabel})`;
   return null;
+}
+
+/**
+ * Round 15 (D4.3): the Console asks for a note when the disposition OVERRIDES the AI
+ * verdict. A Needs human review resolution (`resolved`), a duplicate and a case with no
+ * verdict (`none`) never require one. The backend is unchanged: the note stays optional
+ * on the wire.
+ */
+export function requiresDisagreementNote(
+  verdict?: string | null,
+  disposition?: Disposition | string | null,
+): boolean {
+  return deriveAgreement(verdict, disposition).kind === 'override';
 }
 
 /**
  * Convert a {@link GradingDraft} into the EXISTING backend `CaseFeedbackInput` shape.
  * Stars → 0..1 via {@link starsToScore}; only present/non-empty fields are included;
- * `assessment` defaults to `'agree'` (the field is required by the contract); the
- * optional `analyst` is passed through when provided.
+ * the optional `analyst` is passed through when provided. `assessment` is sent ONLY when
+ * the draft carries one (a derived match/override): it is never defaulted to `agree`,
+ * so a grade on a settled Needs-human hand-off cannot inflate the Agreement metric. It
+ * never carries `actual_outcome` (D4.4).
  */
 export function gradingToFeedbackInput(g: GradingDraft, analyst?: string): CaseFeedbackInput {
-  const body: CaseFeedbackInput = { assessment: g.assessment ?? 'agree' };
+  const body: CaseFeedbackInput = {};
+  if (g.assessment) body.assessment = g.assessment;
   const a = starsToScore(g.accuracy);
   const r = starsToScore(g.reasoning_quality);
   const ap = starsToScore(g.action_appropriateness);
   if (a !== undefined) body.accuracy = a;
   if (r !== undefined) body.reasoning_quality = r;
   if (ap !== undefined) body.action_appropriateness = ap;
-  if (g.actual_outcome) body.actual_outcome = g.actual_outcome;
   if (typeof g.time_saved_minutes === 'number' && g.time_saved_minutes > 0) {
     body.time_saved_minutes = g.time_saved_minutes;
   }
@@ -171,6 +251,41 @@ export function gradingToFeedbackInput(g: GradingDraft, analyst?: string): CaseF
 
 /* ------------------------------------------------------------- components --- */
 
+/**
+ * The derived agreement as one quiet line, shown under the disposition once one is
+ * chosen (D4.4: shown, never asked). `aiLine` ("AI verdict: True positive (80%)") follows
+ * it in muted text. Renders nothing when there is nothing to say.
+ */
+export const AgreementLine: React.FC<{
+  verdict?: string | null;
+  disposition?: Disposition | string | null;
+  aiLine?: string | null;
+  className?: string;
+  'data-testid'?: string;
+}> = ({ verdict, disposition, aiLine, className, 'data-testid': testId }) => {
+  const agreement = deriveAgreement(verdict, disposition);
+  const text = disposition ? agreementText(agreement) : null;
+  if (!text && !aiLine) return null;
+  const override = agreement.kind === 'override';
+  const Icon = override ? AlertTriangle : CheckCircle2;
+  return (
+    <p data-testid={testId} className={cn('flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs', className)}>
+      {text ? (
+        <span
+          className={cn(
+            'inline-flex items-center gap-1.5 font-medium',
+            override ? 'text-warning-text' : agreement.kind === 'match' ? 'text-success-text' : 'text-foreground',
+          )}
+        >
+          <Icon className="size-3.5 shrink-0 self-center" aria-hidden />
+          <span>{text}</span>
+        </span>
+      ) : null}
+      {aiLine ? <span className="text-muted-foreground">{aiLine}</span> : null}
+    </p>
+  );
+};
+
 const StarRow: React.FC<{
   label: string;
   value: number;
@@ -178,12 +293,13 @@ const StarRow: React.FC<{
 }> = ({ label, value, onChange }) => (
   <div className="flex items-center gap-3">
     <span className="flex-1 text-sm text-foreground">{label}</span>
-    <div className="flex items-center">
+    <div className="flex items-center" role="group" aria-label={label}>
       {[1, 2, 3, 4, 5].map((n) => (
         <button
           key={n}
           type="button"
           aria-label={`${label}: ${n} of 5`}
+          aria-pressed={n <= value}
           // ≥24px hit area (WCAG 2.5.8); the glyph stays 16px inside a 24px box.
           className="inline-flex h-6 w-6 items-center justify-center rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => onChange(n === value ? 0 : n)}
@@ -195,14 +311,14 @@ const StarRow: React.FC<{
         </button>
       ))}
     </div>
-    <span className="w-8 text-right text-xs text-muted-foreground">{value ? `${value}/5` : DASH}</span>
+    <span className="w-8 text-right text-xs tabular-nums text-muted-foreground">{value ? `${value}/5` : DASH}</span>
   </div>
 );
 
 export interface GradingFieldsProps {
   /** The AI verdict on the case (read-only). */
   verdict?: string | null;
-  /** The disposition the analyst is committing on close (read-only). */
+  /** The disposition the analyst is committing (read-only). */
   disposition?: Disposition | string | null;
   draft: GradingDraft;
   onChange: (next: GradingDraft) => void;
@@ -210,9 +326,9 @@ export interface GradingFieldsProps {
 }
 
 /**
- * The in-dialog grading body: a DERIVED agree/override badge (from the read-only
- * verdict + disposition), an optional "What did the AI miss?" line on a mismatch, and
- * the 3 detailed quality stars behind a "Rate in detail →" disclosure.
+ * The grading body: the three quality stars and, on an override only, "What did the AI
+ * miss?". The agreement itself is derived at submit by the orchestrator and shown by
+ * {@link AgreementLine}; nothing here decides it.
  */
 export const GradingFields: React.FC<GradingFieldsProps> = ({
   verdict,
@@ -221,21 +337,7 @@ export const GradingFields: React.FC<GradingFieldsProps> = ({
   onChange,
   className,
 }) => {
-  const agreement = React.useMemo(() => deriveAgreement(verdict, disposition), [verdict, disposition]);
-  const badgeText = agreementText(agreement);
-  const isOverride = agreement.kind === 'override';
-  const [detailOpen, setDetailOpen] = React.useState(false);
-
-  // Keep the parent draft's derived `assessment` in sync with the current
-  // verdict↔disposition diff so the close-time submit carries the right value. Guarded
-  // to only fire on an actual change (terminates — never loops).
-  const derivedAssessment = agreement.kind === 'none' ? undefined : agreement.assessment;
-  React.useEffect(() => {
-    if (draft.assessment !== derivedAssessment) {
-      onChange({ ...draft, assessment: derivedAssessment });
-    }
-  }, [derivedAssessment, draft, onChange]);
-
+  const isOverride = deriveAgreement(verdict, disposition).kind === 'override';
   const patch = React.useCallback(
     (next: Partial<GradingDraft>) => onChange({ ...draft, ...next }),
     [draft, onChange],
@@ -243,12 +345,19 @@ export const GradingFields: React.FC<GradingFieldsProps> = ({
 
   return (
     <div className={cn('space-y-3', className)}>
-      {badgeText ? (
-        <Badge variant={isOverride ? 'warning' : 'success'} className="gap-1.5">
-          {isOverride ? <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
-          {badgeText}
-        </Badge>
-      ) : null}
+      <div className="space-y-1">
+        <StarRow label="Accuracy" value={draft.accuracy ?? 0} onChange={(v) => patch({ accuracy: v })} />
+        <StarRow
+          label="Reasoning quality"
+          value={draft.reasoning_quality ?? 0}
+          onChange={(v) => patch({ reasoning_quality: v })}
+        />
+        <StarRow
+          label="Action appropriateness"
+          value={draft.action_appropriateness ?? 0}
+          onChange={(v) => patch({ action_appropriateness: v })}
+        />
+      </div>
 
       {isOverride ? (
         <div className="space-y-1.5">
@@ -258,84 +367,44 @@ export const GradingFields: React.FC<GradingFieldsProps> = ({
           <Textarea
             id="grading-miss"
             rows={2}
-            placeholder="What did the analyst see that the agent didn't?"
+            placeholder="What did you see that the agent did not?"
             value={draft.comment ?? ''}
+            aria-describedby="grading-miss-help"
             onChange={(e) => patch({ comment: e.target.value })}
           />
+          {/* The analyst-comment disclosure: this grading comment is posted to
+              `/cases/{id}/feedback`, which re-indexes the resolved case, so the text
+              becomes part of the precedent chunk the investigator reads later. */}
+          <p id="grading-miss-help" className="text-xs leading-relaxed text-muted-foreground">
+            {DURABLE_CONTEXT_NOTE}
+          </p>
         </div>
       ) : null}
-
-      <Collapsible open={detailOpen} onOpenChange={setDetailOpen}>
-        <CollapsibleTrigger asChild>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 rounded text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <ChevronRight className={cn('h-3.5 w-3.5 transition-transform', detailOpen && 'rotate-90')} aria-hidden />
-            Rate in detail
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="mt-3 space-y-2 rounded-md border border-border bg-muted/30 p-4">
-            <div className="mb-1 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-              Quality (optional)
-            </div>
-            <StarRow
-              label="Accuracy"
-              value={draft.accuracy ?? 0}
-              onChange={(v) => patch({ accuracy: v })}
-            />
-            <StarRow
-              label="Reasoning quality"
-              value={draft.reasoning_quality ?? 0}
-              onChange={(v) => patch({ reasoning_quality: v })}
-            />
-            <StarRow
-              label="Action appropriateness"
-              value={draft.action_appropriateness ?? 0}
-              onChange={(v) => patch({ action_appropriateness: v })}
-            />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
     </div>
   );
 };
 
-export interface GradingSectionProps extends GradingFieldsProps {
-  /** Section heading. */
-  title?: string;
-  /** Whether the section starts expanded. Defaults open (keeps GradingFields mounted). */
+export interface RateTheAiProps extends GradingFieldsProps {
+  /** Whether the disclosure starts open. Default closed (D4.4). */
   defaultOpen?: boolean;
 }
 
 /**
- * A titled, collapsible wrapper around {@link GradingFields} for the close dialog.
- * Defaults OPEN so the derived badge (the primary signal) is visible and the
- * derived-assessment sync runs.
+ * "Rate the AI (optional)": the collapsed disclosure around {@link GradingFields}. Closed
+ * by default; the derived agreement is posted on submit whether or not it was opened.
  */
-export const GradingSection: React.FC<GradingSectionProps> = ({
-  title = 'Grade the AI decision',
-  defaultOpen = true,
-  className,
-  ...fields
-}) => {
+export const RateTheAi: React.FC<RateTheAiProps> = ({ defaultOpen = false, className, ...fields }) => {
   const [open, setOpen] = React.useState(defaultOpen);
+  const rated = isGradingDirty({ ...fields.draft, assessment: undefined });
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className={cn('rounded-md border border-border p-4', className)}>
-      <CollapsibleTrigger asChild>
-        <button
-          type="button"
-          className="flex w-full items-center justify-between rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="text-sm font-medium text-foreground">{title}</span>
-          <ChevronRight className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-90')} aria-hidden />
-        </button>
+    <Collapsible open={open} onOpenChange={setOpen} className={cn('space-y-3', className)}>
+      <CollapsibleTrigger className="inline-flex items-center gap-1.5 rounded-sm text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} aria-hidden />
+        Rate the AI (optional)
+        {rated && !open ? <span className="font-normal text-muted-foreground">· rated</span> : null}
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="mt-3">
-          <GradingFields {...fields} />
-        </div>
+        <GradingFields {...fields} />
       </CollapsibleContent>
     </Collapsible>
   );
@@ -360,9 +429,61 @@ export interface GradingHistoryProps {
   className?: string;
 }
 
+/** A stored 0..1 quality score as a percentage; 0 is the unset default ("Not rated"). */
+export function qualityWords(score: unknown): string {
+  if (typeof score !== 'number' || !Number.isFinite(score) || score <= 0) return 'Not rated';
+  return `${Math.round(Math.min(1, score) * 100)}%`;
+}
+
+/** "False positive at 92%": the AI verdict the grade was given against, when recorded. */
+export function gradedVerdictWords(entry: CaseFeedback): string | null {
+  const verdict = (entry.ai_verdict ?? '').trim();
+  if (!verdict) return null;
+  const confidence = typeof entry.ai_confidence === 'number' && entry.ai_confidence > 0 ? entry.ai_confidence : null;
+  const pct = confidence === null ? null : Math.round(confidence <= 1 ? confidence * 100 : confidence);
+  return `${humanizeToken(verdict)}${pct === null ? '' : ` at ${pct}%`}`;
+}
+
 /**
- * Read-only list of prior gradings (most recent first). Analyst comments render as
- * PLAIN TEXT (#9). Renders nothing when there is no prior feedback.
+ * The full grading record behind one entry (Round 16 SPEC §4.5 WP14, research
+ * data-visibility R8): the three quality scores, the AI verdict that was graded, and
+ * whether it came from the auto-close review. Folded by default.
+ */
+const GradingRecord: React.FC<{ entry: CaseFeedback }> = ({ entry }) => {
+  const [open, setOpen] = React.useState(false);
+  const graded = gradedVerdictWords(entry);
+  const review = (entry.origin ?? '').trim() === 'auto_close_review';
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="mt-1.5">
+      <CollapsibleTrigger className="inline-flex items-center gap-1 rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} aria-hidden />
+        Full record
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-1.5" data-testid="grading-record">
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-xs">
+          <dt className="text-muted-foreground">Accuracy</dt>
+          <dd className="tabular-nums text-foreground">{qualityWords(entry.accuracy)}</dd>
+          <dt className="text-muted-foreground">Reasoning quality</dt>
+          <dd className="tabular-nums text-foreground">{qualityWords(entry.reasoning_quality)}</dd>
+          <dt className="text-muted-foreground">Action appropriateness</dt>
+          <dd className="tabular-nums text-foreground">{qualityWords(entry.action_appropriateness)}</dd>
+          <dt className="text-muted-foreground">Graded the AI verdict</dt>
+          <dd className="text-foreground">{graded ?? 'Not recorded'}</dd>
+          {review ? (
+            <>
+              <dt className="text-muted-foreground">Origin</dt>
+              <dd className="text-foreground">From the auto-close review</dd>
+            </>
+          ) : null}
+        </dl>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+};
+
+/**
+ * Read-only list of prior gradings (most recent first), divided by hairlines. Analyst
+ * comments render as PLAIN TEXT (#9). Renders nothing when there is no prior feedback.
  */
 export const GradingHistory: React.FC<GradingHistoryProps> = ({ feedback, className }) => {
   const prior = React.useMemo(
@@ -372,43 +493,36 @@ export const GradingHistory: React.FC<GradingHistoryProps> = ({ feedback, classN
   if (!prior.length) return null;
 
   return (
-    <div className={className}>
-      <div className="mb-3 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-        Previous gradings
-      </div>
-      <div className="space-y-2">
-        {prior.map((f, i) => (
-          <div key={i} className="rounded-md border border-border bg-muted/30 p-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={assessmentVariant(f.assessment)}>
-                {ASSESSMENT_LABEL[(f.assessment ?? '').trim().toLowerCase()] ||
-                  humanizeToken(f.assessment) ||
-                  'Graded'}
-              </Badge>
-              {f.actual_outcome ? (
-                <Badge variant="outline">{humanizeToken(f.actual_outcome)}</Badge>
-              ) : null}
-              {typeof f.time_saved_minutes === 'number' && f.time_saved_minutes > 0 ? (
-                <Badge variant="outline" className="gap-1">
-                  <Clock className="h-3 w-3" aria-hidden />
-                  {f.time_saved_minutes} min saved
-                </Badge>
-              ) : null}
-              <span className="ml-auto text-xs text-muted-foreground">
-                {f.analyst ? `${f.analyst} · ` : ''}
-                {f.ts ? humanizeAge(f.ts) : DASH}
-              </span>
-            </div>
-            {f.comment ? (
-              /* UNTRUSTED — plain text (#9). */
-              <p className="mt-2 whitespace-pre-wrap text-xs text-foreground/90">{f.comment}</p>
+    <ol className={cn('divide-y divide-border/60', className)}>
+      {prior.map((f, i) => (
+        <li key={i} className="py-2.5 first:pt-0 last:pb-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={assessmentVariant(f.assessment)}>
+              {ASSESSMENT_LABEL[(f.assessment ?? '').trim().toLowerCase()] ||
+                humanizeToken(f.assessment) ||
+                'Graded'}
+            </Badge>
+            {f.actual_outcome && f.actual_outcome !== 'unknown' ? (
+              <Badge variant="outline">{outcomeWords(f.actual_outcome)}</Badge>
             ) : null}
+            {typeof f.time_saved_minutes === 'number' && f.time_saved_minutes > 0 ? (
+              <Badge variant="outline" className="gap-1">
+                <Clock className="h-3 w-3" aria-hidden />
+                {f.time_saved_minutes} min saved
+              </Badge>
+            ) : null}
+            <span className="ml-auto text-xs text-muted-foreground">
+              {f.analyst ? `${f.analyst} · ` : ''}
+              {f.ts ? humanizeAge(f.ts) : DASH}
+            </span>
           </div>
-        ))}
-      </div>
-    </div>
+          {f.comment ? (
+            /* UNTRUSTED: plain text (#9). */
+            <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-foreground/90">{f.comment}</p>
+          ) : null}
+          <GradingRecord entry={f} />
+        </li>
+      ))}
+    </ol>
   );
 };
-
-/** Re-export the `Separator` grammar so the close dialog can divide sections (W1.E). */
-export { Separator as GradingDivider };

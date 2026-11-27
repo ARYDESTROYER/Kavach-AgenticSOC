@@ -1,6 +1,6 @@
 ---
 title: Backend development
-description: Agentic SOC API architecture, conventions, configuration, routes, persistence, and local workflow for version 0.1.
+description: Agentic SOC API architecture, conventions, configuration, routes, persistence, and local workflow for version 0.2.
 ---
 
 # Backend development
@@ -47,9 +47,10 @@ api routes
 | `connectors/` | Pull and receiver SPIs, manifests, registry, and built-ins |
 | `ocsf/` | OCSF event model plus generic/ECS normalization |
 | `engine/` | Deterministic correlation, risk, decision, polling, tuning, campaigns, baselines, budgets, and reports |
-| `agents/` | Router, investigator, formatter, chat, standup, prompts, and pipeline |
+| `agents/` | Router, investigator, formatter, chat (the agent loop, its protocol parser, stream events, answer blocks, and the `chat_tools/` read-only tool registry), standup, prompts, and pipeline |
 | `llm/` | Provider adapters, retry behavior, batching, pricing, and the single gateway |
 | `tools/` | MCP-shaped read-only investigation tools |
+| `knowledge/` | The generated Help Center corpus and console map, verified by a manifest, plus the dependency-free search behind chat's product answers |
 | `stores/` | Repository interfaces plus Elasticsearch, SQL, and KV-backed implementations |
 | `auth/`, `rbac/` | Password/JWT/MFA/OIDC services and permission policy |
 | `notifications/`, `enrichment/` | Pluggable outbound channels and threat-intelligence providers |
@@ -85,7 +86,7 @@ operations where appropriate. Bootstrap, login, and self-authenticating receiver
 need explicit, narrowly tested exceptions. Add a public route only by deliberately
 extending the small allowlist in `api/deps.py` and adding security tests.
 
-Prefer typed request bodies and explicit response models. Existing 0.1 endpoints with
+Prefer typed request bodies and explicit response models. Existing 0.2 endpoints with
 plain dictionary responses remain valid, but new response models improve the OpenAPI
 contract and generated client types.
 
@@ -111,7 +112,7 @@ Call a model only through `llm/gateway.py`. The gateway is the one place that re
 usage and cost. Prompt content derived from sources, users, cases, or arbitrary
 knowledge must use the shared untrusted-data fencing helpers.
 
-Do not allow an agent, tool, playbook, notification, or preview endpoint to write a
+Do not allow an agent, tool, runbook, notification, or preview endpoint to write a
 final case decision. `engine/case_manager.py` remains the authority. Provider, source,
 tool, or parsing failures must preserve a case and route to human review.
 

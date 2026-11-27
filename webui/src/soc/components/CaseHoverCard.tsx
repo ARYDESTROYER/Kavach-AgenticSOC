@@ -5,13 +5,15 @@ import { humanizeAge, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import {
   StatusBadge,
-  VerdictBadge,
   RiskBadge,
   ConfidenceBadge,
   SeverityBadge,
   AutoClosedBadge,
+  AiVerdictChip,
+  OutcomeBadge,
   severityBand,
 } from './badges';
+import { caseOutcome } from './outcome';
 import { ProvenanceTag, severityProvenance } from './ProvenanceTag';
 import { InlineCode } from './CodeBlock';
 
@@ -22,6 +24,20 @@ export interface CaseHoverCardProps {
   children: React.ReactNode;
   openDelay?: number;
   closeDelay?: number;
+  /**
+   * Hold the preview CLOSED and refuse every open transition while true.
+   *
+   * A consumer that opens a case sheet from this very trigger needs it. Radix's hover card
+   * arms its open timer on pointer-enter AND again on focus, overwriting the timer id
+   * without clearing the first (`@radix-ui/react-hover-card` `handleOpen`) — so a single
+   * click leaks a timer that the following blur never cancels. It fires a moment later and
+   * pops the preview OVER the sheet the click just opened, where, as a dismissable layer
+   * stacked above it, it swallows the first Escape the operator presses.
+   *
+   * Defaults to false, which is behaviour-identical to the uncontrolled card this
+   * replaced, so a consumer that does not opt in is unaffected.
+   */
+  forceClosed?: boolean;
   side?: React.ComponentPropsWithoutRef<typeof HoverCardContent>['side'];
   align?: React.ComponentPropsWithoutRef<typeof HoverCardContent>['align'];
   sideOffset?: number;
@@ -39,6 +55,7 @@ export function CaseHoverCard({
   children,
   openDelay = 280,
   closeDelay = 180,
+  forceClosed = false,
   side,
   align = 'start',
   sideOffset,
@@ -64,9 +81,63 @@ export function CaseHoverCard({
     severityBand(c.severity_band) ??
     severityBand(typeof c.risk_score === 'number' ? c.risk_score : null);
 
+  // Controlled so `forceClosed` can REFUSE an open, including one already in flight on a
+  // leaked Radix timer (see the prop's note). With `forceClosed` false this is
+  // behaviour-identical to the uncontrolled card: Radix still drives every hover, focus
+  // and dismiss transition through `onOpenChange`.
+  const [open, setOpen] = React.useState(false);
+  // Round 12 (D15): the outcome of record — the analyst's classification once a human
+  // classified the case, the attributed AI assessment otherwise.
+  const outcome = caseOutcome(c);
+  const humanOutcome = outcome.source === 'analyst' || outcome.source === 'analyst_policy' ||
+    outcome.source === 'analyst_unrecorded';
+  React.useEffect(() => {
+    if (forceClosed) setOpen(false);
+  }, [forceClosed]);
+
+  // Round 12 (CM-9): a preview must never float ABOVE a case sheet or dialog. Activating
+  // the trigger (it usually opens that sheet) closes the card and refuses re-opens for a
+  // moment — Radix can leak an open timer on click (see `forceClosed`) — and no open is
+  // accepted while a modal dialog that does not contain this trigger is on screen. This
+  // covers every consumer, including the ones that do not pass `forceClosed`.
+  const triggerRef = React.useRef<HTMLElement | null>(null);
+  const suppressUntilRef = React.useRef(0);
+  const suppress = React.useCallback(() => {
+    suppressUntilRef.current = Date.now() + 1500;
+    setOpen(false);
+  }, []);
+  const blockedByModal = React.useCallback((): boolean => {
+    if (typeof document === 'undefined') return false;
+    const dialogs = document.querySelectorAll('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]');
+    for (const dialog of Array.from(dialogs)) {
+      if (!triggerRef.current || !dialog.contains(triggerRef.current)) return true;
+    }
+    return false;
+  }, []);
+
   return (
-    <HoverCard openDelay={openDelay} closeDelay={closeDelay}>
-      <HoverCardTrigger asChild>{trigger}</HoverCardTrigger>
+    <HoverCard
+      open={forceClosed ? false : open}
+      onOpenChange={(next) => {
+        if (forceClosed) return;
+        if (next && (Date.now() < suppressUntilRef.current || blockedByModal())) return;
+        setOpen(next);
+      }}
+      openDelay={openDelay}
+      closeDelay={closeDelay}
+    >
+      <HoverCardTrigger
+        asChild
+        ref={(node: HTMLElement | null) => {
+          triggerRef.current = node;
+        }}
+        onClick={suppress}
+        onKeyDown={(event: React.KeyboardEvent) => {
+          if (event.key === 'Enter' || event.key === ' ') suppress();
+        }}
+      >
+        {trigger}
+      </HoverCardTrigger>
       <HoverCardContent
         side={side}
         align={align}
@@ -75,11 +146,19 @@ export function CaseHoverCard({
         className={cn('w-96', className)}
       >
         <div className="flex items-center justify-between gap-2">
-          <span className="font-mono text-xs text-muted-foreground">{c.case_id}</span>
+          {/* The full display id (the queue row may middle-ellipsise it). */}
+          <span className="min-w-0 break-all font-mono text-xs text-muted-foreground">
+            {c.case_number || c.case_id}
+          </span>
           <StatusBadge status={c.status} />
         </div>
         {c.title ? (
           <div className="mt-1.5 line-clamp-2 text-sm font-semibold leading-snug">{c.title}</div>
+        ) : null}
+        {humanOutcome ? (
+          <p data-testid="case-hover-outcome" className="mt-1 text-xs font-medium text-foreground">
+            {outcome.headline}
+          </p>
         ) : null}
 
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -89,7 +168,8 @@ export function CaseHoverCard({
               <ProvenanceTag kind={severityProvenance(c.severity_source)} variant="icon" />
             </span>
           ) : null}
-          {c.verdict ? <VerdictBadge verdict={c.verdict} /> : null}
+          {humanOutcome ? <OutcomeBadge outcome={outcome} /> : null}
+          {c.verdict ? <AiVerdictChip verdict={c.verdict} labelled={humanOutcome} /> : null}
           {typeof c.risk_score === 'number' ? <RiskBadge score={c.risk_score} /> : null}
           {typeof c.confidence === 'number' ? <ConfidenceBadge confidence={c.confidence} /> : null}
           {/* Self-hiding: renders null unless the AI auto-closed the case (terminal +
@@ -103,7 +183,7 @@ export function CaseHoverCard({
 
         {c.entity?.value ? (
           <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="uppercase tracking-wide">{humanizeToken(c.entity.type)}</span>
+            <span>{humanizeToken(c.entity.type)}</span>
             <InlineCode>{c.entity.value}</InlineCode>
           </div>
         ) : null}
@@ -112,7 +192,7 @@ export function CaseHoverCard({
           <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-muted-foreground">{c.summary}</p>
         ) : null}
 
-        <div className="mt-3 flex items-center justify-between gap-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
+        <div className="mt-3 flex items-center justify-between gap-3 border-t border-border pt-2 text-2xs text-muted-foreground">
           <span className="min-w-0 truncate">{c.source_name ? c.source_name : 'Case'}</span>
           <span className="shrink-0 whitespace-nowrap">
             Updated {humanizeAge(c.updated_at || c.created_at)}

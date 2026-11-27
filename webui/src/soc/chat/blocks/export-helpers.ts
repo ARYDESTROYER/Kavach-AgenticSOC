@@ -1,0 +1,292 @@
+/**
+ * Copy / download helpers for answer blocks (BLOCKS.md amendment 9, SPEC §9.3).
+ *
+ * The field encoders, the defang rule and the download helper live in `lib/`
+ * (`lib/csv.ts`, `lib/defang.ts`, `lib/download.ts`) since the reports package
+ * consolidated the console's copies there; they are re-exported here unchanged so the
+ * blocks kit and its tests keep one import site. This module keeps only the block →
+ * table projection and the TSV / CSV / JSON encoders built on those primitives.
+ *
+ * Rules (enforced by the lib modules):
+ *   - STRING cells are formula-defused by the shared rule set
+ *     (`lib/csv-formula.contract.json`: a leading `= + - @`, TAB, CR, LF or full-width
+ *     `＝ ＋ － ＠`, also after spaces, gets a `'` prefix); TSV also defuses a leading `"`.
+ *     NUMERIC cells stay numeric: a negative count is a number, not a formula.
+ *   - `null` is an empty field (G3: not measured is not 0).
+ *   - IOCs are defanged by default for the clipboard (`hxxp`, `[.]`, `[@]`); never in the
+ *     live UI and never in JSON.
+ *   - Enum values read as the screen reads them (`labels.ts`, the badges' own words):
+ *     "True positive", "Needs human", "Critical", "Escalated", "IP address", "Alert",
+ *     never `true_positive`. The projection keeps the stored KEYS of severity, verdict
+ *     and status columns (the "Show table" view draws those as badges) and marks the
+ *     column `semantic`, so CSV and Copy data write the badge's words. A yes/no cell
+ *     reads "Yes" or "No" as the table shows it, in CSV and Copy data too. The KPI
+ *     table's Unit column stays the unit key: it is the machine-readable partner of the
+ *     raw numeric Value. Only JSON keeps every raw value.
+ *   - A case reads as the screen names it, by its number ("CASE-000045"), the internal id
+ *     only when it has none ({@link caseDisplayRef}): in the "Show table" view, Copy data
+ *     and the Case column of a CSV. A case list carries each row's id beside it
+ *     (`Tabular.caseIds`): the table view links by it, and a CSV (the machine format)
+ *     writes it in its own "Case ID" column after "Case" so other tools can match it.
+ */
+import { csvField, tsvField } from '@/lib/csv';
+import { defang } from '@/lib/defang';
+import { IN_PROGRESS_SUFFIX, formatUtc, formatValue, hasCalendarLabels, xAxisHeader, xPositionLabel } from './format';
+import {
+  CITATION_KIND_LABEL,
+  ENTITY_KIND_LABEL,
+  REPUTATION_LABEL,
+  TIMELINE_KIND_LABEL,
+  booleanText,
+  entityFacts,
+  semanticColumn,
+  semanticText,
+  type SemanticColumn,
+} from './labels';
+import type { AnswerBlock, Cell, ChartBlock, ColumnType, KpiGroupBlock, TableBlock, ValueUnit } from './schema';
+import { leafBlocks } from './schema';
+
+export { csvField, defuseFormula, tsvField } from '@/lib/csv';
+export { defang } from '@/lib/defang';
+export { downloadText } from '@/lib/download';
+
+/* -------------------------------------------------------------------------- */
+/* Tabular projection of a block.                                              */
+/* -------------------------------------------------------------------------- */
+export interface TabularColumn {
+  label: string;
+  /** Numeric columns are written raw (never defused, never defanged). */
+  numeric: boolean;
+  /**
+   * A severity, verdict or status column: its cells are the stored keys, written to a
+   * file in the words the screen's badge shows ({@link semanticText}).
+   */
+  semantic?: SemanticColumn;
+  /** An identifier the console shows as is (a case number or id): never defanged. */
+  identifier?: boolean;
+}
+
+export interface Tabular {
+  columns: TabularColumn[];
+  rows: Cell[][];
+  /**
+   * A case list's internal case id for each row (the rows' first column names the case by
+   * its number). The "Show table" view links by it; {@link toCSV} writes it as "Case ID".
+   */
+  caseIds?: string[];
+}
+
+/**
+ * A case as the screen names it (`CaseRefText`, SPEC-chat T14): its display number
+ * ("CASE-000045") when the block carries one, the internal id only as the fallback.
+ */
+export function caseDisplayRef(c: { case_id: string; case_number?: string }): string {
+  return c.case_number?.trim() || c.case_id;
+}
+
+const TEXT = (label: string): TabularColumn => ({ label, numeric: false });
+const NUM = (label: string): TabularColumn => ({ label, numeric: true });
+const SEMANTIC = (label: string, semantic: SemanticColumn): TabularColumn => ({ label, numeric: false, semantic });
+
+function seriesTable(block: ChartBlock): Tabular {
+  // A calendar axis (Round 12) reads as its period labels in the operator zone ("Mar
+  // 2026"), the current period marked; a plain time axis keeps its UTC instants.
+  const calendar = hasCalendarLabels(block.x);
+  const head = calendar ? xAxisHeader(block.x) : block.x.label ?? (block.x.kind === 'time' ? 'Time (UTC)' : 'Category');
+  const last = block.x.values.length - 1;
+  const xCell = (x: string, i: number): string =>
+    calendar ? `${xPositionLabel(block.x, i)}${block.last_in_progress && i === last ? IN_PROGRESS_SUFFIX : ''}` : x;
+  return {
+    columns: [TEXT(head), ...block.series.map((s) => NUM(s.label))],
+    rows: block.x.values.map((x, i) => [xCell(x, i), ...block.series.map((s) => s.values[i] ?? null)]),
+  };
+}
+
+const NUMERIC_COLUMN_TYPES: readonly ColumnType[] = ['number', 'risk'];
+
+function tableTable(block: TableBlock): Tabular {
+  return {
+    columns: block.columns.map((c) => {
+      const semantic = semanticColumn(c.type);
+      return { label: c.label, numeric: NUMERIC_COLUMN_TYPES.includes(c.type), ...(semantic ? { semantic } : {}) };
+    }),
+    rows: block.rows.map((row) => row.map((cell) => cell)),
+  };
+}
+
+/**
+ * A KPI group as a table: Metric, Value (numeric), Unit, Context, then, only when a
+ * figure carries one, Bound ("at least": a scan-bounded lower bound is never read as an
+ * exact count) and the change the tile's delta chip shows, as a signed number plus its
+ * period (Round 12 WP-REP: the CSV says what the screen, the PDF and Word say). Appended
+ * columns keep the first four where every consumer expects them.
+ */
+export function kpiTabular(block: KpiGroupBlock): Tabular {
+  const bounded = block.items.some((it) => it.bound === 'lower');
+  const changes = block.items.some((it) => it.delta);
+  return {
+    columns: [
+      TEXT('Metric'),
+      NUM('Value'),
+      TEXT('Unit'),
+      TEXT('Context'),
+      ...(bounded ? [TEXT('Bound')] : []),
+      ...(changes ? [NUM('Change'), TEXT('Change period')] : []),
+    ],
+    rows: block.items.map((it): Cell[] => [
+      it.label,
+      it.value,
+      it.unit,
+      it.context ?? null,
+      ...(bounded ? [it.bound === 'lower' && it.value !== null ? 'at least' : null] : []),
+      ...(changes ? [it.delta ? it.delta.value : null, it.delta ? it.delta.period_label || null : null] : []),
+    ]),
+  };
+}
+
+/**
+ * The block's data as a plain table (the same rows as the "Show table" view), or `null`
+ * for blocks that have no tabular data (prose, callouts, queries, guides, reports).
+ */
+export function blockTabular(block: AnswerBlock): Tabular | null {
+  switch (block.type) {
+    case 'chart':
+      return seriesTable(block);
+    case 'heatmap':
+      return {
+        columns: [TEXT(block.y.label ?? 'Row'), ...block.x.values.map((x) => NUM(x))],
+        rows: block.y.values.map((y, r) => [y, ...block.x.values.map((_, c) => block.cells[r]?.[c] ?? null)]),
+      };
+    case 'table':
+      return tableTable(block);
+    case 'kpi_group':
+      return kpiTabular(block);
+    case 'case_list':
+      return {
+        columns: [
+          { label: 'Case', numeric: false, identifier: true },
+          TEXT('Title'),
+          SEMANTIC('Severity', 'severity'),
+          SEMANTIC('Verdict', 'verdict'),
+          SEMANTIC('Status', 'status'),
+          NUM('Risk'),
+          TEXT('Created (UTC)'),
+        ],
+        rows: block.items.map((it) => [
+          caseDisplayRef(it),
+          it.title,
+          it.severity ?? null,
+          it.verdict ?? null,
+          it.status ?? null,
+          it.risk ?? null,
+          it.created_at ? formatUtc(it.created_at) : null,
+        ]),
+        caseIds: block.items.map((it) => it.case_id),
+      };
+    case 'timeline':
+      return {
+        columns: [TEXT('Time (UTC)'), TEXT('Event'), TEXT('Kind'), TEXT('Detail')],
+        rows: block.events.map((e) => [formatUtc(e.at), e.label, e.kind ? TIMELINE_KIND_LABEL[e.kind] : null, e.detail ?? null]),
+      };
+    case 'mitre':
+      return {
+        columns: [TEXT('Technique'), TEXT('Name'), TEXT('Tactic'), NUM('Count')],
+        rows: block.techniques.map((t) => [t.id, t.name ?? null, t.tactic ?? null, t.count ?? null]),
+      };
+    case 'entity':
+      return {
+        columns: [TEXT('Field'), TEXT('Value')],
+        rows: [
+          ['Kind', ENTITY_KIND_LABEL[block.entity.kind]],
+          ['Value', block.entity.value],
+          ...entityFacts(block).map((f): Cell[] => [f.label, f.value]),
+          ...block.reputation.map((r): Cell[] => [
+            `Reputation: ${r.provider}`,
+            r.score === undefined || r.score === null ? REPUTATION_LABEL[r.verdict] : `${REPUTATION_LABEL[r.verdict]} (${r.score})`,
+          ]),
+        ],
+      };
+    case 'citations':
+      return {
+        columns: [NUM('#'), TEXT('Kind'), TEXT('Source')],
+        rows: block.items.map((it) => [it.n, CITATION_KIND_LABEL[it.kind], it.label]),
+      };
+    default:
+      return null;
+  }
+}
+
+export interface EncodeOptions {
+  /** Defang IOCs in string cells (clipboard default; never for JSON). */
+  defang?: boolean;
+}
+
+/**
+ * A cell in the words the screen shows (`TypedCell`): a severity/verdict/status key as
+ * its badge's label, and a yes/no value as "Yes" or "No" in any column, as Word, Excel,
+ * Markdown and HTML write it. The field encoders stay primitive (`csvField(true)` is
+ * `true`); only JSON keeps the boolean.
+ */
+function displayCell(cell: Cell, col: TabularColumn): Cell {
+  if (typeof cell === 'boolean') return booleanText(cell);
+  return col.semantic && typeof cell === 'string' ? semanticText(col.semantic, cell) : cell;
+}
+
+function encode(tab: Tabular, field: (c: Cell) => string, sep: string, options: EncodeOptions): string {
+  const fang = (cell: Cell, keep: boolean): Cell =>
+    options.defang && !keep && typeof cell === 'string' ? defang(cell) : cell;
+  const header = tab.columns.map((c) => field(fang(c.label, false))).join(sep);
+  const body = tab.rows.map((row) =>
+    tab.columns
+      .map((col, i) => {
+        const cell = displayCell(row[i] ?? null, col);
+        // A non-numeric cell in a numeric column (a legacy string) is still text and is
+        // defused like any other string; a number anywhere is written raw. A case number
+        // or id is an identifier and keeps its exact spelling.
+        return field(fang(cell, (col.numeric && typeof cell === 'number') || col.identifier === true));
+      })
+      .join(sep),
+  );
+  return [header, ...body].join(sep === '\t' ? '\n' : '\r\n');
+}
+
+/** Copy-data text (TSV, defused, defanged by default). */
+export function toTSV(tab: Tabular, options: EncodeOptions = { defang: true }): string {
+  return encode(tab, tsvField, '\t', options);
+}
+
+/**
+ * CSV download text (RFC-4180, defused; not defanged unless asked). A case list gains a
+ * "Case ID" column after "Case": the Case column names a case as the screen does, and
+ * the id lets other tools match it.
+ */
+export function toCSV(tab: Tabular, options: EncodeOptions = {}): string {
+  return encode(withCaseIdColumn(tab), csvField, ',', options);
+}
+
+function withCaseIdColumn(tab: Tabular): Tabular {
+  const ids = tab.caseIds;
+  if (!ids) return tab;
+  return {
+    columns: [tab.columns[0], { label: 'Case ID', numeric: false, identifier: true }, ...tab.columns.slice(1)],
+    rows: tab.rows.map((row, i) => [row[0] ?? null, ids[i] ?? null, ...row.slice(1)]),
+  };
+}
+
+/** `{ blocks_version, block }` exactly as received (JSON is never defanged). */
+export function toJSON(block: AnswerBlock): string {
+  return JSON.stringify({ blocks_version: 1, block }, null, 2);
+}
+
+/** A readable one-line value for a numeric cell in a unit (table display only). */
+export function displayNumber(value: number | null, unit: ValueUnit | undefined): string {
+  return formatValue(value, unit ?? 'count');
+}
+
+/** Every table-like leaf (report CSV export helper for WP-K). */
+export function tabularLeaves(blocks: readonly AnswerBlock[]): Array<{ block: AnswerBlock; table: Tabular }> {
+  return leafBlocks(blocks).flatMap((b) => {
+    const table = blockTabular(b);
+    return table ? [{ block: b as AnswerBlock, table }] : [];
+  });
+}

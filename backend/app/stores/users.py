@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from ..constants import USERS_KEY, USERS_NS, UserRole
 from ..models import User
+from ..stored_text import USERNAME_MAX_CHARS, single_line, username_problem
 from ..utils import iso_now
 from .base import KVStore, kv_mutate
 
@@ -36,6 +37,44 @@ logger = logging.getLogger("tlsoc.stores.users")
 
 def _norm(username: str) -> str:
     return (username or "").strip().lower()
+
+
+def _checked_name(username: str) -> str:
+    """The username as stored (surrounding whitespace removed). Raises ``ValueError``
+    for an empty name, or one ``username_problem`` refuses (a control character,
+    ``\\u0000`` among them, or more than 160 characters): every audit row the account
+    writes carries its name as the actor."""
+    uname = (username or "").strip()
+    if not uname:
+        raise ValueError("username is required")
+    problem = username_problem(uname)
+    if problem is not None:
+        raise ValueError(problem)
+    return uname
+
+
+#: The shortest start of a longer name that :func:`_cut_of_a_longer_name` refuses.
+_CUT_MIN_CHARS = 127
+
+
+def _cut_of_a_longer_name(uname: str, entries: list[User]) -> bool:
+    """Whether ``uname`` is the start, at least :data:`_CUT_MIN_CHARS` characters
+    long, of an existing name longer than :data:`USERNAME_MAX_CHARS` (an account an
+    older build created). Older builds recorded such an account's chat and access
+    denied rows under the first 160 characters of its name as typed at sign-in, with
+    control characters removed, so a leading space or a removed character moves that
+    cut; an account named any such start could read those rows as its own."""
+    wanted = _norm(uname)
+    if len(wanted) < _CUT_MIN_CHARS:
+        return False
+    for u in entries:
+        cleaned = single_line(u.username).strip()
+        if len(cleaned) <= USERNAME_MAX_CHARS:
+            continue
+        longer = cleaned.lower()
+        if longer != wanted and longer.startswith(wanted):
+            return True
+    return False
 
 
 class UserStore:
@@ -164,22 +203,40 @@ class UserStore:
         role: str = UserRole.ANALYST_TIER1.value,
         active: bool = True,
         must_change_password: bool = False,
+        display_name: str = "",
+        email: str = "",
+        phone: str = "",
+        mfa_required: bool = False,
+        prefs: dict | None = None,
     ) -> User:
-        """Create a user. Raises ``ValueError`` if the username already exists."""
-        uname = (username or "").strip()
-        if not uname:
-            raise ValueError("username is required")
+        """Create a user. Raises ``ValueError`` if the username already exists.
+
+        ``display_name``/``email``/``phone`` are the admin-set profile/contact
+        fields; ``mfa_required`` is the admin MFA-enrollment mandate (NEVER the
+        enrolled ``mfa_enabled`` flag — no secret is minted here); ``prefs`` seeds
+        the free-form prefs bag (e.g. ``{"custom_roles": [...]}`` — the same shape
+        ``PUT /api/users/{u}/roles`` writes). All optional + defaulted (additive).
+        A username with a control character or over 160 characters raises
+        ``ValueError`` too (:func:`_checked_name`)."""
+        uname = _checked_name(username)
         user = User(
             username=uname,
             password_hash=password_hash,
             role=role,
             active=active,
             must_change_password=must_change_password,
+            display_name=display_name or "",
+            email=email or "",
+            phone=phone or "",
+            mfa_required=bool(mfa_required),
+            prefs=dict(prefs or {}),
         )
 
         def apply(entries: list[User]) -> User:
             if any(_norm(u.username) == _norm(uname) for u in entries):
                 raise ValueError(f"user '{uname}' already exists")
+            if _cut_of_a_longer_name(uname, entries):
+                raise ValueError("the username is the start of a longer existing username")
             entries.append(user)
             return user
 
@@ -202,13 +259,15 @@ class UserStore:
         mutation) so two concurrent first-run setup requests cannot both observe an empty
         store and each save an admin (last-writer-wins) — exactly ONE admin is created
         under concurrency (H4 / FINDING #13). At single-process scale the lock is the
-        whole guard; the emptiness check inside it is the linearization point."""
+        whole guard; the emptiness check inside it is the linearization point. The
+        username is checked as :meth:`create` checks it (``ValueError``)."""
+        uname = _checked_name(username)
         async with self._lock:
             entries = await self._load()
             if entries:
                 return None
             user = User(
-                username=(username or "").strip(),
+                username=uname,
                 password_hash=password_hash,
                 role=role,
                 active=active,
@@ -225,9 +284,14 @@ class UserStore:
             "role", "active", "password_hash", "must_change_password", "last_login_at",
             # Wave 2 (MFA / SSO) — additive, set via the auth routes (never the UI).
             "mfa_enabled", "mfa_secret", "mfa_recovery_hashes", "mfa_last_step",
+            # Round 16 (B19): the second-factor failure counter and lock.
+            "mfa_failed_count", "mfa_locked_until",
             "oauth_provider", "oauth_sub",
             # Wave 2 (W2) self-service profile — patched via /api/account/me.
             "display_name", "alias", "avatar", "alt_email", "timezone", "locale", "prefs",
+            # Admin-managed contact fields + the MFA-enrollment mandate — patched
+            # via PUT /api/users/{username} (users:manage).
+            "email", "phone", "mfa_required",
         }
 
         def apply(entries: list[User]) -> User | None:
@@ -242,6 +306,90 @@ class UserStore:
             return None
 
         return await self._mutate(apply)
+
+    async def consume_mfa(
+        self,
+        username: str,
+        *,
+        step: int | None = None,
+        recovery_hash: str | None = None,
+    ) -> bool:
+        """Consume one second-factor code inside the store's compare-and-swap
+        (Round 16, B23). Exactly one of ``step`` (a matched TOTP time step) or
+        ``recovery_hash`` (the exact stored hash string the route matched off the
+        event loop) is given.
+
+        The mutator re-reads the user on every CAS attempt: a TOTP step is accepted
+        only when it is greater than the stored ``mfa_last_step``, and a recovery hash
+        only while that exact string is still stored, so two concurrent requests with
+        one code yield one success. No PBKDF2 runs here (a string comparison only).
+        A success also resets the failure counter and lock (B19). A lost race, an
+        unknown user or an account without MFA answers False and changes nothing."""
+        if (step is None) == (recovery_hash is None):
+            raise ValueError("give exactly one of step or recovery_hash")
+        needle = _norm(username)
+
+        def apply(entries: list[User]) -> bool:
+            for idx, u in enumerate(entries):
+                if _norm(u.username) != needle:
+                    continue
+                if not u.mfa_enabled:
+                    return False
+                patch: dict[str, Any] = {
+                    "mfa_failed_count": 0, "mfa_locked_until": "", "updated_at": iso_now(),
+                }
+                if step is not None:
+                    if int(step) <= int(u.mfa_last_step or 0):
+                        return False
+                    patch["mfa_last_step"] = int(step)
+                else:
+                    hashes = list(u.mfa_recovery_hashes or [])
+                    if recovery_hash not in hashes:
+                        return False
+                    hashes.remove(recovery_hash)
+                    patch["mfa_recovery_hashes"] = hashes
+                entries[idx] = u.model_copy(update=patch)
+                return True
+            return False
+
+        return bool(await self._mutate(apply))
+
+    async def record_mfa_failure(
+        self,
+        username: str,
+        *,
+        threshold: int,
+        lock_minutes: Callable[[int], int],
+        now_iso: str,
+        until_iso: Callable[[int], str],
+    ) -> tuple[int, str, bool]:
+        """Count one failed second-factor check (Round 16, B19), atomically.
+
+        Returns ``(failed_count, locked_until, newly_locked)``. Every ``threshold``
+        consecutive failures set ``mfa_locked_until`` to ``until_iso(minutes)``, where
+        ``minutes = lock_minutes(n)`` for the n-th lock in a row. An unknown user
+        answers ``(0, "", False)``."""
+        needle = _norm(username)
+
+        def apply(entries: list[User]) -> tuple[int, str, bool]:
+            for idx, u in enumerate(entries):
+                if _norm(u.username) != needle:
+                    continue
+                count = int(u.mfa_failed_count or 0) + 1
+                locked_until = str(u.mfa_locked_until or "")
+                newly = False
+                if threshold > 0 and count % threshold == 0:
+                    locked_until = until_iso(lock_minutes(count // threshold))
+                    newly = True
+                entries[idx] = u.model_copy(update={
+                    "mfa_failed_count": count, "mfa_locked_until": locked_until,
+                    "updated_at": now_iso,
+                })
+                return count, locked_until, newly
+            return 0, "", False
+
+        result = await self._mutate(apply)
+        return result if isinstance(result, tuple) else (0, "", False)
 
     async def delete(self, username: str) -> bool:
         needle = _norm(username)

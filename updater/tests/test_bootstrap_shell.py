@@ -20,13 +20,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP = ROOT / "scripts" / "bootstrap-updater.sh"
 RELEASE_SHA = "1" * 40
+CANONICAL_REPOSITORY_LINE = "AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC"
+_DEFAULT_REPOSITORY_LINE = object()
 PRIOR_UPDATER_IMAGE = f"sha256:{'8' * 64}"
 EXISTING_ACTIVE_OVERRIDE = (
     "services:\n"
     "  agentic-soc-updater:\n"
-    f"    image: ghcr.io/arydestroyer/agentic-kibana/updater@{PRIOR_UPDATER_IMAGE}\n"
+    f"    image: ghcr.io/arydestroyer/kavach-agenticsoc/updater@{PRIOR_UPDATER_IMAGE}\n"
     "  tlsoc-backend:\n"
-    "    image: ghcr.io/arydestroyer/agentic-kibana/backend@"
+    "    image: ghcr.io/arydestroyer/kavach-agenticsoc/backend@"
     f"sha256:{'7' * 64}\n"
 )
 
@@ -49,7 +51,11 @@ def _run_bootstrap(
     *,
     replacement_status_version: str,
     existing_active_override: str | None = None,
+    repository_line: object = _DEFAULT_REPOSITORY_LINE,
 ) -> BootstrapRun:
+    """Run the shipping bootstrap; ``repository_line=None`` leaves the line out."""
+    if repository_line is _DEFAULT_REPOSITORY_LINE:
+        repository_line = CANONICAL_REPOSITORY_LINE
     with tempfile.TemporaryDirectory(prefix="agentic-soc-bootstrap-shell-") as directory:
         checkout = Path(directory)
         scripts = checkout / "scripts"
@@ -64,18 +70,14 @@ def _run_bootstrap(
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         )
         (checkout / "VERSION").write_text("0.1.10\n", encoding="utf-8")
-        (checkout / ".env").write_text(
-            "\n".join(
-                (
-                    "TLSOC_AUTH_ENABLED=true",
-                    "TLSOC_AUTH_JWT_SECRET=0123456789abcdef0123456789abcdef",
-                    "TLSOC_PG_PASSWORD=durable-test-password",
-                    "AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Agentic-Kibana",
-                    "",
-                )
-            ),
-            encoding="utf-8",
-        )
+        env_lines = [
+            "TLSOC_AUTH_ENABLED=true",
+            "TLSOC_AUTH_JWT_SECRET=0123456789abcdef0123456789abcdef",
+            "TLSOC_PG_PASSWORD=durable-test-password",
+        ]
+        if repository_line is not None:
+            env_lines.append(str(repository_line))
+        (checkout / ".env").write_text("\n".join((*env_lines, "")), encoding="utf-8")
 
         phase_file = checkout / "phase"
         call_log = checkout / "calls.log"
@@ -302,6 +304,49 @@ class BootstrapShellRegressionTests(unittest.TestCase):
             "  agentic-soc-updater:\n"
             f"    image: {PRIOR_UPDATER_IMAGE}\n",
         )
+
+    def _assert_refused_before_any_change(self, result: BootstrapRun, message: str) -> None:
+        self.assertNotEqual(result.process.returncode, 0)
+        self.assertIn("Updater bootstrap refused:", result.process.stderr)
+        self.assertIn(message, result.process.stderr)
+        self.assertIn(CANONICAL_REPOSITORY_LINE, result.process.stderr)
+        # Refused before Docker, the supervisor or Compose is touched.
+        self.assertEqual(
+            [call for call in result.calls if not call.startswith("docker|compose-version|")],
+            [],
+        )
+        self.assertIsNone(result.active_override)
+        self.assertEqual(result.final_phase, "old")
+
+    def test_a_missing_update_repository_is_refused(self) -> None:
+        result = _run_bootstrap(replacement_status_version="0.1.10", repository_line=None)
+        self._assert_refused_before_any_change(
+            result, "AGENTIC_SOC_UPDATE_REPOSITORY is not set"
+        )
+
+    def test_the_former_repository_is_refused_in_any_case(self) -> None:
+        for value in ("ARYDESTROYER/Agentic-Kibana", "arydestroyer/agentic-kibana"):
+            with self.subTest(value=value):
+                result = _run_bootstrap(
+                    replacement_status_version="0.1.10",
+                    repository_line=f"AGENTIC_SOC_UPDATE_REPOSITORY={value}",
+                )
+                self._assert_refused_before_any_change(result, "names the former repository")
+
+    def test_the_new_repository_in_the_wrong_case_is_refused(self) -> None:
+        result = _run_bootstrap(
+            replacement_status_version="0.1.10",
+            repository_line="AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/kavach-agenticsoc",
+        )
+        self._assert_refused_before_any_change(result, "the signing identity is case-sensitive")
+
+    def test_a_fork_passes_the_identity_check(self) -> None:
+        result = _run_bootstrap(
+            replacement_status_version="0.1.10",
+            repository_line="AGENTIC_SOC_UPDATE_REPOSITORY=example-org/Kavach-AgenticSOC",
+        )
+        self.assertNotIn("AGENTIC_SOC_UPDATE_REPOSITORY", result.process.stderr)
+        self.assertIn("docker|preflight|new", result.calls)
 
     def test_failed_replacement_restores_existing_active_override_exactly(self) -> None:
         result = _run_bootstrap(

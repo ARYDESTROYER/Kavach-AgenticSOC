@@ -1,10 +1,15 @@
 /**
- * Case Manager — concise, case-specific investigation-input provenance.
+ * Case Manager: concise, case-specific investigation-input provenance.
  *
  * Every item comes from the latest run's append-only audit projection.  Nothing is
  * inferred from feature enablement or mutable current settings.  Log/model/operator
  * text is rendered as text only (#9), and the authority note keeps these advisory
  * inputs separate from the deterministic close/escalate decision (#3).
+ *
+ * Round 14 (SPEC §4.10.9): the runbook whose Published guidance the investigator
+ * received is "Runbook" (selected and consulted kept apart); a run from before Round 14
+ * keeps its stored procedure id under "Older runbook". Runbook passages found
+ * through retrieval are "Runbook references".
  */
 import * as React from 'react';
 import {
@@ -19,6 +24,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 
 import type { CaseRationale, RationalePlatformTuning } from '@/lib/types';
+import { guidanceName, rationaleRunbook } from '@/soc/runbooks/run/provenance';
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import { Skeleton } from '@/ui/skeleton';
@@ -77,6 +83,7 @@ export const InvestigationInputs: React.FC<{
   const memories = (rationale?.memory_used || []).filter((item) => item.trim());
   const playbook = rationale?.playbook;
   const procedure = rationale?.procedure_provenance;
+  const retrievalStatus = procedure?.retrieval_status ?? 'unavailable';
   const selectedPersona = procedure?.persona?.selected_id?.trim() || '';
   const personaConsulted = Boolean(selectedPersona && procedure?.persona?.consulted === true);
   const selectedPlaybook = procedure?.playbook?.selected_id?.trim() || playbook?.id?.trim() || '';
@@ -84,6 +91,7 @@ export const InvestigationInputs: React.FC<{
     selectedPlaybook &&
       (procedure?.playbook?.consulted === true || playbook?.consulted === true),
   );
+  const guidance = rationaleRunbook(rationale);
   const tuning = rationale?.platform_tuning || [];
   const tuningUnavailable = rationale?.platform_tuning_status === 'unavailable';
 
@@ -111,11 +119,36 @@ export const InvestigationInputs: React.FC<{
   if (runbooks.length) {
     items.push({
       key: 'runbook',
-      label: 'Runbook',
+      label: 'Runbook references',
       value: plural(runbooks.length, 'retrieved reference'),
       icon: BookMarked,
       detail: 'Runbook references retrieved through RAG for the latest investigation run.',
       informed: true,
+    });
+  }
+  if (rationale && !knowledge.length && retrievalStatus === 'unavailable') {
+    items.push({
+      key: 'knowledge-provenance-unavailable',
+      label: 'Knowledge',
+      value: 'Provenance unavailable',
+      icon: BookOpen,
+      detail:
+        'Reliable latest-run retrieval telemetry was not recorded. Missing history is not a measured zero and did not count as an input.',
+      informed: false,
+    });
+  } else if (
+    rationale &&
+    !knowledge.length &&
+    retrievalStatus === 'not_attempted' &&
+    showSelectionStatus
+  ) {
+    items.push({
+      key: 'knowledge-not-attempted',
+      label: 'Knowledge',
+      value: 'Not run',
+      icon: BookOpen,
+      detail: 'Knowledge retrieval did not run on the latest investigation path.',
+      informed: false,
     });
   }
   if (personaConsulted || (showSelectionStatus && selectedPersona)) {
@@ -131,19 +164,34 @@ export const InvestigationInputs: React.FC<{
       informed: personaConsulted,
     });
   }
-  if (playbookConsulted || (showSelectionStatus && selectedPlaybook)) {
+  if (guidance && (guidance.consulted || showSelectionStatus)) {
+    const reason = guidance.reason;
+    items.push({
+      key: 'runbook-guidance',
+      label: 'Runbook',
+      value: guidance.consulted
+        ? `${guidanceName(guidance)} · Consulted`
+        : `${guidance.title || guidance.selectedId} · Selected only`,
+      icon: Workflow,
+      detail: guidance.consulted
+        ? `The latest run received this Published runbook as guidance.${reason ? ` Matched because: ${reason}` : ''}`
+        : `The latest run matched this runbook but did not receive its guidance.${reason ? ` Matched because: ${reason}` : ''}`,
+      informed: guidance.consulted,
+    });
+  } else if (!guidance && (playbookConsulted || (showSelectionStatus && selectedPlaybook))) {
+    // An investigation from before Round 14: the stored procedure id, shown verbatim.
     const version = playbookConsulted && playbook?.version ? ` · v${playbook.version}` : '';
     const reason = procedure?.playbook?.selection_reason?.trim() || playbook?.reason?.trim();
     items.push({
       key: 'playbook',
-      label: 'Playbook',
+      label: 'Older runbook',
       value: playbookConsulted
         ? `${selectedPlaybook}${version} · Consulted`
         : `${selectedPlaybook} · Selected only`,
       icon: Workflow,
       detail: playbookConsulted
-        ? `The latest run injected and consulted this playbook.${reason ? ` Selected because: ${reason}` : ''}`
-        : `The latest run selected this playbook but did not inject or consult it.${reason ? ` Selected because: ${reason}` : ''}`,
+        ? `The latest run, made by an older version, received and consulted this procedure.${reason ? ` Selected because: ${reason}` : ''}`
+        : `The latest run, made by an older version, selected this procedure but did not receive or consult it.${reason ? ` Selected because: ${reason}` : ''}`,
       informed: playbookConsulted,
     });
   }
@@ -168,7 +216,10 @@ export const InvestigationInputs: React.FC<{
   }
   const informedItemCount = items.filter((item) => item.informed).length;
   const reviewableItemCount = items.filter(
-    (item) => item.key !== 'platform-tuning-unavailable',
+    (item) =>
+      item.key !== 'platform-tuning-unavailable' &&
+      item.key !== 'knowledge-provenance-unavailable' &&
+      item.key !== 'knowledge-not-attempted',
   ).length;
 
   if (!loading && !error && items.length === 0) return null;
@@ -181,13 +232,13 @@ export const InvestigationInputs: React.FC<{
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3
+          <h2
             id="investigation-inputs-heading"
-            className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground"
+            className="text-base font-semibold text-foreground"
           >
             Investigation inputs
-          </h3>
-          <p className="mt-1 text-sm text-muted-foreground">
+          </h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
             {showSelectionStatus
               ? 'Latest-run selections and the inputs actually consulted.'
               : 'Only latest-run inputs actually consulted or applied to this case path.'}
@@ -238,7 +289,10 @@ export const InvestigationInputs: React.FC<{
                           aria-hidden
                         />
                         <div className="min-w-0">
-                          <div className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+                          <div
+                            data-testid="investigation-input-label"
+                            className="text-xs font-medium text-muted-foreground"
+                          >
                             {item.label}
                           </div>
                           <div className="mt-0.5 break-words text-sm font-medium text-foreground">

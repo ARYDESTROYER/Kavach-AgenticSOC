@@ -1,12 +1,12 @@
 ---
 title: Security model
-description: Trust boundaries, enforced safety properties, deployment responsibilities, and known security limits in Agentic SOC 0.1.
+description: Trust boundaries, enforced safety properties, deployment responsibilities, and known security limits in Agentic SOC 0.2.
 ---
 
 # Security model
 
 Agentic SOC processes attacker-influenced telemetry and sends bounded summaries to language
-models. Version 0.1 therefore treats input data, model output, and operational actions
+models. Version 0.2 therefore treats input data, model output, and operational actions
 as separate trust domains. The product's consequential safety rules are enforced in
 code rather than delegated to a prompt.
 
@@ -45,7 +45,7 @@ The LLM produces a verdict recommendation. The pure case-manager decision functi
 evaluates that verdict, confidence, risk score, and operator policy. `NEEDS_HUMAN`
 cannot auto-close. True-positive auto-close is off by default, while false-positive
 auto-close is bounded by configured confidence/risk thresholds and an objection
-window. Playbooks, automation, memory, notifications, and preview endpoints cannot
+window. Runbooks, automation, memory, notifications, and preview endpoints cannot
 bypass the case manager.
 
 See [Deterministic decisions](../concepts/deterministic-decisions.md).
@@ -77,8 +77,18 @@ proposal/approval-gated, and closing a case is not an autonomous tool capability
 Authentication is **off by default** in the base backend configuration. That default
 supports isolated evaluation; it is not a production security posture. When auth is
 enabled, JWTs are accepted through an HTTP-only, SameSite=Lax cookie or a bearer
-header. Session records add revocation, idle/absolute expiry, refresh rotation, and
-token-version invalidation.
+header. Session records add revocation, idle/absolute expiry, and token-version
+invalidation. No sign-in issues a refresh token: a session lasts until its access token
+expires, within the idle and absolute limits. The deprecated `POST /api/auth/refresh`
+answers `401` with code `session_invalid`.
+
+Since 0.2, the server also enforces these account rules: an account an administrator
+created or reset must change its password before any other request (`403
+password_change_required`); changing your own password signs out your other sessions,
+and an administrator's reset signs the account out everywhere; ten wrong second-factor
+codes in a row lock second-factor checks for the account (`429 mfa_locked`), from 5
+minutes and doubling up to an hour; and only a stored Super admin with a fresh sign-in
+can change single sign-on.
 
 RBAC is a second switch:
 
@@ -110,7 +120,7 @@ no-referrer policy; HSTS is emitted for HTTPS requests. The built-in rate limite
 optional, in-process, and per client IP. It is a coarse single-process guard, not a
 distributed rate-control system.
 
-CSRF middleware is optional and off by default. In 0.1 it expects matching
+CSRF middleware is optional and off by default. In 0.2 it expects matching
 `tlsoc_csrf` cookie and `X-CSRF-Token` header values on unsafe requests, but the Agentic SOC
 Console does not mint/echo that token end to end. Do not enable it without validating
 the client flow or providing the exchange at the trusted proxy/application layer.
@@ -120,7 +130,7 @@ the client flow or providing the exchange at the trusted proxy/application layer
 Provider, source, SSO, notification, database, and signing credentials belong in the
 deployment secret store. Runtime values entered in the Console are memory-only unless
 also supplied at boot. API reads expose only configured status. Never put a secret in
-an organization preference, connector non-secret `config`, a playbook, a model prompt,
+an organization preference, connector non-secret `config`, a runbook, a model prompt,
 or source telemetry.
 
 Local passwords use PBKDF2 hashes. JWTs use HS256 with an operator-supplied stable
@@ -141,9 +151,9 @@ obfuscation/signing keys as sensitive and back them up separately.
 - Back up and restore-test state and deployment secrets separately.
 - Record the immutable image/tag/commit identity and verify readiness after restart.
 
-## Security limits in 0.1
+## Security limits in 0.2
 
-Agentic SOC 0.1 does not provide a built-in durable secret manager, default multi-tenant
+Agentic SOC 0.2 does not provide a built-in durable secret manager, default multi-tenant
 row isolation, distributed rate limiting, or autonomous response containment. The
 reference service shape is single-backend oriented; multi-replica coordination and
 high availability require deployment-specific validation. Some transport receivers

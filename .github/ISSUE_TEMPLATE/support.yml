@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Check the [Stable Help Center](https://arydestroyer.github.io/Agentic-Kibana/stable/) first. Questions involving vulnerabilities must use the private process in [SECURITY.md](https://github.com/ARYDESTROYER/Agentic-Kibana/blob/main/SECURITY.md#8-responsible-disclosure).
+        Check the [Stable Help Center](https://arydestroyer.github.io/Kavach-AgenticSOC/stable/) first. Questions involving vulnerabilities must use the private process in [SECURITY.md](https://github.com/ARYDESTROYER/Kavach-AgenticSOC/blob/main/SECURITY.md#8-responsible-disclosure).
 
   - type: checkboxes
     id: preflight

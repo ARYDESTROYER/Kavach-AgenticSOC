@@ -129,6 +129,41 @@ async def test_get_campaign_found(app_state):
     assert res["campaign"]["case_ids"] == ["c1", "c2"]
 
 
+async def test_get_campaign_names_members_by_case_number(app_state):
+    """Round 13 polish: the detail read carries each member's display number, so the
+    Campaigns sheet shows "CASE-000045" and keeps the internal id for a tooltip. A
+    member without a number, or one that no longer exists, is absent (it keeps its id)."""
+    state = app_state
+    numbered = _case("case-numbered", ip="203.0.113.7").model_copy(update={"case_number": "CASE-000045"})
+    plain = _case("case-plain", ip="203.0.113.8").model_copy(update={"case_number": ""})
+    await state.cases.save(numbered)
+    await state.cases.save(plain)
+    await state.campaign_store.upsert(
+        Campaign(id="campaign-num", case_ids=["case-numbered", "case-plain", "case-gone"])
+    )
+    res = await get_campaign("campaign-num", state=state)
+    assert res["case_numbers"] == {"case-numbered": "CASE-000045"}
+    # The campaign itself keeps the shared shape (ids only), as every other surface reads it.
+    assert res["campaign"]["case_ids"] == ["case-numbered", "case-plain", "case-gone"]
+    assert "case_numbers" not in res["campaign"]
+
+
+async def test_get_campaign_member_numbers_survive_a_failing_read(app_state, monkeypatch):
+    state = app_state
+    await state.cases.save(_case("case-ok", ip="203.0.113.9").model_copy(update={"case_number": "CASE-000046"}))
+    await state.campaign_store.upsert(Campaign(id="campaign-flaky", case_ids=["case-ok", "case-bad"]))
+    real_get = state.cases.get
+
+    async def flaky(case_id):
+        if case_id == "case-bad":
+            raise RuntimeError("store glitch")
+        return await real_get(case_id)
+
+    monkeypatch.setattr(state.cases, "get", flaky)
+    res = await get_campaign("campaign-flaky", state=state)
+    assert res["case_numbers"] == {"case-ok": "CASE-000046"}
+
+
 async def test_get_campaign_404(app_state):
     from fastapi import HTTPException
 

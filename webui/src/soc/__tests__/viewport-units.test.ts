@@ -11,19 +11,45 @@ const SOURCES = [
   ['AppShell.tsx'],
   ['components', 'NavSidebar.tsx'],
   ['pages', 'Login.tsx'],
-  ['pages', 'casedetail', 'CollaborationPanel.tsx'],
-  ['pages', 'casedetail', 'CaseChatPanel.tsx'],
   ['pages', 'Roles.tsx'],
   ['pages', 'Sources.tsx'],
 ];
 
 describe('dynamic viewport shell contract', () => {
   it.each(SOURCES)('%s avoids fixed screen/100vh sizing', (...segments) => {
-    const source = readFileSync(path.resolve(__dirname, '..', ...segments), 'utf8');
+    let source = readFileSync(path.resolve(__dirname, '..', ...segments), 'utf8');
+    // The collapsed rail's flyout (its `max-h-[calc(100dvh-1rem)]`) lives in the rail's
+    // lazy interaction layer (Round 14, SPEC §3.4). Read it with NavSidebar, so the
+    // contract follows the classes, not the file.
+    if (segments.at(-1) === 'NavSidebar.tsx') {
+      source += `\n${readFileSync(path.resolve(__dirname, '..', 'components', 'nav-rail-interactions.tsx'), 'utf8')}`;
+    }
 
     expect(source).toContain('dvh');
     expect(source).not.toMatch(/\b(?:h|min-h|max-h)-screen\b/);
     expect(source).not.toContain('100vh');
+  });
+
+  it('sizes the case Chat tab from its lane, with no viewport height of its own', () => {
+    // Round 15 (D8.7): the Chat tab has one layout, the full-height lane Case Manager
+    // gives it, so the retired card's `h-[60dvh]` went with the card.
+    const source = readFileSync(path.resolve(__dirname, '..', 'pages', 'casedetail', 'CaseChatPanel.tsx'), 'utf8');
+    expect(source).toContain('h-full min-h-0');
+    expect(source).not.toMatch(/\b(?:h|min-h|max-h)-screen\b/);
+    expect(source).not.toContain('100vh');
+  });
+
+  it('sizes the case Collaboration tab from its pane, with no viewport height of its own', () => {
+    // Round 15 (D8.3): the side column (tasks and history) no longer sticks to the
+    // viewport; the tab follows the Case Manager pane through container queries, so a
+    // viewport unit there would size it against the wrong box.
+    const source = readFileSync(
+      path.resolve(__dirname, '..', 'pages', 'casedetail', 'CollaborationPanel.tsx'),
+      'utf8',
+    );
+    expect(source).toContain('@container/collab');
+    expect(source).not.toMatch(/\b(?:h|min-h|max-h)-screen\b/);
+    expect(source).not.toMatch(/\d+(?:\.\d+)?d?vh\b/);
   });
 
   it.each([
@@ -31,8 +57,18 @@ describe('dynamic viewport shell contract', () => {
     ['shared AlertDialog', '..', '..', 'ui', 'alert-dialog.tsx'],
     ['shared Sheet', '..', '..', 'ui', 'sheet.tsx'],
     ['expanded Noise Funnel', '..', 'components', 'NoiseFunnel.tsx'],
+    // The KPI deep-inspection modal is a FIXED-height page-in-page (`h-[92dvh]`), so it is
+    // exactly the kind of surface a stray `vh` would break: on mobile it would size to the
+    // largest viewport and hide its own pinned footer behind the browser toolbar.
+    ['KPI deep-inspection modal', '..', 'components', 'KpiDrilldownPanel.tsx'],
   ])('%s uses dynamic rather than legacy viewport units', (_label, ...segments) => {
-    const source = readFileSync(path.resolve(__dirname, ...segments), 'utf8');
+    let source = readFileSync(path.resolve(__dirname, ...segments), 'utf8');
+    // The shared Dialog and AlertDialog compose ONE modal recipe (`modalSurface` in
+    // lib/ui-recipes.ts), which is where their `max-h-[85dvh]` now lives. Read the recipe
+    // together with the primitive so the contract follows the classes, not the file.
+    if (/\bmodalSurface\b/.test(source)) {
+      source += `\n${readFileSync(path.resolve(__dirname, '..', '..', 'lib', 'ui-recipes.ts'), 'utf8')}`;
+    }
 
     expect(source).toContain('dvh');
     expect(source).not.toMatch(/\d+(?:\.\d+)?vh\b/);

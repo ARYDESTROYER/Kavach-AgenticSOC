@@ -45,6 +45,7 @@ from app.constants import UserRole
 from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 SA = UserRole.SUPER_ADMIN.value
 MGR = UserRole.SOC_MANAGER.value
@@ -100,6 +101,7 @@ def _login(c, username="Admin", password="Admin@123"):
 def _mk_user(c, username, password, role=T1):
     r = c.post("/api/users", json={"username": username, "password": password, "role": role})
     assert r.status_code == 200, r.text
+    ready_user(c, username, password)
     return r
 
 
@@ -194,6 +196,10 @@ def test_read_routes_honor_cases_and_sources_read_deny() -> None:
         assert c.get("/api/search", params={"q": "x"}).status_code == 403
         assert c.get("/api/sources").status_code == 403
         assert c.get("/api/sources/some-src/logs").status_code == 403
+        # The unified browse route (and its optional single-source scope) is gated on
+        # the SAME sources:read grant — the scope must never become a way around it.
+        assert c.get("/api/logs").status_code == 403
+        assert c.get("/api/logs", params={"source_id": "some-src"}).status_code == 403
 
 
 def test_read_routes_open_for_default_role_without_deny() -> None:
@@ -211,6 +217,9 @@ def test_read_routes_open_for_default_role_without_deny() -> None:
         assert c.get("/api/sources").status_code == 200
         # Unknown source → 404 (gate passed; route ran).
         assert c.get("/api/sources/nope/logs").status_code == 404
+        assert c.get("/api/logs").status_code == 200
+        # The scoped form runs too, and reports the unknown id the sibling's way.
+        assert c.get("/api/logs", params={"source_id": "nope"}).status_code == 404
 
 
 def test_read_routes_unaffected_when_rbac_off() -> None:

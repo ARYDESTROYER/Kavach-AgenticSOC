@@ -20,14 +20,19 @@ glitch can never drop an alert or break chat.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from typing import Any
 
 from ..constants import (
+    BATCH_JOBS_KEY,
+    BATCH_JOBS_NS,
     CHAT_CONVERSATIONS_DOC_ID,
     CHAT_CONVERSATIONS_KEY,
     CHAT_CONVERSATIONS_NS,
     CONFIG_INDEX,
+    JOBS_KEY,
+    JOBS_NS,
     MEMORY_DOC_ID,
     MEMORY_KEY,
     MEMORY_NS,
@@ -49,6 +54,7 @@ from ..models import MemoryEntry
 from ..utils import iso_now
 from .base import KVStore
 from .base import kv_mutate_strict
+from .update_operations import UPDATE_OPERATIONS_NS
 
 logger = logging.getLogger("tlsoc.stores.memory")
 
@@ -138,6 +144,125 @@ class EsKVStore(KVStore):
     ) -> bool:
         """Native Elasticsearch CAS; backend errors propagate to strict callers."""
         return await self.put_if(namespace, key, value, expected_rev)
+
+    async def delete_strict(self, namespace: str, key: str) -> bool:
+        """Remove one (namespace, key) document (Round 15 SPEC D5.2). ``False`` means it
+        was already absent; every other backend failure propagates."""
+        return await self._es.delete_doc_strict(
+            CONFIG_INDEX, self._doc_id(namespace, key), refresh=True
+        )
+
+    async def _config_ids_strict(self) -> set[str]:
+        """Every document id of the config index, through a stable management PIT.
+
+        Round 15 (SPEC D5.8): no document's source is read here (``_source: false``):
+        the config index holds screenshot content (megabytes a document), so a census
+        that loaded every value could exhaust memory during a factory reset."""
+        pit_id = str(await self._es.open_state_pit(CONFIG_INDEX, "10m") or "")
+        if not pit_id:
+            raise RuntimeError(
+                "strict factory purge requires a point-in-time config scan"
+            )
+        ids: set[str] = set()
+        after: list[Any] | None = None
+        try:
+            while True:
+                body: dict[str, Any] = {
+                    "size": 500,
+                    "track_total_hits": True,
+                    "query": {"match_all": {}},
+                    "sort": ["_shard_doc"],
+                    "pit": {"id": pit_id, "keep_alive": "10m"},
+                    "_source": False,
+                }
+                if after is not None:
+                    body["search_after"] = after
+                response = await self._es.search(CONFIG_INDEX, body)
+                pit_id = str(response.get("pit_id") or pit_id)
+                hits = response.get("hits", {}).get("hits", [])
+                if not isinstance(hits, list):
+                    raise RuntimeError("config PIT search returned malformed hits")
+                if not hits:
+                    return ids
+                for hit in hits:
+                    if not isinstance(hit, dict) or not hit.get("_id"):
+                        raise RuntimeError(
+                            "config PIT search returned a hit without an id"
+                        )
+                    doc_id = str(hit["_id"])
+                    if doc_id in ids:
+                        raise RuntimeError(
+                            f"config PIT search repeated document {doc_id!r}"
+                        )
+                    ids.add(doc_id)
+                marker = hits[-1].get("sort")
+                if (
+                    not isinstance(marker, list)
+                    or len(marker) != 1
+                    or marker == after
+                ):
+                    raise RuntimeError("config PIT search returned no stable cursor")
+                after = list(marker)
+        finally:
+            await self._es.close_state_pit(pit_id)
+
+    async def _protected_sources_strict(self, ids: set[str]) -> dict[str, dict[str, Any]]:
+        """The exact source of each protected document (strict reads, one by one)."""
+        sources: dict[str, dict[str, Any]] = {}
+        for doc_id in sorted(ids):
+            source = await self._es.get_doc_strict(CONFIG_INDEX, doc_id)
+            if source is None:
+                continue
+            if not isinstance(source, dict):
+                raise RuntimeError(f"config document {doc_id!r} is not a JSON object")
+            sources[doc_id] = copy.deepcopy(source)
+        return sources
+
+    async def factory_purge_strict(self) -> int:
+        """Delete all tenant config/KV docs except the three protected classes.
+
+        The exact factory-fenced Jobs and Batch documents are mandatory.  A stable
+        PIT avoids Elasticsearch's result-window limit; per-document strict deletes
+        keep both control anchors continuously present if a later deletion fails.
+        Only the protected documents' sources are ever read (SPEC D5.8): the census
+        and the verification work on ids, and the protected bytes are compared exactly.
+        """
+        jobs_id = self._doc_id(JOBS_NS, JOBS_KEY)
+        batch_id = self._doc_id(BATCH_JOBS_NS, BATCH_JOBS_KEY)
+        update_prefix = f"{UPDATE_OPERATIONS_NS}:"
+
+        def is_protected(doc_id: str) -> bool:
+            return doc_id in {jobs_id, batch_id} or doc_id.startswith(update_prefix)
+
+        before = await self._config_ids_strict()
+        if jobs_id not in before or batch_id not in before:
+            raise RuntimeError(
+                "factory purge requires durable Jobs and Batch fence documents"
+            )
+        protected_ids = {doc_id for doc_id in before if is_protected(doc_id)}
+        protected = await self._protected_sources_strict(protected_ids)
+        if jobs_id not in protected or batch_id not in protected:
+            raise RuntimeError(
+                "factory purge requires durable Jobs and Batch fence documents"
+            )
+        deleted = 0
+        for doc_id in sorted(before - protected_ids):
+            if await self._es.delete_doc_strict(
+                CONFIG_INDEX, doc_id, refresh=True
+            ):
+                deleted += 1
+
+        after_ids = await self._config_ids_strict()
+        after = await self._protected_sources_strict(after_ids & set(protected))
+        retained = len(after_ids - set(protected))
+        missing = len(set(protected) - after_ids) + len((after_ids & set(protected)) - set(after))
+        changed = sum(after[doc_id] != protected[doc_id] for doc_id in set(after))
+        if retained or missing or changed:
+            raise RuntimeError(
+                "factory KV purge verification failed "
+                f"(retained={retained}, missing={missing}, changed={changed})"
+            )
+        return deleted
 
 
 class MemoryStore:

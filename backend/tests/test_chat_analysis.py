@@ -12,7 +12,6 @@ import json
 import pytest
 
 from app.constants import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
-from app.models import ChatContext
 from tests.conftest import make_log_event, seed_logs
 
 

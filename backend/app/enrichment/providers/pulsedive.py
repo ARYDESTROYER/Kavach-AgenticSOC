@@ -48,6 +48,20 @@ class PulsediveProvider(EnrichmentProvider):
             free_tier="Free tier ~ 30 requests/min",
             docs_url="https://pulsedive.com/api/",
             default_enabled=False,
+            setup_steps=[
+                "Create a free account at pulsedive.com and copy the API key from "
+                "your account page.",
+                "Set TLSOC_PULSEDIVE_API_KEY in .env (compose maps it to "
+                "PULSEDIVE_API_KEY), or paste it in this card (in-memory until "
+                "restart).",
+                "Flip this provider's toggle ON.",
+            ],
+            example=(
+                "One call answers 'has any threat feed ever listed this?': a domain "
+                "rated 'critical' with the feeds that flagged it gives the "
+                "investigator a ready-made risk band across IPs, domains, URLs and "
+                "hashes."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

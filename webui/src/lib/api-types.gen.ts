@@ -31,7 +31,8 @@ export interface paths {
         /**
          * Account Activity
          * @description The caller's OWN recent account/audit activity (newest first). Reads the
-         *     append-only audit log filtered by actor. Read-only; never raises.
+         *     append-only audit log filtered by actor. Read-only. When the audit log cannot be
+         *     read the answer is ``503 audit_unavailable``, never an empty list.
          */
         get: operations["account_activity_api_account_activity_get"];
         put?: never;
@@ -79,20 +80,28 @@ export interface paths {
         };
         /**
          * Account Permissions
-         * @description The CURRENT caller's resolved ``resource -> [actions]`` grants — the data the
-         *     webui ``<Can>`` guard checks against.
+         * @description The CURRENT caller's effective ``resource -> [actions]`` grants: the one map the
+         *     Console's permission checks (``hasPermission``, ``<Can>``, ``ProtectedRoute``)
+         *     read, so the Console shows exactly what the API allows (Round 14 FX7e, roles-01).
          *
-         *     Three back-compat modes mirror the server gates:
-         *       * auth DISABLED          → super_admin (full wildcard) so every surface unlocks.
+         *     It is answered by the server's own resolver, never a second copy of it: the
+         *     caller's view comes from :func:`app.api.deps.resolve_access` (the core of every
+         *     ``require_permission`` gate) and each declared ``resource:action`` is listed only
+         *     when :meth:`AccessView.allows` grants it. The base role is UNIONed with the
+         *     custom roles assigned to the user, each role row already carrying its own denies
+         *     and the operator's global per-role denies, so a custom role that grants
+         *     ``runbooks:publish`` lists it and one whose deny removes ``runbooks:run`` does
+         *     not. Writes nothing (a missing grant is not an access denial).
+         *
+         *     Three modes mirror the server gates:
+         *       * auth DISABLED          → super_admin (every action) so every surface unlocks.
          *       * auth ON, rbac OFF      → super_admin (authenticated == super_admin).
-         *       * auth ON, rbac ON       → the principal's base role UNIONed with any custom
-         *                                  roles assigned to the user (resolved against the live
-         *                                  matrix). An env single-admin (no persisted record)
-         *                                  resolves to its synced role.
+         *       * auth ON, rbac ON       → the effective grants above. An env single-admin (no
+         *                                  persisted record) resolves to its synced role.
          *
-         *     Wildcards are exploded into concrete actions so the guard can match a literal
-         *     ``resource:action`` without re-implementing the wildcard rule. Auth-gated only
-         *     (any authenticated principal may read its OWN permissions).
+         *     Every action is concrete (a wildcard is never sent), and a resource the caller
+         *     holds no action on is left out. Auth-gated only (any authenticated principal may
+         *     read its OWN permissions; an unauthenticated caller gets 401 when auth is on).
          */
         get: operations["account_permissions_api_account_permissions_get"];
         put?: never;
@@ -123,6 +132,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/export/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Application Data Archive
+         * @deprecated
+         * @description Deprecated request-bound compatibility export.
+         *
+         *     New operator workflows submit ``data_export_archive`` through ``POST /api/jobs``
+         *     so assembly survives navigation, reports durable progress, and produces a
+         *     permission-rechecked artifact. This route remains for existing API integrations.
+         *
+         *     Every NDJSON member is written one bounded segment page at a time. The terminal
+         *     manifest is added only after every selected repository emitted its starting count;
+         *     no response begins before the ZIP is complete, freshly authorized, and audited.
+         */
+        post: operations["export_application_data_archive_api_admin_export_archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/export/segment": {
         parameters: {
             query?: never;
@@ -134,7 +172,12 @@ export interface paths {
         put?: never;
         /**
          * Export Application Data Segment
-         * @description Download one resumable segment of a scope's complete history.
+         * @deprecated
+         * @description Deprecated request-bound compatibility segment.
+         *
+         *     New operator workflows submit ``data_export_segment`` through ``POST /api/jobs``;
+         *     that worker owns the complete cursor loop and returns one verified artifact. This
+         *     one-page primitive remains for existing integrations and explicit cursor recovery.
          *
          *     The 5,000-record setting is deliberately a per-segment memory/response bound,
          *     not a lifetime ceiling. The Console follows ``next_cursor`` until ``complete``;
@@ -180,12 +223,7 @@ export interface paths {
         put?: never;
         /**
          * Admin Reset
-         * @description Perform a tiered StateStore reset. Returns ``{ok, scope, cleared}``.
-         *
-         *     ``scope`` ∈ {``cases``, ``sources``, ``factory``}; ``confirm`` must match the
-         *     scope's phrase. Order of operations (fail-closed): validate scope → validate
-         *     confirm → AUDIT (#2) → clear in-memory per-source secrets (tiers 2/3 only) →
-         *     reset the StateStore. Nothing is cleared until BOTH gates + BOTH validations pass.
+         * @deprecated
          */
         post: operations["admin_reset_api_admin_reset_post"];
         delete?: never;
@@ -264,13 +302,60 @@ export interface paths {
         };
         /**
          * List Audit
-         * @description Bounded, READ-ONLY list of the append-only audit records for the admin audit
-         *     viewer (W7c). Gated on ``audit:view`` (the auditor/admin grant). Reads the audit
-         *     repository's ``records(...)`` (#2 — never mutates; the index has no update/delete
-         *     path). NEWEST first, hard-capped. All text is returned verbatim for the UI to
-         *     render as PLAIN (#9 — audit rows carry fenced UNTRUSTED log excerpts).
+         * @description One page of audit records with an honest total (SPEC §4.5.5). Read-only (#2).
          */
         get: operations["list_audit_api_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit/count": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Count Audit
+         * @description Exact up to ``cap``, then ``relation: "gte"`` (SPEC §4.5.5). The export dialog
+         *     asks before it offers an export, and the export job asks again before it reads.
+         *
+         *     A count is a search of the audit log, so it is recorded like one (D8): with the
+         *     page's own filters it joins the list read's ``audit_view`` row.
+         */
+        get: operations["count_audit_api_audit_count_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit/records/{record_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audit Record
+         * @description One record by its E12 id, or ``404 audit_record_not_found`` (also for an id
+         *     that does not parse, and for a Demo record while Demo Mode is off).
+         *
+         *     The filter parameters are optional and never narrow the answer: the page sends
+         *     its current filters so an open of one of the rows they list counts toward the list
+         *     read's ``audit_view`` row (D8; J and K through the list add nothing). A record those
+         *     filters would not list, or an open without filters, is recorded on its own, by its
+         *     id, once per record per five minutes.
+         */
+        get: operations["get_audit_record_api_audit_records__record_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -293,6 +378,10 @@ export interface paths {
          * @description Self-service password change (requires a valid session). Verifies the current
          *     password, sets the new one and clears ``must_change_password``. Works only for
          *     multi-user accounts; the env single-admin has no persisted record to update.
+         *
+         *     Round 16 (B21): a successful change signs out the caller's other sessions (this
+         *     one stays) and stops their chat answers, writes a ``session.revoked`` row and
+         *     returns ``sessions_revoked``.
          */
         post: operations["auth_change_password_api_auth_change_password_post"];
         delete?: never;
@@ -342,7 +431,27 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Auth Me */
+        /**
+         * Auth Me
+         * @description The session state the console boots from (PUBLIC).
+         *
+         *     Round 12: REGISTRY-AWARE. Beyond the JWT signature/``exp``/active-user check it
+         *     runs the same session-registry evaluation as every protected route (revocation,
+         *     per-user token version, idle and absolute limits — standard or remembered). When
+         *     the session has ended it answers ``authenticated: false`` with a ``reason``
+         *     (``revoked`` | ``idle_expired`` | ``absolute_expired`` | ``tv_mismatch``) and
+         *     clears the cookie, so the console lands on the sign-in page instead of a shell
+         *     where every call 401s. A session-store outage keeps trusting the JWT (as every
+         *     protected route does). A live session carries an additive ``session`` summary
+         *     ``{remember, expires_at, idle_expires_at}``.
+         *
+         *     Round 14 (SPEC §4.4.5, D16): a signed-in answer also carries ``object_scoped``,
+         *     true when row-level (object) data scope applies to the viewer's case reads (the
+         *     rule the chat starters use, ``chat_starters.object_scoped``, failing closed), so
+         *     the Console hides case-derived dashboard panels instead of showing aggregates the
+         *     viewer could not read row by row. With sign-in off the answer is unchanged (no
+         *     viewer role, so no row scope: an absent ``object_scoped`` reads as false).
+         */
         get: operations["auth_me_api_auth_me_get"];
         put?: never;
         post?: never;
@@ -366,6 +475,9 @@ export interface paths {
          * @description Confirm MFA enrollment (self): verify a TOTP code against the PENDING secret,
          *     then persist the obfuscated secret + hashed recovery codes and set
          *     ``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off.
+         *
+         *     Round 16: needs a fresh sign-in and answers 409 for an enrolled account (B17); a
+         *     wrong code counts toward the account's second-factor bound (B19).
          */
         post: operations["mfa_confirm_api_auth_mfa_confirm_post"];
         delete?: never;
@@ -389,8 +501,57 @@ export interface paths {
          *     single-use recovery code (so a hijacked session alone cannot turn MFA off).
          *     Clears the secret + recovery hashes. (A super_admin can force-disable another
          *     user via PUT /api/users/{username} {mfa_enabled:false}.)
+         *
+         *     Round 16 (B19): needs a fresh sign-in, and a wrong code counts toward the
+         *     account's second-factor bound, so a session cannot guess codes without limit.
          */
         post: operations["mfa_disable_api_auth_mfa_disable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/mfa/enroll-confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mfa Enroll Confirm
+         * @description Complete MANDATED MFA enrollment during login (PUBLIC — gated by the pending
+         *     token): verify the TOTP code against the PENDING secret, persist the enrollment
+         *     (exactly like /auth/mfa/confirm), then mint the FULL session + cookie exactly
+         *     like the /auth/mfa/verify success tail — the user lands fully signed in.
+         */
+        post: operations["mfa_enroll_confirm_api_auth_mfa_enroll_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/mfa/enroll-setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mfa Enroll Setup
+         * @description Begin MANDATED MFA enrollment during login (PUBLIC — gated by the pending
+         *     token). Same response shape as the session-authed /auth/mfa/setup: a PENDING
+         *     TOTP secret + otpauth URI + one-time recovery codes. Nothing is persisted until
+         *     the user proves possession via /auth/mfa/enroll-confirm.
+         */
+        post: operations["mfa_enroll_setup_api_auth_mfa_enroll_setup_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -410,8 +571,11 @@ export interface paths {
          * Mfa Setup
          * @description Begin MFA enrollment (self, authenticated). Generates a PENDING TOTP secret +
          *     recovery codes and returns them ONCE (the secret + otpauth URI for the QR, and the
-         *     plaintext recovery codes for the user to save). Does NOT enable MFA — the user must
+         *     plaintext recovery codes for the user to save). Does NOT enable MFA: the user must
          *     prove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret.
+         *
+         *     Round 16 (B17): needs a fresh sign-in, and answers 409 for an account that is
+         *     already enrolled, so a stolen session cannot replace the authenticator.
          */
         post: operations["mfa_setup_api_auth_mfa_setup_post"];
         delete?: never;
@@ -475,7 +639,13 @@ export interface paths {
         put?: never;
         /**
          * Auth Refresh
+         * @deprecated
          * @description Rotate a refresh token → mint a fresh ACCESS token + a NEW refresh token.
+         *
+         *     Round 16 (B24): deprecated. No sign-in issues a refresh token, so every call
+         *     answers 401 with code ``session_invalid`` and reason ``unknown_refresh``. A
+         *     session lasts until its access token expires, within the idle and absolute
+         *     limits. The route stays so an older client gets that answer, not a 404.
          *
          *     Reuse detection (theft): if the presented token matches an ALREADY-ROTATED
          *     previous hash, the session is treated as compromised → revoke + bump the user's
@@ -572,8 +742,32 @@ export interface paths {
          * @description Set/clear one OIDC provider's client secret (super_admin only). The value goes
          *     to the SECRET tier (in memory), NEVER to Preferences/the config doc; only a
          *     configured-boolean is returned.
+         *
+         *     Round 16 (B15): a stored Super admin with a strict fresh sign-in only, otherwise
+         *     ``403 super_admin_only`` and nothing changes.
          */
         post: operations["set_sso_provider_secret_api_auth_sso_providers__provider_id__secret_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auto-close-review/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Auto Close Review Summary
+         * @description The Review scope badge (D6.12). Pending entries whose case already carries its
+         *     review are repaired in the ledger and not counted.
+         */
+        get: operations["auto_close_review_summary_api_auto_close_review_summary_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -598,7 +792,13 @@ export interface paths {
          * @description Update the ``baseline`` policy, DEEP-MERGING only the keys the caller sent onto
          *     the live config (mirrors the ``PUT /api/settings`` contract). Additive + validated
          *     by the Pydantic model; never touches ``decide()`` (#3) — the baseline is a pure
-         *     advisory producer. Audited (#2).
+         *     advisory producer.
+         *
+         *     Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+         *     naming every changed field is appended first, and a failed append answers ``503
+         *     audit_unavailable`` with nothing saved. The baseline policy follows the active
+         *     execution stack, so in Demo Mode the edit stays in the Demo sandbox and its row goes
+         *     to the Demo audit (SPEC §3.5).
          */
         put: operations["put_baseline_config_api_baseline_config_put"];
         post?: never;
@@ -677,7 +877,12 @@ export interface paths {
          *     the Pydantic model; #6 is untouched (this only toggles routing — the batch service
          *     still writes exactly one UsageDoc per resolved call). Never touches ``decide()`` (#3).
          *     During Demo Mode the edit remains in the throwaway sandbox; off demo it persists
-         *     normally. Audited (#2).
+         *     normally.
+         *
+         *     Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+         *     naming every changed field is appended first, and a failed append answers ``503
+         *     audit_unavailable`` with nothing saved. The row sits beside the config it describes:
+         *     the Demo audit for a Demo-only change, the real audit log otherwise (SPEC §3.5).
          */
         put: operations["put_batch_config_api_batch_config_put"];
         post?: never;
@@ -754,7 +959,13 @@ export interface paths {
         };
         /** Get Budget */
         get: operations["get_budget_api_budget_get"];
-        /** Put Budget */
+        /**
+         * Put Budget
+         * @description Replace the cost-budget ceiling config. Audited before it is saved (#2, Round 14
+         *     SPEC §3.6): a ``settings.updated`` row naming every changed field is appended first,
+         *     and a failed append answers ``503 audit_unavailable`` with nothing saved. The budget
+         *     is real tenant state, so the row always goes to the real audit log (SPEC §3.5).
+         */
         put: operations["put_budget_api_budget_put"];
         post?: never;
         delete?: never;
@@ -770,7 +981,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Budget Status */
+        /**
+         * Budget Status
+         * @description The AI budget's configuration and its live daily and monthly spend.
+         *
+         *     Needs ``models:read``. The spend itself (each window's ``spent``, ``fraction`` and
+         *     ``band``, and ``excluded_today``) is AI spend, which ``cost:view`` governs, the
+         *     rule chat's budget fields already follow: for a caller without that grant those
+         *     fields are ``null`` and the caps and settings stay.
+         */
         get: operations["budget_status_api_budget_status_get"];
         put?: never;
         post?: never;
@@ -823,7 +1042,13 @@ export interface paths {
          *     the live config (mirrors the ``PUT /api/settings`` contract). Additive + validated
          *     by the Pydantic model; a campaign is ADVISORY — nothing here calls ``decide()`` (#3)
          *     or touches a ``cluster_signature`` (#4). Admin-gated (a tenant-wide clustering-policy
-         *     change is an operator action, matching the recorrelate route). Audited (#2).
+         *     change is an operator action, matching the recorrelate route).
+         *
+         *     Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+         *     naming every changed field is appended first, and a failed append answers ``503
+         *     audit_unavailable`` with nothing saved. The campaign policy follows the active
+         *     execution stack, so in Demo Mode the edit stays in the Demo sandbox and its row goes
+         *     to the Demo audit (SPEC §3.5).
          */
         put: operations["put_campaign_config_api_campaigns_config_put"];
         post?: never;
@@ -851,8 +1076,21 @@ export interface paths {
          *     UPSERTS the result into ``campaign_store`` (idempotent — same members → same id),
          *     and returns them. It NEVER investigates a case, calls an LLM (#6), touches a
          *     ``cluster_signature`` (#4), or calls ``decide()`` (#3) — a case's status is
-         *     untouched. Admin-gated (a tenant-wide manual re-correlate is an operator action);
-         *     audited (#2). NEVER raises — a store glitch degrades to an empty result.
+         *     untouched. Admin-gated (a tenant-wide manual re-correlate is an operator action).
+         *
+         *     Audited before the new set is stored (#2, Round 14 SPEC §3.6): the pass is a read,
+         *     then a ``campaign.recorrelated`` row is appended, then the set replaces the stored
+         *     one. A failed append answers ``503 audit_unavailable`` and the stored set is
+         *     unchanged; a failed store write appends ``campaign.recorrelate_failed`` and answers
+         *     ``503``. The campaign store follows the active execution stack, so in Demo Mode the
+         *     row goes to the Demo audit (SPEC §3.5).
+         *
+         *     The pass, its row and the store it replaces belong to one execution stack, bound
+         *     before the pass reads anything: campaigns built from Demo cases never replace the
+         *     real set, nor real campaigns the sandbox's. When Demo Mode is turned on or off while
+         *     the pass runs, nothing is recorded or stored; when it moves after the row, the store
+         *     write is refused and paired with its failure row. Either way the request answers
+         *     ``409 demo_mode_changed``.
          */
         post: operations["recorrelate_campaigns_api_campaigns_recorrelate_post"];
         delete?: never;
@@ -872,6 +1110,11 @@ export interface paths {
          * Get Campaign
          * @description One campaign by its (content-hash) id — its member case ids, shared entities,
          *     MITRE union and severity rollup. 404 when absent. Read-only advisory (#3/#4).
+         *
+         *     ``case_numbers`` (Round 13 polish, additive) maps a member case id to its display
+         *     number ("CASE-000045"), so the Campaigns detail sheet names members the way the rest
+         *     of the console does. Bounded (:data:`_MEMBER_NUMBER_READS` reads); a member without
+         *     a number, past the bound or whose read fails is simply absent and keeps its id.
          */
         get: operations["get_campaign_api_campaigns__campaign_id__get"];
         put?: never;
@@ -889,7 +1132,35 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Cases */
+        /**
+         * List Cases
+         * @description List cases, optionally windowed, sorted, paged and narrowed to a lifecycle group.
+         *
+         *     The declared 200 schema is the envelope EVERY caller has always received. A request
+         *     that engages one of ``sort_field`` / ``sort_order`` / ``status_group`` additionally
+         *     receives the :class:`CaseListEcho` keys — ``sortable_fields``, ``sort_field``,
+         *     ``sort_order``, ``limit_applied``, ``offset_applied``, ``max_offset`` and
+         *     ``status_group_applied`` — describing what the server actually applied.
+         *
+         *     They are additive and opt-in rather than always present, because a caller that sends
+         *     none of the new parameters must keep receiving its envelope key for key. They are
+         *     deliberately not folded into the declared response model: as optional fields there
+         *     they would be emitted as nulls to every legacy caller, and declaring the extended
+         *     envelope as a second response model splits the shared ``Case`` component into
+         *     validation and serialisation variants, which changes every generated case type.
+         *
+         *     Round 14 (SPEC §4.6.1): ``rule`` keeps the cases whose ``rule_ids`` hold that exact
+         *     value (as stored: never trimmed or case-folded; 1 to 256 characters on one line), the
+         *     population the rule sheet's "Show the N cases" opens and its case count measures.
+         *     ``closed_by`` keeps terminal cases closed by ``agent``, ``analyst``,
+         *     ``analyst_policy`` or ``system`` (the exact-aggregation engine's values, and only
+         *     those; ``system`` also covers older rows with no recorded decider). Both are answered
+         *     by the exact queue scan and echoed as ``rule_applied`` / ``closed_by_applied``; any
+         *     other value is a 400. The free-text ``q`` now also matches a case's rule values.
+         *
+         *     Round 14 (roles-11): for a caller without ``cost:view`` every row's ``token_cost``
+         *     (the case's own AI spend) is ``null``; the rows, counts and echoes are unchanged.
+         */
         get: operations["list_cases_api_cases_get"];
         put?: never;
         post?: never;
@@ -936,7 +1207,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Case */
+        /**
+         * Get Case
+         * @description One case. For a caller without ``cost:view`` its ``token_cost`` (the case's own
+         *     AI spend) is ``null`` (Round 14 roles-11); every other field is unchanged.
+         */
         get: operations["get_case_api_cases__case_id__get"];
         put?: never;
         post?: never;
@@ -972,10 +1247,12 @@ export interface paths {
         };
         /**
          * Get Case Activity
-         * @description The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed
+         * @description The case ACTIVITY timeline: the authoritative audit rows for the case UNIONed
          *     with the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays
          *     the source of truth (#2); the friendly feed adds human-readable collaboration
-         *     events. All text is returned plain (#9).
+         *     events. All text is returned plain (#9). For a caller without ``cost:view`` the
+         *     cost figures a spend writer put into a row's ``result_summary`` are replaced, as
+         *     on the trace (Round 16, WP16: ``api.cost_text``).
          */
         get: operations["get_case_activity_api_cases__case_id__activity_get"];
         put?: never;
@@ -1044,6 +1321,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cases/{case_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Case Events
+         * @description The raw events behind a case, read again from its source (see the module
+         *     docstring). 404 for an unknown case; 400 for a cursor this route never returned.
+         */
+        get: operations["case_events_api_cases__case_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cases/{case_id}/export": {
         parameters: {
             query?: never;
@@ -1054,7 +1352,9 @@ export interface paths {
         /**
          * Case Export
          * @description Export a case for handoff/ticketing as JSON or a Markdown report. Returns
-         *     ``{filename, content_type, content}`` so the UI can trigger a download.
+         *     ``{filename, content_type, content}`` so the UI can trigger a download. The JSON
+         *     leaves ``token_cost`` out (``null``) for a caller without ``cost:view``; the
+         *     Markdown report carries no spend.
          */
         get: operations["case_export_api_cases__case_id__export_get"];
         put?: never;
@@ -1085,6 +1385,75 @@ export interface paths {
          *     same way as every other case mutation.
          */
         post: operations["case_feedback_api_cases__case_id__feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Case Files
+         * @description The case's screenshots (metadata only, upload order), its deleted ones (their
+         *     metadata kept), what they take and the bounds that apply.
+         */
+        get: operations["list_case_files_api_cases__case_id__files_get"];
+        put?: never;
+        /**
+         * Upload Case File
+         * @description Attach one screenshot to the case (see the module docstring). Allowed on a
+         *     closed case; never changes the case.
+         */
+        post: operations["upload_case_file_api_cases__case_id__files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Case File
+         * @description Delete one screenshot: its bytes go, its metadata stays as a deleted entry. The
+         *     uploader may delete their own; a ``cases:close`` holder anyone's (a refusal
+         *     writes an Access denied row).
+         */
+        delete: operations["delete_case_file_api_cases__case_id__files__file_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/files/{file_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Case File Content
+         * @description The image bytes with strict headers (see the module docstring). A thumbnail
+         *     is served when asked for and present, else the full image.
+         */
+        get: operations["get_case_file_content_api_cases__case_id__files__file_id__content_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1133,13 +1502,18 @@ export interface paths {
          * Case Investigate
          * @description Human-triggered (re-)investigation of a stored case (C3-4).
          *
-         *     Rebuilds the cluster from the case — preferring an exact id-based re-query,
-         *     falling back to a config-windowed entity re-query — then re-runs the SAME
+         *     Rebuilds the cluster from the case (preferring an exact id-based re-query,
+         *     falling back to a config-windowed entity re-query), then re-runs the SAME
          *     shared pipeline with ``force=True`` so an already-investigated OPEN case is
          *     re-investigated in place. The case's ORIGINAL provenance (``source_surface`` /
          *     ``origin_surface``) is preserved by the pipeline, so an automated-scan case
          *     stays in the Automated Scans tab. Returns a NEUTRAL 400 if no events remain
          *     (the cluster aged out of the configured window).
+         *
+         *     Round 16 (SPEC §4.5 WP08): a closed case is investigated in place unless an open
+         *     case holds its signature (``409 open_case_exists``), and a second request while a
+         *     run on the case is queued or running answers ``409 investigation_running``; both
+         *     are checked before the rebuild.
          */
         post: operations["case_investigate_api_cases__case_id__investigate_post"];
         delete?: never;
@@ -1180,15 +1554,21 @@ export interface paths {
         /**
          * Case Rationale
          * @description Case EXPLAINABILITY: a clean, human-readable "why" object assembled from the
-         *     case + its audit records — WITHOUT calling the LLM.
+         *     case + its audit records, WITHOUT calling the LLM.
          *
          *     Surfaces exactly how a case reached its verdict: the persona/playbook chosen, the
          *     operator MEMORY facts consulted, the RAG knowledge retrieved (source + snippet),
          *     the IP enrichment/reputation, the read-only tools/queries the agent ran, the
          *     investigator's reasoning excerpt, the deterministic close/escalate rationale, the
          *     MITRE techniques, and the evidence. Every piece is parsed DEFENSIVELY from the
-         *     audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields — a
+         *     audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields; a
          *     missing piece degrades to an empty value, never an error. NEVER 404s.
+         *
+         *     Round 16 (WP16, [dv] R14): additive ``returned``, ``rows_total``,
+         *     ``rows_total_relation`` and ``truncated``, as the timeline answers them, say when
+         *     the rationale was read from only the newest audit records of a long-lived case.
+         *     For a caller without ``cost:view`` the cost figure in ``decision_rationale`` (the
+         *     case manager's DECISION row text) is replaced (``api.cost_text``).
          */
         get: operations["case_rationale_api_cases__case_id__rationale_get"];
         put?: never;
@@ -1214,7 +1594,7 @@ export interface paths {
          *
          *     Loads the case (404 if missing), reconstructs the cluster from the case's stored
          *     fields (member event ids → exact id re-query, else a config-windowed entity
-         *     re-query — via the same robust ``_cluster_for_case`` helper the legacy
+         *     re-query, via the same robust ``_cluster_for_case`` helper the legacy
          *     ``/investigate`` route uses), then calls ``investigate_cluster(..., force=True)``
          *     so it re-runs even on an already-verdicted case. An optional ``{"model": "<id>"}``
          *     body overrides the investigation-role models for this run only via a prefs copy
@@ -1222,8 +1602,40 @@ export interface paths {
          *     (``source_surface``) is preserved by the pipeline. The deterministic
          *     close/escalate decision in the Case Manager is untouched (#3). Returns the
          *     updated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster.
+         *
+         *     Round 16 (SPEC §4.5 WP08, D10), each checked before the audit row and the rebuild:
+         *     a closed case is reinvestigated IN PLACE unless an open case holds its signature
+         *     (``409 open_case_exists`` with that case's id); a second request while a run on the
+         *     case or its signature is queued or running answers ``409 investigation_running``
+         *     with the run. ``wait=false`` answers ``202 {run_id, case_id, state}`` at once.
          */
         post: operations["case_reinvestigate_api_cases__case_id__reinvestigate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Case Review State
+         * @description One case's auto-close review state (D6.12, D8.2), read by the case workspace.
+         *     A pending entry whose case already carries its review reads as completed (and the
+         *     ledger is repaired, as the summary does). Nothing here changes the case (#3).
+         */
+        get: operations["case_review_state_api_cases__case_id__review_get"];
+        put?: never;
+        /**
+         * Record Auto Close Review
+         * @description Record a person's review of a case the AI agent closed automatically (D6.6).
+         */
+        post: operations["record_auto_close_review_api_cases__case_id__review_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1241,15 +1653,228 @@ export interface paths {
         put?: never;
         /**
          * Case Run Playbook
-         * @description Manually run a chosen playbook on a case (F10) — CONTEXT-ONLY, #3-safe.
-         *
-         *     Re-investigates the case through the SHARED pipeline with ``playbook_id`` FORCED
-         *     as the injected TRUSTED operator procedure. The playbook can only RECOMMEND; the
-         *     deterministic close/escalate decision in the Case Manager is untouched (#3). 404
-         *     if the case or playbook is unknown; 400 (NEUTRAL) when no events remain to rebuild
-         *     the cluster. Returns the updated Case. Gated by ``playbooks:run``.
+         * @deprecated
+         * @description Retired (Round 14 SPEC §4.10.16): ``410 runbooks_moved``. Start a runbook on a
+         *     case with ``POST /api/cases/{case_id}/runbooks``; re-investigate with ``POST
+         *     /api/cases/{case_id}/reinvestigate``.
          */
         post: operations["case_run_playbook_api_cases__case_id__run_playbook_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Case Runbooks
+         * @description The case's runs with every lookup result redacted for this viewer.
+         */
+        get: operations["get_case_runbooks_api_cases__case_id__runbooks_get"];
+        put?: never;
+        /**
+         * Attach Case Runbook
+         * @description Start a Published runbook on the case. An existing run of it answers ``200``
+         *     with ``already_attached`` (#4).
+         */
+        post: operations["attach_case_runbook_api_cases__case_id__runbooks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Runbook Candidates
+         * @description The Start runbook picker: the AI's last suggestion to this person, the best
+         *     match with its explanation, other matches, the fallback, then every other
+         *     Published runbook.
+         */
+        get: operations["get_runbook_candidates_api_cases__case_id__runbooks_candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suggest Case Runbook
+         * @description Ask the AI which Published runbook fits (one gateway call; never attaches).
+         *     ``dry_run=true`` returns the estimate (its cost only to a holder of ``models:read``).
+         */
+        post: operations["suggest_case_runbook_api_cases__case_id__runbooks_suggest_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/abandon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Abandon Runbook Run
+         * @description Abandon the run with a reason. It stays readable; the case is not changed (#3).
+         */
+        post: operations["abandon_runbook_run_api_cases__case_id__runbooks__run_id__abandon_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Runbook Step
+         * @description Status, assignee, note, reason, a decision, a recorded action or an evidence
+         *     link. ``expected_revision`` is the STEP's revision; a stale one is ``409``.
+         */
+        patch: operations["update_runbook_step_api_cases__case_id__runbooks__run_id__steps__step_id__patch"];
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}/approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide Runbook Approval
+         * @description Approve or reject a recorded action waiting for approval. Needs the step's
+         *     ``approval_role``; the person who recorded the action can never approve it.
+         */
+        post: operations["decide_runbook_approval_api_cases__case_id__runbooks__run_id__steps__step_id__approval_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Draft Runbook Step
+         * @description "Draft note" on a Check step: one gateway call; the draft is stored as "AI
+         *     draft" until a person confirms it. ``dry_run=true`` returns the estimate.
+         */
+        post: operations["draft_runbook_step_api_cases__case_id__runbooks__run_id__steps__step_id__draft_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}/draft/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Runbook Step Draft
+         * @description The draft as the person edited it becomes the step's note and the step is Done.
+         *     When the step changed after the draft was made (a note written since, for one),
+         *     the answer is ``409 runbook_conflict`` with the latest run and nothing changes.
+         */
+        post: operations["confirm_runbook_step_draft_api_cases__case_id__runbooks__run_id__steps__step_id__draft_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Runbook Lookup
+         * @description Run the step's lookup now (read-only), replacing its previous result. Needs
+         *     the grant the lookup's tool needs (§4.10.8); a lookup that cannot run is ``503
+         *     lookup_unavailable`` and replaces nothing.
+         */
+        post: operations["run_runbook_lookup_api_cases__case_id__runbooks__run_id__steps__step_id__lookup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/switch-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Switch Runbook Run Version
+         * @description Move the run to the Published version, keeping each step whose id exists in
+         *     both versions.
+         */
+        post: operations["switch_runbook_run_version_api_cases__case_id__runbooks__run_id__switch_version_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1269,9 +1894,11 @@ export interface paths {
          *
          *     A pure read-time projection over the Case + its audit rows (the SAME facts the
          *     ``/timeline`` span view reads), reframed into ``input → correlate → risk → triage
-         *     → investigate → decide``. Advisory/observability ONLY — re-derives ``decide()`` to
-         *     DISPLAY the clause, mutates nothing (#3); untrusted source/log text is fenced in
-         *     steps (#9). NEVER 404s — an unknown case returns the six-stage skeleton.
+         *     → investigate → decide``. Advisory/observability ONLY: the Decision stage reports
+         *     the recorded decision (Round 16 B63) and mutates nothing (#3); untrusted source/log
+         *     text is fenced in steps (#9). NEVER 404s: an unknown case returns the six-stage
+         *     skeleton. ``rows_total`` and ``truncated`` say when only the newest audit records
+         *     were read.
          */
         get: operations["case_stages_api_cases__case_id__stages_get"];
         put?: never;
@@ -1491,15 +2118,29 @@ export interface paths {
          *     the per-case usage/cost ledger. Each audit row becomes ONE span classified by
          *     ``kind`` (invoke_agent | chat | execute_tool | decision) with ``step_index`` /
          *     ``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION
-         *     is rendered as a distinct TERMINAL ``decision`` span whose summary shows the exact
-         *     ``(verdict, confidence, risk_score, policy clause)`` the deterministic ``decide()``
-         *     produced — re-derived at read time, mutating nothing (#3 made visible).
+         *     is rendered as a distinct TERMINAL ``decision`` span reporting the decision as it was
+         *     RECORDED (its time, result, decider, rationale and the gate the run recorded, Round
+         *     16 B63), with today's policy beside it; it mutates nothing (#3 made visible).
          *
          *     TRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log
          *     payloads (es_query / tool output) are separated by the per-span ``trusted`` flag
-         *     (#9). NEVER 404s — an unknown / not-yet-investigated case returns empty spans.
+         *     (#9). NEVER 404s: an unknown or not-yet-investigated case returns empty spans.
          *     ``prompt_excerpt`` text is dropped from a span summary when
          *     ``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle).
+         *
+         *     The cost and tokens come from the usage ledger, which ``cost:view`` governs (the
+         *     grant ``GET /api/usage/summary?case_id=`` needs): for a caller without it the
+         *     ledger is not read, every span's ``cost`` and ``tokens`` are ``null`` and so are
+         *     ``totals.cost`` and ``totals.tokens``.
+         *
+         *     Round 16 (SPEC §4.5 WP10, [dv] R4 and R14): a span's ``kind`` says who acted
+         *     (``person`` for a person's row, ``chat`` for case chat, ``system`` for a
+         *     deterministic actor, else the agent kinds); ``detail`` carries the bounded audit
+         *     record behind it; ``cost_basis`` is ``exact`` when the span carries its own call's
+         *     cost and latency from the ledger and ``split`` when a role's total is shared evenly
+         *     across its steps; the decision span has none, because code made the decision and no
+         *     model call or ledger row exists for it. ``rows_total`` and ``truncated`` say when
+         *     the trace shows only the newest records of a long-lived case.
          */
         get: operations["case_timeline_api_cases__case_id__timeline_get"];
         put?: never;
@@ -1523,9 +2164,11 @@ export interface paths {
          *
          *     Projects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator
          *     → tool calls → verdict → formatter → case-manager decision) into a timeline.
-         *     Read-only on the management-scoped audit index. NEVER 404s — an unknown or
+         *     Read-only on the management-scoped audit index. NEVER 404s: an unknown or
          *     not-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is
-         *     omitted when ``prefs.trace.include_prompts`` is false.
+         *     omitted when ``prefs.trace.include_prompts`` is false. For a caller without
+         *     ``cost:view`` the cost figures a spend writer put into a row's ``result_summary``
+         *     are replaced (Round 16, WP16: ``api.cost_text``); tool output is never changed.
          */
         get: operations["case_trace_api_cases__case_id__trace_get"];
         put?: never;
@@ -1550,10 +2193,41 @@ export interface paths {
          *     ``risk`` (the existing deterministic 0-100 score + breakdown), ``severity``
          *     (SOURCE-asserted, NOT risk), ``impact`` (asset criticality), and ``priority``
          *     (ITIL Impact×Urgency). Each carries an ``inputs`` bag for a UI HelpTip. NEVER
-         *     404s — an unknown case returns an empty-but-renderable shell. Pure derivation
+         *     404s: an unknown case returns an empty-but-renderable shell. Pure derivation
          *     (#3: advisory only, never feeds the decision).
+         *
+         *     Round 16 (SPEC §4.5 WP10) read-time additions, built here and never stored on the
+         *     case: ``auto_close_policy`` (the auto-close entry for the case's verdict class, so
+         *     Case detail can state the policy without ``GET /api/settings``), ``sla`` (the
+         *     per-case SLA reading, ``engine/sla_reading.py``, or ``null``) and, for a
+         *     ``settings:read`` holder only, ``asset_cidr`` (the internal network range of
+         *     today's configuration that holds the entity, labelled so). Everything reads the
+         *     active execution preferences, so Demo Mode reads its sandbox.
          */
         get: operations["case_triage_api_cases__case_id__triage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Case Usage
+         * @description The case's ledger rows and its spend split (see the module docstring). 404 for an
+         *     unknown case; 503 ``case_usage_unavailable`` when the ledger cannot be read (never a
+         *     false "no spend"); 501 ``case_usage_unsupported`` for a ledger that has no per-case
+         *     read.
+         */
+        get: operations["case_usage_api_cases__case_id__usage_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1571,8 +2245,39 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Chat */
+        /**
+         * Chat
+         * @description One chat turn, blocking (chat revamp SPEC §6): the same preflight, turn task
+         *     and persistence as ``POST /api/chat/stream`` (``routes_chat.run_chat_turn``),
+         *     awaited. Imported lazily: ``routes_chat`` imports this module.
+         */
         post: operations["chat_api_chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Context
+         * @description Everything the composer meter needs (SPEC §8): the effective model and its
+         *     limits, the static prompt and history estimates, the caller's tool catalogue,
+         *     the live-text availability, the §4.2 bounds, calibration and the static evergreen
+         *     starters (Round 13 SPEC D2: no case-store read).
+         *     Money and budget fields need ``models:read``; ``spent_today``/``remaining`` also
+         *     ``cost:view``. Cached per principal for 30 s (dropped when one of the caller's
+         *     turns ends) and resolved without audit rows.
+         */
+        get: operations["chat_context_api_chat_context_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1588,7 +2293,11 @@ export interface paths {
         };
         /**
          * List Chat Conversations
-         * @description Newest-first Workspace conversation summaries owned by this principal.
+         * @description Workspace conversation summaries owned by this principal: pinned first, then
+         *     newest first. ``limit`` goes to 60 so the <= 10 pinned conversations (exempt
+         *     from the 50-conversation eviction) are never off the first page. With ``q`` the
+         *     rows are the conversations whose title, messages or block titles contain it,
+         *     each with a ``match {message_id, snippet}`` (chat revamp SPEC §7.5).
          *
          *     Auth-disabled deployments use the same isolated ``default`` profile as user
          *     preferences. Case-scoped collaboration chat is intentionally not listed here.
@@ -1624,10 +2333,350 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Rename Chat Conversation
-         * @description Rename one owned conversation with bounded, single-line plain text.
+         * Update Chat Conversation
+         * @description Rename (bounded, single-line plain text) and/or pin one owned conversation
+         *     (chat revamp SPEC §7.5). Pinning never changes ``updated_at``; an 11th pin is
+         *     409 ``chat_pin_limit``.
          */
-        patch: operations["rename_chat_conversation_api_chat_conversations__conversation_id__patch"];
+        patch: operations["update_chat_conversation_api_chat_conversations__conversation_id__patch"];
+        trace?: never;
+    };
+    "/api/chat/conversations/{conversation_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Conversation Messages
+         * @description Up to ``limit`` messages immediately before message ``before`` (the newest
+         *     ones without it), oldest first, each restored to its full text — how a client
+         *     reads a long conversation beyond the window ``GET /chat/conversations/{id}``
+         *     returns. 404 for a conversation the caller does not own or an unknown ``before``.
+         */
+        get: operations["chat_conversation_messages_api_chat_conversations__conversation_id__messages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/conversations/{conversation_id}/messages/{message_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Conversation Message
+         * @description One message of one of the caller's conversations, restored to its full text
+         *     (only that answer's exchange document is read). 404 when not found or not the
+         *     caller's.
+         */
+        get: operations["chat_conversation_message_api_chat_conversations__conversation_id__messages__message_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/conversations/{conversation_id}/messages/{message_id}/steps/{index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Step Observation
+         * @description The stored observation the model saw for step ``index`` of one of the
+         *     caller's answers (P1-1 step inspector). 404 ``step_not_found`` when the answer
+         *     has no such lookup, ``step_observation_unavailable`` when no observation was
+         *     stored for it (a model step, a refused or failed lookup), and
+         *     ``step_observation_expired`` once the owner's ring holds newer answers.
+         */
+        get: operations["chat_step_observation_api_chat_conversations__conversation_id__messages__message_id__steps__index__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/conversations/{conversation_id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark Chat Conversation Read
+         * @description The owner has seen the conversation's newest answer: clear ``unread``
+         *     (SPEC D13). Idempotent; ``needs_input`` and ``failed`` stay until the next answer.
+         */
+        post: operations["mark_chat_conversation_read_api_chat_conversations__conversation_id__read_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/entity-question": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chat Entity Question
+         * @description The server's question about one entity value, for the chat page to send with
+         *     ``origin: "starter"``. 422 when the value does not have its kind's shape.
+         */
+        post: operations["chat_entity_question_api_chat_entity_question_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Chat Feedback
+         * @description The caller's own ratings (optionally of one conversation), newest first.
+         */
+        get: operations["list_chat_feedback_api_chat_feedback_get"];
+        put?: never;
+        /**
+         * Chat Feedback
+         * @description Rate one of the caller's own Workspace answers (up/down, an optional reason
+         *     and comment). Rating the same answer again replaces the earlier rating. Audited
+         *     without the comment; never used to train a model.
+         */
+        post: operations["chat_feedback_api_chat_feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/feedback/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Feedback Summary
+         * @description The caller's own answer ratings as aggregates (P1-4): thumbs up and down, the
+         *     thumbs-down reasons and how many carried a comment — never a comment or which
+         *     answer it was. Owner-scoped; never used to train a model.
+         */
+        get: operations["chat_feedback_summary_api_chat_feedback_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/starters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Starters
+         * @description The caller's starters for ``surface`` (see the module docstring).
+         */
+        get: operations["chat_starters_api_chat_starters_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/starters/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chat Starter Event
+         * @description Record that the caller saw, used or hid starters (see the module docstring).
+         */
+        post: operations["chat_starter_event_api_chat_starters_events_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chat Stream
+         * @description The streaming twin of ``POST /api/chat`` (same body, same preflight errors).
+         */
+        post: operations["chat_stream_api_chat_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/topics/{topic_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Topic
+         * @description The server's templated question for a console-map topic (``kpi:mtta``,
+         *     ``settings:models``). The page sends it with ``origin: "starter"``; client text
+         *     never stands in for it. 404 for an unknown topic.
+         */
+        get: operations["chat_topic_api_chat_topics__topic_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/turns/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Active Chat Turns
+         * @description The caller's own running chat turns, oldest first: ids, start time, an engine
+         *     label, lookups and tokens — never prompt, answer or log text. Process-local, like
+         *     the turn registry (the supported runtime is one backend process). With auth
+         *     disabled (targeted ``chat.turn`` frames never reach anonymous subscribers) the
+         *     client polls this every 5 s while it knows a turn is running.
+         */
+        get: operations["active_chat_turns_api_chat_turns_active_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/turns/{turn_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Chat Turn
+         * @description Stop the caller's own running turn. The in-flight step finishes and is
+         *     recorded, no new step starts, and the stream ends with ``turn.done`` carrying a
+         *     ``cancelled`` notice. 404 when unknown, finished or not the caller's (ownership
+         *     is indistinguishable from absence).
+         */
+        post: operations["cancel_chat_turn_api_chat_turns__turn_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/turns/{turn_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Turn Events
+         * @description Re-attach to the caller's own running (or just finished) turn (SPEC D13):
+         *     a replay of its bounded event ring after ``after`` — consecutive text deltas
+         *     coalesced, ``usage`` and ``step.progress`` at their latest — then the live tail,
+         *     ending with the terminal event. Resume with ``after=<last seq seen>``. 404 for an
+         *     unknown or expired turn and for anyone else's (ownership is indistinguishable
+         *     from absence). Reading never holds a concurrency slot and never stops the turn.
+         */
+        get: operations["chat_turn_events_api_chat_turns__turn_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/turns/{turn_id}/seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chat Turn Seen
+         * @description The caller has their own turn's outcome on screen (an answer, a question or a
+         *     failure, in a Workspace or a Case Manager chat). Their other consoles hear it and
+         *     drop the mark they may hold for it. Nothing is stored. Always 204, for any
+         *     well-formed turn id: the notice goes only to the caller's own consoles and names
+         *     the turn, plus its conversation or case while the server still keeps the finished
+         *     turn (5 minutes).
+         */
+        post: operations["chat_turn_seen_api_chat_turns__turn_id__seen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/connectors": {
@@ -1726,7 +2775,10 @@ export interface paths {
          * Create Dashboard
          * @description Create one dashboard for the caller (id minted if absent). Allowlist-validates
          *     every widget type, clamps coords, validates the name, and enforces the per-user cap
-         *     (#9/#10). Returns the stored dashboard.
+         *     (#9/#10). A new id that is reserved (``new``, ``builtin:*``, ``u:*``) is refused with
+         *     ``400 dashboard_id_reserved``; replacing an already stored board keeps working
+         *     whatever its id. ``default_window`` and ``derived_from`` are validated strictly and
+         *     stored as sent. Returns the stored dashboard.
          */
         post: operations["create_dashboard_api_dashboards_post"];
         delete?: never;
@@ -1770,7 +2822,8 @@ export interface paths {
          * @description Replace the dashboard at ``dashboard_id`` (the PATH id is authoritative and
          *     overrides any id in the body). Allowlist-validates widget types + clamps coords +
          *     validates the name (#9). Creating-by-PUT is allowed but still honours the per-user
-         *     cap when the id is new.
+         *     cap when the id is new, and is refused for a reserved id (``400
+         *     dashboard_id_reserved``); updating a board stored under a reserved id is allowed.
          */
         put: operations["update_dashboard_api_dashboards__dashboard_id__put"];
         post?: never;
@@ -1903,6 +2956,129 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/diagnostics/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Diagnostics Health
+         * @description The operator diagnostics roll-up for the conditions that used to fail silently.
+         *
+         *     Returns the precedent-corpus health signal (size, per-source projection counts, and
+         *     the explicit "0 analyst-confirmed precedents available" flag), the SQL
+         *     schema-migration state, and the rolling auto-close health signal — plus a flat
+         *     ``alerts`` list of positively-detected conditions and a SEPARATE ``unknowns`` list
+         *     of signals that could not be evaluated, so an empty ``alerts`` is never mistaken for
+         *     a clean bill of health. There is no composite health score — only the two counts.
+         *
+         *     Authenticated and gated on ``settings:read``. This detail is deliberately NOT on the
+         *     public ``GET /api/health``: corpus counts and per-source detection posture must not
+         *     be readable by an anonymous caller.
+         *
+         *     Seed-free, and read-only over everything an operator would call state: asking about
+         *     corpus health never triggers an embedding spend, a projection, a case write or a
+         *     configuration change. It does perform ONE bounded advisory write — the composition
+         *     baseline a class-share shift is measured against, described in the module docstring.
+         *     Advisory only; never read by ``decide()`` (#3).
+         *
+         *     ``case_population`` says when the case figures were read (the shared all-time
+         *     population is kept for up to a minute), and ``event_loop`` carries the event-loop
+         *     lag gauge (measured values only; it feeds neither list).
+         */
+        get: operations["diagnostics_health_api_diagnostics_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/diagnostics/precedent-composition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Diagnostics Precedent Composition
+         * @description WHAT the precedent corpus is made of — now, and after a rebuild. Read-only.
+         *
+         *     **Reprojection is not the repair, and this endpoint is what proves it.** The
+         *     projection pages the case store newest-first, so on the deployment that motivated
+         *     this the bulk-confirmed cases were still the newest analyst-confirmed terminal cases:
+         *     a rebuild RE-SELECTS them and converges on the composition it just replaced. Worse,
+         *     the qualifying POOL was MORE skewed than the window drawn from it, so no selection
+         *     policy over that pool could have produced a healthy corpus. A successful rebuild is
+         *     therefore not evidence of repair, and "the job succeeded" must never be read as one.
+         *
+         *     What makes that visible, and what the payload carries:
+         *
+         *     * the JOINT (analyst outcome x model verdict) cross-tab, for the CURRENT corpus and
+         *       for the projection a rebuild WOULD produce. Per-outcome counts alone read PRISTINE
+         *       through the entire incident — a corpus that is 100% ``outcome=false_positive`` and
+         *       also 100% ``verdict=NEEDS_HUMAN`` is telling the investigator "we escalated this
+         *       every time", not "this is benign";
+         *     * per-rule counts, and chunk/document totals;
+         *     * the size of the qualifying POOL the bounded window was drawn from, so "200 of 889"
+         *       is legible rather than implied;
+         *     * the admission CONCENTRATION — how much of the selected window one operator
+         *       transaction bought.
+         *
+         *     It is deliberately a SEPARATE endpoint rather than a block inside
+         *     ``/api/diagnostics/health``: deriving the would-be projection costs a bounded scan of
+         *     the case store, and the health rollup is polled by the Console. It costs **zero
+         *     embedding calls** either way — both halves come from a management read plus the
+         *     ordinary per-case projector, whose metadata already carries both axes.
+         *
+         *     Gated on ``settings:read`` like the rest of this router, seed-free, and advisory (#3).
+         */
+        get: operations["diagnostics_precedent_composition_api_diagnostics_precedent_composition_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/enrichment/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Enrichment Config
+         * @description Change the enrichment settings of the active stack (module doc).
+         *
+         *     The body is a partial of ``EnrichmentConfig`` (``{"use_spamhaus": true}``); only
+         *     the fields sent change. Audited before it is visible (#2, Round 14 SPEC §3.6): a
+         *     ``settings.updated`` row naming every changed field is appended first, and a failed
+         *     append answers ``503 audit_unavailable`` with nothing saved. Off Demo Mode this saves
+         *     the real settings and the row goes to the real audit log; while Demo Mode is on it
+         *     changes the Demo sandbox's copy only and the row goes to the Demo audit (SPEC §3.5).
+         *     While the settings lock is on it answers ``403`` and saves nothing, with Demo Mode
+         *     on or off. Demo Mode turned on or off (or reset) during the save answers ``409
+         *     demo_mode_changed`` and saves nothing; a save racing another save of the same fields
+         *     is retried from a fresh read and gives up with ``409 settings_conflict``. A body
+         *     that changes nothing saves nothing and writes no row. Never touches ``decide()``
+         *     (#3).
+         */
+        put: operations["put_enrichment_config_api_enrichment_config_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/enrichment/lookup": {
         parameters: {
             query?: never;
@@ -1916,6 +3092,8 @@ export interface paths {
          *
          *     The fused reputation uses the byte-identical default ``max()`` (#3 untouched);
          *     every provider-returned string is FENCED as UNTRUSTED before it is returned (#9).
+         *     ``not_queried`` says why no provider was asked: ``"demo_mode"`` (Demo Mode never
+         *     queries one) or ``"disabled"`` (the master switch is off); ``None`` otherwise.
          */
         get: operations["enrichment_lookup_api_enrichment_lookup_get"];
         put?: never;
@@ -1938,7 +3116,12 @@ export interface paths {
          * @description Every registered provider's manifest + its current config/key state.
          *
          *     Returns booleans only for secrets (``configured`` per field + an overall
-         *     ``key_present``) — never a secret value (#10).
+         *     ``key_present``): never a secret value (#10). The switch states are the active
+         *     stack's enrichment settings, the same ones ``PUT /api/enrichment/config`` changes
+         *     (module doc): in Demo Mode the sandbox's copy, never the execution copy whose
+         *     lookups are forced off. ``demo_active`` says that no provider is queried while
+         *     Demo Mode is on and that a change here lasts only until it ends; ``demo_run_id``
+         *     names that Demo run (``None`` off Demo Mode).
          */
         get: operations["list_enrichment_providers_api_enrichment_providers_get"];
         put?: never;
@@ -1963,8 +3146,15 @@ export interface paths {
          * @description Set/clear a provider's SECRET-tier key(s) IN MEMORY (env/in-memory only).
          *
          *     Values are written onto the in-process ``Secrets`` object (never persisted, never
-         *     returned, #10). Only the keys the provider's manifest declares may be set — an
+         *     returned, #10). Only the keys the provider's manifest declares may be set: an
          *     unknown key is a 400 so a typo can never silently set a dead field.
+         *
+         *     Round 14 (SPEC §3.6, §4.5.4): audited before the key changes, like the source and
+         *     notification channel credentials. An ``enrichment.secrets_updated`` row naming each
+         *     key (``secret: true``, never its value) goes to the real audit log first, with Demo
+         *     Mode on or off: the keys are real secrets, never part of the Demo copy. A failed
+         *     append answers ``503 audit_unavailable`` and no key changes. A body with no key
+         *     changes nothing and writes no row.
          */
         post: operations["set_enrichment_secrets_api_enrichment_providers__name__secrets_post"];
         delete?: never;
@@ -2012,7 +3202,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Feedback Stats Route */
+        /**
+         * Feedback Stats Route
+         * @description Analyst feedback agreement over the newest cases, a metrics read behind
+         *     ``metrics:view`` like ``GET /api/metrics`` (whose ``feedback`` part it repeats).
+         */
         get: operations["feedback_stats_route_api_feedback_stats_get"];
         put?: never;
         post?: never;
@@ -2133,8 +3327,102 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Investigate */
+        /**
+         * Investigate
+         * @description The Investigate page: a person asks for one investigation. The run is a manual
+         *     run of that person (Round 16, WP16), so the AI run popover names who asked and the
+         *     finish notice reaches them, as Investigate on a case does.
+         */
         post: operations["investigate_api_investigate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/investigations/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Investigations Active
+         * @description The AI investigations queued or running now, and those that just finished.
+         */
+        get: operations["investigations_active_api_investigations_active_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Jobs */
+        get: operations["list_jobs_api_jobs_get"];
+        put?: never;
+        /** Submit Job */
+        post: operations["submit_job_api_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Job */
+        get: operations["get_job_api_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/artifact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Job Artifact */
+        get: operations["job_artifact_api_jobs__job_id__artifact_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Job */
+        post: operations["cancel_job_api_jobs__job_id__cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2167,7 +3455,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Add Custom Model */
+        /**
+         * Add Custom Model
+         * @description Register (or update) a self-hosted OpenAI-compatible model. Audited before it is
+         *     saved (#2, Round 14 SPEC §3.6): a ``model.added`` (or ``model.updated``) row with
+         *     the model's settings is appended first; an endpoint key is recorded by name only,
+         *     as a secret (#10). A failed append answers ``503 audit_unavailable`` with nothing
+         *     saved.
+         */
         post: operations["add_custom_model_api_llm_models_custom_post"];
         delete?: never;
         options?: never;
@@ -2185,7 +3480,11 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Remove Custom Model */
+        /**
+         * Remove Custom Model
+         * @description Remove a registered self-hosted model. Audited before it is removed (#2, Round
+         *     14 SPEC §3.6); an unknown model changes nothing and writes no row.
+         */
         delete: operations["remove_custom_model_api_llm_models_custom__model_id__delete"];
         options?: never;
         head?: never;
@@ -2217,10 +3516,20 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Llm Model Pricing */
+        /**
+         * Llm Model Pricing
+         * @description Set an operator price override for one model. Audited before it is saved (#2,
+         *     Round 14 SPEC §3.6): a ``model.pricing_updated`` row with the old and new rates is
+         *     appended first, and a failed append answers ``503 audit_unavailable`` with nothing
+         *     saved.
+         */
         put: operations["llm_model_pricing_api_llm_models__model_id__pricing_put"];
         post?: never;
-        /** Llm Model Pricing Delete */
+        /**
+         * Llm Model Pricing Delete
+         * @description Clear one model's price override. Audited before it is removed (#2, Round 14
+         *     SPEC §3.6); a model without an override changes nothing and writes no row.
+         */
         delete: operations["llm_model_pricing_delete_api_llm_models__model_id__pricing_delete"];
         options?: never;
         head?: never;
@@ -2289,6 +3598,53 @@ export interface paths {
          *     Resilient by design: each source runs under ``asyncio.wait_for`` and the whole set
          *     under ``gather(return_exceptions=True)``, so one slow or failing source degrades to
          *     a per-source error entry and NEVER blocks the rest (partial success).
+         *
+         *     ``source_id`` (OPTIONAL) scopes the fan-out to exactly one source, mirroring the
+         *     private preview reader in ``routes_rules._read_recent_events``. Omitting it is the
+         *     byte-identical all-sources behaviour. A ``source_id`` that is not visible in the
+         *     CURRENT mode is a 404 — while Demo Mode is active a real tenant id is
+         *     indistinguishable from an unknown one, so demo isolation leaks nothing — and a
+         *     visible id that is not an eligible browse target for this route (disabled, no
+         *     registered connector, or no ``browse`` capability) is a 501, the same status and
+         *     detail the per-source sibling route uses.
+         *
+         *     Each per-source status entry carries ``mode``: ``"search"`` = a real backing search
+         *     (``from``/``to``/``query`` apply) and ``"buffer"`` = a push source's process-local,
+         *     volatile in-memory live-tail ring, where ``from``/``to``/``query`` are IGNORED and
+         *     nothing survives a restart. Without it a caller cannot tell a time-ranged query from
+         *     a ring read in the merged view. ``mode`` describes the FILTERS, not the durability
+         *     of the backing store: a Demo Mode adapter reports ``"search"`` because it really
+         *     does apply ``from``/``to``/``query``.
+         *
+         *     BOUNDED, NOT COMPLETE. ``limit`` is clamped to 1..200 and applied per source AND on
+         *     the merge; there is NO pagination, cursor, or offset. The envelope echoes the
+         *     effective ``limit`` and a ``truncated`` flag so a caller can say "most recent N"
+         *     rather than implying it has seen everything. Each per-source status carries its own
+         *     ``truncated``, computed by the SAME ``_browse_truncated`` rule the per-source
+         *     sibling route uses, and the envelope ``truncated`` is the OR of the merge being cut
+         *     with any single source being cut — so scoping to one source, or running a
+         *     single-source deployment, reports exactly what ``GET /sources/{id}/logs`` reports
+         *     for that same read.
+         *
+         *     Round 14 (SPEC §4.6.1) adds three EXACT filters, each bound as a structured filter
+         *     value and never as query text: ``rule`` (an equality match against any rule identity
+         *     of an event: its rule field, rule name field or classified suite rule; 1 to 256
+         *     characters on one line), ``severity`` (exactly one named level: ``info``, ``low``,
+         *     ``medium``, ``high`` or ``critical``) and ``severity_gte`` (that level or above).
+         *     A level is projected through EACH source's own severity ceiling before it is
+         *     compared, so a 0 to 15 and a 0 to 100 source agree on what "High" means. Pull
+         *     sources compile the filters into their own query (exact); a push source's
+         *     live-tail ring is filtered here over the whole ring and, while a filter is active,
+         *     also kept to an explicit ``from``/``to`` (``now``, ``now-3d``, an ISO-8601 instant),
+         *     as a pull search and the rule summary are, so its rows and its "at least" total
+         *     describe the window the page names (``query`` still does not apply to a ring, and
+         *     ``mode`` stays ``"buffer"``). While any of them is active the envelope echoes
+         *     ``filters: {rule, severity, severity_gte}`` (``null`` = that one not filtered), so a
+         *     client can tell the filter was applied (an older backend ignores the parameters and
+         *     echoes nothing), and each per-source status carries ``exact``: ``false`` when that
+         *     source could only be filtered after a bounded read, so its rows are "at least"
+         *     these. A request with none of them is answered exactly as before, key for key. An
+         *     invalid value is a 400.
          */
         get: operations["unified_logs_api_logs_get"];
         put?: never;
@@ -2376,7 +3732,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Metrics */
+        /**
+         * Metrics
+         * @description The Metrics page's operational rollup. Needs ``metrics:view``, like every other
+         *     metrics read. Its ``cost`` part is the AI spend of the window, which ``cost:view``
+         *     governs: for a caller without that grant it is ``{}``.
+         */
         get: operations["metrics_api_metrics_get"];
         put?: never;
         post?: never;
@@ -2397,6 +3758,11 @@ export interface paths {
          * Metrics Agent Improvement
          * @description Aggregate-only evidence of agent-assisted triage effectiveness.
          *
+         *     Needs ``metrics:view``. Its recorded case-associated AI cost is AI spend, which
+         *     ``cost:view`` governs: for a caller without that grant the usage ledger is not
+         *     read and every ``recorded_case_cost`` block (the headline one and each period
+         *     comparison's) is ``unavailable`` with the reason that the grant is required.
+         *
          *     The response reports analyst-reported verdict agreement, material correction
          *     rate, human review turnaround, recorded case-associated cost, observed elapsed-
          *     closure differences, confirmed-positive case mix, alert volume, and non-causal
@@ -2408,6 +3774,216 @@ export interface paths {
          *     deterministic case decision (#3).
          */
         get: operations["metrics_agent_improvement_api_metrics_agent_improvement_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics/auto-close-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Auto Close Health
+         * @description The rolling auto-close rate as a FIRST-CLASS health signal.
+         *
+         *     Auto-close silently ceasing is the failure this endpoint exists for: an unrelated
+         *     configuration change starved the precedent corpus, auto-close stopped forever, and
+         *     nothing surfaced it. A rate that falls to ~0 **while decided volume holds steady**
+         *     is that outage; a rate of 0 because nobody sent any work, or because the operator
+         *     turned auto-close off, is not. The response reports both windows' raw counts plus
+         *     an explicit ``status`` so those are distinguishable rather than conflated.
+         *
+         *     Insufficient evidence stays explicit: a window without enough decided cases returns
+         *     a DASH rate and ``available: false`` with a reason, never a reassuring number. There
+         *     is no composite score.
+         *
+         *     READ-ONLY derivation over already-persisted cases — the ALL-TIME population (a case
+         *     created long ago can be decided today), exact up to ``_STORE_FETCH_LIMIT`` cases and
+         *     honestly ``truncated`` beyond. The auto-close policy is read for DISPLAY only —
+         *     nothing here is ever an input to ``decide()`` (#3).
+         */
+        get: operations["metrics_auto_close_health_api_metrics_auto_close_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics/auto-close-health/recorded": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Auto Close Health Recorded
+         * @description The auto-close rate measured from the APPEND-ONLY decision trail.
+         *
+         *     A SEPARATE series from ``GET /api/metrics/auto-close-health``, which is unchanged
+         *     and still served. The two are expected to differ, and the response carries a
+         *     ``legacy_series.note`` saying why, because silently redefining a shipped metric
+         *     moves every historical number an operator has been tracking.
+         *
+         *     What this one does differently:
+         *
+         *     * anchors each case on its FIRST recorded ``{"event": "decision"}`` entry, so a
+         *       reopen plus a re-investigation never moves, duplicates or re-labels the count;
+         *     * reads the ``status``/``decision_by`` RECORDED in that entry rather than today's
+         *       mutable ``case.decision_by``/``case.status`` — merely acknowledging an agent
+         *       auto-close can no longer migrate it into "a human closed this";
+         *     * excludes decisions taken during a dependency outage, derived from the
+         *       deployment's own provider-health records (never a calendar date, which would be
+         *       correct in one deployment and wrong in every other) and ONLY for a failing
+         *       COMPLETION channel — the one that gates verdict production. A degraded embedding
+         *       channel and a stale knowledge corpus both fail soft, so verdicts (and
+         *       ``decide()``) still ran; those are published under ``outage.context`` and never
+         *       remove a decision from the denominator;
+         *     * reports a bucketed ``gate_series``: how much of the trail can still EXPLAIN why
+         *       auto-close did or did not fire, and for the explained ones, whether the verdict
+         *       class was closable at all and what blocked the bar (confidence / risk /
+         *       class-disabled). That series is an EVIDENCE-QUALITY signal and is explicitly
+         *       NOT a threshold-tuning target — see its ``disclaimer``.
+         *
+         *     Every input beyond the cases is optional and fails soft: a missing audit page
+         *     downgrades the gate breakdown to ``unrecorded``, and a missing health record is
+         *     reported as "no evidence", never as proof that there was no outage.
+         *
+         *     READ-ONLY. The auto-close policy is read for DISPLAY-ONLY classification of
+         *     decisions that have already been made — nothing here is ever an input to
+         *     ``decide()`` (#3).
+         */
+        get: operations["metrics_auto_close_health_recorded_api_metrics_auto_close_health_recorded_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics/auto-close-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Auto Close Review Metrics
+         * @description The Agent effectiveness module (D6.12) over the cases sampled in ``window`` (a
+         *     ``time_windows`` token, default the last 30 days, in the operator zone).
+         */
+        get: operations["auto_close_review_metrics_api_metrics_auto_close_review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics/breakdown": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Breakdown
+         * @description Exact case or usage counts by one field (``by``) or two (``by`` then ``then``) over
+         *     a window, optionally bucketed by time (SPEC §4.4.2).
+         *
+         *     ``kind=cases`` hands one ``CaseAggregateSpec`` (window, group_by, bucket, top_n,
+         *     filters; metrics ``count``, ``open_now`` and the two named families) to
+         *     ``engine.case_aggregate.aggregate_cases``, the engine the chat's ``case_stats`` uses,
+         *     over the case store this caller reads (the Demo store while Demo Mode is on), with
+         *     the same prefs and operator timezone, so the dashboards and chat agree on every
+         *     number. The two families are never mixed: AI verdicts (``verdicted = verdict_tp +
+         *     verdict_fp + verdict_needs_human``) and the analyst outcome (``count = analyst_tp +
+         *     analyst_fp + analyst_ungraded``; analyst-policy closes are never graded). In an
+         *     un-bucketed row ``open_now`` is the window-exempt open stock: the open cases matching
+         *     the row whenever they were created, so it can exceed the row's windowed ``count``; in
+         *     a bucketed row it is the open part of that bucket's cohort. ``window_label`` is the
+         *     window as a caption start in sentence case ("Last 7 days (since 20 Oct 2026)"); a
+         *     relative window of days, weeks, months or years counts whole local periods exactly
+         *     as chat does, and an hours window (``now-168h``) is the rolling span the other
+         *     ``window_hours`` metrics count, labelled as a board names it ("Last 7 days (since 21
+         *     Oct 2026, 12:00)"). ``multi_valued`` is true for ``rule``, ``mitre_tactic``
+         *     and ``mitre_technique``: a case counts once in each of its values, so rows never sum
+         *     to ``total``. ``exact`` false (``partial`` true, with ``partial_reason``) marks lower
+         *     bounds; a zero is never invented for a figure that was not measured. Cases with no
+         *     readable creation date are disclosed in ``missing_created`` (``missing_in_total``
+         *     says whether ``total`` holds them), and with buckets cut by ``top`` each bucket's
+         *     ``other_count`` holds its share of ``other``.
+         *
+         *     ``kind=usage`` aggregates the usage ledger (``engine.case_aggregate.aggregate_usage``,
+         *     metrics ``calls`` and ``cost_usd``, ranked by spend) and is gated on ``cost:view``.
+         *
+         *     One answer per question is shared for a few seconds and a question being read is
+         *     joined, never read twice; at most two reads run at once, a read gets a bounded time,
+         *     an answer holds at most 5,000 group rows and the shared answers 20,000 in all. Every read
+         *     folds the cases of the window, because the analyst outcome family needs the case
+         *     model; the fold reads only the stored fields its metrics and groups need.
+         *
+         *     Errors: ``400 breakdown_bad_param`` (an unknown value, ``then`` equal to ``by``, a
+         *     case-only parameter with ``kind=usage``, an empty ``filter_rule``, a ``top`` that is
+         *     not a whole number from 1 to 50, a window it cannot read, too many buckets, or
+         *     ``top`` times the buckets over 5,000 rows); ``403`` without the grant; ``409
+         *     breakdown_scope_unsupported`` for a case breakdown while row-level data scope applies
+         *     to the caller (aggregates do not honour row scope yet, SPEC D16); ``503
+         *     breakdown_unavailable`` when the store could not be read at all or the read ran past
+         *     its time (nothing was measured, so no figure is returned). A read: no audit row, no
+         *     model call (#6), aggregates only (#7); nothing here is read by
+         *     ``case_manager.decide()`` (#3).
+         */
+        get: operations["metrics_breakdown_api_metrics_breakdown_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics/explain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Explain
+         * @description The cases behind one dashboard figure, so a reader can cross-check it (Round 16
+         *     WP12; research explainability D-API-4).
+         *
+         *     ``metric`` is ``mtta``, ``mttr``, ``dwell`` or ``mttd`` (the posture lifecycle
+         *     median for ``window_hours``), ``active_risk_index`` (the ``GET /api/metrics`` index,
+         *     all time, ``window_hours`` ignored), ``fp_rate`` (the posture AI-verdict false
+         *     positive rate) or ``sla_attainment`` (the posture SLA attainment). The figure is
+         *     computed from the SAME population (``fetch_case_population``) and the SAME code as
+         *     the figure it explains (``engine.metrics.explain_metric``), so its value equals
+         *     the posture value for the same window. Up to 200 case rows; ``sample_count`` is how
+         *     many cases the figure counts (for a timing, the stat block's ``count``).
+         *
+         *     Needs ``metrics:view``; the case rows also need ``cases:read`` (without it they are
+         *     withheld and ``samples_withheld`` says why), and with row-level data scope on each
+         *     row is checked with ``can_object`` (``hidden_by_scope`` counts the rows left out;
+         *     they still count in the figure). Ids, enums and our own numbers only (#7). An
+         *     unreadable store is a 503, never a figure of zero. Advisory (#3).
+         */
+        get: operations["metrics_explain_api_metrics_explain_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2431,11 +4007,25 @@ export interface paths {
          *     ``ingested``/``clustered`` come from the DURABLE ``noise_counters`` store (raw-alert-by-
          *     severity, so they reflect the TRUE inbound volume even after low-value events are
          *     dropped at ingest); ``cases`` + the MECE outcomes (needs_human > escalated >
-         *     auto_cleared > true_positive residual) come from a case tally computed over up to the
-         *     most-recent 5000 cases (the ``cases_meta.truncated`` flag is True when the store held
-         *     more — the outcome tallies are then a lower bound). When the counters are still warming
+         *     auto_cleared > true_positive residual) come from a tally over every case in the window
+         *     (``cases_meta.truncated`` is True when the window holds more cases than
+         *     ``_STORE_FETCH_LIMIT`` or the read failed partway — the outcome tallies are then a
+         *     lower bound and ``store_total``/``fetched`` say by how much). When the counters are still warming
          *     up (``counters.available: false``) the ingested/clustered totals are ``null`` and the
          *     headline ``reduction.overall_pct`` is a DASH, so the UI degrades to a case-only funnel.
+         *
+         *     ``events_per_min`` (Round 14, SPEC §4.4.3, the detection board's "Events per minute")
+         *     is the mean raw alerts per minute over the whole hours the counters summed
+         *     (:func:`_events_per_min`), rounded to 0.01. When the counters began inside the
+         *     window (``counters.incomplete``, a fresh install, a Demo) the hour they began in is
+         *     left out, because it can hold a backfilled burst (a cold-start lookback, the Demo's
+         *     history written at once): the rate then covers the hours after it. ``null`` while
+         *     ``counters.available`` is false or less than five minutes are measured, never a
+         *     made-up 0 and never a burst read as a rate. ``events_per_min_since`` is the ISO
+         *     start of the span the rate covers (``null`` with no rate) and
+         *     ``events_per_min_reason`` a plain sentence saying why the rate is not measured or,
+         *     when the counters began inside the window, that it covers only the time since the
+         *     end of the hour they began in (``null`` when the rate covers the whole window).
          *
          *     DETERMINISTIC + advisory: nothing here is read by ``case_manager.decide()`` (#3); every
          *     band name is plain framework data the UI renders escaped.
@@ -2488,13 +4078,108 @@ export interface paths {
         /**
          * Metrics Posture
          * @description The rich security-posture rollup over the last ``window_hours``, computed over
-         *     up to the most-recent 5000 cases (the response's ``truncated`` flag is True when
-         *     the store held more).
+         *     every case the window (and, for ``compare=prev``, the preceding window) reaches
+         *     (Round 12). ``truncated`` is True when that span holds more cases than
+         *     ``_STORE_FETCH_LIMIT`` or the read failed partway; ``store_total`` is then the exact
+         *     number of in-scope cases and ``fetched`` the newest analysed, and
+         *     ``window_covered`` says whether the SELECTED window is still complete.
          *
          *     ``compare=prev`` adds period-over-period deltas vs the immediately-preceding
          *     equal-length window. SLA targets come from ``Preferences.sla`` (advisory; #3).
+         *
+         *     The headline populations, and which of them ``window_hours`` bounds — the five
+         *     Console tiles are built on exactly these and they are NOT interchangeable::
+         *
+         *         {"case_count": int,                     # arrival cohort in-window, policy-closed INCLUDED
+         *          "severity_counts": {"critical": int, "high": int, "medium": int,
+         *                              "low": int, "info": int},   # partitions case_count exactly
+         *          "open_now": {"count": int, "window_exempt": true, "as_of": iso8601,
+         *                       "complete": bool, "reason": str},  # STOCK, measured now, NOT windowed
+         *          "quality": {"terminal_cases": int, "auto_closed_cases": int,
+         *                      "human_closed_cases": int, "system_closed_cases": int,
+         *                      "false_positive_rate": float, ...},
+         *          "truncated": bool, "store_total": int, "fetched": int,
+         *          "window_covered": bool, "window_coverage_reason": str,
+         *          "oldest_fetched_at": iso8601 | null}
+         *
+         *     * ``severity_counts`` is server-side and covers the FULL windowed population; it
+         *       exists so no client has to infer a band total from whatever bounded page of
+         *       cases it happens to hold. Bands are the read-time advisory ladder
+         *       (``engine.priority.band_of_case``), resolved against each source's DECLARED
+         *       severity ceiling — hence ``Preferences`` is threaded in. Nothing is persisted.
+         *     * ``open_now`` is deliberately window-EXEMPT and carries ``window_exempt: true``
+         *       so it can never be rendered as summing with the windowed tiles.
+         *       ``aging.queue_depth`` is the cohort-scoped "arrived in-window and still open"
+         *       number and is a different figure.
+         *     * ``auto_closed_cases`` + ``human_closed_cases`` + ``system_closed_cases`` sum
+         *       EXACTLY to ``terminal_cases``. Render all three or none: the residual (SYSTEM
+         *       routing + legacy records with no recorded decider) must stay visible even at 0,
+         *       and human work is NEVER ``terminal_cases - auto_closed_cases``. These report the
+         *       LAST recorded decider — see ``engine.metrics.quality_metrics`` for the caveat a
+         *       "human vs AI" surface must disclose.
+         *     * ``window_covered`` is the honest-coverage flag: whether the SELECTED window is
+         *       fully answerable from the cases that were read (cutoff at or after
+         *       ``oldest_fetched_at``). With the exact population it is True unless a single
+         *       window outgrew the in-memory bound. ``open_now`` is an exact store COUNT (window
+         *       exempt) and carries its own ``complete`` flag.
+         *     * A case-store OUTAGE soft-fails to an empty fetch so the dashboard never 500s.
+         *       Both completeness flags then go False with a reason naming the failure: the
+         *       counts are still zeros, but zero-because-unreadable is not a measurement and must
+         *       never be published as one. ``truncated`` is unchanged (it compares fetched with
+         *       store-reported total, and both are 0).
          */
         get: operations["metrics_posture_api_metrics_posture_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics/trends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Trends
+         * @description Bucketed case-cohort + raw-alert trends over the trailing ``window_hours``
+         *     (clamped to 1..720) — the Overview hover-trendline feed.
+         *
+         *     FROZEN response contract::
+         *
+         *         {"window_hours": int, "bucket_minutes": int, "generated_at": iso8601,
+         *          "buckets": [{"t": iso8601 bucket-start UTC, "new_cases": int, "closed": int,
+         *                       "auto_closed": int, "false_positives": int, "needs_human": int,
+         *                       "escalated": int, "fp_rate": float 0-100 | null,
+         *                       "alerts": int | null}],
+         *          "truncated": bool, "store_total": int, "fetched": int}
+         *
+         *     ``bucket_minutes`` follows the frozen ladder (<=24h → 60, <=72h → 180,
+         *     <=168h → 360, else 1440); buckets are UTC-aligned, zero-filled across the whole
+         *     window, newest bucket partial. The FIRST bucket is partial too: it starts on its
+         *     aligned edge, before the window does, and counts only what lies inside the window
+         *     (the cases created from ``now - window_hours`` on, and the alert hours from the
+         *     hour that instant falls in, the same hours the noise funnel sums). So the buckets
+         *     add up to the window's own case count, the figure every other panel shows. Cohort
+         *     counts reuse the exact
+         *     ``engine.metrics.quality_metrics`` field/verdict/decision_by semantics so they
+         *     reconcile with the posture tiles; ``fp_rate`` mirrors posture's
+         *     ``false_positive_rate`` numerator/denominator within the bucket (null when no
+         *     verdicted case). ``alerts`` comes from the durable noise counters' per-hour
+         *     ingested tallies (null when the counters are warming up / unreadable, and for
+         *     buckets predating their first observation).
+         *
+         *     Served from the SAME shared short-TTL exact population as the other posture
+         *     rollups (every case the window reaches; one store scan per TTL window). The
+         *     ``truncated``/``store_total``/``fetched`` marker is True only when the window alone
+         *     outgrew ``_STORE_FETCH_LIMIT``. DETERMINISTIC + advisory: nothing here is read by
+         *     ``case_manager.decide()`` (#3).
+         */
+        get: operations["metrics_trends_api_metrics_trends_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2513,10 +4198,11 @@ export interface paths {
         /**
          * Mitre Coverage
          * @description Per-tactic MITRE ATT&CK technique coverage tallied from our case load against
-         *     the bundled corpus, over up to the most-recent 5000 cases (the response's
-         *     ``truncated`` flag is True when the store held more — the covered tally is then a
-         *     lower bound). ``window_hours=0`` (default) covers ALL fetched cases; a positive
-         *     value time-bounds to created-within. Invalid/forged technique ids are dropped (#9).
+         *     the bundled corpus, over every case in the window (``window_hours=0``, the default,
+         *     is all time; a positive value bounds to created-within). ``truncated`` is True when
+         *     that population outgrew ``_STORE_FETCH_LIMIT`` (or the read failed partway) — the
+         *     covered tally is then a lower bound over the newest cases, beside the exact
+         *     ``store_total``. Invalid/forged technique ids are dropped (#9).
          */
         get: operations["mitre_coverage_api_mitre_coverage_get"];
         put?: never;
@@ -2579,6 +4265,13 @@ export interface paths {
          * @description Set/clear one notification channel's secret field (notifications:manage). The value
          *     goes to the SECRET tier (in memory), NEVER to Preferences; only a configured-
          *     boolean is returned. Also stamps the channel's ``configured_secrets`` (names only).
+         *
+         *     Round 14 (SPEC §3.6): audited before the credential changes. A
+         *     ``notification.secrets_updated`` row naming the field (never its value, #10) is
+         *     appended first; a failed append answers ``503 audit_unavailable`` and the
+         *     credential is unchanged. The configured field NAMES are saved first and the
+         *     credential changes in memory only after that save succeeds, so a failed save leaves
+         *     the credential as it was and its failure row ("Not applied") is true.
          */
         post: operations["set_notification_channel_secret_api_notifications_channels__channel_id__secret_post"];
         delete?: never;
@@ -2824,16 +4517,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Playbooks */
+        /**
+         * Playbooks
+         * @deprecated
+         * @description Deprecated alias: every Published runbook in the old procedure list shape. Use
+         *     ``GET /api/runbooks``.
+         */
         get: operations["playbooks_api_playbooks_get"];
         put?: never;
         /**
          * Playbooks Create
-         * @description Create an operator Markdown file, atomically reload it, and audit the change.
-         *
-         *     The front-matter id must equal ``body.id``.  IDs are slug/path constrained and
-         *     a create never overwrites any existing file or bundled playbook.  Playbook text
-         *     remains recommendation-only context; this endpoint never touches ``decide()``.
+         * @deprecated
+         * @description Retired write: ``410 runbooks_moved``. Create a runbook with ``POST /api/runbooks``.
          */
         post: operations["playbooks_create_api_playbooks_post"];
         delete?: never;
@@ -2851,7 +4546,14 @@ export interface paths {
         };
         /**
          * Playbooks Coverage
-         * @description Coverage over the stored case population, paged without a 200-row cap.
+         * @deprecated
+         * @description Deprecated alias: which runbook each stored case would match (the fallback does
+         *     not count as coverage), over the newest 20,000 cases at most. Needs ``cases:read``
+         *     as well as ``runbooks:read``, answers ``409 runbook_scope_unsupported`` while
+         *     row-level data scope applies to the caller and ``503 case_store_unavailable`` when
+         *     cases cannot be read. ``truncated`` is true when more cases exist beyond the ones
+         *     read, or a later page could not be read: every figure is then a lower bound. Use
+         *     ``GET /api/runbooks/metrics`` for runbook coverage.
          */
         get: operations["playbooks_coverage_api_playbooks_coverage_get"];
         put?: never;
@@ -2873,7 +4575,9 @@ export interface paths {
         put?: never;
         /**
          * Playbooks Dry Run
-         * @description Explain exact match and no-match reasons without running an investigation.
+         * @deprecated
+         * @description Retired: ``410 runbooks_moved``. Preview matching with ``POST
+         *     /api/runbooks/match-preview``.
          */
         post: operations["playbooks_dry_run_api_playbooks_dry_run_post"];
         delete?: never;
@@ -2893,8 +4597,8 @@ export interface paths {
         put?: never;
         /**
          * Playbooks Reload
-         * @description Hot-reload playbooks from disk (atomic; a broken file never replaces a good
-         *     live set). Returns the load summary.
+         * @deprecated
+         * @description Retired write: ``410 runbooks_moved``. The runbook library needs no reload.
          */
         post: operations["playbooks_reload_api_playbooks_reload_post"];
         delete?: never;
@@ -2912,7 +4616,9 @@ export interface paths {
         };
         /**
          * Playbook Selection
-         * @description Why a given case selected the playbook it did (from the audit trail).
+         * @deprecated
+         * @description Deprecated alias: the runbook on a case and why it was attached (the first run
+         *     that is not abandoned). Use ``GET /api/cases/{case_id}/runbooks``.
          */
         get: operations["playbook_selection_api_playbooks_selection__case_id__get"];
         put?: never;
@@ -2932,12 +4638,18 @@ export interface paths {
         };
         /**
          * Playbook Detail
-         * @description Open one playbook as plain UTF-8 Markdown plus parsed catalog metadata.
+         * @deprecated
+         * @description Deprecated alias: one Published runbook in the old procedure detail shape,
+         *     ``content`` and ``body`` exported as Markdown. A retired bundled procedure id
+         *     answers with the runbook that replaced it; an unknown id answers the old ``404``
+         *     (``{"detail": "playbook not found"}``). Use ``GET /api/runbooks/{id}``.
          */
         get: operations["playbook_detail_api_playbooks__playbook_id__get"];
         /**
          * Playbook Update
-         * @description Atomically update an operator playbook. Bundled playbooks are read-only.
+         * @deprecated
+         * @description Retired write: ``410 runbooks_moved``. Edit a draft with ``PUT
+         *     /api/runbooks/{id}/draft``.
          */
         put: operations["playbook_update_api_playbooks__playbook_id__put"];
         post?: never;
@@ -3003,6 +4715,11 @@ export interface paths {
          * Prefs Org Put
          * @description Replace the ORG customization defaults (admin-only). Validated/bounded by
          *     CustomizationConfig. All free-text is plain data (#9).
+         *
+         *     Round 16 (WP16): the new settings are validated as a whole ``Preferences``, so its
+         *     after-validators run on this write as on every other: a legacy
+         *     ``customization.default_theme`` other than ``system`` is moved into Branding (B45)
+         *     and is never stored here.
          */
         put: operations["prefs_org_put_api_prefs_org_put"];
         post?: never;
@@ -3028,6 +4745,9 @@ export interface paths {
          * Prefs User Put
          * @description Patch the caller's PERSONAL prefs (theme, pins, last-list-state, …). Only the
          *     provided fields change. NOT admin-gated — every user edits only their own bucket.
+         *
+         *     A change to the saved chat prompts (the Round 12 prompt library) writes one
+         *     append-only audit row (#2) with counts only — never a prompt's title or text.
          */
         put: operations["prefs_user_put_api_prefs_user_put"];
         post?: never;
@@ -3070,10 +4790,55 @@ export interface paths {
          * @description List agent-drafted proposals (newest first). ``?status=pending`` filters to
          *     the review queue; omit for all. A proposal is a PENDING recommendation — nothing
          *     is live until it is explicitly approved.
+         *
+         *     Opportunistically garbage-collects lapsed proposals first. A queue nobody can work
+         *     (the deployment whose approvals were broken for its whole life) otherwise grows
+         *     without bound and keeps rendering month-old recommendations as actionable. The
+         *     sweep is bounded, writes nothing when nothing has lapsed, and is best-effort: the
+         *     store's read-time projection already presents a lapsed row as ``expired``, so a
+         *     failed sweep costs durability, never honesty.
          */
         get: operations["list_proposals_api_proposals_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/proposals/bulk-reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bulk Reject Proposals
+         * @description Reject many proposals in one audited request.
+         *
+         *     A queue that accumulated for a deployment's whole life cannot realistically be
+         *     cleared one HTTP request at a time, but convenience must not buy itself a hole in
+         *     the append-only audit trail (#2). This therefore runs the SAME strict per-proposal
+         *     decision path as :func:`reject_proposal` — one ``event_id``-keyed append-only
+         *     decision record each — rather than a bulk state write with a single summary row.
+         *
+         *     Consequences of that choice, all deliberate:
+         *
+         *     * **Idempotent.** An already-rejected id reports ``already_rejected`` and writes
+         *       nothing new; ``record_strict`` deduplicates on ``event_id`` anyway.
+         *     * **Partial success is a first-class result.** One unusable id — missing, in
+         *       flight, or a store hiccup — is reported in ``results`` and never aborts the
+         *       batch, so an operator is never left guessing which half landed.
+         *     * **Bounded.** At most :data:`BULK_DECISION_LIMIT` ids per request, deduplicated,
+         *       because each one performs a durable write.
+         *
+         *     Expired proposals are rejectable, which is what makes this the queue-clearing tool.
+         */
+        post: operations["bulk_reject_proposals_api_proposals_bulk_reject_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3098,9 +4863,18 @@ export interface paths {
          *     picks it up LIVE. memory → append a human-injectable agent fact. tuning →
          *     revalidate and, where eligible, materialise the bounded change. ``automation_ack``
          *     records review only and never mutates configuration, Memory, suppression, or case
-         *     state. A strict CAS claim is persisted before any effect, every effect is keyed by
-         *     proposal id, and finalisation is strict so concurrent/retried requests cannot apply
-         *     the same proposal twice. 404 if missing; 409 if already decided/in progress.
+         *     state.
+         *
+         *     The decision runs in four ordered phases — PREPARE (pure validation only),
+         *     AUDIT (the strict ``event_id``-keyed decision record), EFFECT, FINALISE — so an
+         *     operator who is told the approval failed can never find the configuration already
+         *     changed by that attempt. Every phase is idempotent: the strict claim fixes actor
+         *     and audit timestamp, ``record_strict`` deduplicates on ``event_id``, and every
+         *     effect is keyed by proposal id, so a retry after any failure converges on exactly
+         *     one applied change. 404 if missing; 409 if already decided/in progress, if the
+         *     proposal has EXPIRED, or if its evidence basis can no longer be verified — the
+         *     last two are refusals to act on stale reasoning and ask for a re-draft, and both
+         *     happen before anything is audited or applied.
          */
         post: operations["approve_proposal_api_proposals__proposal_id__approve_post"];
         delete?: never;
@@ -3122,9 +4896,11 @@ export interface paths {
          * Reject Proposal
          * @description Reject a pending proposal through the same durable decision boundary.
          *
-         *     Preferences / memory are unchanged. A strict CAS claim and idempotent
-         *     append-only audit row must both succeed before the proposal can be finalised as
-         *     rejected. 404 if missing; 409 if already decided/in progress.
+         *     Rejection has no effect phase at all: preferences, Memory, suppression and case
+         *     state are never touched, so the ordering is simply strict CAS claim → strict
+         *     append-only decision record → strict finalisation. An EXPIRED proposal may still
+         *     be rejected — retiring dead review work is how a queue is cleared and it changes
+         *     nothing. 404 if missing; 409 if already decided/in progress.
          */
         post: operations["reject_proposal_api_proposals__proposal_id__reject_post"];
         delete?: never;
@@ -3171,6 +4947,17 @@ export interface paths {
          * Rag Delete Document
          * @description Delete an imported document. 404 if missing; 400 if a guarded seed source
          *     (runbook/mitre/suppression/resolved_case) unless ``?force=true``.
+         *
+         *     Every SUCCESSFUL delete is audited. It previously was not: a ``force=true`` delete
+         *     is the single most destructive corpus mutation the API offers — it removes protected
+         *     built-in knowledge or an analyst-confirmed precedent — and it left no record at all,
+         *     so "where did that runbook go?" was unanswerable. The row carries the document id and
+         *     the force flag; no chunk text ever enters it (#9).
+         *
+         *     For a PRECEDENT document, note that a plain force-delete does not stay deleted: the
+         *     next projection re-derives that case from the case store. ``POST
+         *     /api/rag/precedent/exclusions`` is the supported way to make a precedent removal
+         *     stick, and it performs this same delete as its second half.
          */
         delete: operations["rag_delete_document_api_rag_documents__document_id__delete"];
         options?: never;
@@ -3189,10 +4976,181 @@ export interface paths {
         put?: never;
         /**
          * Rag Import
-         * @description Import a free-text document into the RAG corpus. Chunked + embedded; takes
-         *     effect immediately for retrieval. 400 on empty/oversized text.
+         * @deprecated
+         * @description Deprecated request-bound single-document import compatibility route.
+         *
+         *     New operator workflows submit bounded ``rag_import`` Jobs so indexing survives
+         *     navigation and has durable progress. The document is chunked and embedded and
+         *     takes effect immediately for retrieval. 400 on empty/oversized text.
          */
         post: operations["rag_import_api_rag_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rag/precedent/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Precedent Bootstrap Status
+         * @description Preview the bulk bootstrap: tier state, guards, and how many cases qualify.
+         *
+         *     Read-only. ``eligible`` counts guard-passing candidates within the bounded scan;
+         *     ``pending`` is how many of those are not yet ratified.
+         */
+        get: operations["precedent_bootstrap_status_api_rag_precedent_bootstrap_get"];
+        put?: never;
+        /**
+         * Precedent Bootstrap
+         * @deprecated
+         * @description Deprecated request-bound bulk-ratification compatibility route.
+         *
+         *     New operator workflows submit ``precedent_bootstrap`` through ``POST /api/jobs``
+         *     for durable per-case progress and projection recovery.
+         *
+         *     Bounded, idempotent, resumable, and explicitly acknowledged. The route preserves
+         *     the historical synchronous API while sharing the exact domain operation with the
+         *     durable Jobs subsystem.
+         */
+        post: operations["precedent_bootstrap_api_rag_precedent_bootstrap_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rag/precedent/composition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Precedent Composition
+         * @description The corpus as it stands, beside the projection a rebuild WOULD produce.
+         *
+         *     Read-only and free: it embeds nothing, seeds nothing and writes nothing, because both
+         *     halves are derivable from a management read plus the ordinary per-case projector,
+         *     whose item metadata already carries the analyst outcome AND the model verdict.
+         *
+         *     Reports the JOINT (analyst outcome x model verdict) distribution rather than either
+         *     marginal alone — outcome-only counts read PRISTINE on a corpus that is actively
+         *     poisoning the model — plus per-rule counts, chunk/document totals, the size of the
+         *     QUALIFYING POOL the window was drawn from (so "200 of 889" is visible), and how
+         *     concentrated the selected window is in one operator transaction.
+         */
+        get: operations["precedent_composition_api_rag_precedent_composition_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rag/precedent/exclusions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Precedent Exclusions
+         * @description The case-scoped precedent exclusion set: count, ids, per-rule and per-reason.
+         *
+         *     ``available: false`` means the set could not be READ — never that nothing is
+         *     excluded. The two are different answers and conflating them would report a broad
+         *     exclusion as an empty one.
+         */
+        get: operations["precedent_exclusions_api_rag_precedent_exclusions_get"];
+        put?: never;
+        /**
+         * Precedent Exclude
+         * @description Exclude cases from the precedent corpus: DELETE + MARK, per case, atomically.
+         *
+         *     The marker is written first so no producer can re-derive the precedent while its
+         *     chunks are being removed; the delete follows. Idempotent — re-issuing the same
+         *     exclusion refreshes the marker and finishes any removal that did not complete.
+         *
+         *     ``dry_run`` resolves the selection and returns the case ids WITHOUT excluding
+         *     anything. Every exclusion is audited per case.
+         *
+         *     Ground truth is untouched: the case keeps its analyst label, so
+         *     ``analyst_confirmed_outcome`` — and the threshold tuner's independent-evidence count,
+         *     which is derived from it — are unchanged. Side effect, by design: an excluded case is
+         *     also no longer indexed by the incremental close-time path.
+         */
+        post: operations["precedent_exclude_api_rag_precedent_exclusions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rag/precedent/exclusions/{case_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Precedent Restore
+         * @description Drop a precedent exclusion. 404 when the case is not excluded.
+         *
+         *     Removes the marker only: the precedent reappears on the NEXT ordinary projection,
+         *     derived from the case store exactly as it would have been. Nothing is written to the
+         *     corpus here — an un-exclusion must not be able to mint a chunk the projection would
+         *     not have produced.
+         */
+        delete: operations["precedent_restore_api_rag_precedent_exclusions__case_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rag/precedent/repair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Precedent Repair
+         * @description Repair precedent whose stored TEXT no longer matches the current projection.
+         *
+         *     ``dry_run`` (the default) reports per-tier ``scanned / current / stale /
+         *     undetermined / not_projecting`` counts plus ``would_repair`` and ``would_evict``,
+         *     and costs nothing. A real run re-embeds exactly the chunks whose re-render differs
+         *     and upserts them on their existing chunk id — one metered embedding per repaired
+         *     chunk (#6), bounded per run by a cap derived from the configured precedent window.
+         *
+         *     The ONLY removable chunk is one whose case is POSITIVELY absent from the case
+         *     store. An operator-EXCLUDED case and one whose analyst label was WITHDRAWN are
+         *     reported, never deleted: those are operator decisions and their home is the
+         *     exclusion API. Before any removal the evicted document id, text and metadata are
+         *     written to the append-only audit trail — that record is the only reconstruction
+         *     path, because the store upserts and a repair is idempotent and re-derivable but not
+         *     reversible to the prior render.
+         *
+         *     Ground truth is untouched: no feedback row, no disposition, no decision_by, no
+         *     status, no history rewrite (#3).
+         */
+        post: operations["precedent_repair_api_rag_precedent_repair_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3240,6 +5198,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rbac": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Rbac
+         * @description Whether role-based access is on and whether the caller may change it.
+         */
+        get: operations["get_rbac_api_rbac_get"];
+        /**
+         * Put Rbac
+         * @description Turn role-based access on or off (module doc, rules 1 to 7).
+         */
+        put: operations["put_rbac_api_rbac_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/releases/upstream": {
         parameters: {
             query?: never;
@@ -3274,6 +5256,187 @@ export interface paths {
          * @description Request a refresh, still respecting the anti-hammering manual cooldown.
          */
         post: operations["check_upstream_releases_api_releases_upstream_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/replay/fixtures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Replay Fixtures
+         * @description Catalog metadata only, plus the storage bound and the honesty statement.
+         */
+        get: operations["list_replay_fixtures_api_replay_fixtures_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Purge Replay Fixtures
+         * @description Clear the catalog and overwrite every body slot.
+         *
+         *     Capture is on by default and fixtures hold raw records, so an operator needs an
+         *     immediate purge that does not require a factory reset.
+         */
+        delete: operations["purge_replay_fixtures_api_replay_fixtures_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Reports
+         * @description The caller's reports, newest first (no items; open one with GET by id).
+         */
+        get: operations["list_reports_api_reports_get"];
+        put?: never;
+        /**
+         * Create Report
+         * @description Create an empty report. With ``conversation_id`` it becomes that (caller-owned)
+         *     conversation's draft; a conversation has at most one (409 with its id).
+         */
+        post: operations["create_report_api_reports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/reports/add": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add To Report
+         * @description Add one block (``block_id``) or the whole answer (a ``section``) of a persisted
+         *     Workspace answer the caller owns. The server resolves and snapshots the content;
+         *     with no ``report_id`` the conversation's draft is used (created on first add).
+         */
+        post: operations["add_to_report_api_reports_add_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/reports/from-answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report From Answer
+         * @description Save one answer as the report its header asked for, after the server-side save
+         *     failed with a retryable error (``saved_report_error``). Idempotent PER ANSWER: the
+         *     report id derives from the owner, the conversation and the answer, so a second
+         *     click, another tab or a click after a reload returns the same report; an answer
+         *     already carrying ``saved_report`` returns that report without writing. The stored
+         *     answer then records ``saved_report`` and drops ``saved_report_error``, so a
+         *     reopened thread shows the saved line, never the offer again. Workspace answers
+         *     only (case-scoped turns never enter Workspace history, #5); audited (#2).
+         */
+        post: operations["report_from_answer_api_reports_from_answer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/reports/from-conversation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report From Conversation
+         * @description "Save conversation as report" (SPEC D11): every answer of one caller-owned
+         *     Workspace conversation becomes one section (its question as the heading, then
+         *     the answer text and blocks), in order, up to the report's item limit; a reply to a
+         *     chat command (``/compact``) is not an answer and is left out. The server
+         *     resolves every item from the persisted conversation; nothing is client-supplied
+         *     content. Case-scoped chat never enters Workspace history, so a case conversation
+         *     can never be saved this way.
+         */
+        post: operations["report_from_conversation_api_reports_from_conversation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/reports/{report_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Report */
+        get: operations["get_report_api_reports__report_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Report
+         * @description Strict tombstone under ``expected_version`` (body, or the query parameter for
+         *     clients whose DELETE cannot carry a body), then removal from the index.
+         */
+        delete: operations["delete_report_api_reports__report_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Patch Report
+         * @description Title, template, item order, notes and removals in one strict-CAS write under
+         *     ``expected_version`` (409 ``report_version_conflict`` with ``current_version``).
+         */
+        patch: operations["patch_report_api_reports__report_id__patch"];
+        trace?: never;
+    };
+    "/api/reports/{report_id}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Summarise Report
+         * @description Generate (or estimate) the AI executive summary: ONE ``gateway.complete`` call
+         *     with ``surface="report"`` over the §9.4 digest, so exactly one UsageDoc. Repeats
+         *     are bounded by the idempotency key (same key → the stored result, no call), a
+         *     per-report single-flight lock (a concurrent second click → 409) and a per-user
+         *     token bucket (10 per hour; Demo exempt). A report whose bounded digest could keep
+         *     none of its items is refused (409 ``report_too_large_to_summarise``) before any
+         *     spend, for the estimate too. Failure messages describe the summary, not a chat
+         *     turn (:data:`SUMMARY_FAILURE_MESSAGES`).
+         */
+        post: operations["summarise_report_api_reports__report_id__summary_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3350,6 +5513,11 @@ export interface paths {
          *     current effective matrix (built-ins + operator overrides + stored custom roles).
          *     Returns ``allowed`` plus the role's resolved actions on that resource so the UI can
          *     explain WHY.
+         *
+         *     Round 14 (SPEC §3.7): the retired ``playbooks`` resource is still an accepted
+         *     alias of ``runbooks`` in every grant layer, so a question about it is answered for
+         *     its ``runbooks`` meaning (``alias_of`` names the resource that was evaluated), never
+         *     a silent "denied" for a resource the server no longer lists.
          */
         get: operations["simulate_permission_api_roles_simulate_get"];
         put?: never;
@@ -3410,6 +5578,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rules/analyst-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Analyst Policies
+         * @description Every operator declaration, with a derived ``live`` flag per row.
+         */
+        get: operations["list_analyst_policies_api_rules_analyst_policies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/analyst-policies/{policy_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Upsert Analyst Policy
+         * @description Create or replace ONE declaration.
+         *
+         *     ``policy_id`` of ``new`` mints a server-side id, so a client never has to invent
+         *     one. The rule id is normalised with the SAME function the tuner and precedent
+         *     matcher use, so "the same rule" means one thing everywhere.
+         */
+        put: operations["upsert_analyst_policy_api_rules_analyst_policies__policy_id__put"];
+        post?: never;
+        /**
+         * Delete Analyst Policy
+         * @description Delete a declaration. Cases it already closed stay closed (and reopenable).
+         */
+        delete: operations["delete_analyst_policy_api_rules_analyst_policies__policy_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/analyst-policies/{policy_id}/enabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Analyst Policy Enabled
+         * @description Revoke (or restore) a declaration without losing it or its provenance.
+         */
+        post: operations["set_analyst_policy_enabled_api_rules_analyst_policies__policy_id__enabled_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/rules/case-automation/{rule_id}": {
         parameters: {
             query?: never;
@@ -3426,7 +5662,9 @@ export interface paths {
          *
          *     HITL-SAFE by construction (#3): a case-automation rule can only
          *     ``tag``/``recommend``/``notify``/``run_playbook``/``request_approval`` — the engine
-         *     enforces it NEVER sets a case ``status``/``disposition``. Bug #6: a
+         *     enforces it NEVER sets a case ``status``/``disposition``. ``run_playbook`` attaches
+         *     the runbook named by ``payload.runbook_id`` (or a legacy ``payload.playbook_id``,
+         *     resolved at fire time; Round 14). Bug #6: a
          *     ``conditions.verdict`` that is not a real :class:`Verdict` is REJECTED here (400).
          *     Config-writer only. Audited + versioned (#2).
          */
@@ -3585,6 +5823,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rules/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Rule Summary
+         * @description One detection rule's picture for the rule sheet (see the module docstring).
+         */
+        get: operations["rule_summary_api_rules_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/rules/{kind}/{rule_id}/rollback/{version_id}": {
         parameters: {
             query?: never;
@@ -3640,11 +5898,128 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Runbooks */
+        /**
+         * List Runbooks
+         * @description The runbook library: every built-in and operator runbook the caller may see.
+         *     ``runs_30d`` is null without ``cases:read``. ``shape=v1`` answers the old shape
+         *     (Published runbooks only) with deprecation headers.
+         */
         get: operations["list_runbooks_api_runbooks_get"];
         put?: never;
-        /** Create Runbook */
+        /**
+         * Create Runbook
+         * @description Create a runbook as a version 1 Draft from ``{definition}`` or ``{source}``.
+         *     The old write shape (``{id, content}``) answers ``410 runbooks_moved``, whatever
+         *     else the body carries.
+         */
         post: operations["create_runbook_api_runbooks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Runbook
+         * @description Import Markdown (SPEC §4.10.13). It always lands as a new Draft (#9): a
+         *     clashing id is renamed, and every problem is kept as an import note. Imported
+         *     content is due for review at once (D38).
+         */
+        post: operations["import_runbook_api_runbooks_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/lookup-test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Lookup Test
+         * @description Run a draft lookup against one case, read-only: nothing is stored and nothing
+         *     is audited (a read). The same bounds and 45-second limit as a run's lookup.
+         */
+        post: operations["lookup_test_api_runbooks_lookup_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/match-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Match Preview Route
+         * @description Which of the last 500 cases of the last 30 days a definition (or a stored
+         *     runbook, by ``id``) would get. Nothing is attached and no metric changes.
+         */
+        post: operations["match_preview_route_api_runbooks_match_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Runbook Metrics
+         * @description Runs, completion times, skipped steps, coverage of human-handled cases, rules
+         *     with no runbook and the with and without cohorts (a comparison, not a cause). Each
+         *     figure states its population; ``partial`` marks lower bounds.
+         */
+        get: operations["runbook_metrics_api_runbooks_metrics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Runbook Progress
+         * @description Progress per case (every run not abandoned, summed). A case with no run, or
+         *     whose runs cannot be read, is absent from the answer.
+         */
+        post: operations["runbook_progress_api_runbooks_progress_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3660,8 +6035,36 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reindex Runbooks */
+        /**
+         * Reindex Runbooks
+         * @deprecated
+         * @description Deprecated request-bound full reconciliation of the runbook retrieval
+         *     projection, kept as it was. New workflows submit ``runbook_reindex`` through
+         *     ``POST /api/jobs`` so the full reconciliation survives navigation.
+         */
         post: operations["reindex_runbooks_api_runbooks_reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate Runbook Route
+         * @description Every issue of a definition or Markdown source and the investigator guidance
+         *     length against its budget. Nothing is written. A built-in's own bundled text is
+         *     checked as a built-in (its Source view is not told its id is taken).
+         */
+        post: operations["validate_runbook_route_api_runbooks_validate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3675,13 +6078,122 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Runbook */
+        /**
+         * Get Runbook
+         * @description One runbook: its summary, live version, version list and (to a holder of
+         *     ``runbooks:manage`` or ``runbooks:publish``) its draft and in-review versions.
+         */
         get: operations["get_runbook_api_runbooks__runbook_id__get"];
-        /** Update Runbook */
-        put: operations["update_runbook_api_runbooks__runbook_id__put"];
+        /**
+         * Update Runbook Old Shape
+         * @deprecated
+         * @description Retired old-shape write: answers ``410 runbooks_moved`` (E14). Edit the draft
+         *     with ``PUT /api/runbooks/{id}/draft``.
+         */
+        put: operations["update_runbook_old_shape_api_runbooks__runbook_id__put"];
         post?: never;
-        /** Delete Runbook */
-        delete: operations["delete_runbook_api_runbooks__runbook_id__delete"];
+        /**
+         * Delete Runbook Old Shape
+         * @deprecated
+         * @description Retired old-shape write: answers ``410 runbooks_moved`` (E14). Discard a draft
+         *     with ``DELETE /api/runbooks/{id}/draft``; retire a published runbook with
+         *     ``POST /api/runbooks/{id}/retire``.
+         */
+        delete: operations["delete_runbook_old_shape_api_runbooks__runbook_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Save Runbook Draft
+         * @description Save the draft. Editing a Published runbook creates the next version as a
+         *     draft (D39); editing a version in review takes it back to draft. A draft may hold
+         *     content problems (the editor lists them); its id and size must be valid. A stale
+         *     ``expected_revision`` answers ``409 runbook_conflict`` with the latest.
+         */
+        put: operations["save_runbook_draft_api_runbooks__runbook_id__draft_put"];
+        post?: never;
+        /**
+         * Discard Runbook Draft
+         * @description Discard the draft (or the version in review). A runbook that was never
+         *     published disappears; published history is never deleted.
+         */
+        delete: operations["discard_runbook_draft_api_runbooks__runbook_id__draft_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/duplicate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Duplicate Runbook
+         * @description Copy a built-in or operator runbook into a new draft (``<id>-custom``). A
+         *     built-in's copy replaces the built-in once it is Published.
+         */
+        post: operations["duplicate_runbook_api_runbooks__runbook_id__duplicate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Runbook
+         * @description One version as a ``text/markdown`` attachment (SPEC §4.10.13). Every export is
+         *     recorded in the audit log before the file is sent; a failed append refuses it
+         *     (``503 audit_unavailable``).
+         */
+        get: operations["export_runbook_api_runbooks__runbook_id__export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish Runbook
+         * @description Make a draft or in-review version live: it becomes trusted investigator
+         *     guidance and starts matching cases. The body names the revision (and the
+         *     version's content hash) the publisher reviewed, so text changed since is never
+         *     published unseen (``409 runbook_conflict``). Fresh sign-in is not required.
+         */
+        post: operations["publish_runbook_api_runbooks__runbook_id__publish_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -3696,8 +6208,160 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reindex Runbook */
+        /**
+         * Reindex Runbook
+         * @description Reproject one runbook in the retrieval index (kept from the earlier API).
+         *
+         *     A built-in id is admitted and reprojected like an operator one: the runbook corpus
+         *     holds every Published version, the built-ins included (SPEC §4.10.18), so the
+         *     built-in's live chunks are written again, or removed when a Published operator
+         *     copy replaces it. An unknown id is ``404 runbook_not_found`` before any work.
+         */
         post: operations["reindex_runbook_api_runbooks__runbook_id__reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject Runbook
+         * @description Send a version in review back to draft with a reason (required: a missing or
+         *     blank one answers ``422 runbook_invalid`` before any audit row).
+         */
+        post: operations["reject_runbook_api_runbooks__runbook_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Runbook
+         * @description Republish the last live version of a retired runbook.
+         */
+        post: operations["restore_runbook_api_runbooks__runbook_id__restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retire Runbook
+         * @description Retire the live version: the runbook stops matching and stops guiding the
+         *     investigator; runs that use it keep working.
+         */
+        post: operations["retire_runbook_api_runbooks__runbook_id__retire_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/reviewed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark Runbook Reviewed
+         * @description Mark reviewed: records the reviewer and the time without a new version; the
+         *     next review falls due ``review_every_days`` from now.
+         */
+        post: operations["mark_runbook_reviewed_api_runbooks__runbook_id__reviewed_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit Runbook
+         * @description Send a valid draft for review.
+         */
+        post: operations["submit_runbook_api_runbooks__runbook_id__submit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/versions/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Runbook Version
+         * @description One version with its Markdown source. A draft or in-review version is
+         *     ``404 runbook_version_not_found`` without ``manage`` or ``publish``.
+         */
+        get: operations["get_runbook_version_api_runbooks__runbook_id__versions__version__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/versions/{version}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Runbook Version
+         * @description A new draft from an earlier version (its text is checked again at publish).
+         */
+        post: operations["restore_runbook_version_api_runbooks__runbook_id__versions__version__restore_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3960,8 +6624,10 @@ export interface paths {
          *
          *     On success it hashes the (policy-checked) password via PBKDF2-SHA256, creates the
          *     ``super_admin`` (``must_change_password=False`` — the operator just chose it),
-         *     refreshes the auth view, clears the demo-seed hint, and audits the bootstrap (#2).
-         *     The password is NEVER echoed — the response carries booleans + the username only.
+         *     refreshes the auth view and clears the demo-seed hint. The bootstrap is audited
+         *     BEFORE the account exists (#2, Round 14 SPEC §3.6): with the audit log unavailable
+         *     the answer is ``503 audit_unavailable`` and no account is created. The password is
+         *     NEVER echoed: the response carries booleans and the username only.
          */
         post: operations["setup_account_api_setup_account_post"];
         delete?: never;
@@ -4060,10 +6726,12 @@ export interface paths {
          *
          *     Returns ``{sources_total, sources_enabled, sources_silent, events_per_min,
          *     alerts_triaged_24h, worst_last_event_seconds}`` computed over the configured sources,
-         *     or over the isolated native demo sources while Demo Mode is active. ``alerts_triaged_24h`` is
-         *     the count of cases opened in the last 24h computed with the SAME window filter the
-         *     ``/metrics/noise-reduction`` endpoint uses, so the two agree. Never raises — every
-         *     sub-lookup degrades to a safe zero (#3/#4/#6/#9 untouched).
+         *     or over the isolated native demo sources while Demo Mode is active. ``alerts_triaged_24h``
+         *     is the count of cases created in the last 24h, answered by a repository COUNT
+         *     push-down (``CaseRepository.count_created_since`` — one backend count, zero full
+         *     documents fetched) over the same 24h window the ``/metrics/noise-reduction``
+         *     funnel's ``cases`` stage uses. Never raises — every sub-lookup degrades to a safe
+         *     zero (#3/#4/#6/#9 untouched).
          */
         get: operations["sources_coverage_api_sources_coverage_get"];
         put?: never;
@@ -4132,11 +6800,15 @@ export interface paths {
          * Analyze Source Sample
          * @description Suggest field mappings from a pasted SAMPLE record (F9; gated by sources:manage).
          *
-         *     Returns ``{suggested_mappings, fields}`` — the suggested field-name overrides
-         *     (``source_ip_field``/``user_field``/``host_field``/``message_field``/
-         *     ``severity_field``/``rule_field``/...) and the flattened path inventory the UI
+         *     Returns ``{suggested_mappings, suggested_evidence_fields, fields}`` — the
+         *     suggested field-name overrides (``source_ip_field``/``user_field``/``host_field``/
+         *     ``message_field``/``severity_field``/``rule_field``/...), which of the default
+         *     case-evidence paths this record actually carries (the answer to "do my alerts
+         *     carry the fields that decide the case?"), and the flattened path inventory the UI
          *     renders. Pure heuristic (no LLM/network). The sample is SANITIZED (flattened to
-         *     paths only) and is NEVER persisted to the config doc / secret tier (#9).
+         *     paths only) and is NEVER persisted to the config doc / secret tier (#9);
+         *     ``suggested_evidence_fields`` is stricter still — every entry is one of the
+         *     backend's own constants matched against the sample, never a path echoed back.
          */
         post: operations["analyze_source_sample_api_sources__source_id__analyze_sample_post"];
         delete?: never;
@@ -4187,6 +6859,20 @@ export interface paths {
          *     data_view_pattern (and its own TLS settings); push sources return the last N
          *     ingested events from the in-memory live-tail buffer. Hard-capped; secrets are
          *     never returned (rows are log data only).
+         *
+         *     BOUNDED, NOT COMPLETE. ``limit`` is clamped to 1..200 and there is NO pagination,
+         *     cursor, or offset: the response is always the MOST RECENT ``count`` rows for the
+         *     requested window, never the full match set. The envelope echoes the effective
+         *     ``limit`` and a ``truncated`` flag so a caller can say "most recent N" instead of
+         *     implying completeness. ``mode`` distinguishes the two read paths:
+         *     ``"search"`` = a real backing search (``from``/``to``/``query`` apply, and
+         *     ``total`` reports the match count when the connector supplies one) and
+         *     ``"buffer"`` = a push source's process-local, volatile in-memory live-tail ring,
+         *     where ``from``/``to``/``query`` are IGNORED and nothing survives a restart.
+         *     ``mode`` describes the FILTERS, never the durability of the backing store: a Demo
+         *     Mode adapter reports ``"search"`` because it really does apply
+         *     ``from``/``to``/``query`` and really does report a match ``total``, even though the
+         *     ring it searches is itself in-memory.
          */
         get: operations["source_logs_api_sources__source_id__logs_get"];
         put?: never;
@@ -4211,7 +6897,8 @@ export interface paths {
          * @description Set/clear a source's secret fields (e.g. a webhook token, a Splunk key).
          *
          *     Values go to the secret tier (in memory), NEVER to the persisted config; only
-         *     the configured field NAMES are recorded on the SourceInstance (#10).
+         *     the configured field NAMES are recorded on the SourceInstance (#10). Round 14
+         *     (SPEC §3.6): audited before the credentials change, naming the fields only.
          */
         post: operations["set_source_secrets_api_sources__source_id__secrets_post"];
         delete?: never;
@@ -4233,6 +6920,10 @@ export interface paths {
          *     a clear ``{enabled: false}`` shape when disabled, the full happy-path result
          *     when data is present, or a graceful ``degraded: true`` + ``error`` + a short
          *     summary note when the aggregation/summary step is unavailable (never a 500).
+         *
+         *     The summary's AI spend, ``cost``, follows the one spend rule, ``cost:view``
+         *     (Round 16 cross-cutting review): without it the key stays and its value is
+         *     ``null``, the withheld-spend shape of ``_withhold_case_spend``.
          */
         get: operations["standup_api_standup_get"];
         put?: never;
@@ -4275,7 +6966,7 @@ export interface paths {
         /**
          * List Acknowledgements
          * @description The acknowledgement log (newest first), optionally filtered by ``window`` /
-         *     ``user``. Read inherits the router auth mount. Never 500s.
+         *     ``user``. Read needs metrics:view. Never 500s.
          */
         get: operations["list_acknowledgements_api_standup_acknowledgements_get"];
         put?: never;
@@ -4295,8 +6986,8 @@ export interface paths {
         };
         /**
          * List Action Items
-         * @description List shift action items (newest-tracked first by creation order). Read inherits
-         *     the router auth mount. Never 500s — a degraded store yields an empty list.
+         * @description List shift action items (newest-tracked first by creation order). Read needs
+         *     metrics:view. Never 500s: a degraded store yields an empty list.
          */
         get: operations["list_action_items_api_standup_action_items_get"];
         put?: never;
@@ -4396,7 +7087,7 @@ export interface paths {
         put?: never;
         /**
          * Storage Lifecycle Apply
-         * @description Explicitly apply the persisted policy to supported owned-state targets.
+         * @deprecated
          */
         post: operations["storage_lifecycle_apply_api_storage_lifecycle_apply_post"];
         delete?: never;
@@ -4547,6 +7238,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/team/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Team Activity */
+        get: operations["team_activity_api_team_activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/team/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Team People */
+        get: operations["team_people_api_team_people_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/team/people/{username}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Team Person Events */
+        get: operations["team_person_events_api_team_people__username__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/terminology": {
         parameters: {
             query?: never;
@@ -4645,7 +7387,13 @@ export interface paths {
         /**
          * Put Tuning Config
          * @description Update the ``threshold_tuning`` policy. Additive + validated by the Pydantic
-         *     model; never touches ``decide()`` (#3). Audited (#2).
+         *     model; never touches ``decide()`` (#3).
+         *
+         *     Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+         *     naming every changed field is appended first, and a failed append answers ``503
+         *     audit_unavailable`` with nothing saved. The tuning policy follows the active
+         *     execution stack, so in Demo Mode the edit stays in the Demo sandbox and its row goes
+         *     to the Demo audit (SPEC §3.5).
          */
         put: operations["put_tuning_config_api_tuning_config_put"];
         post?: never;
@@ -4723,6 +7471,13 @@ export interface paths {
          *
          *     404 when no proposal exists for ``rule_id`` (the rule isn't noisy / cleared the
          *     bar) so the caller gets an honest signal rather than a silent no-op.
+         *
+         *     One execution stack (:class:`app.audit.settings_write.ExecutionStack`): the
+         *     settings, cases and ledger it reads, the approval queue and ledger it writes, the
+         *     settings it changes and the audit log of its rows are the real ones or the Demo
+         *     sandbox's, never a mix. When Demo Mode is turned on or off while it runs it answers
+         *     ``409 demo_mode_changed``: with no row when nothing was attempted yet, and with no
+         *     threshold changed in either stack once its row is appended.
          */
         post: operations["apply_tuning_api_tuning__rule_id__apply_post"];
         delete?: never;
@@ -4748,6 +7503,10 @@ export interface paths {
          *     the ``"<source_id>:<feed_id>"`` feed key for a ``severity_floor`` raise. Restores
          *     the record's ``before`` via the SAME config-writers the apply used (never a case /
          *     verdict / signature). 404 when there is no active record for the key.
+         *
+         *     Bound to one execution stack like the apply: the ledger it reads and marks, the
+         *     settings it restores and the audit log of its rows. When Demo Mode is turned on or
+         *     off while it runs it answers ``409 demo_mode_changed`` and restores nothing.
          */
         post: operations["rollback_tuning_api_tuning__rule_id__rollback_post"];
         delete?: never;
@@ -4763,7 +7522,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Usage Summary */
+        /**
+         * Usage Summary
+         * @description AI spend and token use over the window, or for one case with ``case_id``.
+         *     Needs ``cost:view``, the grant every view of AI spend needs.
+         */
         get: operations["usage_summary_api_usage_summary_get"];
         put?: never;
         post?: never;
@@ -4996,6 +7759,41 @@ export interface components {
             /** Sample */
             sample?: Record<string, never>;
         };
+        /**
+         * AppliesWhen
+         * @description When a runbook applies to a case. Every present criterion is any-of; all
+         *     present criteria must match. ``always`` marks only the Generic incident fallback
+         *     (the lowest specificity). Limits (checked by ``validate_runbook``): ``rule_ids``
+         *     at most 50 values of 1 to 256 characters; ``mitre`` at most 50 ``T####`` or
+         *     ``T####.###`` ids (a parent matches its sub-techniques); ``sources`` at most 20
+         *     source ids or ``type:<SourceType>``; ``statuses`` at most 10 ``CaseStatus``
+         *     values; ``any_tags`` at most 20 tags of at most 64 characters.
+         */
+        AppliesWhen: {
+            /**
+             * Always
+             * @default false
+             */
+            always: boolean;
+            /** Any Tags */
+            any_tags?: string[];
+            /** Entity Types */
+            entity_types?: ("ip" | "host" | "user" | "domain" | "hash" | "url" | "email" | "process" | "file")[];
+            /** Min Event Count */
+            min_event_count?: number | null;
+            /** Mitre */
+            mitre?: string[];
+            /** Rule Ids */
+            rule_ids?: string[];
+            /** Severity At Least */
+            severity_at_least?: ("critical" | "high" | "medium" | "low" | "info") | null;
+            /** Sources */
+            sources?: string[];
+            /** Statuses */
+            statuses?: string[];
+            /** Verdicts */
+            verdicts?: ("TRUE_POSITIVE" | "FALSE_POSITIVE" | "NEEDS_HUMAN")[];
+        };
         /** AssignBody */
         AssignBody: {
             /**
@@ -5010,18 +7808,258 @@ export interface components {
             assignee: string;
         };
         /**
-         * AuditListResponse
-         * @description The audit-viewer envelope. ``records`` are append-only audit rows returned
-         *     verbatim (fenced UNTRUSTED excerpts rendered PLAIN by the UI, #9).
+         * AuditChange
+         * @description One changed field in a settings, user, role, rule or runbook write (SPEC
+         *     §4.5.3). A secret is written as ``{field, before: None, after: None, secret:
+         *     True}``; a URL is reduced to scheme and host by the writer, which sets ``secret``
+         *     when anything was removed. A value that is not text is stored as canonical JSON
+         *     text (:func:`_audit_change_text`); ``before`` and ``after`` are cut to 500
+         *     characters and lose NUL and lone surrogates, ``field`` is one clean line.
          */
-        AuditListResponse: {
+        AuditChange: {
+            /** After */
+            after?: string | null;
+            /** Before */
+            before?: string | null;
+            /** Field */
+            field: string;
+            /**
+             * Secret
+             * @default false
+             */
+            secret: boolean;
+        };
+        /**
+         * AuditClient
+         * @description Where a request-driven audit row came from (SPEC §4.5.3, personal data, D9).
+         *
+         *     ``ip`` is believed from a forwarded header only when the socket peer is a named
+         *     trusted proxy, and then it is the rightmost entry that is not itself a trusted
+         *     proxy (``ip_source="trusted_proxy"``, see ``audit.context.audit_client_ip``);
+         *     otherwise it is the socket peer (``ip_source="peer"``) whatever the caller sent.
+         *     ``ip`` is always a parsed address or ``None`` (:func:`normalise_audit_ip`): it is
+         *     mapped as Elasticsearch type ``ip``, which refuses the whole row for ``""`` or a
+         *     non-address such as a Unix-socket peer. ``peer`` keeps the raw socket address as
+         *     text. ``forwarded_for`` keeps the raw header as untrusted text, never used to
+         *     filter or group. Values are bounded on write.
+         */
+        AuditClient: {
+            /** Forwarded For */
+            forwarded_for?: string | null;
+            /** Ip */
+            ip?: string | null;
+            /**
+             * Ip Source
+             * @default peer
+             * @enum {string}
+             */
+            ip_source: "peer" | "trusted_proxy";
+            /**
+             * Peer
+             * @default
+             */
+            peer: string;
+            /**
+             * User Agent
+             * @default
+             */
+            user_agent: string;
+        };
+        /**
+         * AuditCount
+         * @description ``GET /api/audit/count``: exact up to the requested cap, then ``gte``.
+         */
+        AuditCount: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /**
+             * Relation
+             * @default eq
+             * @enum {string}
+             */
+            relation: "eq" | "gte";
+        };
+        /**
+         * AuditPage
+         * @description ``GET /api/audit`` (SPEC §4.5.10). ``records`` and ``total`` keep the old
+         *     ``AuditListResponse`` keys so existing clients keep working. ``total`` is exact
+         *     when ``total_relation`` is ``eq`` and a lower bound when it is ``gte``.
+         *     ``run_totals`` gives, for every ``run_id`` on this page, the run's event count
+         *     under the same filters, so a group split across pages says "6 of 10 steps".
+         */
+        AuditPage: {
+            /** Next Cursor */
+            next_cursor?: string | null;
             /** Records */
-            records?: Record<string, never>[];
+            records?: components["schemas"]["AuditRecord"][];
+            retention?: components["schemas"]["AuditRetention"];
+            /** Run Totals */
+            run_totals?: {
+                [key: string]: number;
+            };
             /**
              * Total
              * @default 0
              */
             total: number;
+            /**
+             * Total Relation
+             * @default eq
+             * @enum {string}
+             */
+            total_relation: "eq" | "gte";
+        };
+        /**
+         * AuditRecord
+         * @description One audit row as the read API returns it (SPEC §4.5.10): the stored
+         *     :class:`AuditDoc` fields, the Round 14 fields when the row carries them (absent on
+         *     legacy rows, never shown empty) and the read-time projections.
+         *
+         *     Read leniently: a stored row is never rejected because a value drifted. An
+         *     unknown ``action_type`` keeps its token (it is categorised as System, never
+         *     hidden); an invalid Round 14 value is dropped as not recorded. ``outcome`` and
+         *     ``actor_type`` may be derived for a legacy row, which ``*_derived`` says.
+         *     ``category`` and ``event_label`` come from ``audit/event_categories.json``. Every
+         *     value renders as plain text (#9); ``prompt_excerpt`` and ``tool_output_summary``
+         *     carry fenced untrusted log data.
+         */
+        AuditRecord: {
+            /** Action */
+            action?: string | null;
+            /**
+             * Action Type
+             * @default
+             */
+            action_type: string;
+            /**
+             * Actor
+             * @default
+             */
+            actor: string;
+            /** Actor Role */
+            actor_role?: string | null;
+            /** Actor Type */
+            actor_type?: ("human" | "agent" | "system" | "service") | null;
+            /**
+             * Actor Type Derived
+             * @default false
+             */
+            actor_type_derived: boolean;
+            /** App Version */
+            app_version?: string | null;
+            /** Build Sha */
+            build_sha?: string | null;
+            /** Case Id */
+            case_id?: string | null;
+            /**
+             * Category
+             * @default system
+             * @enum {string}
+             */
+            category: "access" | "config" | "case_work" | "agent" | "system";
+            /** Changes */
+            changes?: components["schemas"]["AuditChange"][] | null;
+            client?: components["schemas"]["AuditClient"] | null;
+            /**
+             * Demo
+             * @default false
+             */
+            demo: boolean;
+            /** Event Id */
+            event_id?: string | null;
+            /**
+             * Event Label
+             * @default
+             */
+            event_label: string;
+            /** Model */
+            model?: string | null;
+            /** Outcome */
+            outcome?: ("success" | "failure" | "denied" | "partial" | "unknown") | null;
+            /**
+             * Outcome Derived
+             * @default false
+             */
+            outcome_derived: boolean;
+            /** Prompt Excerpt */
+            prompt_excerpt?: string | null;
+            /** Query Text */
+            query_text?: string | null;
+            /** Record Id */
+            record_id: string;
+            /** Request Id */
+            request_id?: string | null;
+            /** Result Summary */
+            result_summary?: string | null;
+            /** Run Id */
+            run_id?: string | null;
+            /** Session Ref */
+            session_ref?: string | null;
+            /** Source Id */
+            source_id?: string | null;
+            /**
+             * Surface
+             * @default
+             */
+            surface: string;
+            target?: components["schemas"]["AuditTarget"] | null;
+            /** Tool Input */
+            tool_input?: unknown;
+            /** Tool Name */
+            tool_name?: string | null;
+            /** Tool Output Summary */
+            tool_output_summary?: string | null;
+            /** Truncated Fields */
+            truncated_fields?: string[];
+            /**
+             * Ts
+             * @default
+             */
+            ts: string;
+        };
+        /**
+         * AuditRetention
+         * @description How long the deployment keeps the audit log, for the page's scope line. A
+         *     volatile store keeps it in memory only (lost on restart).
+         */
+        AuditRetention: {
+            /** Hot Days */
+            hot_days?: number | null;
+            /**
+             * Volatile
+             * @default false
+             */
+            volatile: boolean;
+            /** Warm Days */
+            warm_days?: number | null;
+        };
+        /**
+         * AuditTarget
+         * @description What an audit row acted on: ``{type, id, label, revision}`` (SPEC §4.5.3,
+         *     §3.6). ``label`` is the human name at the time (a case number, a dashboard name)
+         *     and is plain data. ``revision`` is the store revision the write creates, written
+         *     by ``audited_write`` on the action row BEFORE the store write: if the process
+         *     stops between the two, a reader can see that the named revision never existed
+         *     (the documented crash limit). ``None`` for targets without a revision.
+         */
+        AuditTarget: {
+            /** Id */
+            id: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Revision */
+            revision?: number | null;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "case" | "user" | "role" | "source" | "setting" | "job" | "rule" | "runbook" | "dashboard" | "export";
         };
         /**
          * AutoClosePolicy
@@ -5035,6 +8073,66 @@ export interface components {
             false_positive?: components["schemas"]["VerdictAutoClose"];
             needs_human?: components["schemas"]["VerdictAutoClose"];
             true_positive?: components["schemas"]["VerdictAutoClose"];
+        };
+        /**
+         * AutoCloseReviewMetrics
+         * @description The Agent effectiveness "Auto-close review" module (D6.12) over the cases sampled
+         *     in ``window``. Never a composite score.
+         */
+        AutoCloseReviewMetrics: {
+            agreement: components["schemas"]["ReviewAgreement"];
+            /** By Day */
+            by_day: components["schemas"]["ReviewDayRow"][];
+            /** By Rule */
+            by_rule: components["schemas"]["ReviewRuleRow"][];
+            /** Daily Cap */
+            daily_cap: number;
+            eligible: components["schemas"]["ReviewEligible"];
+            /** Enabled */
+            enabled: boolean;
+            /** Expired */
+            expired: number;
+            /** Expiry Days */
+            expiry_days: number;
+            /** Generated At */
+            generated_at: string;
+            /** Ledger Complete */
+            ledger_complete: boolean;
+            missed_threats: components["schemas"]["ReviewMissedThreats"];
+            /** Pending */
+            pending: number;
+            /** Per Rule Daily Cap */
+            per_rule_daily_cap: number;
+            /** Reviewed */
+            reviewed: number;
+            /** Sample Rate */
+            sample_rate: number;
+            /** Sampled */
+            sampled: number;
+            /** Statement */
+            statement: string;
+            time_spent_ms: components["schemas"]["ReviewDuration"];
+            time_to_review_ms: components["schemas"]["ReviewDuration"];
+            /** Unsure */
+            unsure: number;
+            window: components["schemas"]["ReviewMetricsWindow"];
+        };
+        /**
+         * AutoCloseReviewSummary
+         * @description The Review scope badge: pending reviews, disagreeing reviews whose case is still
+         *     closed, today's sample against the daily cap.
+         */
+        AutoCloseReviewSummary: {
+            /** Daily Cap */
+            daily_cap: number;
+            /** Disagreed Open */
+            disagreed_open: number;
+            /** Enabled */
+            enabled: boolean;
+            /** Pending */
+            pending: number;
+            /** Sampled Today */
+            sampled_today: number;
         };
         /**
          * AvatarBody
@@ -5207,6 +8305,11 @@ export interface components {
             commit_sha: string;
             /** Ocsf Version */
             ocsf_version: string;
+            /**
+             * Provenance Advisories
+             * @default []
+             */
+            provenance_advisories: string[];
             /** Provenance Complete */
             provenance_complete: boolean;
             /** Provenance Missing */
@@ -5224,11 +8327,17 @@ export interface components {
          * BulkCaseAction
          * @description A :class:`CaseAction` applied to many cases at once. ``ids`` is the set of
          *     target case ids; the action/payload fields are inherited verbatim so a bulk move
-         *     is IDENTICAL to N single-case moves.
+         *     is IDENTICAL to N single-case moves. The one exception is ``review_via`` (Round 15
+         *     SPEC D6.9): a review is about one case, so a bulk body that sends it answers 422.
          */
         BulkCaseAction: {
             /** Action */
             action: string;
+            /**
+             * What was done about the case
+             * @description At most 8 values from the fixed vocabulary; an unknown value answers 422 and a repeated value is kept once.
+             */
+            actions_taken?: ("no_action_needed" | "blocked_indicator" | "isolated_host" | "disabled_account" | "reset_credentials" | "removed_malware" | "patched_or_hardened" | "notified_owner" | "escalated_externally" | "tuned_detection" | "other")[] | null;
             /**
              * Analyst
              * @default analyst
@@ -5238,6 +8347,12 @@ export interface components {
             assignee?: string | null;
             /** Disposition */
             disposition?: string | null;
+            /**
+             * The analyst chose this disposition in this action
+             * @description True only when a human affirmatively selected `disposition` as part of this action. The disposition is applied either way; this flag is what makes it independent analyst evidence rather than a value echoed back from the model-derived disposition already stored on the case.
+             * @default false
+             */
+            disposition_declared: boolean;
             /** Ids */
             ids?: string[];
             /**
@@ -5251,6 +8366,11 @@ export interface components {
              * @default
              */
             note: string;
+            /**
+             * Why the case closes with required runbook steps open
+             * @description 1 to 500 characters; audited on case.closed_with_open_steps.
+             */
+            open_steps_reason?: string | null;
             /** Priority */
             priority?: string | null;
             /**
@@ -5258,6 +8378,12 @@ export interface components {
              * @default
              */
             reason: string;
+            /**
+             * Refuse the close when required runbook steps are open and no reason is given
+             * @description The Console sets it to show its close dialog; the default never blocks a close.
+             * @default false
+             */
+            require_open_steps_reason: boolean;
             /** Resolution */
             resolution?: string | null;
             /** Status */
@@ -5274,6 +8400,10 @@ export interface components {
              * @default
              */
             agent_persona: string;
+            /** Analyst Policy */
+            analyst_policy?: Record<string, never> | null;
+            /** App Version */
+            app_version?: string | null;
             /**
              * Assignee
              * @default
@@ -5286,6 +8416,8 @@ export interface components {
              * @default
              */
             awaiting_reason: string;
+            /** Build Sha */
+            build_sha?: string | null;
             /** Campaign Id */
             campaign_id?: string | null;
             /** Case Id */
@@ -5360,6 +8492,8 @@ export interface components {
              * @default
              */
             playbook_id: string;
+            /** Precedent Signal */
+            precedent_signal?: Record<string, never> | null;
             /** Priority Level */
             priority_level?: string | null;
             /**
@@ -5374,6 +8508,18 @@ export interface components {
              * @default
              */
             reproduce_query: string;
+            /**
+             * Retrieval History Status
+             * @default unavailable
+             * @enum {string}
+             */
+            retrieval_history_status: "available" | "unavailable";
+            /**
+             * Retrieval Observation Status
+             * @default unavailable
+             * @enum {string}
+             */
+            retrieval_observation_status: "measured" | "not_measured" | "unavailable";
             risk_breakdown?: components["schemas"]["RiskBreakdown"];
             /**
              * Risk Score
@@ -5382,6 +8528,10 @@ export interface components {
             risk_score: number;
             /** Rule Ids */
             rule_ids?: string[];
+            /** Runbook Id */
+            runbook_id?: string | null;
+            /** Runbook Version */
+            runbook_version?: number | null;
             /** Severity Band */
             severity_band?: string | null;
             /** Severity Source */
@@ -5420,7 +8570,7 @@ export interface components {
              * Token Cost
              * @default 0
              */
-            token_cost: number;
+            token_cost: number | null;
             trigger_reason?: components["schemas"]["TriggerReason"] | null;
             /** Updated At */
             updated_at?: string;
@@ -5435,6 +8585,11 @@ export interface components {
             /** Action */
             action: string;
             /**
+             * What was done about the case
+             * @description At most 8 values from the fixed vocabulary; an unknown value answers 422 and a repeated value is kept once.
+             */
+            actions_taken?: ("no_action_needed" | "blocked_indicator" | "isolated_host" | "disabled_account" | "reset_credentials" | "removed_malware" | "patched_or_hardened" | "notified_owner" | "escalated_externally" | "tuned_detection" | "other")[] | null;
+            /**
              * Analyst
              * @default analyst
              */
@@ -5443,6 +8598,12 @@ export interface components {
             assignee?: string | null;
             /** Disposition */
             disposition?: string | null;
+            /**
+             * The analyst chose this disposition in this action
+             * @description True only when a human affirmatively selected `disposition` as part of this action. The disposition is applied either way; this flag is what makes it independent analyst evidence rather than a value echoed back from the model-derived disposition already stored on the case.
+             * @default false
+             */
+            disposition_declared: boolean;
             /**
              * Legacy escalation compatibility value
              * @deprecated
@@ -5454,6 +8615,11 @@ export interface components {
              * @default
              */
             note: string;
+            /**
+             * Why the case closes with required runbook steps open
+             * @description 1 to 500 characters; audited on case.closed_with_open_steps.
+             */
+            open_steps_reason?: string | null;
             /** Priority */
             priority?: string | null;
             /**
@@ -5461,8 +8627,19 @@ export interface components {
              * @default
              */
             reason: string;
+            /**
+             * Refuse the close when required runbook steps are open and no reason is given
+             * @description The Console sets it to show its close dialog; the default never blocks a close.
+             * @default false
+             */
+            require_open_steps_reason: boolean;
             /** Resolution */
             resolution?: string | null;
+            /**
+             * The action was taken from an auto-close review
+             * @description "auto_close_review" or null; recorded on the history entry and the audit row only.
+             */
+            review_via?: "auto_close_review" | null;
             /** Status */
             status?: string | null;
             /** Tags */
@@ -5537,6 +8714,201 @@ export interface components {
             /** Ts */
             ts?: string;
         };
+        /**
+         * CaseEventsPage
+         * @description ``GET /api/cases/{case_id}/events`` (Round 16 SPEC §4.5 WP13, [dv] R2).
+         *
+         *     The raw records behind a case, read on demand through the read-only log client (#1)
+         *     and kept only when their source-qualified key is one of the case's
+         *     ``member_event_keys``. ``available`` is false with a ``reason`` when the source could
+         *     not answer; ``expected`` is the case's member count, ``returned`` the rows on this
+         *     page and ``truncated`` true when more remain (``next_cursor``). Each row is the
+         *     ``/api/logs`` row contract (``engine/log_rows.log_row``: ``id``, ``ts``,
+         *     ``source_ip``, ``user``, ``host``, ``rule``, ``severity``, ``message``, ``_raw``)
+         *     plus ``index``, ``source_id`` and ``in_evidence`` (the finding indexes that cite
+         *     it). Every value is source-controlled UNTRUSTED data: a reader renders it as text,
+         *     never as markup (#9), and it is never sent to a model (#7).
+         */
+        CaseEventsPage: {
+            /**
+             * Available
+             * @default false
+             */
+            available: boolean;
+            /** Case Id */
+            case_id: string;
+            /**
+             * Expected
+             * @default 0
+             */
+            expected: number;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Reason */
+            reason?: ("aged_out" | "push_source_not_retrievable" | "source_unavailable") | null;
+            /**
+             * Returned
+             * @default 0
+             */
+            returned: number;
+            /** Rows */
+            rows?: Record<string, never>[];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /** CaseFileDeleteResult */
+        CaseFileDeleteResult: {
+            /**
+             * Deleted
+             * @default true
+             */
+            deleted: boolean;
+            file: components["schemas"]["CaseFileEntry"];
+        };
+        /**
+         * CaseFileEntry
+         * @description One screenshot as the API lists it (metadata only, never the bytes).
+         */
+        CaseFileEntry: {
+            /** Bytes */
+            bytes: number;
+            /**
+             * Can Delete
+             * @default false
+             */
+            can_delete: boolean;
+            /**
+             * Caption
+             * @default
+             */
+            caption: string;
+            /** Case Id */
+            case_id: string;
+            /** Content Type */
+            content_type: string;
+            /**
+             * Deleted
+             * @default false
+             */
+            deleted: boolean;
+            /** Deleted At */
+            deleted_at?: string | null;
+            /** Deleted By */
+            deleted_by?: string | null;
+            /**
+             * Filename
+             * @default
+             */
+            filename: string;
+            /**
+             * Has Thumbnail
+             * @default false
+             */
+            has_thumbnail: boolean;
+            /** Height */
+            height: number;
+            /** Id */
+            id: string;
+            /**
+             * Position
+             * @description 1-based number of the screenshot on its case (upload order).
+             */
+            position: number;
+            /** Sha256 */
+            sha256: string;
+            /** Thumbnail Bytes */
+            thumbnail_bytes?: number | null;
+            /**
+             * Uploaded At
+             * @default
+             */
+            uploaded_at: string;
+            /**
+             * Uploaded By
+             * @default
+             */
+            uploaded_by: string;
+            /** Width */
+            width: number;
+        };
+        /** CaseFileLimitsInfo */
+        CaseFileLimitsInfo: {
+            /** Accepted Types */
+            accepted_types: string[];
+            /** Max Caption Chars */
+            max_caption_chars: number;
+            /** Max Case Bytes */
+            max_case_bytes: number;
+            /** Max File Bytes */
+            max_file_bytes: number;
+            /** Max Filename Chars */
+            max_filename_chars: number;
+            /** Max Files */
+            max_files: number;
+            /** Max Pixels */
+            max_pixels: number;
+            /** Max Side Px */
+            max_side_px: number;
+            /** Max Thumbnail Bytes */
+            max_thumbnail_bytes: number;
+        };
+        /** CaseFileList */
+        CaseFileList: {
+            /** Bytes */
+            bytes: number;
+            /** Can Upload */
+            can_upload: boolean;
+            /** Case Id */
+            case_id: string;
+            /** Count */
+            count: number;
+            /** Deleted */
+            deleted: components["schemas"]["CaseFileEntry"][];
+            /** Files */
+            files: components["schemas"]["CaseFileEntry"][];
+            limits: components["schemas"]["CaseFileLimitsInfo"];
+        };
+        /**
+         * CaseFileUploadBody
+         * @description One screenshot upload. ``data_base64`` is the image as base64 (a ``data:``
+         *     URL is accepted too); ``content_type`` the type the client claims (it must match
+         *     the image's magic bytes). A thumbnail is optional (at most 48 KiB once decoded).
+         */
+        CaseFileUploadBody: {
+            /**
+             * Caption
+             * @default
+             */
+            caption: string;
+            /** Content Type */
+            content_type?: string | null;
+            /** Data Base64 */
+            data_base64: string;
+            /**
+             * Filename
+             * @default
+             */
+            filename: string;
+            /** Thumbnail Base64 */
+            thumbnail_base64?: string | null;
+        };
+        /** CaseFileUploadResult */
+        CaseFileUploadResult: {
+            /**
+             * Deduplicated
+             * @default false
+             */
+            deduplicated: boolean;
+            file: components["schemas"]["CaseFileEntry"];
+        };
         /** CaseIdPreviewBody */
         CaseIdPreviewBody: {
             /**
@@ -5562,6 +8934,73 @@ export interface components {
             cases: components["schemas"]["Case"][];
             /** Total */
             total: number;
+            /** Window Total Exact */
+            window_total_exact?: boolean | null;
+        };
+        /**
+         * CaseReviewState
+         * @description One case's place in the auto-close review (Round 15, D6.12, D8.2): what the case
+         *     workspace needs to show the pending band, choose its primary action and offer
+         *     "Review this auto-close". ``state`` is the case's sample entry (``pending``,
+         *     ``completed`` or ``expired``, computed on read) or ``none`` when it was never
+         *     sampled. ``agent_closed`` is the review endpoint's own rule (terminal, first
+         *     decision record an agent close), and ``can_record`` says whether that endpoint
+         *     would accept a review now, the caller's grants aside: a sampled case whose review
+         *     is recorded answers 409, and so does a case that is not (or no longer) closed by
+         *     the agent.
+         */
+        CaseReviewState: {
+            /** Agent Closed */
+            agent_closed: boolean;
+            /** Can Record */
+            can_record: boolean;
+            /** Case Id */
+            case_id: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Review Id */
+            review_id?: string | null;
+            /** Sampled At */
+            sampled_at?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "none" | "pending" | "completed" | "expired";
+        };
+        /**
+         * CaseRunbooks
+         * @description ``GET /api/cases/{case_id}/runbooks`` (SPEC §4.10.15a): the case's runs with
+         *     evidence redacted per viewer by the lookup grants, progress per run, the newer
+         *     published version per run, the free-form case tasks ("Other tasks") and the case
+         *     document's CAS revision. ``role_labels`` maps every role the runs' steps name
+         *     (``approval_role``, ``owner_role`` and a pending approval's ``required_role``) to
+         *     the label a person knows it by ("soc_manager" to "SOC manager"; a custom role read
+         *     the way the Console reads a token), for the approval wording (SPEC §3.1,
+         *     §4.10.11).
+         */
+        CaseRunbooks: {
+            /** Newer Versions */
+            newer_versions?: {
+                [key: string]: number;
+            };
+            /** Other Tasks */
+            other_tasks?: components["schemas"]["CaseTask"][];
+            /** Progress */
+            progress?: {
+                [key: string]: components["schemas"]["RunbookProgress"];
+            };
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /** Role Labels */
+            role_labels?: {
+                [key: string]: string;
+            };
+            /** Runs */
+            runs?: components["schemas"]["RunbookRun"][];
         };
         /**
          * CaseStatus
@@ -5578,12 +9017,213 @@ export interface components {
          * @enum {string}
          */
         CaseStatus: "new" | "open" | "needs_human" | "investigating" | "escalated" | "on_hold" | "resolved" | "closed";
+        /**
+         * CaseTask
+         * @description One checklist item / task on a case (Round 3 collaboration). ``status`` tracks
+         *     open→done; ``order`` keeps a stable manual ordering; ``logs`` is an append-only
+         *     note trail ``[{ts, by, note}]``. ``title``/``logs`` are plain data (#9).
+         */
+        CaseTask: {
+            /** Assignee */
+            assignee?: string | null;
+            /**
+             * Case Id
+             * @default
+             */
+            case_id: string;
+            /** Created At */
+            created_at?: string;
+            /** Id */
+            id?: string;
+            /** Logs */
+            logs?: Record<string, never>[];
+            /**
+             * Order
+             * @default 0
+             */
+            order: number;
+            /**
+             * Status
+             * @default open
+             */
+            status: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /**
+         * CaseUsagePage
+         * @description ``GET /api/cases/{case_id}/usage`` (Round 16 SPEC §4.5 WP13, [dv] R3 and R14).
+         *
+         *     ``rows``: the case's ledger rows, newest first, at most :data:`CASE_USAGE_MAX_ROWS`.
+         *     ``rows_total`` is the exact count when the store could prove it (else ``None``) and
+         *     ``truncated`` is true when rows exist beyond ``rows``. ``totals`` are lifetime sums
+         *     over every row of the case, not only the returned page; ``token_cost`` is the case's
+         *     recorded investigation cost and ``reconciles`` says whether ``totals.pipeline``
+         *     equals it within the display epsilon. Served only with ``cost:view``.
+         */
+        CaseUsagePage: {
+            /** Case Id */
+            case_id: string;
+            /** Reconciles */
+            reconciles?: boolean | null;
+            /**
+             * Returned
+             * @default 0
+             */
+            returned: number;
+            /** Rows */
+            rows?: components["schemas"]["UsageDoc"][];
+            /** Rows Total */
+            rows_total?: number | null;
+            /** Token Cost */
+            token_cost?: number | null;
+            totals?: components["schemas"]["CaseUsageTotals"];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /**
+         * CaseUsageTotals
+         * @description A case's ledger spend in USD, split as the Console shows it: ``pipeline`` (the
+         *     investigation roles, ``constants.CASE_PIPELINE_USAGE_ROLES``, the figure
+         *     ``Case.token_cost`` records) and ``chat`` (case chat on this case, never part of the
+         *     investigation cost); ``runbook`` (additive) is runbook AI help on the case, the
+         *     calls on surface ``runbook``, never case chat; ``other`` holds anything else written
+         *     with the case id.
+         */
+        CaseUsageTotals: {
+            /**
+             * Chat
+             * @default 0
+             */
+            chat: number;
+            /**
+             * Other
+             * @default 0
+             */
+            other: number;
+            /**
+             * Pipeline
+             * @default 0
+             */
+            pipeline: number;
+            /**
+             * Runbook
+             * @default 0
+             */
+            runbook: number;
+        };
         /** ChangePasswordBody */
         ChangePasswordBody: {
             /** Current Password */
             current_password: string;
             /** New Password */
             new_password: string;
+        };
+        /**
+         * ChatActiveTurn
+         * @description ``GET /api/chat/turns/active`` (SPEC D13): one of the caller's running turns.
+         *     ``label`` is an engine template, never model or log text.
+         */
+        ChatActiveTurn: {
+            /** Case Id */
+            case_id?: string | null;
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * Lookups
+             * @default 0
+             */
+            lookups: number;
+            /** Started At */
+            started_at: string;
+            /**
+             * Status
+             * @default running
+             * @enum {string}
+             */
+            status: "running" | "needs_input";
+            /**
+             * Tokens
+             * @default 0
+             */
+            tokens: number;
+            /** Turn Id */
+            turn_id: string;
+        };
+        /**
+         * ChatBudgetInfo
+         * @description The daily budget the meter's ring measures against. ``models:read`` only.
+         */
+        ChatBudgetInfo: {
+            /** Daily Limit */
+            daily_limit?: number | null;
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * On Exceed
+             * @default block
+             * @enum {string}
+             */
+            on_exceed: "warn" | "block";
+            /**
+             * Soft Warn Pct
+             * @default 0.8
+             */
+            soft_warn_pct: number;
+        };
+        /**
+         * ChatCatchUp
+         * @description "Since {since_label}: clause, clause and clause." (at most 160 characters as a
+         *     whole line; the server drops clauses from the end until it fits).
+         */
+        ChatCatchUp: {
+            /** Clauses */
+            clauses?: components["schemas"]["ChatCatchUpClause"][];
+            /** Since */
+            since: string;
+            /** Since Label */
+            since_label: string;
+        };
+        /**
+         * ChatCatchUpClause
+         * @description One clause of the catch-up line ("5 new cases (2 critical)") and the starter
+         *     it sends when clicked (action ``send`` only; SPEC §3.6).
+         */
+        ChatCatchUpClause: {
+            starter: components["schemas"]["ChatStarter"];
+            /** Text */
+            text: string;
+        };
+        /**
+         * ChatClarify
+         * @description A clarifying question the model asked instead of guessing (SPEC D10). Option
+         *     text is model-authored and may echo log values: the UI renders it as untrusted
+         *     text, and a pick is sent with ``origin="clarify"`` (follow_up taint class, #9).
+         */
+        ChatClarify: {
+            /**
+             * Allow Custom
+             * @default true
+             */
+            allow_custom: boolean;
+            /** Options */
+            options?: string[];
+            /** Question */
+            question: string;
         };
         /**
          * ChatContext
@@ -5614,16 +9254,557 @@ export interface components {
             /** Url */
             url?: string | null;
         };
-        /** ChatConversationRenameRequest */
-        ChatConversationRenameRequest: {
+        /**
+         * ChatContextBounds
+         * @description The §4.2 bounds the meter and the run log display (no internal_domains).
+         */
+        ChatContextBounds: {
+            /**
+             * Allow Text Streaming
+             * @default true
+             */
+            allow_text_streaming: boolean;
+            /**
+             * Animated Brand
+             * @default true
+             */
+            animated_brand: boolean;
+            /**
+             * Default Stream Mode
+             * @default steps
+             * @enum {string}
+             */
+            default_stream_mode: "steps" | "text";
+            /** Final Max Tokens */
+            final_max_tokens: number;
+            /** Final Reserve Tokens */
+            final_reserve_tokens: number;
+            /** Max Indicator Lookups */
+            max_indicator_lookups: number;
+            /** Max Model Calls */
+            max_model_calls: number;
+            /** Max Parallel */
+            max_parallel: number;
+            /** Max Tool Calls */
+            max_tool_calls: number;
+            /** Model Step Timeout S */
+            model_step_timeout_s: number;
+            /** Observation Chars */
+            observation_chars: number;
+            /** Tool Timeout S */
+            tool_timeout_s: number;
+            /** Turn Timeout S */
+            turn_timeout_s: number;
+            /** Turn Token Ceiling */
+            turn_token_ceiling: number;
+        };
+        /**
+         * ChatContextInfo
+         * @description ``GET /api/chat/context`` (SPEC §8): everything the composer meter needs.
+         *     Money and budget fields are present only with ``models:read``; ``spent_today`` /
+         *     ``remaining`` additionally need ``cost:view``. Without them the meter shows
+         *     tokens only plus ``budget_state``.
+         */
+        ChatContextInfo: {
+            bounds: components["schemas"]["ChatContextBounds"];
+            budget?: components["schemas"]["ChatBudgetInfo"] | null;
+            /** Budget State */
+            budget_state?: ("ok" | "approaching" | "reached") | null;
+            /** Calibration */
+            calibration?: number | null;
+            /**
+             * Chars Per Token
+             * @default 4
+             */
+            chars_per_token: number;
+            /** Context Window */
+            context_window?: number | null;
+            /**
+             * History Exchanges
+             * @default 0
+             */
+            history_exchanges: number;
+            /**
+             * History Tokens
+             * @default 0
+             */
+            history_tokens: number;
+            /**
+             * Limits Mode
+             * @default unlimited
+             * @enum {string}
+             */
+            limits_mode: "unlimited" | "bounded";
+            /**
+             * Max Output Tokens
+             * @default 0
+             */
+            max_output_tokens: number;
+            /** Model */
+            model?: string | null;
+            rates?: components["schemas"]["ChatRates"] | null;
+            /** Remaining */
+            remaining?: number | null;
+            /** Simulated */
+            simulated?: boolean | null;
+            /** Spent Today */
+            spent_today?: number | null;
+            /** Starters */
+            starters?: components["schemas"]["ChatStarter"][];
+            /**
+             * Static Prompt Tokens
+             * @default 0
+             */
+            static_prompt_tokens: number;
+            text_streaming?: components["schemas"]["TextStreamingInfo"];
+            /**
+             * Timezone
+             * @default UTC
+             */
+            timezone: string;
+            /** Tools */
+            tools?: components["schemas"]["ChatToolInfo"][];
+        };
+        /** ChatConversation */
+        ChatConversation: {
+            /** Created At */
+            created_at: string;
+            /**
+             * Earlier Message Count
+             * @default 0
+             */
+            earlier_message_count: number;
+            /**
+             * History Truncated
+             * @default false
+             */
+            history_truncated: boolean;
+            /** Id */
+            id: string;
+            /**
+             * Message Count
+             * @default 0
+             */
+            message_count: number;
+            /** Messages */
+            messages?: components["schemas"]["ChatConversationMessage"][];
+            /** Model */
+            model?: string | null;
+            /** Oldest Retained At */
+            oldest_retained_at?: string | null;
+            /**
+             * Pinned
+             * @default false
+             */
+            pinned: boolean;
+            /**
+             * Preview
+             * @default
+             */
+            preview: string;
+            /** Report Id */
+            report_id?: string | null;
+            /** Source Id */
+            source_id?: string | null;
+            /** Source Name */
+            source_name?: string | null;
+            /**
+             * Status
+             * @default idle
+             * @enum {string}
+             */
+            status: "idle" | "running" | "needs_input" | "failed";
+            /** Summary Covers Through */
+            summary_covers_through?: string | null;
+            time_range?: components["schemas"]["TimeRange"] | null;
             /** Title */
             title: string;
+            /** Total Cost */
+            total_cost?: number | null;
+            /**
+             * Total Message Count
+             * @default 0
+             */
+            total_message_count: number;
+            /** Total Tokens */
+            total_tokens?: number | null;
+            /**
+             * Unread
+             * @default false
+             */
+            unread: boolean;
+            /** Updated At */
+            updated_at: string;
+            /** Usage Turns */
+            usage_turns?: number | null;
+        };
+        /**
+         * ChatConversationMatch
+         * @description Where a ``?q=`` search hit a conversation (SPEC §7.5 Search).
+         */
+        ChatConversationMatch: {
+            /** Message Id */
+            message_id?: string | null;
+            /**
+             * Snippet
+             * @default
+             */
+            snippet: string;
+        };
+        /**
+         * ChatConversationMessage
+         * @description One durable Workspace-chat message.
+         *
+         *     ``response`` keeps the bounded structured result needed to restore tables,
+         *     query links, cost and memory feedback.  It is plain JSON presentation data;
+         *     the authoritative chat engine still receives only ``role`` + ``content`` as
+         *     prior model history.
+         */
+        ChatConversationMessage: {
+            /** Content */
+            content: string;
+            /** Created At */
+            created_at?: string;
+            /** Id */
+            id?: string;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Response */
+            response?: Record<string, never> | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /** Source Id */
+            source_id?: string | null;
+            /** Source Name */
+            source_name?: string | null;
+        };
+        /**
+         * ChatConversationPage
+         * @description ``GET /api/chat/conversations``: one page of the caller's conversation
+         *     summaries. With ``?q=`` each row also carries ``match {message_id, snippet}``
+         *     (rows of a plain listing omit it; the route serialises with
+         *     ``response_model_exclude_unset`` so the wire shape is unchanged).
+         */
+        ChatConversationPage: {
+            /** Conversations */
+            conversations: components["schemas"]["ChatConversationSearchHit"][];
+            /** History Truncated */
+            history_truncated: boolean;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Oldest Retained At */
+            oldest_retained_at?: string | null;
+            /**
+             * Search Incomplete
+             * @default false
+             */
+            search_incomplete: boolean;
+            /** Total */
+            total: number;
+            /** Total Conversation Count */
+            total_conversation_count: number;
+        };
+        /**
+         * ChatConversationSearchHit
+         * @description A conversation summary returned by a content search (never persisted).
+         */
+        ChatConversationSearchHit: {
+            /** Created At */
+            created_at: string;
+            /**
+             * History Truncated
+             * @default false
+             */
+            history_truncated: boolean;
+            /** Id */
+            id: string;
+            match?: components["schemas"]["ChatConversationMatch"] | null;
+            /**
+             * Message Count
+             * @default 0
+             */
+            message_count: number;
+            /** Model */
+            model?: string | null;
+            /** Oldest Retained At */
+            oldest_retained_at?: string | null;
+            /**
+             * Pinned
+             * @default false
+             */
+            pinned: boolean;
+            /**
+             * Preview
+             * @default
+             */
+            preview: string;
+            /** Report Id */
+            report_id?: string | null;
+            /** Source Id */
+            source_id?: string | null;
+            /** Source Name */
+            source_name?: string | null;
+            /**
+             * Status
+             * @default idle
+             * @enum {string}
+             */
+            status: "idle" | "running" | "needs_input" | "failed";
+            time_range?: components["schemas"]["TimeRange"] | null;
+            /** Title */
+            title: string;
+            /** Total Cost */
+            total_cost?: number | null;
+            /**
+             * Total Message Count
+             * @default 0
+             */
+            total_message_count: number;
+            /** Total Tokens */
+            total_tokens?: number | null;
+            /**
+             * Unread
+             * @default false
+             */
+            unread: boolean;
+            /** Updated At */
+            updated_at: string;
+            /** Usage Turns */
+            usage_turns?: number | null;
+        };
+        /**
+         * ChatConversationUpdateRequest
+         * @description ``PATCH /api/chat/conversations/{id}`` (SPEC §7.5 Pin): rename and/or pin.
+         *     At least one field is required; pinning never changes ``updated_at``.
+         */
+        ChatConversationUpdateRequest: {
+            /** Pinned */
+            pinned?: boolean | null;
+            /** Title */
+            title?: string | null;
+        };
+        /**
+         * ChatEntityQuestion
+         * @description The server-worded question for one entity (sent with ``origin: "starter"``).
+         */
+        ChatEntityQuestion: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "ip" | "host" | "user" | "hash" | "domain" | "url" | "email" | "rule" | "case";
+            /** Question */
+            question: string;
+            /** Value */
+            value: string;
+        };
+        /**
+         * ChatEntityRef
+         * @description ``POST /api/chat/entity-question`` body: what an Ask AI chip asks about.
+         */
+        ChatEntityRef: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "ip" | "host" | "user" | "hash" | "domain" | "url" | "email" | "rule" | "case";
+            /** Value */
+            value: string;
+        };
+        /**
+         * ChatFeedbackEntryOut
+         * @description One of the caller's own ratings.
+         */
+        ChatFeedbackEntryOut: {
+            /**
+             * Comment
+             * @default
+             */
+            comment: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /** Message Id */
+            message_id: string;
+            /** Rating */
+            rating: string;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Updated At
+             * @default
+             */
+            updated_at: string;
+        };
+        /**
+         * ChatFeedbackList
+         * @description ``GET /api/chat/feedback``: the caller's ratings, newest first.
+         */
+        ChatFeedbackList: {
+            /** Feedback */
+            feedback?: components["schemas"]["ChatFeedbackEntryOut"][];
+        };
+        /**
+         * ChatFeedbackRequest
+         * @description ``POST /api/chat/feedback`` (SPEC §3.2). Stored per user and audited; never used
+         *     to train a model.
+         */
+        ChatFeedbackRequest: {
+            /**
+             * Comment
+             * @default
+             */
+            comment: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /** Message Id */
+            message_id: string;
+            /**
+             * Rating
+             * @enum {string}
+             */
+            rating: "up" | "down";
+            /** Reason */
+            reason?: ("wrong" | "incomplete" | "slow" | "other") | null;
+        };
+        /**
+         * ChatFeedbackSummary
+         * @description ``GET /api/chat/feedback/summary``: the caller's ratings as aggregates only
+         *     (never a comment or which answer). ``down_by_reason`` holds every reason, zero
+         *     included; ``since`` echoes the filter.
+         */
+        ChatFeedbackSummary: {
+            /**
+             * Down
+             * @default 0
+             */
+            down: number;
+            /** Down By Reason */
+            down_by_reason?: {
+                [key: string]: number;
+            };
+            /**
+             * Down Without Reason
+             * @default 0
+             */
+            down_without_reason: number;
+            /** Since */
+            since?: string | null;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Up
+             * @default 0
+             */
+            up: number;
+            /**
+             * With Comment
+             * @default 0
+             */
+            with_comment: number;
+        };
+        /**
+         * ChatMessagePage
+         * @description ``GET /api/chat/conversations/{id}/messages``: messages oldest first, each
+         *     restored to its full text, and how many older ones remain
+         *     (``earlier_message_count``; 0 = this page starts the conversation).
+         */
+        ChatMessagePage: {
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Earlier Message Count
+             * @default 0
+             */
+            earlier_message_count: number;
+            /** Messages */
+            messages?: components["schemas"]["ChatConversationMessage"][];
+        };
+        /**
+         * ChatPrompt
+         * @description One saved composer prompt (chat revamp SPEC §10.4). Plain user text: rendered
+         *     as text, sent as an ordinary user message (it is the user's own words).
+         *
+         *     Round 12 prompt library (SPEC §3.1): an optional ``category`` and a ``favorite``
+         *     star; ``{name}`` placeholders in ``text`` are filled in by the composer before
+         *     sending (client-side; the server stores the template as plain text).
+         */
+        ChatPrompt: {
+            /** Category */
+            category?: ("triage" | "hunt" | "ioc" | "posture" | "reporting" | "app_help") | null;
+            /**
+             * Favorite
+             * @default false
+             */
+            favorite: boolean;
+            /** Id */
+            id: string;
+            /** Text */
+            text: string;
+            /** Title */
+            title: string;
+        };
+        /**
+         * ChatRates
+         * @description Effective per-million-token rates (demo-aware). ``models:read`` only.
+         */
+        ChatRates: {
+            /** Cache Read Per Million */
+            cache_read_per_million?: number | null;
+            /** Input Per Million */
+            input_per_million: number;
+            /** Output Per Million */
+            output_per_million: number;
+        };
+        /**
+         * ChatReportSaveError
+         * @description Why the report a chat answer asked for was NOT saved (SPEC D11; additive). The
+         *     answer itself is saved; ``message`` is a server template, never model text.
+         *     ``retryable``: the same save may work later (a store outage), so the UI can offer
+         *     "Save as report"; a full library or an answer with nothing to save cannot.
+         *
+         *     ``title`` and ``template`` (additive) record what the answer's header asked for, so
+         *     "Save as report" (``POST /api/reports/from-answer``) saves the SAME report the server
+         *     could not; the server reads them from the stored answer, never from the client.
+         *     ``title`` is model-derived display text (#9); both are lenient on replay.
+         */
+        ChatReportSaveError: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "report_limit" | "report_unavailable" | "report_empty";
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
+            /** Template */
+            template?: ("investigation" | "hunt" | "ioc" | "shift" | "posture" | "custom" | "executive" | "monthly" | "infographic" | "investigation_brief") | null;
+            /** Title */
+            title?: string | null;
         };
         /** ChatRequest */
         ChatRequest: {
             /** Case Id */
             case_id?: string | null;
             context?: components["schemas"]["ChatContext"] | null;
+            /** Continue Of */
+            continue_of?: string | null;
             /** Conversation Id */
             conversation_id?: string | null;
             /** History */
@@ -5635,19 +9816,495 @@ export interface components {
             /** Model */
             model?: string | null;
             /**
+             * Origin
+             * @default user
+             * @enum {string}
+             */
+            origin: "user" | "follow_up" | "starter" | "command" | "continue" | "clarify" | "retry_step";
+            /**
              * Persist Conversation
              * @default false
              */
             persist_conversation: boolean;
+            /** Scopes */
+            scopes?: ("logs" | "cases" | "metrics" | "intel" | "docs" | "platform")[];
             /** Source Id */
             source_id?: string | null;
+            /**
+             * Stream Mode
+             * @default steps
+             * @enum {string}
+             */
+            stream_mode: "steps" | "text";
+            time_range?: components["schemas"]["TimeRange"] | null;
+            /** Topic */
+            topic?: string | null;
+        };
+        /** ChatResponse */
+        ChatResponse: {
+            /** Answer */
+            answer: string;
+            /**
+             * Answer Kind
+             * @default conversation
+             * @enum {string}
+             */
+            answer_kind: "data" | "product_help" | "mixed" | "conversation";
+            /** Blocks */
+            blocks?: Record<string, never>[];
+            /**
+             * Blocks Version
+             * @default 1
+             */
+            blocks_version: number;
+            /** Case Id */
+            case_id?: string | null;
+            case_save_notice?: components["schemas"]["TurnNotice"] | null;
+            /** Case Saved */
+            case_saved?: boolean | null;
+            /** Citations */
+            citations?: components["schemas"]["Citation"][];
+            clarify?: components["schemas"]["ChatClarify"] | null;
+            /** Command */
+            command?: "compact" | null;
+            /**
+             * Compacted
+             * @default false
+             */
+            compacted: boolean;
+            /** Console Links */
+            console_links?: components["schemas"]["ConsoleLink"][];
+            /**
+             * Continued
+             * @default 0
+             */
+            continued: number;
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Conversation Title */
+            conversation_title?: string | null;
+            /**
+             * Cost
+             * @default 0
+             */
+            cost: number;
+            discover?: components["schemas"]["DiscoverLink"] | null;
+            /** Effective Model */
+            effective_model?: string | null;
+            /** Effective Source Id */
+            effective_source_id?: string | null;
+            /** Effective Source Name */
+            effective_source_name?: string | null;
+            /** Follow Ups */
+            follow_ups?: string[];
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /** Memory Action */
+            memory_action?: Record<string, never> | null;
+            memory_proposal?: components["schemas"]["MemoryProposal"] | null;
+            memory_suggestion?: components["schemas"]["MemorySuggestion"] | null;
+            /** Message Id */
+            message_id?: string | null;
+            notice?: components["schemas"]["TurnNotice"] | null;
+            /** Query */
+            query?: string | null;
+            saved_report?: components["schemas"]["ChatSavedReport"] | null;
+            saved_report_error?: components["schemas"]["ChatReportSaveError"] | null;
+            /** Steps */
+            steps?: components["schemas"]["ChatStep"][];
+            /** Stream Mode */
+            stream_mode?: ("steps" | "text") | null;
+            /** Table */
+            table?: Record<string, never> | null;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /** Turn Id */
+            turn_id?: string | null;
+            usage?: components["schemas"]["TurnUsage"] | null;
+            /** User Message Id */
+            user_message_id?: string | null;
+        };
+        /**
+         * ChatSavedReport
+         * @description The report the server saved from this answer (SPEC D11). Created by the server
+         *     from the persisted message, never by the model. ``skipped`` (additive): sections
+         *     of the answer that did not fit the report's item or size limit.
+         */
+        ChatSavedReport: {
+            /** Id */
+            id: string;
+            /**
+             * Items
+             * @default 0
+             */
+            items: number;
+            /**
+             * Skipped
+             * @default 0
+             */
+            skipped: number;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /**
+         * ChatStarter
+         * @description One starter card (SPEC §10.5; Round 13 SPEC-chat §3.2.1).
+         *
+         *     ``id`` is the FAMILY id (one card per family; the pre-Round-13 ids investigate,
+         *     hunt, posture, shift_brief, explain_metric and learn_app stay valid). ``label`` is
+         *     a short family name and ``description`` equals ``reason``, for older clients. For
+         *     action ``send``, ``prompt`` is both the visible question and the exact text the
+         *     client sends with ``origin: "starter"`` (never edited, never put in the composer);
+         *     dynamic templates render at most 100 characters. Action ``open_conversation`` and
+         *     ``use_prompt`` cards are display-only: ``prompt`` is their card text (at most 120
+         *     characters) and is never sent; ``ref`` names the conversation or saved prompt.
+         */
+        ChatStarter: {
+            /**
+             * Action
+             * @default send
+             * @enum {string}
+             */
+            action: "send" | "open_conversation" | "use_prompt";
+            /** As Of */
+            as_of?: string | null;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Id */
+            id: string;
+            /** Key */
+            key?: string | null;
+            /** Label */
+            label: string;
+            /** Prompt */
+            prompt: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            ref?: components["schemas"]["ChatStarterRef"] | null;
+            /** Template */
+            template?: string | null;
+            /** Tools */
+            tools?: string[];
+            /**
+             * Urgency
+             * @default none
+             * @enum {string}
+             */
+            urgency: "none" | "attention" | "critical";
+        };
+        /**
+         * ChatStarterEvent
+         * @description ``POST /api/chat/starters/events`` body (SPEC §3.2.2, §3.6). Presentation state
+         *     only: it updates the caller's own starter state document, writes no audit row and
+         *     stores no text (D10). A ``thread`` ``viewed`` event carries no keys.
+         */
+        ChatStarterEvent: {
+            /** Keys */
+            keys?: string[];
+            /**
+             * Surface
+             * @default home
+             * @enum {string}
+             */
+            surface: "home" | "thread" | "case";
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "viewed" | "used" | "dismissed";
+        };
+        /**
+         * ChatStarterRef
+         * @description A typed reference a starter names (a case, rule, source, campaign, ATT&CK
+         *     technique) or opens (a conversation, a saved prompt). ``value`` passes its kind's
+         *     strict grammar (``chat_starter_text.ref_value``) unchanged, or the model refuses it:
+         *     a value is never cut, quoted or altered (SPEC §3.8.1).
+         */
+        ChatStarterRef: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "case" | "rule" | "source" | "campaign" | "technique" | "conversation" | "prompt";
+            /** Value */
+            value: string;
+        };
+        /**
+         * ChatStartersInfo
+         * @description ``GET /api/chat/starters`` (SPEC §3.2.2). ``enabled`` mirrors
+         *     ``chat_agent.dynamic_starters``; when it is false the server returns the evergreen
+         *     set only and no catch-up line. ``expires_at`` is ``as_of`` + 120 s.
+         */
+        ChatStartersInfo: {
+            /** As Of */
+            as_of: string;
+            catch_up?: components["schemas"]["ChatCatchUp"] | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Expires At */
+            expires_at: string;
+            /** Starters */
+            starters?: components["schemas"]["ChatStarter"][];
+            /**
+             * Surface
+             * @enum {string}
+             */
+            surface: "home" | "thread" | "case";
+            /** Timezone */
+            timezone: string;
+        };
+        /**
+         * ChatStep
+         * @description One row of a turn's run log (SPEC §3.3). Every string is engine-authored or
+         *     display-sanitised; ``untrusted_params`` and ``query`` may carry model/log-derived
+         *     values, which the UI renders as untrusted text/code and prompts fence.
+         */
+        ChatStep: {
+            /** Basis */
+            basis?: ("exact" | "newest_n" | "sample" | "cached") | null;
+            /** Coverage */
+            coverage?: string | null;
+            /**
+             * Duration Ms
+             * @default 0
+             */
+            duration_ms: number;
+            /** Group */
+            group?: number | null;
+            /** Index */
+            index: number;
+            /**
+             * Kind
+             * @default tool
+             * @enum {string}
+             */
+            kind: "tool" | "model";
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Observation Ref */
+            observation_ref?: string | null;
+            /** Ordinal */
+            ordinal?: number | null;
+            /** Params */
+            params?: {
+                [key: string]: string | number | boolean | null;
+            };
+            progress?: components["schemas"]["ChatStepProgress"] | null;
+            /** Query */
+            query?: string | null;
+            /** Rows */
+            rows?: number | null;
+            /** Sources */
+            sources?: string[];
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "error" | "denied" | "timeout" | "skipped" | "cancelled";
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Tool */
+            tool?: string | null;
+            /** Untrusted Params */
+            untrusted_params?: {
+                [key: string]: string;
+            };
+            usage?: components["schemas"]["StepUsage"] | null;
+        };
+        /**
+         * ChatStepObservation
+         * @description ``GET …/steps/{index}``: what the model saw for one lookup. ``observation`` is
+         *     the aggregate observation (never raw log rows); ``untrusted`` is always True —
+         *     its values come from logs and tools and are rendered as text. ``truncated``: the
+         *     stored copy was shortened structurally to fit its storage bound.
+         */
+        ChatStepObservation: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Index */
+            index: number;
+            /** Label */
+            label?: string | null;
+            /** Message Id */
+            message_id: string;
+            /** Observation */
+            observation?: Record<string, never>;
+            /** Ordinal */
+            ordinal?: number | null;
+            /** Params */
+            params?: {
+                [key: string]: string;
+            };
+            /** Status */
+            status?: string | null;
+            /** Stored At */
+            stored_at?: string | null;
+            /** Summary */
+            summary?: string | null;
+            /** Tool */
+            tool?: string | null;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /**
+             * Untrusted
+             * @default true
+             */
+            untrusted: boolean;
+        };
+        /**
+         * ChatStepProgress
+         * @description Progress of one long-running lookup (an exact aggregate scan). ``total`` is None
+         *     when the store cannot say up front; ``unit`` is a display noun ("cases").
+         */
+        ChatStepProgress: {
+            /**
+             * Done
+             * @default 0
+             */
+            done: number;
+            /** Total */
+            total?: number | null;
+            /**
+             * Unit
+             * @default
+             */
+            unit: string;
+        };
+        /**
+         * ChatStreamEventModel
+         * @description A named wrapper so the discriminated union appears in ``openapi.json`` as one
+         *     component (``/chat/stream`` documents each NDJSON line with this schema).
+         */
+        ChatStreamEventModel: components["schemas"]["TurnStartEvent"] | components["schemas"]["StepStartEvent"] | components["schemas"]["StepEndEvent"] | components["schemas"]["UsageEvent"] | components["schemas"]["TextDeltaEvent"] | components["schemas"]["TextResetEvent"] | components["schemas"]["TurnDoneEvent"] | components["schemas"]["TurnErrorEvent"] | components["schemas"]["PingEvent"] | components["schemas"]["StepProgressEvent"] | components["schemas"]["TextContinuedEvent"];
+        /**
+         * ChatToolInfo
+         * @description One row of the caller's tool catalogue ("What can the assistant access?").
+         */
+        ChatToolInfo: {
+            /**
+             * Allowed
+             * @default false
+             */
+            allowed: boolean;
+            /**
+             * Available
+             * @default true
+             */
+            available: boolean;
+            /**
+             * Data Source
+             * @default
+             */
+            data_source: string;
+            /** Kind Requires */
+            kind_requires?: {
+                [key: string]: string;
+            };
+            /** Kinds Allowed */
+            kinds_allowed?: string[];
+            /** Label */
+            label: string;
+            /** Missing */
+            missing?: string[];
+            /** Name */
+            name: string;
+            /** Requires */
+            requires?: string[];
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "logs" | "cases" | "metrics" | "intel" | "docs" | "platform";
+        };
+        /**
+         * ChatTopicQuestion
+         * @description ``GET /api/chat/topics/{topic_id}`` (SPEC §10.7 "Ask about this"): the
+         *     templated question for a console_map topic. The page sends this text with
+         *     ``origin="starter"``; it never sends free text of its own for a topic.
+         */
+        ChatTopicQuestion: {
+            /** Question */
+            question: string;
+            /** Topic */
+            topic: string;
         };
         /** ChatTurn */
         ChatTurn: {
             /** Content */
             content: string;
+            /** Origin */
+            origin?: ("user" | "follow_up" | "starter" | "command" | "continue" | "clarify" | "retry_step") | null;
             /** Role */
             role: string;
+        };
+        /**
+         * ChatTurnCancelResult
+         * @description ``POST /api/chat/turns/{turn_id}/cancel``: the Stop was accepted.
+         */
+        ChatTurnCancelResult: {
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+            /** Turn Id */
+            turn_id: string;
+        };
+        /**
+         * Citation
+         * @description A source the answer cites by id (``D1`` doc, ``C2`` case, ``K3`` knowledge,
+         *     ``M1`` ATT&CK, ``Q1`` query). The model references ids only; the server resolves
+         *     them; the client re-validates every target.
+         */
+        Citation: {
+            /** Case Id */
+            case_id?: string | null;
+            /** Case Number */
+            case_number?: string | null;
+            /** Doc */
+            doc?: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "doc" | "case" | "knowledge" | "mitre" | "query";
+            /** Snippet */
+            snippet?: string | null;
+            /** Technique */
+            technique?: string | null;
+            /** Title */
+            title: string;
+            /**
+             * Untrusted
+             * @default false
+             */
+            untrusted: boolean;
         };
         /**
          * ColumnState
@@ -5694,6 +10351,31 @@ export interface components {
             source_id?: string | null;
             /** Source Type */
             source_type?: string | null;
+        };
+        /**
+         * ConsoleLink
+         * @description A console destination resolved from ``console_map`` (never from model text).
+         *     ``allowed`` comes from the caller's grants; a disallowed link renders as plain
+         *     text naming the grant it ``requires``.
+         */
+        ConsoleLink: {
+            /**
+             * Allowed
+             * @default false
+             */
+            allowed: boolean;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Opts */
+            opts?: {
+                [key: string]: string | number;
+            };
+            /** Page */
+            page: string;
+            /** Requires */
+            requires?: string | null;
         };
         /**
          * CorrelationMode
@@ -5828,23 +10510,13 @@ export interface components {
             };
         };
         /**
-         * DashboardLayout
-         * @description One named custom dashboard (Round 5 / G7). A user owns a set of these keyed
-         *     by ``id`` on :attr:`UserPrefs.dashboards`. Persisted backend-agnostically as
-         *     part of the per-user prefs KV document — NO new index/table/migration.
-         *
-         *     ``widgets`` is the default (single-breakpoint) placement; ``layouts`` optionally
-         *     carries a per-breakpoint override map (``{"lg": [...], "md": [...], ...}`` — the
-         *     RGL responsive shape) so a dashboard can reflow at different widths. ``columns``
-         *     is the grid column count (12 by default). ``schema_version`` is stamped from day
-         *     one so a future migration can evolve the widget shape without a data reset (a
-         *     lower/absent version is upgraded on read by the client/store, never blocks load).
-         *
-         *     ``name`` is UNTRUSTED user input — rendered as PLAIN text/SVG by the UI, never
-         *     ``dangerouslySetInnerHTML`` and never a prompt instruction (#9). A dashboard is
-         *     ADVISORY presentation state only; it never feeds ``case_manager.decide()`` (#3).
+         * DashboardLayoutIn
+         * @description The create and update request body of a personal board (``POST
+         *     /api/dashboards``, ``PUT /api/dashboards/{id}``): :class:`DashboardLayout` with the
+         *     Round 14 fields validated strictly, so a bad ``default_window`` or
+         *     ``derived_from`` is refused at the write boundary instead of being dropped.
          */
-        DashboardLayout: {
+        DashboardLayoutIn: {
             /**
              * Columns
              * @default 12
@@ -5852,6 +10524,10 @@ export interface components {
             columns: number;
             /** Created At */
             created_at?: string;
+            /** Default Window */
+            default_window?: ("now-24h" | "now-7d" | "now-30d" | "now-90d") | null;
+            /** Derived From */
+            derived_from?: string | null;
             /** Id */
             id?: string;
             /** Layouts */
@@ -5933,6 +10609,14 @@ export interface components {
             y: number;
         };
         /**
+         * DataExportArchiveRequest
+         * @description Selected safe scopes for one server-assembled full-history ZIP.
+         */
+        DataExportArchiveRequest: {
+            /** Scopes */
+            scopes?: ("all" | "cases" | "audit" | "usage" | "configuration" | "automation" | "knowledge")[];
+        };
+        /**
          * DataExportRequest
          * @description Selectable export request. ``all`` expands to every safe application scope.
          */
@@ -5980,7 +10664,20 @@ export interface components {
          * DecisionBy
          * @enum {string}
          */
-        DecisionBy: "agent" | "analyst" | "system";
+        DecisionBy: "agent" | "analyst" | "system" | "analyst_policy";
+        /**
+         * DecisionOption
+         * @description One option of a Decision step. ``marks_not_applicable`` names later step ids
+         *     this option skips (only steps still To do).
+         */
+        DecisionOption: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Marks Not Applicable */
+            marks_not_applicable?: string[];
+        };
         /** DemoEnableBody */
         DemoEnableBody: {
             /** Alert Interval Seconds */
@@ -6018,6 +10715,34 @@ export interface components {
             scenario_id?: string | null;
         };
         /**
+         * DiscoverLink
+         * @description Payload the plugin feeds to Kibana's locators API (Section 8.1).
+         */
+        DiscoverLink: {
+            /**
+             * Data View Pattern
+             * @default all-logs-*
+             */
+            data_view_pattern: string;
+            /**
+             * Language
+             * @default kuery
+             */
+            language: string;
+            /** Query */
+            query: string;
+            /**
+             * Time From
+             * @default now-24h
+             */
+            time_from: string;
+            /**
+             * Time To
+             * @default now
+             */
+            time_to: string;
+        };
+        /**
          * Disposition
          * @description Investigative OUTCOME (verdict-class) axis — the analyst-confirmable,
          *     reportable classification on/after close. Orthogonal to :class:`CaseStatus`
@@ -6026,6 +10751,237 @@ export interface components {
          * @enum {string}
          */
         Disposition: "true_positive" | "false_positive" | "benign" | "suspicious" | "duplicate" | "undetermined";
+        /** EnrichmentConfig */
+        EnrichmentConfig: {
+            /**
+             * Cache Ttl Seconds
+             * @default 21600
+             */
+            cache_ttl_seconds: number;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Fusion Enabled
+             * @default false
+             */
+            fusion_enabled: boolean;
+            /**
+             * Use Abuseipdb
+             * @default true
+             */
+            use_abuseipdb: boolean;
+            /**
+             * Use Apivoid
+             * @default false
+             */
+            use_apivoid: boolean;
+            /**
+             * Use Binaryedge
+             * @default false
+             */
+            use_binaryedge: boolean;
+            /**
+             * Use Censys
+             * @default false
+             */
+            use_censys: boolean;
+            /**
+             * Use Circl Hashlookup
+             * @default true
+             */
+            use_circl_hashlookup: boolean;
+            /**
+             * Use Criminalip
+             * @default false
+             */
+            use_criminalip: boolean;
+            /**
+             * Use Crowdsec
+             * @default false
+             */
+            use_crowdsec: boolean;
+            /**
+             * Use Crt Sh
+             * @default false
+             */
+            use_crt_sh: boolean;
+            /**
+             * Use Cymru Mhr
+             * @default false
+             */
+            use_cymru_mhr: boolean;
+            /**
+             * Use Dshield
+             * @default true
+             */
+            use_dshield: boolean;
+            /**
+             * Use Emailrep
+             * @default false
+             */
+            use_emailrep: boolean;
+            /**
+             * Use Geoip
+             * @default true
+             */
+            use_geoip: boolean;
+            /**
+             * Use Google Safebrowsing
+             * @default false
+             */
+            use_google_safebrowsing: boolean;
+            /**
+             * Use Greynoise
+             * @default false
+             */
+            use_greynoise: boolean;
+            /**
+             * Use Hibp
+             * @default false
+             */
+            use_hibp: boolean;
+            /**
+             * Use Honeypot
+             * @default false
+             */
+            use_honeypot: boolean;
+            /**
+             * Use Hybrid Analysis
+             * @default false
+             */
+            use_hybrid_analysis: boolean;
+            /**
+             * Use Ipdata
+             * @default false
+             */
+            use_ipdata: boolean;
+            /**
+             * Use Ipinfo
+             * @default true
+             */
+            use_ipinfo: boolean;
+            /**
+             * Use Ipqualityscore
+             * @default false
+             */
+            use_ipqualityscore: boolean;
+            /**
+             * Use Maltiverse
+             * @default false
+             */
+            use_maltiverse: boolean;
+            /**
+             * Use Malwarebazaar
+             * @default true
+             */
+            use_malwarebazaar: boolean;
+            /**
+             * Use Metadefender
+             * @default false
+             */
+            use_metadefender: boolean;
+            /**
+             * Use Netlas
+             * @default false
+             */
+            use_netlas: boolean;
+            /**
+             * Use Onionoo
+             * @default true
+             */
+            use_onionoo: boolean;
+            /**
+             * Use Otx
+             * @default false
+             */
+            use_otx: boolean;
+            /**
+             * Use Pulsedive
+             * @default false
+             */
+            use_pulsedive: boolean;
+            /**
+             * Use Rdap
+             * @default true
+             */
+            use_rdap: boolean;
+            /**
+             * Use Robtex
+             * @default false
+             */
+            use_robtex: boolean;
+            /**
+             * Use Securitytrails
+             * @default false
+             */
+            use_securitytrails: boolean;
+            /**
+             * Use Shodan
+             * @default false
+             */
+            use_shodan: boolean;
+            /**
+             * Use Shodan Internetdb
+             * @default true
+             */
+            use_shodan_internetdb: boolean;
+            /**
+             * Use Spamhaus
+             * @default false
+             */
+            use_spamhaus: boolean;
+            /**
+             * Use Spur
+             * @default false
+             */
+            use_spur: boolean;
+            /**
+             * Use Threatfox
+             * @default true
+             */
+            use_threatfox: boolean;
+            /**
+             * Use Urlhaus
+             * @default true
+             */
+            use_urlhaus: boolean;
+            /**
+             * Use Urlscan
+             * @default false
+             */
+            use_urlscan: boolean;
+            /**
+             * Use Virustotal
+             * @default true
+             */
+            use_virustotal: boolean;
+            /**
+             * Use Xforce
+             * @default false
+             */
+            use_xforce: boolean;
+        };
+        /**
+         * EnrichmentConfigSaveResult
+         * @description The answer of ``PUT /api/enrichment/config``.
+         */
+        EnrichmentConfigSaveResult: {
+            /** Changed */
+            changed: boolean;
+            config: components["schemas"]["EnrichmentConfig"];
+            /** Demo Active */
+            demo_active: boolean;
+            /** Demo Run Id */
+            demo_run_id?: string | null;
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+        };
         /** Entity */
         Entity: {
             type: components["schemas"]["EntityType"];
@@ -6151,10 +11107,20 @@ export interface components {
              */
             comment: string;
             /**
+             * Origin
+             * @default
+             */
+            origin: string;
+            /**
              * Reasoning Quality
              * @default 0
              */
             reasoning_quality: number;
+            /**
+             * Review Id
+             * @default
+             */
+            review_id: string;
             /**
              * Time Saved Minutes
              * @default 0
@@ -6189,6 +11155,17 @@ export interface components {
          *     both fields deliberately carry the same own-state readiness result.
          */
         HealthResponse: {
+            /**
+             * Degraded
+             * @description Whether a subsystem the product depends on is impaired while the state store itself is reachable. Additive: `status` keeps its historical meaning (state-store readiness) so existing clients are unaffected.
+             * @default false
+             */
+            degraded: boolean;
+            /**
+             * Degraded Reasons
+             * @description Opaque, closed-vocabulary codes naming each active degradation. This endpoint is PUBLIC, so it carries no counts, source names or posture detail — the authenticated /api/diagnostics/health surface owns those.
+             */
+            degraded_reasons?: string[];
             /**
              * Es Connected
              * @description Compatibility alias for state_store_connected; this does not describe log-source Elasticsearch connectivity.
@@ -6235,6 +11212,238 @@ export interface components {
             /** @default investigate */
             source_surface: components["schemas"]["SourceSurface"];
         };
+        /**
+         * InvestigationSlots
+         * @description The investigation gate's use: ``in_use`` permits held, ``cap`` the configured
+         *     ``caps.max_concurrent``.
+         */
+        InvestigationSlots: {
+            /**
+             * Cap
+             * @default 0
+             */
+            cap: number;
+            /**
+             * In Use
+             * @default 0
+             */
+            in_use: number;
+        };
+        /**
+         * InvestigationView
+         * @description One AI investigation run as the Console sees it (SPEC §4.5 WP08, D10).
+         *
+         *     Ids, enums, ISO timestamps and integers only (#7, #9): never a title, entity, rule
+         *     or model text, and never a person's name in a broadcast. ``case_id`` is ``None``
+         *     while a run on new events has not attached its case yet. ``deadline_at`` is
+         *     ``started_at`` plus ``time_cap_seconds`` (the run's model-call cap).
+         *
+         *     ``requested_by_you`` and ``requested_by`` are filled only by the caller-scoped
+         *     route: ``requested_by_you`` for everyone, ``requested_by`` (the requester's user
+         *     name) only for a holder of ``users:manage``. The ``case.investigation`` frame drops
+         *     both (``realtime.publish_case_investigation``).
+         */
+        InvestigationView: {
+            /** Case Id */
+            case_id?: string | null;
+            /** Deadline At */
+            deadline_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Outcome */
+            outcome?: ("decided" | "routed_to_person" | "closed_by_policy" | "unchanged" | "cancelled" | "failed") | null;
+            /**
+             * Phase
+             * @default queued
+             * @enum {string}
+             */
+            phase: "queued" | "triage" | "specialist" | "evidence" | "verdict" | "decision";
+            /**
+             * Queued At
+             * @default
+             */
+            queued_at: string;
+            /** Requested By */
+            requested_by?: string | null;
+            /**
+             * Requested By You
+             * @default false
+             */
+            requested_by_you: boolean;
+            /** Run Id */
+            run_id: string;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * State
+             * @default queued
+             * @enum {string}
+             */
+            state: "queued" | "running" | "finished";
+            /** Status After */
+            status_after?: string | null;
+            /**
+             * Time Cap Seconds
+             * @default 0
+             */
+            time_cap_seconds: number;
+            /**
+             * Trigger
+             * @default automatic
+             * @enum {string}
+             */
+            trigger: "automatic" | "manual" | "job" | "drain" | "detection";
+            /** Verdict After */
+            verdict_after?: string | null;
+        };
+        /**
+         * InvestigationsActive
+         * @description ``GET /api/investigations/active`` (SPEC §4.5 WP08). Memory only: ``items`` are
+         *     the queued or running runs whose case is known, ``recent`` the runs that finished in
+         *     the last 120 s, ``new_runs`` the count of runs whose case does not exist yet.
+         *     ``process_local`` is always true: another backend replica's runs are not seen.
+         */
+        InvestigationsActive: {
+            /** Generated At */
+            generated_at?: string;
+            /** Items */
+            items?: components["schemas"]["InvestigationView"][];
+            /**
+             * New Runs
+             * @default 0
+             */
+            new_runs: number;
+            /**
+             * Process Local
+             * @default true
+             */
+            process_local: boolean;
+            /** Recent */
+            recent?: components["schemas"]["InvestigationView"][];
+            slots?: components["schemas"]["InvestigationSlots"];
+        };
+        /** JobFailure */
+        JobFailure: {
+            /**
+             * Item Ref
+             * @default
+             */
+            item_ref: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+        };
+        /**
+         * JobKind
+         * @description Registered server-owned long-operation kinds.
+         * @enum {string}
+         */
+        JobKind: "case_reinvestigate" | "case_lifecycle" | "case_assign" | "case_tag" | "data_export_archive" | "data_export_segment" | "precedent_bootstrap" | "runbook_reindex" | "rag_import" | "rag_rebuild" | "tiered_reset" | "storage_lifecycle_apply" | "replay_experiment" | "audit_export";
+        /** JobListResponse */
+        JobListResponse: {
+            /** Jobs */
+            jobs: components["schemas"]["JobPublic"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            related?: components["schemas"]["RelatedJobsPublic"] | null;
+            system_workers?: components["schemas"]["SchedulerHealthPublic"] | null;
+            /** Total */
+            total: number;
+        };
+        /**
+         * JobProgress
+         * @description Bounded progress projection shared by Jobs, Inbox, SSE, and the Console.
+         */
+        JobProgress: {
+            /**
+             * Done
+             * @default 0
+             */
+            done: number;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Unit
+             * @default items
+             */
+            unit: string;
+        };
+        /**
+         * JobPublic
+         * @description Secret-free/self-scoped wire projection returned by the Jobs API and SSE.
+         */
+        JobPublic: {
+            /** Actor */
+            actor: string;
+            /**
+             * Cancel Requested
+             * @default false
+             */
+            cancel_requested: boolean;
+            /** Created At */
+            created_at: string;
+            /**
+             * Failure Count
+             * @default 0
+             */
+            failure_count: number;
+            /** Failures */
+            failures?: components["schemas"]["JobFailure"][];
+            /**
+             * Failures Truncated
+             * @default 0
+             */
+            failures_truncated: number;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Job Id */
+            job_id: string;
+            kind: components["schemas"]["JobKind"];
+            /** Params */
+            params?: Record<string, never>;
+            progress: components["schemas"]["JobProgress"];
+            /** Request Fingerprint */
+            request_fingerprint: string;
+            result?: components["schemas"]["JobResult"] | null;
+            /** Started At */
+            started_at?: string | null;
+            status: components["schemas"]["JobStatus"];
+        };
+        /** JobResult */
+        JobResult: {
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+            /**
+             * Kind
+             * @default summary
+             */
+            kind: string;
+        };
+        /**
+         * JobStatus
+         * @description Durable lifecycle of a server-owned operator job.
+         * @enum {string}
+         */
+        JobStatus: "queued" | "running" | "succeeded" | "partial" | "failed" | "cancelled";
+        /** JobSubmit */
+        JobSubmit: {
+            /** Idempotency Key */
+            idempotency_key: string;
+            kind: components["schemas"]["JobKind"];
+            /** Params */
+            params: Record<string, never>;
+        };
         /** LivenessResponse */
         LivenessResponse: {
             /** Service */
@@ -6248,8 +11457,266 @@ export interface components {
         LoginBody: {
             /** Password */
             password: string;
+            /**
+             * Remember
+             * @default false
+             */
+            remember: boolean;
             /** Username */
             username: string;
+        };
+        /**
+         * LookupResult
+         * @description The stored result of one lookup run (SPEC §4.10.7, §4.10.8). Every value is
+         *     untrusted plain text (#9). ``params`` are the resolved values; ``ran_by`` is
+         *     ``agentic_soc`` for a background ``on_attach`` run or the person who pressed Run.
+         *     ``table`` is ``{columns <= 6, rows <= 20, cells <= 200 chars}``: an ``aggregate``
+         *     table holds counts per key; a ``rows`` table holds raw ``log_search`` rows,
+         *     shown to people only and reduced by code to a row count and top values before
+         *     any prompt (#7). ``window_clamped`` says ``window_to`` was cut to ``ran_at``.
+         */
+        LookupResult: {
+            /** Count */
+            count?: number | null;
+            /**
+             * Count Relation
+             * @default eq
+             * @enum {string}
+             */
+            count_relation: "eq" | "gte";
+            /** Facts */
+            facts?: {
+                [key: string]: string;
+            }[];
+            /** Params */
+            params?: {
+                [key: string]: string;
+            };
+            /**
+             * Ran At
+             * @default
+             */
+            ran_at: string;
+            /**
+             * Ran By
+             * @default
+             */
+            ran_by: string;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "empty" | "partial" | "error" | "not_applicable";
+            /** Table */
+            table?: Record<string, never> | null;
+            /** Table Kind */
+            table_kind?: ("aggregate" | "rows") | null;
+            /** Tool */
+            tool: string;
+            /**
+             * Window Clamped
+             * @default false
+             */
+            window_clamped: boolean;
+            /**
+             * Window From
+             * @default
+             */
+            window_from: string;
+            /**
+             * Window To
+             * @default
+             */
+            window_to: string;
+        };
+        /**
+         * LookupTemplate
+         * @description A declarative, read-only lookup a Lookup step runs (SPEC §4.10.8). ``filter``
+         *     maps a field (validated against the evidence-fields grammar) to a literal or one
+         *     ``{{template value}}``, at most 8 entries; ``group_by`` (``log_stats`` only) at
+         *     most 2 fields; ``indicator`` (``enrich`` only) one template value. The window
+         *     spans at most 30 days; ``log_search`` returns at most 20 rows.
+         */
+        LookupTemplate: {
+            /** Filter */
+            filter?: {
+                [key: string]: string;
+            };
+            /** Group By */
+            group_by?: string[];
+            /** Indicator */
+            indicator?: string | null;
+            /**
+             * Limit
+             * @default 20
+             */
+            limit: number;
+            /**
+             * Run
+             * @default on_attach
+             * @enum {string}
+             */
+            run: "on_attach" | "on_demand";
+            /**
+             * Tool
+             * @enum {string}
+             */
+            tool: "log_stats" | "log_search" | "enrich" | "related_cases" | "campaign" | "mitre";
+            /**
+             * Window
+             * @default case_first_seen-1h..case_last_seen+1h
+             */
+            window: string;
+        };
+        /**
+         * MatchExplanation
+         * @description Why a runbook was chosen (SPEC §4.10.4). ``tier`` is 3 (rule matched), 2
+         *     (technique matched, the runbook names no rules), 1 (other criteria only) or 0 (the
+         *     fallback). ``tie`` says a tie survived to the id rule.
+         */
+        MatchExplanation: {
+            /** Matched */
+            matched?: components["schemas"]["MatchedCriterion"][];
+            /** Missed */
+            missed?: components["schemas"]["MissedCriterion"][];
+            /**
+             * Tie
+             * @default false
+             */
+            tie: boolean;
+            /** Tier */
+            tier: number;
+        };
+        /**
+         * MatchPreview
+         * @description ``POST /api/runbooks/match-preview`` (SPEC §4.10.15a): which of the last 500
+         *     cases in 30 days the definition would get. Nothing is attached and no metric
+         *     changes. ``truncated`` says a list was cut at 50; ``counts`` are always exact.
+         */
+        MatchPreview: {
+            /** Another Wins */
+            another_wins?: components["schemas"]["MatchPreviewOther"][];
+            /**
+             * Considered
+             * @default 0
+             */
+            considered: number;
+            counts?: components["schemas"]["MatchPreviewCounts"];
+            /** Gets It */
+            gets_it?: components["schemas"]["MatchPreviewCase"][];
+            /** Near Misses */
+            near_misses?: components["schemas"]["MatchPreviewNearMiss"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /**
+             * Window Label
+             * @default
+             */
+            window_label: string;
+        };
+        /**
+         * MatchPreviewCase
+         * @description A case the previewed runbook would get, with why.
+         */
+        MatchPreviewCase: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            explanation?: components["schemas"]["MatchExplanation"] | null;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /**
+         * MatchPreviewCounts
+         * @description Exact group sizes; each list above holds at most 50.
+         */
+        MatchPreviewCounts: {
+            /**
+             * Another Wins
+             * @default 0
+             */
+            another_wins: number;
+            /**
+             * Gets It
+             * @default 0
+             */
+            gets_it: number;
+            /**
+             * Near Misses
+             * @default 0
+             */
+            near_misses: number;
+        };
+        /**
+         * MatchPreviewNearMiss
+         * @description A case that nearly matched, with the criteria that failed.
+         */
+        MatchPreviewNearMiss: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            /** Failed */
+            failed?: components["schemas"]["MissedCriterion"][];
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /**
+         * MatchPreviewOther
+         * @description A case another runbook would win, naming the winner.
+         */
+        MatchPreviewOther: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Winner Id */
+            winner_id: string;
+            /**
+             * Winner Title
+             * @default
+             */
+            winner_title: string;
+        };
+        /**
+         * MatchedCriterion
+         * @description A criterion that matched, and the case value that matched it.
+         */
+        MatchedCriterion: {
+            /**
+             * Criterion
+             * @enum {string}
+             */
+            criterion: "rule_ids" | "mitre" | "entity_types" | "severity_at_least" | "sources" | "verdicts" | "statuses" | "any_tags" | "min_event_count" | "always";
+            /** Value */
+            value?: string | number | string[] | null;
         };
         /** MemoryCreate */
         MemoryCreate: {
@@ -6277,6 +11744,41 @@ export interface components {
             /** Entries */
             entries?: Record<string, never>[];
         };
+        /**
+         * MemoryProposal
+         * @description A memory change the MODEL proposed (§4.8). Never executed by the engine: the
+         *     UI confirms it through the existing memory routes under ``memory:manage``.
+         *     ``remove`` takes exact entry ids only (no text matching from chat).
+         */
+        MemoryProposal: {
+            /** Ids */
+            ids?: string[];
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "add" | "remove";
+            /** Text */
+            text?: string | null;
+        };
+        /**
+         * MemorySuggestion
+         * @description A durable fact the chat agent NOTICED and proposes to remember. The UI shows
+         *     it for the analyst to confirm before it is saved — the agent never auto-saves a
+         *     suggestion (only explicit "remember: …" commands are executed).
+         */
+        MemorySuggestion: {
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+        };
         /** MemoryUpdate */
         MemoryUpdate: {
             /** Active */
@@ -6290,10 +11792,179 @@ export interface components {
             /** Text */
             text?: string | null;
         };
+        /**
+         * MetricsBreakdown
+         * @description ``GET /api/metrics/breakdown`` (SPEC §4.4.2): exact case or usage counts by one
+         *     or two fields over a window, from the same engine as the chat's ``case_stats``,
+         *     so dashboards and chat agree on every number. ``exact`` is false and ``partial``
+         *     true when a store failure cut the scan (the figures are then lower bounds, said
+         *     so by the widget). ``multi_valued`` warns that rows do not sum to ``total``.
+         *     ``missing_created`` counts the matching records with no readable creation time
+         *     (cases) or timestamp (usage), never silently dropped; ``missing_in_total`` says
+         *     whether ``total`` holds them (all time: yes, in the "no date" bucket; a bounded
+         *     window cannot place them).
+         */
+        MetricsBreakdown: {
+            /** Bucket */
+            bucket?: ("hour" | "day" | "week") | null;
+            /** Buckets */
+            buckets?: components["schemas"]["MetricsBreakdownBucket"][];
+            /**
+             * By
+             * @enum {string}
+             */
+            by: "rule" | "source" | "severity" | "status" | "verdict" | "closed_by" | "assignee" | "mitre_tactic" | "mitre_technique" | "surface" | "role" | "model" | "provider" | "service_tier";
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Groups */
+            groups?: components["schemas"]["MetricsBreakdownGroup"][];
+            /**
+             * Kind
+             * @default cases
+             * @enum {string}
+             */
+            kind: "cases" | "usage";
+            /**
+             * Missing Created
+             * @default 0
+             */
+            missing_created: number;
+            /**
+             * Missing In Total
+             * @default true
+             */
+            missing_in_total: boolean;
+            /**
+             * Multi Valued
+             * @default false
+             */
+            multi_valued: boolean;
+            other?: components["schemas"]["MetricsBreakdownOther"] | null;
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /** Partial Reason */
+            partial_reason?: string | null;
+            /** Status Group */
+            status_group?: ("open" | "closed") | null;
+            /** Then */
+            then?: ("rule" | "source" | "severity" | "status" | "verdict" | "closed_by" | "assignee" | "mitre_tactic" | "mitre_technique" | "surface" | "role" | "model" | "provider" | "service_tier") | null;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /** Window From */
+            window_from?: string | null;
+            /**
+             * Window Label
+             * @default
+             */
+            window_label: string;
+            /** Window To */
+            window_to?: string | null;
+        };
+        /**
+         * MetricsBreakdownBucket
+         * @description One zero-filled calendar bucket of a bucketed breakdown, in order. When ``top``
+         *     cut groups, ``other_count`` is this bucket's share of ``other`` (``count``, or
+         *     ``calls`` for usage), so the bucket's listed groups plus it are the bucket's total;
+         *     ``None`` when nothing was cut.
+         */
+        MetricsBreakdownBucket: {
+            /**
+             * In Progress
+             * @default false
+             */
+            in_progress: boolean;
+            /** Label */
+            label: string;
+            /** Other Count */
+            other_count?: number | null;
+        };
+        /**
+         * MetricsBreakdownGroup
+         * @description One row of a breakdown. ``key`` is the ``by`` value (``None`` is the empty
+         *     group, for example the unassigned cases); ``then_key`` the ``then`` value;
+         *     ``bucket`` the zero-filled calendar bucket label. Keys are untrusted plain
+         *     strings (rule ids, source names, technique names). Case metrics are filled for
+         *     ``kind=cases`` and ``None`` for ``kind=usage``; ``calls`` and ``cost_usd`` the
+         *     other way round (for usage ``count`` equals ``calls``).
+         */
+        MetricsBreakdownGroup: {
+            /** Analyst Fp */
+            analyst_fp?: number | null;
+            /** Analyst Tp */
+            analyst_tp?: number | null;
+            /** Analyst Ungraded */
+            analyst_ungraded?: number | null;
+            /** Bucket */
+            bucket?: string | null;
+            /** Calls */
+            calls?: number | null;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Key */
+            key?: string | null;
+            /** Open Now */
+            open_now?: number | null;
+            /** Then Key */
+            then_key?: string | null;
+            /** Verdict Fp */
+            verdict_fp?: number | null;
+            /** Verdict Needs Human */
+            verdict_needs_human?: number | null;
+            /** Verdict Tp */
+            verdict_tp?: number | null;
+            /** Verdicted */
+            verdicted?: number | null;
+        };
+        /**
+         * MetricsBreakdownOther
+         * @description The exact remainder past ``top``: how many records and how many groups.
+         */
+        MetricsBreakdownOther: {
+            /** Calls */
+            calls?: number | null;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /**
+             * Groups
+             * @default 0
+             */
+            groups: number;
+        };
         /** MfaCodeBody */
         MfaCodeBody: {
             /** Code */
             code: string;
+        };
+        /** MfaEnrollConfirmBody */
+        MfaEnrollConfirmBody: {
+            /** Code */
+            code: string;
+            /** Pending Token */
+            pending_token: string;
+        };
+        /** MfaEnrollSetupBody */
+        MfaEnrollSetupBody: {
+            /** Pending Token */
+            pending_token: string;
         };
         /** MfaVerifyBody */
         MfaVerifyBody: {
@@ -6301,6 +11972,21 @@ export interface components {
             code: string;
             /** Pending Token */
             pending_token: string;
+        };
+        /**
+         * MissedCriterion
+         * @description A criterion that failed: what the runbook expects and what the case has.
+         */
+        MissedCriterion: {
+            /** Actual */
+            actual?: string | number | string[] | null;
+            /**
+             * Criterion
+             * @enum {string}
+             */
+            criterion: "rule_ids" | "mitre" | "entity_types" | "severity_at_least" | "sources" | "verdicts" | "statuses" | "any_tags" | "min_event_count" | "always";
+            /** Expected */
+            expected?: string | number | string[] | null;
         };
         /**
          * ModelConfig
@@ -6349,6 +12035,11 @@ export interface components {
         };
         /** ModelTestBody */
         ModelTestBody: {
+            /**
+             * Mode
+             * @default chat
+             */
+            mode: string;
             /** Model */
             model: string;
             /**
@@ -6393,11 +12084,16 @@ export interface components {
         };
         /**
          * NotificationProvidersResponse
-         * @description The notification providers catalog envelope (no secrets — names/ids only).
+         * @description The notification providers catalog envelope (no secrets, names and ids only).
+         *
+         *     ``channel_types`` holds the registered channel type ids as plain strings, the
+         *     shape ``notifications.channel.channel_types()`` returns (``["email", "slack",
+         *     ...]``). Typing it as a list of objects made the response validation fail, so
+         *     the route answered 500 instead of the catalog.
          */
         NotificationProvidersResponse: {
             /** Channel Types */
-            channel_types?: Record<string, never>[];
+            channel_types?: string[];
             /** Email Presets */
             email_presets?: Record<string, never>[];
             /** Template Ids */
@@ -6455,40 +12151,144 @@ export interface components {
             /** Source */
             source?: Record<string, never>;
         };
-        /**
-         * PlaybookCreateRequest
-         * @description Create one operator-owned Markdown playbook.
-         */
-        PlaybookCreateRequest: {
-            /** Content */
-            content: string;
-            /** Id */
-            id: string;
-        };
-        /**
-         * PlaybookDryRunRequest
-         * @description Synthetic cluster attributes for deterministic procedure diagnostics.
-         */
-        PlaybookDryRunRequest: {
-            /** @default rule */
-            entity_type: components["schemas"]["EntityType"];
+        /** PersonActivity */
+        PersonActivity: {
             /**
-             * Event Count
-             * @default 1
+             * Ack Samples
+             * @default 0
              */
-            event_count: number;
-            /** Rule Ids */
-            rule_ids?: string[];
+            ack_samples: number;
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+            /** Bulk */
+            bulk: {
+                [key: string]: number;
+            };
+            /** Closed By */
+            closed_by: {
+                [key: string]: number;
+            };
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Daily */
+            daily: components["schemas"]["TeamDay"][];
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /**
+             * Key
+             * @description The normalised username; empty for Not attributed.
+             */
+            key: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "account" | "environment" | "demo" | "deleted" | "unattributed";
+            /** Last Active */
+            last_active?: string | null;
+            /** Median Ack Seconds */
+            median_ack_seconds?: number | null;
+            reviews: components["schemas"]["TeamReviews"];
+            /**
+             * Role
+             * @default
+             */
+            role: string;
+            /** Username */
+            username: string;
+        };
+        /** PingEvent */
+        PingEvent: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "ping";
         };
         /**
-         * PlaybookUpdateRequest
-         * @description Replace one operator-owned Markdown playbook; the id remains immutable.
+         * PrecedentBootstrapRequest
+         * @description An explicit, honest ratification of MODEL verdicts as weak precedent.
          */
-        PlaybookUpdateRequest: {
-            /** Content */
-            content: string;
-            /** Expected Revision */
-            expected_revision?: number | null;
+        PrecedentBootstrapRequest: {
+            /**
+             * Acknowledgement
+             * @description Must be exactly: I am ratifying model verdicts, not independent analyst ground truth
+             */
+            acknowledgement: string;
+            /**
+             * Batch Id
+             * @default
+             */
+            batch_id: string;
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+            /**
+             * Limit
+             * @default 200
+             */
+            limit: number;
+        };
+        /**
+         * PrecedentExclusionRequest
+         * @description Exclude one or more cases from the precedent corpus.
+         *
+         *     Supply ``case_ids`` directly, or ``select`` a population by the projection's OWN
+         *     metadata keys. Free-text rule-title matching is deliberately NOT offered: a title is
+         *     content, and a detection-content update rewrites it underneath a saved selection.
+         */
+        PrecedentExclusionRequest: {
+            /** Case Ids */
+            case_ids?: string[];
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Reason
+             * @default other
+             */
+            reason: string;
+            /** Select */
+            select?: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * PrecedentRepairRequest
+         * @description Re-render stored precedent from the CURRENT builder and rewrite what drifted.
+         *
+         *     There is no selector here, and that is the design. No metadata key records which
+         *     generation of the builder produced a chunk's text, so the ONLY honest selector is
+         *     to render each case again through the same projector the projection uses and
+         *     compare the two strings. A free-text selector over chunk TEXT would be strictly
+         *     worse than the free-text metadata selector this module already refuses: precedent
+         *     text carries the analyst note, the model's recommended action and log-derived
+         *     evidence summaries, so matching prose means matching attacker- and
+         *     operator-influenceable content (#9).
+         */
+        PrecedentRepairRequest: {
+            /**
+             * Dry Run
+             * @default true
+             */
+            dry_run: boolean;
         };
         /** PricingBody */
         PricingBody: {
@@ -6496,6 +12296,19 @@ export interface components {
             input_per_million: number;
             /** Output Per Million */
             output_per_million: number;
+        };
+        /**
+         * ProposalBulkRejectRequest
+         * @description Explicit ids plus one audited reason for clearing a review queue.
+         */
+        ProposalBulkRejectRequest: {
+            /** Ids */
+            ids?: string[];
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
         };
         /**
          * ProviderSecretsBody
@@ -6542,6 +12355,109 @@ export interface components {
             text: string;
             /** Title */
             title: string;
+        };
+        /**
+         * RbacStatus
+         * @description The state of role-based access, as ``GET /api/rbac`` reports it.
+         */
+        RbacStatus: {
+            /**
+             * Auth Enabled
+             * @description Whether sign-in is on. Without it roles have no effect.
+             */
+            auth_enabled: boolean;
+            /**
+             * Blockers
+             * @description Why the caller may not change it: auth_off, not_super_admin, read_only_settings.
+             */
+            blockers?: string[];
+            /**
+             * Caller Role
+             * @description The caller's stored role, even while role-based access is off (empty with sign-in off).
+             * @default
+             */
+            caller_role: string;
+            /**
+             * Can Change
+             * @description Whether the caller may turn it on or off now (no blockers).
+             */
+            can_change: boolean;
+            /**
+             * Enabled
+             * @description Whether role-based access is on (``rbac.enabled``).
+             */
+            enabled: boolean;
+            /**
+             * Role Counts
+             * @description Active accounts per stored role (environment accounts included). Only for a caller holding users:manage; null otherwise.
+             */
+            role_counts?: {
+                [key: string]: number;
+            } | null;
+            /**
+             * Super Admin Count
+             * @description Active Super admin accounts: persisted ones, plus the environment administrator when it is configured and no persisted user has its name.
+             * @default 0
+             */
+            super_admin_count: number;
+        };
+        /**
+         * RbacUpdate
+         * @description ``PUT /api/rbac``: the requested state. A JSON boolean only.
+         */
+        RbacUpdate: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /**
+         * RbacUpdateResult
+         * @description The answer to ``PUT /api/rbac``: the new state and whether it changed.
+         */
+        RbacUpdateResult: {
+            /**
+             * Auth Enabled
+             * @description Whether sign-in is on. Without it roles have no effect.
+             */
+            auth_enabled: boolean;
+            /**
+             * Blockers
+             * @description Why the caller may not change it: auth_off, not_super_admin, read_only_settings.
+             */
+            blockers?: string[];
+            /**
+             * Caller Role
+             * @description The caller's stored role, even while role-based access is off (empty with sign-in off).
+             * @default
+             */
+            caller_role: string;
+            /**
+             * Can Change
+             * @description Whether the caller may turn it on or off now (no blockers).
+             */
+            can_change: boolean;
+            /**
+             * Changed
+             * @description False when role-based access was already in the requested state.
+             */
+            changed: boolean;
+            /**
+             * Enabled
+             * @description Whether role-based access is on (``rbac.enabled``).
+             */
+            enabled: boolean;
+            /**
+             * Role Counts
+             * @description Active accounts per stored role (environment accounts included). Only for a caller holding users:manage; null otherwise.
+             */
+            role_counts?: {
+                [key: string]: number;
+            } | null;
+            /**
+             * Super Admin Count
+             * @description Active Super admin accounts: persisted ones, plus the environment administrator when it is configured and no persisted user has its name.
+             * @default 0
+             */
+            super_admin_count: number;
         };
         /** ReactionBody */
         ReactionBody: {
@@ -6591,7 +12507,12 @@ export interface components {
          * ReinvestigateRequest
          * @description Re-run the investigation on an existing case. Optional ``model`` overrides
          *     the investigation-role models (router/investigator/formatter) for THIS run via a
-         *     prefs copy (the per-call model-override technique) — no gateway plumbing change.
+         *     prefs copy (the per-call model-override technique); no gateway plumbing change.
+         *
+         *     ``wait`` (Round 16 SPEC §4.5 WP08): true (the default) answers when the run ends,
+         *     with the updated case; false answers ``202 {run_id, case_id, state: "queued"}`` at
+         *     once and the run goes on in the background (its result arrives as a case update,
+         *     a ``case.investigation`` frame and an Inbox notice).
          */
         ReinvestigateRequest: {
             /**
@@ -6601,6 +12522,47 @@ export interface components {
             analyst: string;
             /** Model */
             model?: string | null;
+            /**
+             * Wait
+             * @default true
+             */
+            wait: boolean;
+        };
+        /**
+         * RelatedBatchJobPublic
+         * @description Bounded, provider-secret-free LLM Batch summary on the unified Jobs view.
+         */
+        RelatedBatchJobPublic: {
+            /** Discount */
+            discount: number;
+            /** Id */
+            id: string;
+            /** Model */
+            model: string;
+            /** Polled At */
+            polled_at?: string | null;
+            /** Provider */
+            provider: string;
+            /** Requests */
+            requests: number;
+            /** Retrieved */
+            retrieved: number;
+            /** State */
+            state: string;
+            /** Submitted At */
+            submitted_at?: string | null;
+        };
+        /** RelatedJobsPublic */
+        RelatedJobsPublic: {
+            /** Llm Batches */
+            llm_batches?: components["schemas"]["RelatedBatchJobPublic"][];
+            /** Total */
+            total: number;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /** ReleaseCacheStatus */
         ReleaseCacheStatus: {
@@ -6663,6 +12625,360 @@ export interface components {
             /** Repository Url */
             repository_url: string;
         };
+        /**
+         * Report
+         * @description A per-user report document (SPEC §9.1): <= 40 items, strict-CAS ``version``.
+         */
+        Report: {
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Created At */
+            created_at?: string;
+            /** Id */
+            id: string;
+            /** Items */
+            items?: components["schemas"]["ReportItem"][];
+            /** Owner */
+            owner: string;
+            summary?: components["schemas"]["ReportSummary"] | null;
+            /**
+             * Template
+             * @default custom
+             * @enum {string}
+             */
+            template: "investigation" | "hunt" | "ioc" | "shift" | "posture" | "custom" | "executive" | "monthly" | "infographic" | "investigation_brief";
+            /** Title */
+            title: string;
+            /** Updated At */
+            updated_at?: string;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+        };
+        /**
+         * ReportAddRequest
+         * @description ``POST /api/reports/add``: add BY REFERENCE. The server loads the block (or the
+         *     whole answer as a ``section`` when ``block_id`` is absent) from the caller-owned
+         *     persisted Workspace message and snapshots it; client-supplied block JSON is never
+         *     accepted, so case-scoped content cannot be added by construction.
+         */
+        ReportAddRequest: {
+            /** Block Id */
+            block_id?: string | null;
+            /** Conversation Id */
+            conversation_id: string;
+            /** Message Id */
+            message_id: string;
+            /** Report Id */
+            report_id?: string | null;
+        };
+        /**
+         * ReportAddResponse
+         * @description ``POST /api/reports/add``: the updated report and the item id. ``added`` is
+         *     False when the same source was already in the report (idempotent add);
+         *     ``created_report`` is True when this add created the conversation's draft.
+         */
+        ReportAddResponse: {
+            /**
+             * Added
+             * @default true
+             */
+            added: boolean;
+            /**
+             * Created Report
+             * @default false
+             */
+            created_report: boolean;
+            /** Item Id */
+            item_id: string;
+            report: components["schemas"]["Report"];
+        };
+        /**
+         * ReportCreateRequest
+         * @description ``POST /api/reports``.
+         */
+        ReportCreateRequest: {
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /**
+             * Template
+             * @default custom
+             * @enum {string}
+             */
+            template: "investigation" | "hunt" | "ioc" | "shift" | "posture" | "custom" | "executive" | "monthly" | "infographic" | "investigation_brief";
+            /**
+             * Title
+             * @default Untitled report
+             */
+            title: string;
+        };
+        /**
+         * ReportDeleteRequest
+         * @description ``DELETE /api/reports/{id}`` body (strict tombstone under ``expected_version``).
+         */
+        ReportDeleteRequest: {
+            /** Expected Version */
+            expected_version: number;
+        };
+        /**
+         * ReportDeleteResponse
+         * @description ``DELETE /api/reports/{id}``.
+         */
+        ReportDeleteResponse: {
+            /** Id */
+            id: string;
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+        };
+        /**
+         * ReportFromAnswerRequest
+         * @description ``POST /api/reports/from-answer``: "Save as report" for one caller-owned
+         *     Workspace answer whose header-requested report could not be saved (D11). Nothing
+         *     else is client-supplied: the title and template the answer asked for are read
+         *     from the stored answer, and the content is resolved from it like every add.
+         */
+        ReportFromAnswerRequest: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Message Id */
+            message_id: string;
+        };
+        /**
+         * ReportFromConversationRequest
+         * @description ``POST /api/reports/from-conversation``: save a whole Workspace conversation as
+         *     a new report (each answer one section). ``idempotency_key`` makes a retry return
+         *     the same report.
+         */
+        ReportFromConversationRequest: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /** Template */
+            template?: string | null;
+            /** Title */
+            title?: string | null;
+        };
+        /**
+         * ReportFromConversationResponse
+         * @description The saved report, how many items it holds, how many answers did not fit
+         *     (``skipped``) and whether this call created it (False: an idempotent replay).
+         */
+        ReportFromConversationResponse: {
+            /**
+             * Created
+             * @default true
+             */
+            created: boolean;
+            /** Items */
+            items: number;
+            report: components["schemas"]["Report"];
+            /**
+             * Skipped
+             * @default 0
+             */
+            skipped: number;
+        };
+        /**
+         * ReportItem
+         * @description One report item: a validated block snapshot or a whole-answer section.
+         */
+        ReportItem: {
+            /** Added At */
+            added_at?: string;
+            /** Block */
+            block: Record<string, never>;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @default block
+             * @enum {string}
+             */
+            kind: "block" | "section";
+            /** Note */
+            note?: string | null;
+            scope?: components["schemas"]["ReportItemScope"];
+            source: components["schemas"]["ReportItemSource"];
+        };
+        /**
+         * ReportItemScope
+         * @description Scope captured server-side at add time (never client-supplied).
+         */
+        ReportItemScope: {
+            /** App Version */
+            app_version?: string | null;
+            /**
+             * Demo
+             * @default false
+             */
+            demo: boolean;
+            /** Generated By */
+            generated_by?: string | null;
+            /** Sources */
+            sources?: string[];
+            /** Window */
+            window?: string | null;
+        };
+        /**
+         * ReportItemSource
+         * @description Where an item came from (a caller-owned persisted Workspace message).
+         */
+        ReportItemSource: {
+            /** Block Id */
+            block_id?: string | null;
+            /** Conversation Id */
+            conversation_id: string;
+            /** Message Id */
+            message_id: string;
+        };
+        /**
+         * ReportListEntry
+         * @description One row of the per-user report index (``GET /api/reports``).
+         *
+         *     ``conversation_id`` names the conversation whose DRAFT this report is (at most one
+         *     per conversation); ``source_conversation_id`` names the conversation the report
+         *     came from (the one conversation all its items name, else the draft's), for the
+         *     library's "Source conversation" column. A report saved from an answer or a whole
+         *     conversation is never a draft, so it carries only the second. Rows written before
+         *     the field existed read ``None`` until the report next changes.
+         */
+        ReportListEntry: {
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Has Summary
+             * @default false
+             */
+            has_summary: boolean;
+            /** Id */
+            id: string;
+            /**
+             * Item Count
+             * @default 0
+             */
+            item_count: number;
+            /** Source Conversation Id */
+            source_conversation_id?: string | null;
+            /**
+             * Template
+             * @default custom
+             * @enum {string}
+             */
+            template: "investigation" | "hunt" | "ioc" | "shift" | "posture" | "custom" | "executive" | "monthly" | "infographic" | "investigation_brief";
+            /** Title */
+            title: string;
+            /** Updated At */
+            updated_at: string;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+        };
+        /**
+         * ReportListResponse
+         * @description ``GET /api/reports``: ``{reports: [...]}`` newest first, plus the cap.
+         */
+        ReportListResponse: {
+            /**
+             * Limit
+             * @default 100
+             */
+            limit: number;
+            /** Reports */
+            reports?: components["schemas"]["ReportListEntry"][];
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+        };
+        /**
+         * ReportPatchRequest
+         * @description ``PATCH /api/reports/{id}``: title, template, item order, notes, removals —
+         *     all under ``expected_version`` (409 ``report_version_conflict`` on mismatch).
+         *     ``item_order`` must be a permutation of the remaining item ids; ``notes`` maps
+         *     item id → note (``null`` clears it).
+         */
+        ReportPatchRequest: {
+            /** Expected Version */
+            expected_version: number;
+            /** Item Order */
+            item_order?: string[] | null;
+            /** Notes */
+            notes?: {
+                [key: string]: string | null;
+            } | null;
+            /** Remove Items */
+            remove_items?: string[] | null;
+            /** Template */
+            template?: ("investigation" | "hunt" | "ioc" | "shift" | "posture" | "custom" | "executive" | "monthly" | "infographic" | "investigation_brief") | null;
+            /** Title */
+            title?: string | null;
+        };
+        /**
+         * ReportSummary
+         * @description The AI-written executive summary (one gateway call over the §9.4 digest).
+         *     Stale when ``based_on_version`` lags the report's ``version``.
+         */
+        ReportSummary: {
+            /**
+             * Based On Version
+             * @default 0
+             */
+            based_on_version: number;
+            /**
+             * Executive Summary
+             * @default
+             */
+            executive_summary: string;
+            /** Generated At */
+            generated_at?: string;
+            /** Model */
+            model?: string | null;
+            /** Next Steps */
+            next_steps?: string[];
+            usage?: components["schemas"]["TurnUsage"];
+        };
+        /**
+         * ReportSummaryEstimate
+         * @description ``POST /api/reports/{id}/summary?dry_run=1``: what generating would cost.
+         */
+        ReportSummaryEstimate: {
+            /** Cost */
+            cost?: number | null;
+            /** Max Output Tokens */
+            max_output_tokens: number;
+            /** Model */
+            model?: string | null;
+            /** Prompt Tokens */
+            prompt_tokens: number;
+            /**
+             * Simulated
+             * @default false
+             */
+            simulated: boolean;
+            /** Total Tokens */
+            total_tokens: number;
+        };
+        /**
+         * ReportSummaryRequest
+         * @description ``POST /api/reports/{id}/summary`` body (``?dry_run=1`` is a query flag).
+         */
+        ReportSummaryRequest: {
+            /** Expected Version */
+            expected_version?: number | null;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+        };
         /** ResetBody */
         ResetBody: {
             /**
@@ -6672,6 +12988,157 @@ export interface components {
             confirm: string;
             /** Scope */
             scope: string;
+        };
+        /** ReviewAgreement */
+        ReviewAgreement: {
+            /** Agreed */
+            agreed: number;
+            /** Disagreed */
+            disagreed: number;
+            /** Interval */
+            interval?: {
+                [key: string]: number;
+            } | null;
+            /** Minimum */
+            minimum: number;
+            /** Rate */
+            rate?: number | null;
+            /** Reviews */
+            reviews: number;
+            /** Statement */
+            statement: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "insufficient";
+        };
+        /**
+         * ReviewBody
+         * @description A person's review of an automatic close. ``classification`` is their own
+         *     answer, asked before the AI verdict is compared. The optional ratings are stars
+         *     (above 0, at most 1). ``elapsed_ms`` is the time from opening the review card to
+         *     submitting it, measured by the Console.
+         */
+        ReviewBody: {
+            /** Accuracy */
+            accuracy?: number | null;
+            /** Action Appropriateness */
+            action_appropriateness?: number | null;
+            /**
+             * Classification
+             * @enum {string}
+             */
+            classification: "true_positive" | "false_positive" | "benign" | "unsure";
+            /** Elapsed Ms */
+            elapsed_ms?: number | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Reasoning Quality */
+            reasoning_quality?: number | null;
+        };
+        /** ReviewDayRow */
+        ReviewDayRow: {
+            /** Day */
+            day: string;
+            /** Eligible */
+            eligible: number;
+            /** Sampled */
+            sampled: number;
+        };
+        /** ReviewDuration */
+        ReviewDuration: {
+            /** Median */
+            median?: number | null;
+            /**
+             * Reviews
+             * @default 0
+             */
+            reviews: number;
+        };
+        /** ReviewEligible */
+        ReviewEligible: {
+            /** Complete */
+            complete: boolean;
+            /** Count */
+            count: number;
+        };
+        /** ReviewMetricsWindow */
+        ReviewMetricsWindow: {
+            /** End */
+            end: string;
+            /** Label */
+            label: string;
+            /** Start */
+            start?: string | null;
+            /** Token */
+            token: string;
+            /** Tz */
+            tz: string;
+        };
+        /** ReviewMissedThreat */
+        ReviewMissedThreat: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            /**
+             * Completed At
+             * @default
+             */
+            completed_at: string;
+            /**
+             * Rule
+             * @default
+             */
+            rule: string;
+        };
+        /** ReviewMissedThreats */
+        ReviewMissedThreats: {
+            /** Cases */
+            cases?: components["schemas"]["ReviewMissedThreat"][];
+            /** Count */
+            count: number;
+        };
+        /**
+         * ReviewResult
+         * @description The recorded review: ``agrees`` (None for unsure), whether the caller may
+         *     reopen the case (``cases:close``), and the ledger id when the case was sampled.
+         */
+        ReviewResult: {
+            /** Agrees */
+            agrees?: boolean | null;
+            /**
+             * Can Reopen
+             * @default false
+             */
+            can_reopen: boolean;
+            /** Review Id */
+            review_id?: string | null;
+            /**
+             * Sampled
+             * @default false
+             */
+            sampled: boolean;
+        };
+        /** ReviewRuleRow */
+        ReviewRuleRow: {
+            /** Agreed */
+            agreed: number;
+            /** Disagreed */
+            disagreed: number;
+            /** Reviewed */
+            reviewed: number;
+            /** Rule */
+            rule: string;
+            /** Sampled */
+            sampled: number;
         };
         /** RevokeOthersBody */
         RevokeOthersBody: {
@@ -6693,6 +13160,7 @@ export interface components {
              * @default 0
              */
             diversity: number;
+            inputs?: components["schemas"]["RiskInputs"] | null;
             /**
              * Reputation
              * @default 0
@@ -6703,6 +13171,163 @@ export interface components {
              * @default 0
              */
             total: number;
+            /**
+             * Velocity
+             * @default 0
+             */
+            velocity: number;
+            /**
+             * Volume
+             * @default 0
+             */
+            volume: number;
+        };
+        /**
+         * RiskInputs
+         * @description What one risk score was computed from (Round 16 SPEC §4.3 WP01, S3, B13).
+         *
+         *     Written beside ``compute_risk`` by the pure ``engine/risk_explain.explain_risk``
+         *     (``engine/risk.py`` stays byte-identical, #3), so a reader can re-derive every
+         *     factor and the total from the record alone, after the case attached more events or
+         *     the weights changed. Read only by explanations: nothing reads it to decide (#3).
+         *
+         *     * ``event_count``, ``span_seconds``: the scoring cluster's count and first-to-last
+         *       span; ``effective_window_seconds`` is the span floored at 1 s;
+         *       ``rate_per_minute`` is ``event_count / (effective_window_seconds / 60)`` when
+         *       ``velocity_rule == "rate"`` and ``None`` below 3 events
+         *       (``"below_min_events"``, velocity 0).
+         *     * ``rule_values``: the distinct rule values, first order, at most
+         *       :data:`RISK_INPUTS_MAX_RULE_VALUES`, each at most
+         *       :data:`RISK_INPUTS_RULE_VALUE_CHARS` characters. Source-controlled strings: a
+         *       reader renders them as text (#9). ``rule_type_count`` is exactly
+         *       ``len(cluster.rule_values)``, the count the diversity factor used.
+         *     * ``reputation_input``: the reputation passed in, before clamping to 0..100;
+         *       ``reputation_source`` says where it came from.
+         *     * ``asset_value``: the criticality the asset policy gave, before clamping;
+         *       ``asset_match`` says how (a network range, an exact entry, or none). The matched
+         *       range is never stored: every route that returns a case would return it
+         *       (SPEC Appendix C, C5).
+         *     * ``weights``, ``total_weight`` (their sum) and ``zero_weight_fallback`` (the sum
+         *       was 0, so the score divided by 1); ``refs`` the factor reference points.
+         *     * ``scored_at``: when the score was computed (the only date); ``inputs_version``.
+         */
+        RiskInputs: {
+            /**
+             * Asset Match
+             * @default none
+             * @enum {string}
+             */
+            asset_match: "network" | "exact" | "none";
+            /**
+             * Asset Value
+             * @default 0
+             */
+            asset_value: number;
+            /**
+             * Effective Window Seconds
+             * @default 1
+             */
+            effective_window_seconds: number;
+            /**
+             * Event Count
+             * @default 0
+             */
+            event_count: number;
+            /**
+             * Inputs Version
+             * @default 1
+             */
+            inputs_version: number;
+            /** Rate Per Minute */
+            rate_per_minute?: number | null;
+            refs?: components["schemas"]["RiskReferences"];
+            /**
+             * Reputation Input
+             * @default 0
+             */
+            reputation_input: number;
+            /**
+             * Reputation Source
+             * @default not_looked_up
+             * @enum {string}
+             */
+            reputation_source: "enrichment" | "not_ip_entity" | "enrichment_off" | "not_looked_up";
+            /**
+             * Rule Type Count
+             * @default 0
+             */
+            rule_type_count: number;
+            /** Rule Values */
+            rule_values?: string[];
+            /**
+             * Scored At
+             * @default
+             */
+            scored_at: string;
+            /**
+             * Span Seconds
+             * @default 0
+             */
+            span_seconds: number;
+            /**
+             * Total Weight
+             * @default 0
+             */
+            total_weight: number;
+            /**
+             * Velocity Rule
+             * @default below_min_events
+             * @enum {string}
+             */
+            velocity_rule: "below_min_events" | "rate";
+            weights?: components["schemas"]["RiskWeightsSnapshot"];
+            /**
+             * Zero Weight Fallback
+             * @default false
+             */
+            zero_weight_fallback: boolean;
+        };
+        /**
+         * RiskReferences
+         * @description The reference points at which a factor reaches full score (``engine/risk.py``).
+         */
+        RiskReferences: {
+            /**
+             * Diversity
+             * @default 5
+             */
+            diversity: number;
+            /**
+             * Velocity
+             * @default 10
+             */
+            velocity: number;
+            /**
+             * Volume
+             * @default 50
+             */
+            volume: number;
+        };
+        /**
+         * RiskWeightsSnapshot
+         * @description The five risk weights in force when a score was computed (a fixed key set).
+         */
+        RiskWeightsSnapshot: {
+            /**
+             * Asset Criticality
+             * @default 0
+             */
+            asset_criticality: number;
+            /**
+             * Diversity
+             * @default 0
+             */
+            diversity: number;
+            /**
+             * Reputation
+             * @default 0
+             */
+            reputation: number;
             /**
              * Velocity
              * @default 0
@@ -6740,6 +13365,53 @@ export interface components {
              * @default
              */
             name: string;
+        };
+        /**
+         * RuleCaseOutcomes
+         * @description The analyst-outcome family only (analyst-policy closes excluded); the AI
+         *     verdict family is never labelled as an analyst outcome.
+         */
+        RuleCaseOutcomes: {
+            /**
+             * Analyst Fp
+             * @default 0
+             */
+            analyst_fp: number;
+            /**
+             * Analyst Tp
+             * @default 0
+             */
+            analyst_tp: number;
+            /**
+             * Analyst Ungraded
+             * @default 0
+             */
+            analyst_ungraded: number;
+        };
+        /**
+         * RuleCaseRow
+         * @description One of the newest cases from the rule (at most 5), named by case number.
+         */
+        RuleCaseRow: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            /**
+             * Status
+             * @default
+             */
+            status: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Verdict */
+            verdict?: string | null;
         };
         /**
          * RuleDefinition
@@ -6826,6 +13498,264 @@ export interface components {
             lookback_seconds?: number | null;
         };
         /**
+         * RuleSeverityPoint
+         * @description One time bucket of a rule's alerts, counted per named level.
+         */
+        RuleSeverityPoint: {
+            /**
+             * Critical
+             * @default 0
+             */
+            critical: number;
+            /**
+             * High
+             * @default 0
+             */
+            high: number;
+            /**
+             * Info
+             * @default 0
+             */
+            info: number;
+            /**
+             * Low
+             * @default 0
+             */
+            low: number;
+            /**
+             * Medium
+             * @default 0
+             */
+            medium: number;
+            /** T */
+            t: string;
+        };
+        /**
+         * RuleSeveritySeries
+         * @description Alerts over time by named level. ``bucket`` is the bucket width ("12h").
+         */
+        RuleSeveritySeries: {
+            /**
+             * Bucket
+             * @default
+             */
+            bucket: string;
+            /** Levels */
+            levels?: ("info" | "low" | "medium" | "high" | "critical")[];
+            /** Points */
+            points?: components["schemas"]["RuleSeverityPoint"][];
+        };
+        /**
+         * RuleSuiteDefinition
+         * @description The summary of a suite detection rule (``Preferences.rule_catalog``).
+         */
+        RuleSuiteDefinition: {
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Mitre */
+            mitre?: string[];
+            /** Name */
+            name: string;
+            /** Priority */
+            priority?: number | null;
+        };
+        /**
+         * RuleSummary
+         * @description ``GET /api/rules/summary`` (SPEC §4.6.2): one rule's picture. Each section
+         *     checks its own grant and carries its own status, so the rule sheet degrades per
+         *     section. No model call (#6) and no raw rows (#7): the latest alerts come from
+         *     ``GET /api/logs?rule=``. The rule value and every IP, host and title are
+         *     untrusted plain strings (#9).
+         */
+        RuleSummary: {
+            alerts?: components["schemas"]["RuleSummaryAlerts"];
+            analyst_policy?: components["schemas"]["RuleSummaryAnalystPolicy"];
+            cases?: components["schemas"]["RuleSummaryCases"];
+            definition?: components["schemas"]["RuleSummaryDefinition"];
+            /** Rule */
+            rule: string;
+            top_source_ips?: components["schemas"]["RuleSummaryTopList"];
+            top_targets?: components["schemas"]["RuleSummaryTopList"];
+            tuning?: components["schemas"]["RuleSummaryTuning"];
+            window?: components["schemas"]["RuleSummaryWindow"];
+        };
+        /**
+         * RuleSummaryAlerts
+         * @description The alert figures. ``count_relation`` is ``gte`` when any source was sampled;
+         *     the Console then never names the count in "Open all N in Logs".
+         */
+        RuleSummaryAlerts: {
+            /** Count */
+            count?: number | null;
+            /**
+             * Count Relation
+             * @default eq
+             * @enum {string}
+             */
+            count_relation: "eq" | "gte";
+            /** First Seen */
+            first_seen?: string | null;
+            /** Last Seen */
+            last_seen?: string | null;
+            /** Reason */
+            reason?: string | null;
+            series?: components["schemas"]["RuleSeveritySeries"] | null;
+            /** Sources */
+            sources?: components["schemas"]["RuleSummarySource"][];
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+        };
+        /**
+         * RuleSummaryAnalystPolicy
+         * @description The operator's "declared benign" policy for the rule, or ``None``.
+         */
+        RuleSummaryAnalystPolicy: {
+            /** Policy */
+            policy?: Record<string, never> | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+        };
+        /**
+         * RuleSummaryCases
+         * @description Cases whose ``rule_ids`` hold the rule, exact through ``case_aggregate``.
+         */
+        RuleSummaryCases: {
+            /** Count */
+            count?: number | null;
+            /** Latest */
+            latest?: components["schemas"]["RuleCaseRow"][];
+            /** Open Now */
+            open_now?: number | null;
+            outcomes?: components["schemas"]["RuleCaseOutcomes"] | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+        };
+        /**
+         * RuleSummaryDefinition
+         * @description Where the rule is defined: ``suite`` with its summary, or ``source`` meaning
+         *     "Defined in the source SIEM" (no settings link).
+         */
+        RuleSummaryDefinition: {
+            /** Kind */
+            kind?: ("suite" | "source") | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+            suite_rule?: components["schemas"]["RuleSuiteDefinition"] | null;
+        };
+        /**
+         * RuleSummarySource
+         * @description A source that contributed to the alert figures, and whether it could filter
+         *     on the rule exactly (``False``: counted from a bounded newest-N sample).
+         */
+        RuleSummarySource: {
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+        };
+        /**
+         * RuleSummaryTopList
+         * @description A bounded top list (at most 10 rows); ``exact`` false when sampled.
+         */
+        RuleSummaryTopList: {
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Reason */
+            reason?: string | null;
+            /** Rows */
+            rows?: components["schemas"]["RuleTopRow"][];
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+        };
+        /**
+         * RuleSummaryTuning
+         * @description The rule's threshold-tuning state (needs ``automation:read``).
+         */
+        RuleSummaryTuning: {
+            /** Last Tuned */
+            last_tuned?: string | null;
+            /** Proposed Change */
+            proposed_change?: Record<string, never> | null;
+            /** Reason */
+            reason?: string | null;
+            /** Samples */
+            samples?: number | null;
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+            /** Wilson Lower Bound */
+            wilson_lower_bound?: number | null;
+        };
+        /**
+         * RuleSummaryWindow
+         * @description The window a rule summary measured: ``{label, from, to}`` (ISO UTC).
+         */
+        RuleSummaryWindow: {
+            /**
+             * From
+             * @default
+             */
+            from: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * To
+             * @default
+             */
+            to: string;
+        };
+        /**
          * RuleSuppression
          * @description Optional per-detection-rule alert-storm suppression metadata (G6 R5).
          *
@@ -6856,41 +13786,1000 @@ export interface components {
             window_seconds?: number | null;
         };
         /**
-         * RunPlaybookRequest
-         * @description Manually RUN a specific playbook on a case (F10). ``playbook_id`` selects the
-         *     playbook to FORCE-inject as TRUSTED operator procedure for a re-investigation.
+         * RuleTopRow
+         * @description One row of a top list (an IP, a host or a user) with its count. Untrusted.
          */
-        RunPlaybookRequest: {
+        RuleTopRow: {
             /**
-             * Analyst
-             * @default analyst
+             * Count
+             * @default 0
              */
-            analyst: string;
-            /** Playbook Id */
-            playbook_id: string;
+            count: number;
+            /** Kind */
+            kind?: string | null;
+            /** Value */
+            value: string;
         };
-        /** RunbookCreateRequest */
-        RunbookCreateRequest: {
+        /**
+         * RunAbandonBody
+         * @description ``POST .../runbooks/{run_id}/abandon``.
+         */
+        RunAbandonBody: {
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * RunSwitchVersionBody
+         * @description ``POST .../runbooks/{run_id}/switch-version``.
+         */
+        RunSwitchVersionBody: {
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookAppliesTo
+         * @description The first rule and technique chips of a library row; ``more`` counts the rest.
+         */
+        RunbookAppliesTo: {
+            /** Mitre */
+            mitre?: string[];
             /**
-             * Content
-             * @default
+             * More
+             * @default 0
              */
-            content: string;
+            more: number;
+            /** Rule Ids */
+            rule_ids?: string[];
+        };
+        /**
+         * RunbookAttachBody
+         * @description ``POST /api/cases/{case_id}/runbooks``: attach one runbook by hand.
+         */
+        RunbookAttachBody: {
+            /** Note */
+            note?: string | null;
+            /** Runbook Id */
+            runbook_id: string;
+        };
+        /**
+         * RunbookAttachResult
+         * @description ``POST /api/cases/{case_id}/runbooks``: the new run, or ``already_attached``
+         *     (idempotent per case and runbook, #4).
+         */
+        RunbookAttachResult: {
             /**
-             * Id
-             * @default
+             * Already Attached
+             * @default false
              */
+            already_attached: boolean;
+            progress?: components["schemas"]["RunbookProgress"] | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            run?: components["schemas"]["RunbookRun"] | null;
+        };
+        /**
+         * RunbookCandidate
+         * @description One entry of the Start runbook picker (``GET .../runbooks/candidates``).
+         */
+        RunbookCandidate: {
+            explanation?: components["schemas"]["MatchExplanation"] | null;
+            /**
+             * Group
+             * @enum {string}
+             */
+            group: "best" | "other" | "fallback" | "all" | "suggested";
+            /** Id */
             id: string;
-        };
-        /** RunbookUpdateRequest */
-        RunbookUpdateRequest: {
             /**
-             * Content
+             * Origin
+             * @enum {string}
+             */
+            origin: "builtin" | "operator" | "imported";
+            /** Phases */
+            phases?: ("triage" | "investigate" | "contain" | "eradicate" | "recover" | "close")[];
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Summary
              * @default
              */
-            content: string;
+            summary: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookCandidates
+         * @description The Start runbook picker list, best match first.
+         */
+        RunbookCandidates: {
+            /** Candidates */
+            candidates?: components["schemas"]["RunbookCandidate"][];
+        };
+        /**
+         * RunbookDefinition
+         * @description A runbook's canonical definition (SPEC §4.10.2). It has no ``version`` field:
+         *     a version is metadata of the stored document (``RunbookVersionDoc.version``) and
+         *     of a built-in's front matter. ``phases`` is ordered, 1 to 6, each used by at least
+         *     one step; ``steps`` holds 1 to 40. ``references`` are https links only, at most
+         *     10. ``review_every_days`` defaults to 180 (E6).
+         */
+        RunbookDefinition: {
+            applies_when?: components["schemas"]["AppliesWhen"];
+            /** Id */
+            id: string;
+            /** Mitre */
+            mitre?: string[];
+            /** Owner */
+            owner?: string | null;
+            /** Phases */
+            phases?: ("triage" | "investigate" | "contain" | "eradicate" | "recover" | "close")[];
+            /**
+             * Prerequisites
+             * @default
+             */
+            prerequisites: string;
+            /**
+             * Priority
+             * @default 50
+             */
+            priority: number;
+            /** References */
+            references?: string[];
+            /** Retrieval Queries */
+            retrieval_queries?: string[];
+            /**
+             * Review Every Days
+             * @default 180
+             */
+            review_every_days: number;
+            /** Steps */
+            steps?: components["schemas"]["RunbookStep"][];
+            /** Summary */
+            summary: string;
+            /** Title */
+            title: string;
+            /**
+             * Use When
+             * @default
+             */
+            use_when: string;
+        };
+        /**
+         * RunbookDetail
+         * @description ``GET /api/runbooks/{id}`` (SPEC §4.10.15a). ``draft`` and ``in_review`` are
+         *     present only to a holder of ``runbooks:manage`` or ``runbooks:publish``.
+         *     ``retired`` is the retired version of a retired runbook (its last published text,
+         *     with ``retired_by`` and ``retired_at``), which the editor shows read only and
+         *     Restore makes live again; ``None`` otherwise. A retired version is readable by
+         *     every reader of the runbook, as its published history is.
+         *     ``open_runs_by_version`` maps a version to the active runs pinned to it.
+         *     ``revision`` is the library document's CAS revision, sent back as
+         *     ``expected_revision``.
+         */
+        RunbookDetail: {
+            draft?: components["schemas"]["RunbookVersionDoc"] | null;
+            in_review?: components["schemas"]["RunbookVersionDoc"] | null;
+            live?: components["schemas"]["RunbookVersionDoc"] | null;
+            /** Open Runs By Version */
+            open_runs_by_version?: {
+                [key: string]: number;
+            };
+            retired?: components["schemas"]["RunbookVersionDoc"] | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            summary: components["schemas"]["RunbookSummary"];
+            /** Versions */
+            versions?: components["schemas"]["RunbookVersionListItem"][];
+        };
+        /**
+         * RunbookDiscardResult
+         * @description ``DELETE /api/runbooks/{id}/draft``: the runbook after its draft is gone, or
+         *     ``removed`` when it was never published (it disappears).
+         */
+        RunbookDiscardResult: {
+            detail?: components["schemas"]["RunbookDetail"] | null;
+            /** Id */
+            id: string;
+            /**
+             * Removed
+             * @default false
+             */
+            removed: boolean;
+        };
+        /**
+         * RunbookDraftBody
+         * @description ``PUT /api/runbooks/{id}/draft``: the new draft and the revision it edits.
+         */
+        RunbookDraftBody: {
+            definition?: components["schemas"]["RunbookDefinition"] | null;
             /** Expected Revision */
             expected_revision: number;
+            /** Source */
+            source?: string | null;
+        };
+        /**
+         * RunbookIssue
+         * @description One validation problem: where (``steps[3].lookup.filter``), a stable code and
+         *     a plain sentence naming the fix.
+         */
+        RunbookIssue: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+            /**
+             * Path
+             * @default
+             */
+            path: string;
+        };
+        /**
+         * RunbookLibrary
+         * @description ``GET /api/runbooks`` (the new shape): built-ins and operator runbooks. There
+         *     is no empty library: the 12 built-ins are always listed.
+         */
+        RunbookLibrary: {
+            /** Migrated Procedures */
+            migrated_procedures?: {
+                [key: string]: string;
+            };
+            migration?: components["schemas"]["RunbookMigrationNotice"] | null;
+            /** Runbooks */
+            runbooks?: components["schemas"]["RunbookSummary"][];
+        };
+        /**
+         * RunbookLookupTestBody
+         * @description ``POST /api/runbooks/lookup-test``: run a draft lookup against one case,
+         *     read-only, storing nothing.
+         */
+        RunbookLookupTestBody: {
+            /** Case Id */
+            case_id: string;
+            lookup: components["schemas"]["LookupTemplate"];
+        };
+        /**
+         * RunbookMetrics
+         * @description ``GET /api/runbooks/metrics`` (SPEC §4.10.15a). ``partial`` is true when a
+         *     ledger month document reached its cap inside the window. Every figure states its
+         *     population and none claims a runbook caused a time change.
+         */
+        RunbookMetrics: {
+            cohorts?: components["schemas"]["RunbookMetricsCohorts"];
+            coverage?: components["schemas"]["RunbookMetricsCoverage"];
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /** Per Phase */
+            per_phase?: components["schemas"]["RunbookMetricsPhaseRow"][];
+            /** Per Runbook */
+            per_runbook?: components["schemas"]["RunbookMetricsRunbookRow"][];
+            /** Per Step */
+            per_step?: components["schemas"]["RunbookMetricsStepRow"][];
+            /** Recent Runs */
+            recent_runs?: components["schemas"]["RunbookMetricsRecentRun"][];
+            /** Rules Without Runbook */
+            rules_without_runbook?: components["schemas"]["RunbookMetricsRuleGap"][];
+            /**
+             * Window Label
+             * @default
+             */
+            window_label: string;
+        };
+        /**
+         * RunbookMetricsCohort
+         * @description One response-time cohort: its size and median time to resolve.
+         */
+        RunbookMetricsCohort: {
+            /**
+             * Cases
+             * @default 0
+             */
+            cases: number;
+            /** Mttr P50 Minutes */
+            mttr_p50_minutes?: number | null;
+        };
+        /**
+         * RunbookMetricsCohorts
+         * @description Cases with and without a completed run. A comparison, never a cause.
+         */
+        RunbookMetricsCohorts: {
+            /**
+             * Note
+             * @default comparison, not cause
+             * @constant
+             */
+            note: "comparison, not cause";
+            with_completed_run?: components["schemas"]["RunbookMetricsCohort"];
+            without?: components["schemas"]["RunbookMetricsCohort"];
+        };
+        /**
+         * RunbookMetricsCoverage
+         * @description Human-handled cases in the window, and how many had a run.
+         */
+        RunbookMetricsCoverage: {
+            /**
+             * Cases With Run
+             * @default 0
+             */
+            cases_with_run: number;
+            /**
+             * Human Handled Cases
+             * @default 0
+             */
+            human_handled_cases: number;
+        };
+        /**
+         * RunbookMetricsPhaseRow
+         * @description The median time to finish one phase of one runbook.
+         */
+        RunbookMetricsPhaseRow: {
+            /** Median Minutes */
+            median_minutes?: number | null;
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "triage" | "investigate" | "contain" | "eradicate" | "recover" | "close";
+            /** Runbook Id */
+            runbook_id: string;
+        };
+        /**
+         * RunbookMetricsRecentRun
+         * @description One of the most recent runs, for the library's Recent runs panel.
+         */
+        RunbookMetricsRecentRun: {
+            /**
+             * Attached Actor
+             * @default
+             */
+            attached_actor: string;
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Duration Minutes */
+            duration_minutes?: number | null;
+            /** Run Id */
+            run_id: string;
+            /** Runbook Id */
+            runbook_id: string;
+            /**
+             * Started At
+             * @default
+             */
+            started_at: string;
+            /**
+             * Status
+             * @default active
+             * @enum {string}
+             */
+            status: "active" | "completed" | "abandoned";
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Version */
+            version?: number | null;
+        };
+        /**
+         * RunbookMetricsRuleGap
+         * @description A rule seen in the window that no Published runbook matches. Untrusted.
+         */
+        RunbookMetricsRuleGap: {
+            /**
+             * Cases
+             * @default 0
+             */
+            cases: number;
+            /** Rule */
+            rule: string;
+        };
+        /**
+         * RunbookMetricsRunbookRow
+         * @description Runs started, completed and abandoned for one runbook in the window.
+         */
+        RunbookMetricsRunbookRow: {
+            /**
+             * Abandoned
+             * @default 0
+             */
+            abandoned: number;
+            /**
+             * Completed
+             * @default 0
+             */
+            completed: number;
+            /** Id */
+            id: string;
+            /** Median Minutes To Complete */
+            median_minutes_to_complete?: number | null;
+            /**
+             * Started
+             * @default 0
+             */
+            started: number;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /**
+         * RunbookMetricsStepRow
+         * @description The median time and the skip count of one step.
+         */
+        RunbookMetricsStepRow: {
+            /** Median Minutes */
+            median_minutes?: number | null;
+            /** Runbook Id */
+            runbook_id: string;
+            /**
+             * Skipped
+             * @default 0
+             */
+            skipped: number;
+            /** Step Id */
+            step_id: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /**
+         * RunbookMigratedFrom
+         * @description The legacy document a migrated runbook came from (SPEC §4.10.17).
+         */
+        RunbookMigratedFrom: {
+            /** Id */
+            id: string;
+            /** Namespace */
+            namespace: string;
+            /** Revision */
+            revision?: number | null;
+        };
+        /**
+         * RunbookMigrationNotice
+         * @description The one-shot migration's counts (from its marker, §4.10.17), for the Runbooks
+         *     page's dismissible intro: "Your 10 procedures from the previous version are now
+         *     runbooks. 9 are published and due for review; 1 is a draft with problems to fix."
+         *     ``None`` on the library response when nothing was migrated.
+         */
+        RunbookMigrationNotice: {
+            /** Completed At */
+            completed_at?: string | null;
+            /**
+             * Draft
+             * @default 0
+             */
+            draft: number;
+            /**
+             * Published
+             * @default 0
+             */
+            published: number;
+            /**
+             * Skipped
+             * @default 0
+             */
+            skipped: number;
+        };
+        /**
+         * RunbookProgress
+         * @description Progress derived on read from a run (never stored). ``done`` counts only Done
+         *     steps; Not applicable is counted on its own and never as done. The chip reads
+         *     "4/11", "5/9 · 1 blocked" or "4/11 · 1 waiting".
+         */
+        RunbookProgress: {
+            /**
+             * Blocked
+             * @default 0
+             */
+            blocked: number;
+            /**
+             * Done
+             * @default 0
+             */
+            done: number;
+            /**
+             * Not Applicable
+             * @default 0
+             */
+            not_applicable: number;
+            /**
+             * Required Open
+             * @default 0
+             */
+            required_open: number;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Waiting
+             * @default 0
+             */
+            waiting: number;
+        };
+        /**
+         * RunbookProgressBody
+         * @description ``POST /api/runbooks/progress``: progress for up to 100 cases at once, each id
+         *     1 to 128 characters (an id becomes part of a store key).
+         */
+        RunbookProgressBody: {
+            /** Case Ids */
+            case_ids?: string[];
+        };
+        /**
+         * RunbookPublishBody
+         * @description ``POST /api/runbooks/{id}/publish`` (SPEC §4.10.15): the version and the
+         *     library revision the publisher reviewed, both required. Publishing is the one
+         *     transition that makes runbook text trusted investigator guidance (#9), and drafts
+         *     are edited in place, so a publish is bound to exactly what was reviewed: a stale
+         *     ``expected_revision`` answers ``409 runbook_conflict`` with the latest state.
+         *     ``content_hash`` (the reviewed version's ``RunbookVersionDoc.content_hash``) also
+         *     binds it across a discard and re-create, where a new library document can repeat
+         *     an old revision number; when given, a different stored hash is ``409
+         *     runbook_conflict`` too. The Console always sends it.
+         */
+        RunbookPublishBody: {
+            /** Content Hash */
+            content_hash?: string | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookRef
+         * @description A pinned reference to one version of a runbook (``derived_from``).
+         */
+        RunbookRef: {
+            /** Id */
+            id: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookRejectBody
+         * @description ``POST /api/runbooks/{id}/reject``: back to draft with a reason.
+         */
+        RunbookRejectBody: {
+            /** Expected Revision */
+            expected_revision?: number | null;
+            /** Reason */
+            reason: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookReviewNote
+         * @description A reviewer's note on a version (a rejection reason, a review comment).
+         */
+        RunbookReviewNote: {
+            /** At */
+            at: string;
+            /** By */
+            by: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * RunbookRevisionBody
+         * @description ``retire``, ``restore``, ``reviewed``, ``duplicate`` and ``versions/{n}/restore``:
+         *     the revision the action is based on (optional for the idempotent ones).
+         */
+        RunbookRevisionBody: {
+            /** Expected Revision */
+            expected_revision?: number | null;
+        };
+        /**
+         * RunbookRun
+         * @description One runbook run on one case (SPEC §4.10.7). A run pins its version: the
+         *     ``snapshot`` lets it render without the catalog, and "Switch to v5" is an
+         *     explicit, audited step. ``attached_reason`` is the match explanation
+         *     (:class:`MatchExplanation`) or ``{by: <user>, note}``. Completing or abandoning a
+         *     run never changes the case (#3); one run per case and runbook (#4).
+         */
+        RunbookRun: {
+            /** Abandoned Reason */
+            abandoned_reason?: string | null;
+            /**
+             * Attached Actor
+             * @default
+             */
+            attached_actor: string;
+            /**
+             * Attached At
+             * @default
+             */
+            attached_at: string;
+            /**
+             * Attached By
+             * @enum {string}
+             */
+            attached_by: "rule" | "fallback" | "person" | "suggestion";
+            /** Attached Reason */
+            attached_reason?: Record<string, never>;
+            /** Case Id */
+            case_id: string;
+            /** Completed At */
+            completed_at?: string | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /** Run Id */
+            run_id: string;
+            /** Runbook Id */
+            runbook_id: string;
+            snapshot: components["schemas"]["RunbookDefinition"];
+            /**
+             * Status
+             * @default active
+             * @enum {string}
+             */
+            status: "active" | "completed" | "abandoned";
+            /** Steps */
+            steps?: {
+                [key: string]: components["schemas"]["StepState"];
+            };
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookRunUpdate
+         * @description The result of any write to one run: a step update, a lookup, an approval, an AI
+         *     draft or its confirmation, a version switch or an abandon. ``revision`` is the case
+         *     document's CAS revision after the write. ``role_labels`` is the run's roles by
+         *     their labels, as on :class:`CaseRunbooks`.
+         */
+        RunbookRunUpdate: {
+            progress: components["schemas"]["RunbookProgress"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /** Role Labels */
+            role_labels?: {
+                [key: string]: string;
+            };
+            run: components["schemas"]["RunbookRun"];
+        };
+        /**
+         * RunbookSourceBody
+         * @description ``POST /api/runbooks`` (create a draft), ``/validate``, ``/import`` and
+         *     ``/match-preview``: a definition, or Markdown source, or (match preview only) an
+         *     existing runbook id.
+         *
+         *     ``content`` is the old write shape's key, accepted only so the route can tell
+         *     ``{id, content}`` apart after validation: any request that sets it (``"content" in
+         *     model_fields_set``) answers ``410 runbooks_moved``, because an old-shape write
+         *     cannot be honoured without making unreviewed text trusted (#9, E14).
+         */
+        RunbookSourceBody: {
+            /**
+             * Content
+             * @description Legacy key of the old write shape; any value answers 410 runbooks_moved.
+             */
+            content?: unknown;
+            definition?: components["schemas"]["RunbookDefinition"] | null;
+            /** Id */
+            id?: string | null;
+            /** Source */
+            source?: string | null;
+        };
+        /**
+         * RunbookStep
+         * @description One step (SPEC §4.10.2, §4.10.3). ``id`` is a slug unique in the runbook and
+         *     stable across versions. Checks are written as questions. ``instructions`` is
+         *     restricted Markdown for people (never part of the investigator prompt);
+         *     ``focus``, ``escalate_if`` and ``benign_if`` are what the investigator reads.
+         *     ``lookup`` is required on Lookup steps and absent elsewhere; ``options`` holds 2
+         *     to 6 options on Decision steps. ``approval_role`` is honoured only when step
+         *     approvals are on; ``target_minutes`` is shown, never enforced.
+         */
+        RunbookStep: {
+            /** Approval Role */
+            approval_role?: string | null;
+            /** Benign If */
+            benign_if?: string | null;
+            /** D3Fend */
+            d3fend?: string | null;
+            /** Escalate If */
+            escalate_if?: string | null;
+            /**
+             * Evidence
+             * @default none
+             * @enum {string}
+             */
+            evidence: "none" | "note" | "note_or_attachment";
+            /** Focus */
+            focus?: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Instructions
+             * @default
+             */
+            instructions: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "check" | "lookup" | "decision" | "action" | "record";
+            lookup?: components["schemas"]["LookupTemplate"] | null;
+            /** Options */
+            options?: components["schemas"]["DecisionOption"][];
+            /** Owner Role */
+            owner_role?: string | null;
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "triage" | "investigate" | "contain" | "eradicate" | "recover" | "close";
+            /** React */
+            react?: string | null;
+            /**
+             * Required
+             * @default true
+             */
+            required: boolean;
+            /** Target Minutes */
+            target_minutes?: number | null;
+            /** Title */
+            title: string;
+        };
+        /**
+         * RunbookStepDraftResult
+         * @description ``POST .../steps/{step_id}/draft``: the run with the step's new AI draft
+         *     (labelled "AI draft" until a person confirms it), or with ``dry_run=true`` only
+         *     the estimate of the one gateway call (#6).
+         */
+        RunbookStepDraftResult: {
+            estimate?: components["schemas"]["ReportSummaryEstimate"] | null;
+            update?: components["schemas"]["RunbookRunUpdate"] | null;
+        };
+        /**
+         * RunbookStepUpdate
+         * @description ``PATCH /api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}``. A stale
+         *     ``expected_revision`` is never retried (``409 runbook_conflict``). ``assignee``
+         *     sent as ``null`` clears the assignment; an absent key leaves it (the route reads
+         *     ``model_fields_set``).
+         */
+        RunbookStepUpdate: {
+            action_record?: components["schemas"]["StepActionRecordInput"] | null;
+            /** Assignee */
+            assignee?: string | null;
+            decision?: components["schemas"]["StepDecisionInput"] | null;
+            evidence_link?: components["schemas"]["StepEvidenceLinkInput"] | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Note */
+            note?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Status */
+            status?: ("todo" | "in_progress" | "done" | "not_applicable" | "blocked") | null;
+        };
+        /**
+         * RunbookSuggestion
+         * @description ``POST /api/cases/{case_id}/runbooks/suggest``: the AI's suggestion, which a
+         *     person must select (it is never attached), or with ``dry_run=true`` only the
+         *     estimate of the one gateway call (#6).
+         */
+        RunbookSuggestion: {
+            candidate?: components["schemas"]["RunbookCandidate"] | null;
+            estimate?: components["schemas"]["ReportSummaryEstimate"] | null;
+        };
+        /**
+         * RunbookSummary
+         * @description One library row (SPEC §4.10.15a). ``state`` is the most advanced visible
+         *     state. ``runs_30d`` is ``None`` without ``cases:read``. ``review_due_at`` is
+         *     ``last_reviewed_at + review_every_days``; imported content is due at once (D38).
+         *     ``replaced_by`` names the Published operator copy that stopped a built-in
+         *     matching. Titles and summaries are plain text.
+         */
+        RunbookSummary: {
+            applies_to?: components["schemas"]["RunbookAppliesTo"];
+            derived_from?: components["schemas"]["RunbookRef"] | null;
+            /** Draft Version */
+            draft_version?: number | null;
+            /** Id */
+            id: string;
+            /** In Review Version */
+            in_review_version?: number | null;
+            /** Last Reviewed At */
+            last_reviewed_at?: string | null;
+            /** Last Reviewed By */
+            last_reviewed_by?: string | null;
+            /** Live Version */
+            live_version?: number | null;
+            migrated_from?: components["schemas"]["RunbookMigratedFrom"] | null;
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "builtin" | "operator" | "imported";
+            /** Owner */
+            owner?: string | null;
+            /** Phases */
+            phases?: ("triage" | "investigate" | "contain" | "eradicate" | "recover" | "close")[];
+            /** Replaced By */
+            replaced_by?: string | null;
+            /** Replaces */
+            replaces?: string | null;
+            /**
+             * Retired
+             * @default false
+             */
+            retired: boolean;
+            /** Review Due At */
+            review_due_at?: string | null;
+            /** Runs 30D */
+            runs_30d?: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "draft" | "in_review" | "published" | "retired";
+            /**
+             * Step Count
+             * @default 0
+             */
+            step_count: number;
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Updated By */
+            updated_by?: string | null;
+        };
+        /**
+         * RunbookValidation
+         * @description ``POST /api/runbooks/validate``: the issues and the investigator guidance
+         *     length against its budget. Nothing is written.
+         */
+        RunbookValidation: {
+            /** Issues */
+            issues?: components["schemas"]["RunbookIssue"][];
+            /**
+             * Prompt Budget
+             * @default 0
+             */
+            prompt_budget: number;
+            /**
+             * Prompt Chars
+             * @default 0
+             */
+            prompt_chars: number;
+        };
+        /**
+         * RunbookVersionBody
+         * @description ``POST /api/runbooks/{id}/submit``: the version sent for review. Publishing
+         *     takes :class:`RunbookPublishBody`, which requires the revision.
+         */
+        RunbookVersionBody: {
+            /** Expected Revision */
+            expected_revision?: number | null;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookVersionDoc
+         * @description One immutable version (SPEC §4.10.5, §4.10.15a). ``content_hash`` is the
+         *     SHA-256 of the canonical definition; ``source`` its Markdown; ``prompt_chars`` the
+         *     investigator rendering's length (the budget is 3,000, E10).
+         */
+        RunbookVersionDoc: {
+            /**
+             * Author
+             * @default
+             */
+            author: string;
+            /**
+             * Content Hash
+             * @default
+             */
+            content_hash: string;
+            /**
+             * Created At
+             * @default
+             */
+            created_at: string;
+            definition: components["schemas"]["RunbookDefinition"];
+            /** Import Notes */
+            import_notes?: string[];
+            /**
+             * Prompt Chars
+             * @default 0
+             */
+            prompt_chars: number;
+            /** Published At */
+            published_at?: string | null;
+            /** Published By */
+            published_by?: string | null;
+            /** Retired At */
+            retired_at?: string | null;
+            /** Retired By */
+            retired_by?: string | null;
+            /** Review Notes */
+            review_notes?: components["schemas"]["RunbookReviewNote"][];
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "draft" | "in_review" | "published" | "superseded" | "retired";
+            /** Submitted At */
+            submitted_at?: string | null;
+            /** Submitted By */
+            submitted_by?: string | null;
+            /** Superseded At */
+            superseded_at?: string | null;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookVersionListItem
+         * @description One row of a runbook's version history. ``review_notes`` are the reasons a
+         *     reviewer gave when sending that version back to draft (oldest first), the same
+         *     notes its version document carries, so History shows them on every entry, a
+         *     superseded one too, without reading each version.
+         */
+        RunbookVersionListItem: {
+            /** Published At */
+            published_at?: string | null;
+            /** Published By */
+            published_by?: string | null;
+            /** Review Notes */
+            review_notes?: components["schemas"]["RunbookReviewNote"][];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "draft" | "in_review" | "published" | "superseded" | "retired";
+            /** Version */
+            version: number;
         };
         /** SSOProviderSecretBody */
         SSOProviderSecretBody: {
@@ -6993,6 +14882,46 @@ export interface components {
             /** Sort */
             sort?: string | null;
         };
+        /** SchedulerHealthPublic */
+        SchedulerHealthPublic: {
+            /** Scheduler Runtime Running */
+            scheduler_runtime_running: boolean;
+            /** Workers */
+            workers?: {
+                [key: string]: components["schemas"]["SchedulerWorkerPublic"];
+            };
+        };
+        /** SchedulerWorkerPublic */
+        SchedulerWorkerPublic: {
+            /** Cadence */
+            cadence: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Gated */
+            gated: boolean;
+            /**
+             * Last Attempt At
+             * @default
+             */
+            last_attempt_at: string;
+            /**
+             * Last Error
+             * @default
+             */
+            last_error: string;
+            /**
+             * Last Success At
+             * @default
+             */
+            last_success_at: string;
+            /**
+             * Processed
+             * @default 0
+             */
+            processed: number;
+            /** Running */
+            running: boolean;
+        };
         /**
          * SearchResponse
          * @description The command-palette search envelope. Result rows are loose typed dicts (each
@@ -7081,6 +15010,8 @@ export interface components {
              * @default false
              */
             is_primary: boolean;
+            /** Severity Scale Max */
+            severity_scale_max?: number | null;
             /** Source Type */
             source_type: string;
         };
@@ -7116,6 +15047,275 @@ export interface components {
              * @default
              */
             to_status: string;
+        };
+        /**
+         * StepActionRecordInput
+         * @description What a person recorded on an Action or Record step.
+         */
+        StepActionRecordInput: {
+            /**
+             * Outcome
+             * @default
+             */
+            outcome: string;
+            /** Performed At */
+            performed_at?: string | null;
+            /**
+             * Where
+             * @default
+             */
+            where: string;
+        };
+        /**
+         * StepApprovalBody
+         * @description ``POST .../steps/{step_id}/approval``: the recorder can never approve.
+         */
+        StepApprovalBody: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "reject";
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * StepDecisionInput
+         * @description The option a person picked on a Decision step.
+         */
+        StepDecisionInput: {
+            /** Option Id */
+            option_id: string;
+        };
+        /**
+         * StepDraftConfirmBody
+         * @description ``POST .../steps/{step_id}/draft/confirm``: the draft as the person edited it.
+         */
+        StepDraftConfirmBody: {
+            /** Text */
+            text: string;
+        };
+        /** StepEndEvent */
+        StepEndEvent: {
+            step: components["schemas"]["ChatStep"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "step.end";
+        };
+        /**
+         * StepEvidence
+         * @description One piece of evidence on a step: a stored lookup result, an https link or a
+         *     ticket reference (``url`` at most 500, ``label`` at most 120 characters).
+         *
+         *     ``url`` is https only (:func:`https_url`). A stored value that is not a safe https
+         *     link reads as ``None`` (the label still shows), so a row written before this rule,
+         *     or by hand, can never reach a viewer as a ``javascript:`` or ``data:`` link.
+         */
+        StepEvidence: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "lookup_result" | "link" | "ticket";
+            /** Label */
+            label?: string | null;
+            lookup?: components["schemas"]["LookupResult"] | null;
+            /** Url */
+            url?: string | null;
+        };
+        /**
+         * StepEvidenceLinkInput
+         * @description An https link or ticket reference attached as evidence. ``url`` must be an
+         *     absolute https link (:func:`https_url`; ``javascript:``, ``data:``, ``http:`` and
+         *     relative links are refused with a 422).
+         */
+        StepEvidenceLinkInput: {
+            /**
+             * Kind
+             * @default link
+             * @enum {string}
+             */
+            kind: "link" | "ticket";
+            /** Label */
+            label?: string | null;
+            /** Url */
+            url?: string | null;
+        };
+        /**
+         * StepProgressEvent
+         * @description Progress of one running step (SPEC §3.3), e.g. an exact aggregate scan:
+         *     ``done`` of ``total`` (``None`` when the store cannot say up front) in ``unit``
+         *     (an engine noun such as "cases"). The step's final ``progress`` arrives in its
+         *     ``step.end``.
+         */
+        StepProgressEvent: {
+            /**
+             * Done
+             * @default 0
+             */
+            done: number;
+            /** Index */
+            index: number;
+            /** Total */
+            total?: number | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "step.progress";
+            /**
+             * Unit
+             * @default
+             */
+            unit: string;
+        };
+        /** StepStartEvent */
+        StepStartEvent: {
+            step: components["schemas"]["StepStartInfo"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "step.start";
+        };
+        /**
+         * StepStartInfo
+         * @description What a step announces before it runs (its final shape arrives in step.end).
+         */
+        StepStartInfo: {
+            /** Group */
+            group?: number | null;
+            /** Index */
+            index: number;
+            /**
+             * Kind
+             * @default tool
+             * @enum {string}
+             */
+            kind: "tool" | "model";
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Ordinal */
+            ordinal?: number | null;
+            /** Params */
+            params?: {
+                [key: string]: string | number | boolean | null;
+            };
+            /** Tool */
+            tool?: string | null;
+        };
+        /**
+         * StepState
+         * @description The live state of one step in a run. ``note`` is plain text (at most 4,000);
+         *     ``reason`` (1 to 500) is required for ``not_applicable`` and ``blocked``.
+         *
+         *     The dict-valued fields have fixed shapes (the TypeScript mirror types them):
+         *     ``decision`` ``{option_id, label, by, at}``; ``action_record`` ``{performed_by,
+         *     performed_at, where, outcome}``; ``approval`` ``{required_role, status:
+         *     pending|approved|rejected, by, at, reason}``; ``ai_draft`` ``{text <= 2,000,
+         *     created_at, model, usage_id, confirmed}``. An AI draft is never part of the case
+         *     until a person confirms it, and the AI never sets a status (§4.10.10).
+         */
+        StepState: {
+            /** Action Record */
+            action_record?: Record<string, never> | null;
+            /** Ai Draft */
+            ai_draft?: Record<string, never> | null;
+            /** Approval */
+            approval?: Record<string, never> | null;
+            /** Assignee */
+            assignee?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Completed By */
+            completed_by?: string | null;
+            /** Decision */
+            decision?: Record<string, never> | null;
+            /** Evidence */
+            evidence?: components["schemas"]["StepEvidence"][];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * Status
+             * @default todo
+             * @enum {string}
+             */
+            status: "todo" | "in_progress" | "done" | "not_applicable" | "blocked";
+        };
+        /**
+         * StepUsage
+         * @description Usage of ONE model call (or one query-embedding call on a tool step).
+         *     ``estimated`` marks a provider that omitted usage or a call cancelled mid-stream
+         *     (input = provider count or chars/4, output = chars/4 of what was received).
+         */
+        StepUsage: {
+            /**
+             * Cache Read Tokens
+             * @default 0
+             */
+            cache_read_tokens: number;
+            /**
+             * Cache Write Tokens
+             * @default 0
+             */
+            cache_write_tokens: number;
+            /**
+             * Cost
+             * @default 0
+             */
+            cost: number;
+            /**
+             * Embedding Calls
+             * @default 0
+             */
+            embedding_calls: number;
+            /**
+             * Embedding Cost
+             * @default 0
+             */
+            embedding_cost: number;
+            /**
+             * Embedding Tokens
+             * @default 0
+             */
+            embedding_tokens: number;
+            /**
+             * Estimated
+             * @default false
+             */
+            estimated: boolean;
+            /**
+             * Input Tokens
+             * @default 0
+             */
+            input_tokens: number;
+            /**
+             * Latency Ms
+             * @default 0
+             */
+            latency_ms: number;
+            /**
+             * Output Tokens
+             * @default 0
+             */
+            output_tokens: number;
         };
         /**
          * StorageLifecycleConfig
@@ -7249,6 +15449,237 @@ export interface components {
             title?: string | null;
         };
         /**
+         * TeamActivity
+         * @description One window of Team activity (SPEC D3.10).
+         */
+        TeamActivity: {
+            /**
+             * Auth Enabled
+             * @default true
+             */
+            auth_enabled: boolean;
+            /** Days */
+            days: string[];
+            /**
+             * Demo
+             * @default false
+             */
+            demo: boolean;
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Generated At */
+            generated_at: string;
+            /** Partial Reason */
+            partial_reason?: ("row_limit" | "store_limit") | null;
+            /** People */
+            people: components["schemas"]["PersonActivity"][];
+            /**
+             * Rbac Enabled
+             * @default false
+             */
+            rbac_enabled: boolean;
+            /**
+             * Scanned Rows
+             * @default 0
+             */
+            scanned_rows: number;
+            team: components["schemas"]["TeamTotals"];
+            /** Timezone */
+            timezone: string;
+            window: components["schemas"]["TeamWindow"];
+        };
+        /** TeamDay */
+        TeamDay: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Date */
+            date: string;
+        };
+        /** TeamEvent */
+        TeamEvent: {
+            /** Case Id */
+            case_id?: string | null;
+            /** Case Number */
+            case_number?: string | null;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Ts */
+            ts: string;
+        };
+        /** TeamEvents */
+        TeamEvents: {
+            /** Events */
+            events: components["schemas"]["TeamEvent"][];
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Partial Reason */
+            partial_reason?: ("row_limit" | "store_limit") | null;
+            /** Total */
+            total: number;
+            /** Username */
+            username: string;
+            window: components["schemas"]["TeamWindow"];
+        };
+        /** TeamPeople */
+        TeamPeople: {
+            /**
+             * Auth Enabled
+             * @default true
+             */
+            auth_enabled: boolean;
+            /**
+             * Demo
+             * @default false
+             */
+            demo: boolean;
+            /** People */
+            people: components["schemas"]["TeamPerson"][];
+        };
+        /** TeamPerson */
+        TeamPerson: {
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "account" | "environment" | "demo";
+            /**
+             * Role
+             * @default
+             */
+            role: string;
+            /** Username */
+            username: string;
+        };
+        /** TeamReviews */
+        TeamReviews: {
+            /**
+             * Agreed
+             * @default 0
+             */
+            agreed: number;
+            /**
+             * Agreement Rate
+             * @description Agreed over answered, only from 30 answered reviews.
+             */
+            agreement_rate?: number | null;
+            /**
+             * Answered
+             * @default 0
+             */
+            answered: number;
+            /**
+             * Completed
+             * @default 0
+             */
+            completed: number;
+            /**
+             * Disagreed
+             * @default 0
+             */
+            disagreed: number;
+            /**
+             * Time Spent Median Ms
+             * @description Median time spent on the review card, measured in the Console.
+             */
+            time_spent_median_ms?: number | null;
+            /**
+             * Time To Review Median Seconds
+             * @description Median time from the case being picked for review to the review.
+             */
+            time_to_review_median_seconds?: number | null;
+            /**
+             * Unsure
+             * @default 0
+             */
+            unsure: number;
+        };
+        /** TeamTotals */
+        TeamTotals: {
+            /**
+             * Ack Sample Offset
+             * @description The 0-based rank of the first listed time among all ack_samples sorted times.
+             * @default 0
+             */
+            ack_sample_offset: number;
+            /**
+             * Ack Sample Seconds
+             * @description The sorted times to acknowledge, in seconds, around the median: at most 200, always the one or two middle times the median is taken from. Empty unless measured.
+             */
+            ack_sample_seconds?: number[];
+            /**
+             * Ack Samples
+             * @default 0
+             */
+            ack_samples: number;
+            /**
+             * Ack Status
+             * @description Whether the median time to acknowledge was measured: too many cases, the cases could not be read, or the audit read stopped before the end of the window (partial). It is omitted unless measured.
+             * @default measured
+             * @enum {string}
+             */
+            ack_status: "measured" | "too_many_cases" | "unavailable" | "partial";
+            /** Bulk */
+            bulk: {
+                [key: string]: number;
+            };
+            /** Closed By */
+            closed_by: {
+                [key: string]: number;
+            };
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Daily */
+            daily: components["schemas"]["TeamDay"][];
+            /** Median Ack Seconds */
+            median_ack_seconds?: number | null;
+            /**
+             * People Active
+             * @default 0
+             */
+            people_active: number;
+            reviews: components["schemas"]["TeamReviews"];
+        };
+        /** TeamWindow */
+        TeamWindow: {
+            /** End */
+            end: string;
+            /** Label */
+            label: string;
+            /** Start */
+            start?: string | null;
+            /** Token */
+            token: string;
+        };
+        /**
          * TerminologyBody
          * @description The ORG terminology label-override map (admin-only). Every value is plain DATA
          *     rendered as text by the UI (#9). Validated/bounded by CustomizationConfig.
@@ -7258,6 +15689,62 @@ export interface components {
             terminology?: {
                 [key: string]: string;
             };
+        };
+        /**
+         * TextContinuedEvent
+         * @description The answer was cut at the output limit and continues as part ``part`` (≥ 2)
+         *     (SPEC D3). A quiet run-log marker: the text keeps streaming, no ``text.reset``.
+         */
+        TextContinuedEvent: {
+            /** Part */
+            part: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "text.continued";
+        };
+        /**
+         * TextDeltaEvent
+         * @description Answer text (Live text mode only, after the header parsed as ``final``).
+         *
+         *     Lone surrogate halves are dropped (a delta can split nothing valid in two: the
+         *     engine slices Python strings, whose astral characters are single code points, so
+         *     a surrogate here came from a JSON escape in the model output). ``ChatResponse``
+         *     drops them the same way, so the streamed text and the final answer agree.
+         */
+        TextDeltaEvent: {
+            /** Text */
+            text: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "text.delta";
+        };
+        /**
+         * TextResetEvent
+         * @description Discard all text streamed so far for this turn.
+         */
+        TextResetEvent: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "text.reset";
+        };
+        /**
+         * TextStreamingInfo
+         * @description Whether "Type out answers" can work for the effective chat model (§6.3).
+         */
+        TextStreamingInfo: {
+            /**
+             * Available
+             * @default false
+             */
+            available: boolean;
+            /** Reason */
+            reason?: ("disabled_by_admin" | "model_does_not_stream") | null;
         };
         /** ThreadEditBody */
         ThreadEditBody: {
@@ -7374,6 +15861,29 @@ export interface components {
             wilson_z: number;
         };
         /**
+         * TimeRange
+         * @description The composer time window ``{from, to}`` (SPEC §3.1).
+         *
+         *     Each bound is ``now``, ``now-<n>[m|h|d|w|M|y]`` (lower-case ``m`` is minutes,
+         *     ``M`` months, ``y`` years) or ISO-8601, and ``from`` may also be ``all``
+         *     (``{"from": "all"}``, the "All time" chip, Round 12, which never clamps); ``from``
+         *     must be strictly before ``to``, else 422. Round 12 (SPEC D7a): chat scope windows
+         *     have no span limit (:attr:`MAX_SPAN_DAYS` is ``None``). It applies to every
+         *     windowed chat tool; precedence is the model's explicit window from the user's
+         *     words, then this, then ``context.time_range``, then the tool's own default. Serialises as ``{"from",
+         *     "to"}`` (both keys, always) regardless of ``by_alias`` or ``exclude_defaults``, so
+         *     stored and wire shapes never diverge.
+         */
+        TimeRange: {
+            /** From */
+            from: string;
+            /**
+             * To
+             * @default now
+             */
+            to: string;
+        };
+        /**
          * TriggerReason
          * @description Deterministic explanation of WHY a cluster was triggered (Feature 3).
          *
@@ -7437,6 +15947,175 @@ export interface components {
              * @default 0
              */
             window_start: number;
+        };
+        /**
+         * TurnDoneEvent
+         * @description The persisted response: the client renders this, not its streamed state.
+         */
+        TurnDoneEvent: {
+            response: components["schemas"]["ChatResponse"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "turn.done";
+        };
+        /**
+         * TurnErrorEvent
+         * @description A turn that produced no response after the stream started.
+         */
+        TurnErrorEvent: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "provider_unavailable" | "budget_blocked" | "breaker_open" | "history_unavailable" | "internal";
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            notice?: components["schemas"]["TurnNotice"] | null;
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "turn.error";
+        };
+        /** TurnEstimate */
+        TurnEstimate: {
+            /**
+             * Prompt Tokens
+             * @default 0
+             */
+            prompt_tokens: number;
+        };
+        /**
+         * TurnNotice
+         * @description Why a turn is partial, stopped, refused or not saved. ``message`` is an engine
+         *     template; ``retryable`` decides whether the UI offers Retry.
+         */
+        TurnNotice: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "partial" | "cap" | "budget" | "provider" | "breaker" | "denied" | "timeout" | "cancelled" | "unsupported" | "not_saved" | "limited" | "stopped_repeating" | "compacted";
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
+        };
+        /** TurnStartEvent */
+        TurnStartEvent: {
+            /** Conversation Id */
+            conversation_id?: string | null;
+            estimate?: components["schemas"]["TurnEstimate"];
+            /** Model */
+            model?: string | null;
+            /**
+             * Replayed
+             * @default false
+             */
+            replayed: boolean;
+            /**
+             * Stream Mode
+             * @default steps
+             * @enum {string}
+             */
+            stream_mode: "steps" | "text";
+            /** Turn Id */
+            turn_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "turn.start";
+        };
+        /**
+         * TurnUsage
+         * @description Running/final usage of one turn: the sum of its model calls plus any
+         *     query-embedding calls. ``cost`` includes embedding cost; ``simulated`` marks Demo
+         *     Mode synthetic pricing; ``estimated`` is true when any part was estimated.
+         */
+        TurnUsage: {
+            /**
+             * Cache Read Tokens
+             * @default 0
+             */
+            cache_read_tokens: number;
+            /**
+             * Cache Write Tokens
+             * @default 0
+             */
+            cache_write_tokens: number;
+            /**
+             * Calls
+             * @default 0
+             */
+            calls: number;
+            /** Context Window */
+            context_window?: number | null;
+            /**
+             * Cost
+             * @default 0
+             */
+            cost: number;
+            /**
+             * Embedding Calls
+             * @default 0
+             */
+            embedding_calls: number;
+            /**
+             * Estimated
+             * @default false
+             */
+            estimated: boolean;
+            /**
+             * Input Tokens
+             * @default 0
+             */
+            input_tokens: number;
+            /**
+             * Latency Ms
+             * @default 0
+             */
+            latency_ms: number;
+            /** Model */
+            model?: string | null;
+            /**
+             * Output Tokens
+             * @default 0
+             */
+            output_tokens: number;
+            /**
+             * Peak Prompt Tokens
+             * @default 0
+             */
+            peak_prompt_tokens: number;
+            /** Pricing Source */
+            pricing_source?: string | null;
+            /**
+             * Simulated
+             * @default false
+             */
+            simulated: boolean;
+            /**
+             * Total Tokens
+             * @default 0
+             */
+            total_tokens: number;
         };
         /** UpdateBackup */
         UpdateBackup: {
@@ -7724,10 +16403,161 @@ export interface components {
             last_job?: components["schemas"]["UpdateJob"] | null;
             release_discovery: components["schemas"]["UpdateReleaseDiscovery"];
         };
+        /** UsageDoc */
+        UsageDoc: {
+            /** App Version */
+            app_version?: string | null;
+            /**
+             * Attempts
+             * @default 1
+             */
+            attempts: number;
+            /**
+             * Batch
+             * @default false
+             */
+            batch: boolean;
+            /** Build Sha */
+            build_sha?: string | null;
+            /** Cache Read Rate Per Million */
+            cache_read_rate_per_million?: number | null;
+            /**
+             * Cache Read Tokens
+             * @default 0
+             */
+            cache_read_tokens: number;
+            /** Cache Write Rate Per Million */
+            cache_write_rate_per_million?: number | null;
+            /**
+             * Cache Write Tokens
+             * @default 0
+             */
+            cache_write_tokens: number;
+            /** Cache Write Ttl */
+            cache_write_ttl?: string | null;
+            /** Case Id */
+            case_id?: string | null;
+            /**
+             * Completion Tokens
+             * @default 0
+             */
+            completion_tokens: number;
+            /**
+             * Cost
+             * @default 0
+             */
+            cost: number;
+            /**
+             * Currency
+             * @default USD
+             */
+            currency: string;
+            /**
+             * Failure Class
+             * @default
+             */
+            failure_class: string;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /** Input Rate Per Million */
+            input_rate_per_million?: number | null;
+            /**
+             * Latency Ms
+             * @default 0
+             */
+            latency_ms: number;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /** @default ok */
+            outcome: components["schemas"]["UsageOutcome"];
+            /** Output Rate Per Million */
+            output_rate_per_million?: number | null;
+            /** Price Basis */
+            price_basis?: string | null;
+            /**
+             * Pricing Source
+             * @default exact
+             */
+            pricing_source: string;
+            /**
+             * Processing Tier
+             * @default standard
+             */
+            processing_tier: string;
+            /**
+             * Prompt Tokens
+             * @default 0
+             */
+            prompt_tokens: number;
+            /**
+             * Role
+             * @default
+             */
+            role: string;
+            /**
+             * Surface
+             * @default
+             */
+            surface: string;
+            /**
+             * Total Tokens
+             * @default 0
+             */
+            total_tokens: number;
+            /** Ts */
+            ts?: string;
+            /**
+             * Usage Estimated
+             * @default false
+             */
+            usage_estimated: boolean;
+        };
+        /**
+         * UsageEvent
+         * @description Running totals after a model call (the meter ticks on every one).
+         */
+        UsageEvent: {
+            totals: components["schemas"]["TurnUsage"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "usage";
+        };
+        /**
+         * UsageOutcome
+         * @enum {string}
+         */
+        UsageOutcome: "ok" | "error" | "capped";
         /** UserCreateBody */
         UserCreateBody: {
+            /** Custom Roles */
+            custom_roles?: string[] | null;
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /**
+             * Email
+             * @default
+             */
+            email: string;
+            /**
+             * Mfa Required
+             * @default false
+             */
+            mfa_required: boolean;
             /** Password */
             password: string;
+            /**
+             * Phone
+             * @default
+             */
+            phone: string;
             /**
              * Role
              * @default analyst_tier1
@@ -7744,6 +16574,8 @@ export interface components {
          *     granular edits).
          */
         UserPrefsPatchBody: {
+            /** Chat Prompts */
+            chat_prompts?: components["schemas"]["ChatPrompt"][] | null;
             /** Last List State */
             last_list_state?: {
                 [key: string]: Record<string, never>;
@@ -7776,10 +16608,18 @@ export interface components {
         UserUpdateBody: {
             /** Active */
             active?: boolean | null;
+            /** Display Name */
+            display_name?: string | null;
+            /** Email */
+            email?: string | null;
             /** Mfa Enabled */
             mfa_enabled?: boolean | null;
+            /** Mfa Required */
+            mfa_required?: boolean | null;
             /** Password */
             password?: string | null;
+            /** Phone */
+            phone?: string | null;
             /** Role */
             role?: string | null;
         };
@@ -7830,12 +16670,35 @@ export interface components {
             objection_window_minutes: number;
         };
         /**
-         * _EnabledIn
-         * @description Enable/disable a rule (a lifecycle toggle body).
+         * _PolicyIn
+         * @description The writable shape. ``id`` comes from the path; provenance is set server-side.
+         *
+         *     Every optional field here defaults to the WIDEST blast radius (enabled, unscoped,
+         *     never expiring). Writing those defaults over a prior record would mean a partial edit
+         *     silently re-enables a revoked declaration, clears its expiry, and widens it from one
+         *     source to all of them. So :func:`upsert_analyst_policy` carries prior values forward
+         *     for any field the client did not actually send (``model_fields_set``) — the same
+         *     reason :class:`_EnabledIn` makes ``enabled`` required.
          */
-        _EnabledIn: {
-            /** Enabled */
+        _PolicyIn: {
+            /**
+             * Enabled
+             * @default true
+             */
             enabled: boolean;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Max Risk Score */
+            max_risk_score?: number | null;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Source Id */
+            source_id?: string | null;
         };
         /**
          * _PreviewDecisionIn
@@ -7896,6 +16759,27 @@ export interface components {
             source_id?: string | null;
             /** To */
             to?: string | null;
+        };
+        /**
+         * _EnabledIn
+         * @description Enable/disable a declaration.
+         *
+         *     Typed on purpose: a raw ``dict`` + ``bool(body.get("enabled"))`` coerces the JSON
+         *     STRING ``"false"`` to True, so a client that sends ``{"enabled": "false"}`` would be
+         *     told the declaration was revoked while it kept closing cases. A missing field would
+         *     silently disable instead of failing.
+         */
+        app__api__routes_analyst_policy___EnabledIn: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /**
+         * _EnabledIn
+         * @description Enable/disable a rule (a lifecycle toggle body).
+         */
+        app__api__routes_rules___EnabledIn: {
+            /** Enabled */
+            enabled: boolean;
         };
     };
     responses: never;
@@ -8065,6 +16949,39 @@ export interface operations {
             };
         };
     };
+    export_application_data_archive_api_admin_export_archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DataExportArchiveRequest"];
+            };
+        };
+        responses: {
+            /** @description One complete server-assembled portable export archive. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     export_application_data_segment_api_admin_export_segment_post: {
         parameters: {
             query?: never;
@@ -8146,8 +17063,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful Response */
-            200: {
+            /** @description Mutation retired; submit a tiered_reset durable Job. */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8251,14 +17168,37 @@ export interface operations {
     list_audit_api_audit_get: {
         parameters: {
             query?: {
-                actor?: string | null;
+                /** @description next_cursor of the previous page */
+                cursor?: string | null;
+                order?: "desc" | "asc";
+                /** @description 1 to 200, larger values clamped; absent or 0 is 100 without 'scope', 50 with it */
+                limit?: number | null;
+                /** @description people, agent or all; absent reads every row */
+                scope?: ("people" | "agent" | "all") | null;
+                /** @description search: event name, actor, target and the summaries */
+                q?: string | null;
+                /** @description exact action_type (unchanged meaning) */
                 action?: string | null;
+                /** @description structured action (auth.login), category id or event family */
+                event?: string | null;
+                /** @description exact actor (unchanged meaning) */
+                actor?: string | null;
+                /** @description actor contains, case-insensitive */
+                actor_contains?: string | null;
+                actor_kind?: ("human" | "agent" | "system" | "service") | null;
+                /** @description success, failure, denied, partial, or unknown (Not recorded: no outcome recorded and none derived, or a recorded unknown) */
+                outcome?: ("success" | "failure" | "denied" | "partial" | "unknown") | null;
                 surface?: string | null;
                 case_id?: string | null;
                 source_id?: string | null;
+                /** @description target id */
+                target?: string | null;
+                /** @description client IP address */
+                ip?: string | null;
+                /** @description start: now-7d, now-1d/d, an ISO 8601 time, a date or epoch milliseconds */
                 from?: string | null;
+                /** @description end, in the same forms as 'from' */
                 to?: string | null;
-                limit?: number;
             };
             header?: never;
             path?: never;
@@ -8272,7 +17212,123 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AuditListResponse"];
+                    "application/json": components["schemas"]["AuditPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    count_audit_api_audit_count_get: {
+        parameters: {
+            query?: {
+                /** @description exact up to this many (1 to 100,001; absent or 0 is 100,001) */
+                cap?: number | null;
+                /** @description people, agent or all; absent reads every row */
+                scope?: ("people" | "agent" | "all") | null;
+                /** @description search: event name, actor, target and the summaries */
+                q?: string | null;
+                /** @description exact action_type (unchanged meaning) */
+                action?: string | null;
+                /** @description structured action (auth.login), category id or event family */
+                event?: string | null;
+                /** @description exact actor (unchanged meaning) */
+                actor?: string | null;
+                /** @description actor contains, case-insensitive */
+                actor_contains?: string | null;
+                actor_kind?: ("human" | "agent" | "system" | "service") | null;
+                /** @description success, failure, denied, partial, or unknown (Not recorded: no outcome recorded and none derived, or a recorded unknown) */
+                outcome?: ("success" | "failure" | "denied" | "partial" | "unknown") | null;
+                surface?: string | null;
+                case_id?: string | null;
+                source_id?: string | null;
+                /** @description target id */
+                target?: string | null;
+                /** @description client IP address */
+                ip?: string | null;
+                /** @description start: now-7d, now-1d/d, an ISO 8601 time, a date or epoch milliseconds */
+                from?: string | null;
+                /** @description end, in the same forms as 'from' */
+                to?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditCount"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_audit_record_api_audit_records__record_id__get: {
+        parameters: {
+            query?: {
+                /** @description people, agent or all; absent reads every row */
+                scope?: ("people" | "agent" | "all") | null;
+                /** @description search: event name, actor, target and the summaries */
+                q?: string | null;
+                /** @description exact action_type (unchanged meaning) */
+                action?: string | null;
+                /** @description structured action (auth.login), category id or event family */
+                event?: string | null;
+                /** @description exact actor (unchanged meaning) */
+                actor?: string | null;
+                /** @description actor contains, case-insensitive */
+                actor_contains?: string | null;
+                actor_kind?: ("human" | "agent" | "system" | "service") | null;
+                /** @description success, failure, denied, partial, or unknown (Not recorded: no outcome recorded and none derived, or a recorded unknown) */
+                outcome?: ("success" | "failure" | "denied" | "partial" | "unknown") | null;
+                surface?: string | null;
+                case_id?: string | null;
+                source_id?: string | null;
+                /** @description target id */
+                target?: string | null;
+                /** @description client IP address */
+                ip?: string | null;
+                /** @description start: now-7d, now-1d/d, an ISO 8601 time, a date or epoch milliseconds */
+                from?: string | null;
+                /** @description end, in the same forms as 'from' */
+                to?: string | null;
+            };
+            header?: never;
+            path: {
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRecord"];
                 };
             };
             /** @description Validation Error */
@@ -8458,6 +17514,72 @@ export interface operations {
             };
         };
     };
+    mfa_enroll_confirm_api_auth_mfa_enroll_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaEnrollConfirmBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mfa_enroll_setup_api_auth_mfa_enroll_setup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaEnrollSetupBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     mfa_setup_api_auth_mfa_setup_post: {
         parameters: {
             query?: never;
@@ -8581,6 +17703,7 @@ export interface operations {
         parameters: {
             query: {
                 provider: string;
+                remember?: boolean;
             };
             header?: never;
             path?: never;
@@ -8691,6 +17814,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    auto_close_review_summary_api_auto_close_review_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoCloseReviewSummary"];
                 };
             };
         };
@@ -9176,6 +18319,16 @@ export interface operations {
                 offset?: number;
                 from?: string | null;
                 to?: string | null;
+                sort_field?: string | null;
+                sort_order?: string | null;
+                status_group?: string | null;
+                q?: string | null;
+                assignee?: string | null;
+                severity?: string | null;
+                verdict?: string | null;
+                rule?: string | null;
+                closed_by?: string | null;
+                review?: string | null;
             };
             header?: never;
             path?: never;
@@ -9436,6 +18589,42 @@ export interface operations {
             };
         };
     };
+    case_events_api_cases__case_id__events_get: {
+        parameters: {
+            query?: {
+                /** @description Member events per page, 1 to 200. */
+                limit?: number;
+                /** @description The previous page's next_cursor. */
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseEventsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     case_export_api_cases__case_id__export_get: {
         parameters: {
             query?: {
@@ -9501,6 +18690,155 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    list_case_files_api_cases__case_id__files_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFileList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_case_file_api_cases__case_id__files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaseFileUploadBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFileUploadResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_case_file_api_cases__case_id__files__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFileDeleteResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_case_file_content_api_cases__case_id__files__file_id__content_get: {
+        parameters: {
+            query?: {
+                variant?: "full" | "thumb";
+                download?: boolean;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The screenshot (or its thumbnail), as stored after validation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            /** @description case_not_found or case_file_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description case_files_unavailable: the store could not be read */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -9653,7 +18991,73 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    case_review_state_api_cases__case_id__review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseReviewState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_auto_close_review_api_cases__case_id__review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewResult"];
                 };
             };
             /** @description Validation Error */
@@ -9676,9 +19080,173 @@ export interface operations {
             };
             cookie?: never;
         };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_case_runbooks_api_cases__case_id__runbooks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseRunbooks"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attach_case_runbook_api_cases__case_id__runbooks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RunPlaybookRequest"];
+                "application/json": components["schemas"]["RunbookAttachBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookAttachResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_runbook_candidates_api_cases__case_id__runbooks_candidates_get: {
+        parameters: {
+            query?: {
+                q?: string | null;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookCandidates"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    suggest_case_runbook_api_cases__case_id__runbooks_suggest_post: {
+        parameters: {
+            query?: {
+                dry_run?: boolean;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookSuggestion"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    abandon_runbook_run_api_cases__case_id__runbooks__run_id__abandon_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunAbandonBody"];
             };
         };
         responses: {
@@ -9688,7 +19256,222 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_runbook_step_api_cases__case_id__runbooks__run_id__steps__step_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookStepUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_runbook_approval_api_cases__case_id__runbooks__run_id__steps__step_id__approval_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepApprovalBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    draft_runbook_step_api_cases__case_id__runbooks__run_id__steps__step_id__draft_post: {
+        parameters: {
+            query?: {
+                dry_run?: boolean;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookStepDraftResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_runbook_step_draft_api_cases__case_id__runbooks__run_id__steps__step_id__draft_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepDraftConfirmBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_runbook_lookup_api_cases__case_id__runbooks__run_id__steps__step_id__lookup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    switch_runbook_run_version_api_cases__case_id__runbooks__run_id__switch_version_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunSwitchVersionBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
                 };
             };
             /** @description Validation Error */
@@ -10202,6 +19985,37 @@ export interface operations {
             };
         };
     };
+    case_usage_api_cases__case_id__usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseUsagePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     chat_api_chat_post: {
         parameters: {
             query?: never;
@@ -10221,7 +20035,40 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["ChatResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_context_api_chat_context_get: {
+        parameters: {
+            query?: {
+                conversation_id?: string | null;
+                model?: string | null;
+                case_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatContextInfo"];
                 };
             };
             /** @description Validation Error */
@@ -10240,6 +20087,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 offset?: number;
+                q?: string | null;
             };
             header?: never;
             path?: never;
@@ -10253,7 +20101,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["ChatConversationPage"];
                 };
             };
             /** @description Validation Error */
@@ -10284,7 +20132,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["ChatConversation"];
                 };
             };
             /** @description Validation Error */
@@ -10329,7 +20177,7 @@ export interface operations {
             };
         };
     };
-    rename_chat_conversation_api_chat_conversations__conversation_id__patch: {
+    update_chat_conversation_api_chat_conversations__conversation_id__patch: {
         parameters: {
             query?: never;
             header?: never;
@@ -10340,7 +20188,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ChatConversationRenameRequest"];
+                "application/json": components["schemas"]["ChatConversationUpdateRequest"];
             };
         };
         responses: {
@@ -10350,8 +20198,503 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["ChatConversation"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_conversation_messages_api_chat_conversations__conversation_id__messages_get: {
+        parameters: {
+            query?: {
+                before?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatMessagePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_conversation_message_api_chat_conversations__conversation_id__messages__message_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatConversationMessage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_step_observation_api_chat_conversations__conversation_id__messages__message_id__steps__index__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                message_id: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatStepObservation"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_chat_conversation_read_api_chat_conversations__conversation_id__read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_entity_question_api_chat_entity_question_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatEntityRef"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatEntityQuestion"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_chat_feedback_api_chat_feedback_get: {
+        parameters: {
+            query?: {
+                conversation_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatFeedbackList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_feedback_api_chat_feedback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatFeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_feedback_summary_api_chat_feedback_summary_get: {
+        parameters: {
+            query?: {
+                since?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatFeedbackSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_starters_api_chat_starters_get: {
+        parameters: {
+            query?: {
+                surface?: "home" | "thread" | "case";
+                conversation_id?: string | null;
+                case_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatStartersInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_starter_event_api_chat_starters_events_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatStarterEvent"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_stream_api_chat_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatRequest"];
+            };
+        };
+        responses: {
+            /** @description NDJSON: one ChatStreamEvent per line. turn.start first; turn.done (the persisted response) or turn.error last; ping every idle 10 s. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": components["schemas"]["ChatStreamEventModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_topic_api_chat_topics__topic_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                topic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatTopicQuestion"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    active_chat_turns_api_chat_turns_active_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatActiveTurn"][];
+                };
+            };
+        };
+    };
+    cancel_chat_turn_api_chat_turns__turn_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatTurnCancelResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_turn_events_api_chat_turns__turn_id__events_get: {
+        parameters: {
+            query?: {
+                after?: number;
+            };
+            header?: never;
+            path: {
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description NDJSON: the turn's events after `after` (each line also carries its `seq`; answer text coalesced), then the live tail, ending with turn.done or turn.error; ping every idle 10 s. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": components["schemas"]["ChatStreamEventModel"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_turn_seen_api_chat_turns__turn_id__seen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -10510,7 +20853,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["DashboardLayout"];
+                "application/json": components["schemas"]["DashboardLayoutIn"];
             };
         };
         responses: {
@@ -10565,7 +20908,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["DashboardLayout"];
+                "application/json": components["schemas"]["DashboardLayoutIn"];
             };
         };
         responses: {
@@ -10773,6 +21116,133 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    diagnostics_health_api_diagnostics_health_get: {
+        parameters: {
+            query?: {
+                window_hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    diagnostics_precedent_composition_api_diagnostics_precedent_composition_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    put_enrichment_config_api_enrichment_config_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    cache_ttl_seconds?: number;
+                    enabled?: boolean;
+                    fusion_enabled?: boolean;
+                    use_abuseipdb?: boolean;
+                    use_apivoid?: boolean;
+                    use_binaryedge?: boolean;
+                    use_censys?: boolean;
+                    use_circl_hashlookup?: boolean;
+                    use_criminalip?: boolean;
+                    use_crowdsec?: boolean;
+                    use_crt_sh?: boolean;
+                    use_cymru_mhr?: boolean;
+                    use_dshield?: boolean;
+                    use_emailrep?: boolean;
+                    use_geoip?: boolean;
+                    use_google_safebrowsing?: boolean;
+                    use_greynoise?: boolean;
+                    use_hibp?: boolean;
+                    use_honeypot?: boolean;
+                    use_hybrid_analysis?: boolean;
+                    use_ipdata?: boolean;
+                    use_ipinfo?: boolean;
+                    use_ipqualityscore?: boolean;
+                    use_maltiverse?: boolean;
+                    use_malwarebazaar?: boolean;
+                    use_metadefender?: boolean;
+                    use_netlas?: boolean;
+                    use_onionoo?: boolean;
+                    use_otx?: boolean;
+                    use_pulsedive?: boolean;
+                    use_rdap?: boolean;
+                    use_robtex?: boolean;
+                    use_securitytrails?: boolean;
+                    use_shodan?: boolean;
+                    use_shodan_internetdb?: boolean;
+                    use_spamhaus?: boolean;
+                    use_spur?: boolean;
+                    use_threatfox?: boolean;
+                    use_urlhaus?: boolean;
+                    use_urlscan?: boolean;
+                    use_virustotal?: boolean;
+                    use_xforce?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrichmentConfigSaveResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -11071,6 +21541,212 @@ export interface operations {
             };
         };
     };
+    investigations_active_api_investigations_active_get: {
+        parameters: {
+            query?: {
+                case_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationsActive"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_jobs_api_jobs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_job_api_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_api_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    job_artifact_api_jobs__job_id__artifact_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The verified artifact: a ZIP for a data export, a CSV or JSON Lines file for an audit export. Every download is audited first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/x-ndjson": string;
+                    "application/zip": string;
+                    "text/csv": string;
+                };
+            };
+            /** @description job_artifact_permission_lost: the job needs a grant its owner no longer holds (an audit export needs audit:export and audit:view) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description audit_unavailable: the download could not be audited; or job_permission_unverifiable: the job's grants could not be confirmed just now (try again) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel_job_api_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     llm_models_api_llm_models_get: {
         parameters: {
             query?: never;
@@ -11314,7 +21990,11 @@ export interface operations {
                 query?: string | null;
                 from?: string | null;
                 to?: string | null;
+                source_id?: string | null;
                 per_source_timeout?: number;
+                rule?: string | null;
+                severity?: string | null;
+                severity_gte?: string | null;
             };
             header?: never;
             path?: never;
@@ -11570,6 +22250,180 @@ export interface operations {
             };
         };
     };
+    metrics_auto_close_health_api_metrics_auto_close_health_get: {
+        parameters: {
+            query?: {
+                window_hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_auto_close_health_recorded_api_metrics_auto_close_health_recorded_get: {
+        parameters: {
+            query?: {
+                window_hours?: number;
+                /** @description Which decision in a case's append-only trail anchors it to a window. `first` (default) is stable under reinvestigation; `last` reproduces the legacy endpoint's rolling clock. */
+                anchor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    auto_close_review_metrics_api_metrics_auto_close_review_get: {
+        parameters: {
+            query?: {
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoCloseReviewMetrics"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_breakdown_api_metrics_breakdown_get: {
+        parameters: {
+            query: {
+                /** @description The grouping. kind=cases: rule, source, severity, status, verdict, closed_by, assignee, mitre_tactic, mitre_technique. kind=usage: surface, role, model, provider, service_tier. */
+                by: "rule" | "source" | "severity" | "status" | "verdict" | "closed_by" | "assignee" | "mitre_tactic" | "mitre_technique" | "surface" | "role" | "model" | "provider" | "service_tier";
+                /** @description cases (gate metrics:view) or usage (gate cost:view). */
+                kind?: "cases" | "usage";
+                /** @description An optional second grouping from the same set, not equal to by (an exact cross-tab). */
+                then?: "rule" | "source" | "severity" | "status" | "verdict" | "closed_by" | "assignee" | "mitre_tactic" | "mitre_technique" | "surface" | "role" | "model" | "provider" | "service_tier";
+                /** @description The Round 12 window grammar: all, now-24h, now-7d, now-30d, calendar tokens (this_month, last_week, ...), period literals or ranges (A..B), resolved in the operator timezone. A relative window of days, weeks, months or years spans whole periods, the last in progress, exactly as chat counts it. */
+                window?: string;
+                /** @description Optional zero-filled time buckets over the window. */
+                bucket?: "hour" | "day" | "week";
+                /** @description Groups kept, 1 to 50; the rest is one exact other row. */
+                top?: number;
+                /** @description kind=cases only: count only cases carrying this exact rule value, matched as stored (1 to 256 printable characters, case sensitive, spaces included). */
+                filter_rule?: string | null;
+                /** @description kind=cases only: open (the open stock; with window=all for open-now figures) or closed (closed or resolved cases). */
+                status_group?: "open" | "closed";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsBreakdown"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_explain_api_metrics_explain_get: {
+        parameters: {
+            query: {
+                /** @description One of mtta, mttr, dwell, mttd, active_risk_index, fp_rate, sla_attainment. */
+                metric: string;
+                window_hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     metrics_noise_reduction_api_metrics_noise_reduction_get: {
         parameters: {
             query?: {
@@ -11638,6 +22492,37 @@ export interface operations {
             query?: {
                 window_hours?: number;
                 compare?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_trends_api_metrics_trends_get: {
+        parameters: {
+            query?: {
+                window_hours?: number;
             };
             header?: never;
             path?: never;
@@ -12138,28 +23023,15 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PlaybookCreateRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": unknown;
                 };
             };
         };
@@ -12191,28 +23063,15 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PlaybookDryRunRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": unknown;
                 };
             };
         };
@@ -12227,12 +23086,12 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": unknown;
                 };
             };
         };
@@ -12308,19 +23167,15 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PlaybookUpdateRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -12546,6 +23401,39 @@ export interface operations {
             };
         };
     };
+    bulk_reject_proposals_api_proposals_bulk_reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProposalBulkRejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     approve_proposal_api_proposals__proposal_id__approve_post: {
         parameters: {
             query?: never;
@@ -12725,6 +23613,196 @@ export interface operations {
             };
         };
     };
+    precedent_bootstrap_status_api_rag_precedent_bootstrap_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    precedent_bootstrap_api_rag_precedent_bootstrap_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrecedentBootstrapRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    precedent_composition_api_rag_precedent_composition_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    precedent_exclusions_api_rag_precedent_exclusions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    precedent_exclude_api_rag_precedent_exclusions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrecedentExclusionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    precedent_restore_api_rag_precedent_exclusions__case_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    precedent_repair_api_rag_precedent_repair_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrecedentRepairRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     rag_search_api_rag_search_get: {
         parameters: {
             query: {
@@ -12777,6 +23855,59 @@ export interface operations {
             };
         };
     };
+    get_rbac_api_rbac_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RbacStatus"];
+                };
+            };
+        };
+    };
+    put_rbac_api_rbac_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RbacUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RbacUpdateResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     upstream_releases_api_releases_upstream_get: {
         parameters: {
             query?: never;
@@ -12813,6 +23944,338 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReleaseDiscoveryResponse"];
+                };
+            };
+        };
+    };
+    list_replay_fixtures_api_replay_fixtures_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    purge_replay_fixtures_api_replay_fixtures_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    list_reports_api_reports_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportListResponse"];
+                };
+            };
+        };
+    };
+    create_report_api_reports_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ReportCreateRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Report"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_to_report_api_reports_add_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportAddRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportAddResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    report_from_answer_api_reports_from_answer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportFromAnswerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatSavedReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    report_from_conversation_api_reports_from_conversation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportFromConversationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportFromConversationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_report_api_reports__report_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                report_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Report"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_report_api_reports__report_id__delete: {
+        parameters: {
+            query?: {
+                expected_version?: number | null;
+            };
+            header?: never;
+            path: {
+                report_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ReportDeleteRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_report_api_reports__report_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                report_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportPatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Report"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    summarise_report_api_reports__report_id__summary_post: {
+        parameters: {
+            query?: {
+                dry_run?: boolean;
+            };
+            header?: never;
+            path: {
+                report_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ReportSummaryRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description The report with its new summary, or with ``dry_run=1`` the ReportSummaryEstimate (no model call). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Report"] | components["schemas"]["ReportSummaryEstimate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -13020,6 +24483,127 @@ export interface operations {
             };
         };
     };
+    list_analyst_policies_api_rules_analyst_policies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    upsert_analyst_policy_api_rules_analyst_policies__policy_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                policy_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_PolicyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_analyst_policy_api_rules_analyst_policies__policy_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                policy_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_analyst_policy_enabled_api_rules_analyst_policies__policy_id__enabled_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                policy_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["app__api__routes_analyst_policy___EnabledIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     upsert_case_automation_rule_api_rules_case_automation__rule_id__put: {
         parameters: {
             query?: never;
@@ -13097,7 +24681,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["_EnabledIn"];
+                "application/json": components["schemas"]["app__api__routes_rules___EnabledIn"];
             };
         };
         responses: {
@@ -13264,7 +24848,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["_EnabledIn"];
+                "application/json": components["schemas"]["app__api__routes_rules___EnabledIn"];
             };
         };
         responses: {
@@ -13308,6 +24892,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rule_summary_api_rules_summary_get: {
+        parameters: {
+            query: {
+                /** @description The exact rule value as shown (rule id or name), 1 to 256 characters. */
+                rule: string;
+                /** @description Round 12 window grammar; default now-3d. */
+                window?: string | null;
+                /** @description Restrict the alert sections to one source. */
+                source_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleSummary"];
                 };
             };
             /** @description Validation Error */
@@ -13388,7 +25008,16 @@ export interface operations {
     };
     list_runbooks_api_runbooks_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Search the id, title, summary and rule chips. */
+                q?: string;
+                state?: ("draft" | "in_review" | "published" | "retired") | null;
+                origin?: ("builtin" | "operator" | "imported") | null;
+                /** @description Also list built-ins a Published copy replaces. */
+                show_replaced?: boolean;
+                /** @description v1: the old runbook shape, for one release. */
+                shape?: "v1" | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -13401,7 +25030,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookLibrary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -13415,7 +25053,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RunbookCreateRequest"];
+                "application/json": components["schemas"]["RunbookSourceBody"];
             };
         };
         responses: {
@@ -13425,7 +25063,172 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_runbook_api_runbooks_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookSourceBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    lookup_test_api_runbooks_lookup_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookLookupTestBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LookupResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    match_preview_route_api_runbooks_match_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookSourceBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MatchPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    runbook_metrics_api_runbooks_metrics_get: {
+        parameters: {
+            query?: {
+                window?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookMetrics"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    runbook_progress_api_runbooks_progress_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookProgressBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: components["schemas"]["RunbookProgress"];
+                    };
                 };
             };
             /** @description Validation Error */
@@ -13459,9 +25262,45 @@ export interface operations {
             };
         };
     };
-    get_runbook_api_runbooks__runbook_id__get: {
+    validate_runbook_route_api_runbooks_validate_post: {
         parameters: {
             query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookSourceBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookValidation"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_runbook_api_runbooks__runbook_id__get: {
+        parameters: {
+            query?: {
+                /** @description v1: the old runbook shape, for one release. */
+                shape?: "v1" | null;
+            };
             header?: never;
             path: {
                 runbook_id: string;
@@ -13476,7 +25315,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookDetail"];
                 };
             };
             /** @description Validation Error */
@@ -13490,7 +25329,69 @@ export interface operations {
             };
         };
     };
-    update_runbook_api_runbooks__runbook_id__put: {
+    update_runbook_old_shape_api_runbooks__runbook_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_runbook_old_shape_api_runbooks__runbook_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_runbook_draft_api_runbooks__runbook_id__draft_put: {
         parameters: {
             query?: never;
             header?: never;
@@ -13501,7 +25402,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RunbookUpdateRequest"];
+                "application/json": components["schemas"]["RunbookDraftBody"];
             };
         };
         responses: {
@@ -13511,7 +25412,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookDetail"];
                 };
             };
             /** @description Validation Error */
@@ -13525,10 +25426,10 @@ export interface operations {
             };
         };
     };
-    delete_runbook_api_runbooks__runbook_id__delete: {
+    discard_runbook_draft_api_runbooks__runbook_id__draft_delete: {
         parameters: {
-            query: {
-                expected_revision: number;
+            query?: {
+                expected_revision?: number | null;
             };
             header?: never;
             path: {
@@ -13544,7 +25445,111 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookDiscardResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    duplicate_runbook_api_runbooks__runbook_id__duplicate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RunbookRevisionBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_runbook_api_runbooks__runbook_id__export_get: {
+        parameters: {
+            query?: {
+                /** @description Default: the version the caller would open. */
+                version?: number | null;
+            };
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/markdown": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    publish_runbook_api_runbooks__runbook_id__publish_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookPublishBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
                 };
             };
             /** @description Validation Error */
@@ -13576,6 +25581,249 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_runbook_api_runbooks__runbook_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookRejectBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_runbook_api_runbooks__runbook_id__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RunbookRevisionBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retire_runbook_api_runbooks__runbook_id__retire_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RunbookRevisionBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_runbook_reviewed_api_runbooks__runbook_id__reviewed_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RunbookRevisionBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_runbook_api_runbooks__runbook_id__submit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookVersionBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_runbook_version_api_runbooks__runbook_id__versions__version__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookVersionDoc"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_runbook_version_api_runbooks__runbook_id__versions__version__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RunbookRevisionBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
                 };
             };
             /** @description Validation Error */
@@ -14613,8 +26861,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
-            200: {
+            /** @description Mutation retired; submit a storage_lifecycle_apply durable Job. */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14871,6 +27119,93 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UpdateStatus"];
+                };
+            };
+        };
+    };
+    team_activity_api_team_activity_get: {
+        parameters: {
+            query?: {
+                /** @description A time window: today, yesterday, now-7d, or a date range. */
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamActivity"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    team_people_api_team_people_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamPeople"];
+                };
+            };
+        };
+    };
+    team_person_events_api_team_people__username__events_get: {
+        parameters: {
+            query?: {
+                window?: string | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamEvents"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

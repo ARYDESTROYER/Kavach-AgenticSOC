@@ -17,8 +17,8 @@ New here? Start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
 > **Round 2** (2026-06-30): a server-side **session registry**
 > (`stores/sessions.py`) with explicit revocation, per-user **token-version**
 > invalidation, and idle/absolute/refresh **token policy**
-> (`Preferences.session_policy`); refresh-token rotation with reuse (theft)
-> detection; step-up re-auth; a fully **isolated** Demo Mode (synthetic data in a
+> (`Preferences.session_policy`); a refresh route that no sign-in can reach (see
+> "Refresh tokens" below); step-up re-auth; a fully **isolated** Demo Mode (synthetic data in a
 > separate in-memory store with a `$0` deterministic mock LLM, never touching the
 > real workload stores or durable poll cursor; lifecycle actions intentionally leave
 > a real append-only audit record); auto-escaping/CRLF-safe email
@@ -503,18 +503,62 @@ revocation/expiry semantics on top of the JWT signature, never weaken it.
 - **No-auth is unchanged.** When auth is OFF the whole session/step-up path is a
   strict no-op (every principal is treated as `super_admin`, as before).
 
-### Refresh-token rotation & reuse (theft) detection
+### Refresh tokens
 
-`POST /api/auth/refresh` rotates the refresh token on every use: the presented token
-is matched against the session's stored **hash** (refresh tokens are stored
-**hashed**, never plaintext), a new token is minted, and the old hash is demoted to
-`refresh_prev_hash`. If a token is presented that matches an **already-rotated
-`refresh_prev_hash`**, that is treated as **theft** (a replay of a token that should
-have been discarded): the suite immediately **revokes every session for the user and
-bumps their `token_version`** (`revoke_all(..., reason="refresh_reuse_detected")`),
-audits a `refresh_reuse` event, best-effort notifies, and 401s. This bounds the
-damage of a leaked refresh token to a single use before the whole account's sessions
-are nuked.
+No sign-in issues a refresh token. A session lasts until its access token expires
+(`AUTH_TOKEN_HOURS`, or the Remember me duration), within the session policy's idle
+and absolute limits; after that the person signs in again. `POST /api/auth/refresh`
+is kept for older clients, marked deprecated in the API description, and always
+answers `401` with code `session_invalid` and reason `unknown_refresh`. No credential
+that browser JavaScript can read is added for it.
+
+The rotation code behind the route (hashed refresh tokens, reuse detection that
+revokes every session of the account) stays in place but cannot run while no sign-in
+issues a token.
+
+### Account security checks
+
+- **Forced password change.** An account an administrator creates, or whose password
+  an administrator resets, must change its temporary password before anything else.
+  Until it does, every `/api` route answers `403` with code `password_change_required`,
+  except signing out, the change itself, and the reads the sign-in screen needs
+  (`/api/auth/me`, `/api/account/me`, `/api/account/permissions`,
+  `/api/prefs/effective`, `/api/prefs/user`). The seeded demo `Admin` account is not
+  flagged; change its password yourself, or set `AUTH_SEED_ADMIN=false` on the backend.
+- **Password changes end other sessions.** Changing your own password signs out your
+  other sessions (this one stays). An administrator's reset signs the account out
+  everywhere. Both write `session.revoked` audit rows.
+- **Second-factor attempts are bounded.** Ten wrong codes in a row lock second-factor
+  checks for the account for 5 minutes, doubling for each further run of ten up to an
+  hour, with a `429` answer and an `auth.mfa_locked` audit row. This covers the
+  sign-in check, both enrolment confirms and turning MFA off. A pending sign-in token
+  is refused after 5 wrong codes or once it has signed in. A correct code resets the
+  count, and so does an administrator turning MFA off for the account. Each code is
+  consumed inside the user store's compare-and-swap, so a code sent twice at once
+  signs in once.
+- **Replacing an authenticator.** An enrolled account cannot start a new enrolment
+  from a session; it turns MFA off with a current code first. Enrolling and turning
+  MFA off both ask for a recent sign-in.
+- **Hashing off the event loop.** Password and recovery-code hashing run in worker
+  threads under a small semaphore, so a burst of sign-ins never stalls other requests.
+- **Session addresses.** The session list and new-device notices record the client
+  address the audit trail records: a forwarded header is believed only from a peer in
+  `TRUSTED_PROXIES`.
+- **Single sign-on.** A verified email links only to an account of the same provider
+  that has no subject yet; an account of another provider, or one already bound to a
+  different subject, is refused. Only a Google provider's `hd` claim names a domain;
+  otherwise the domain is the verified email's, and an unverified email has none.
+  Every change to the single sign-on settings, and every provider client secret, needs
+  a stored Super admin with a fresh sign-in (anyone else gets `403 super_admin_only`,
+  "Only a Super admin can change single sign-on."), and in 0.2.0 role values
+  (`default_role` and the group map) must name a built-in role: any other value, a
+  custom role name included, is refused with a 422 that names the field (mapping a group to
+  a custom role is backlog; a provider saved earlier with such a value stays stored until it
+  is next changed). A group map never changes a Super admin's role.
+- **Cost figures in audit text.** The spend figure a few audit rows carry in their text (the
+  investigation timeout, the decision, the runbook AI prompt and a budget refusal) is hidden
+  from a viewer without `cost:view` in the case timeline, trace, rationale, activity feed
+  and chat's case rationale. Tool output and every other row are shown as recorded.
 
 ### Demo Mode isolation guarantees
 

@@ -1,0 +1,126 @@
+/* Chat activity indicator (Round 12, SPEC D13): the navigation glyph, the history-row
+   ring and the brand ring. The look lives here, not in the entry chunk's JavaScript.
+   Base rules use :where() (no specificity), so a host's utility classes (size, margin,
+   position) still apply. Motion is transform-only, one calm rotation, and only under
+   `prefers-reduced-motion: no-preference`; reduced motion keeps the same static arc
+   (the tooltip then says "Working"). Forced colors use system colors. */
+
+:where(.chat-activity) {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: hsl(var(--primary));
+}
+
+:where(.chat-activity[data-activity='needs_input']) {
+  background: hsl(var(--warning));
+}
+
+:where(.chat-activity[data-activity='failed']) {
+  background: hsl(var(--critical));
+}
+
+/* Working: a quarter arc on a quiet track. */
+:where(.chat-activity[data-activity='running']) {
+  width: 0.875rem;
+  height: 0.875rem;
+  background: none;
+  border: 2px solid hsl(var(--border));
+  border-top-color: hsl(var(--primary));
+}
+
+/* A badge on an icon button, knocked out of the surface behind it. */
+:where(.chat-activity-badge) {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  box-shadow: 0 0 0 2px hsl(var(--surface));
+}
+
+:where(.chat-activity-badge[data-activity='running']) {
+  width: 0.75rem;
+  height: 0.75rem;
+  background: hsl(var(--surface));
+}
+
+/* The brand tile's ring: a thin outline that follows the tile's own rounded square
+   3px out (concentric with its corners, clear of the product name). The outline never
+   moves; only a soft highlight travels around it (a rotating conic gradient, clipped
+   to the 1.5px outline). The logo inside never moves either. */
+.chat-brand-ring {
+  position: absolute;
+  inset: -3px;
+  /* The tile is rounded-md (var(--radius) - 2px); 3px further out: + 3px. */
+  border-radius: calc(var(--radius) + 1px);
+  padding: 1.5px;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+
+.chat-brand-ring::before {
+  content: '';
+  position: absolute;
+  inset: -50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0 55%,
+    hsl(var(--primary) / 0.35) 75%,
+    hsl(var(--primary)) 100%
+  );
+}
+
+@keyframes chat-activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes chat-activity-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chat-activity[data-activity='running'] {
+    animation: chat-activity-spin 1.2s linear infinite;
+  }
+
+  .chat-brand-ring {
+    animation: chat-activity-in 300ms ease-out;
+  }
+
+  .chat-brand-ring::before {
+    animation: chat-activity-spin 1.6s linear infinite;
+  }
+}
+
+@media (forced-colors: active) {
+  .chat-activity,
+  .chat-brand-ring {
+    forced-color-adjust: none;
+  }
+
+  .chat-activity {
+    background: Highlight;
+  }
+
+  .chat-activity[data-activity='running'] {
+    background: Canvas;
+    border-color: GrayText;
+    border-top-color: Highlight;
+  }
+
+  .chat-brand-ring::before {
+    background: conic-gradient(from 0deg, transparent 0 55%, Highlight 75% 100%);
+  }
+}

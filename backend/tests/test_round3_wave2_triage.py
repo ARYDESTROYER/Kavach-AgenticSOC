@@ -12,12 +12,13 @@ BYTE-IDENTICAL regardless of any advisory severity/impact/urgency/priority band.
 from __future__ import annotations
 
 from app.api.routes_triage import case_timeline, case_triage
-from app.config import AssetNetwork, Preferences, PriorityMatrix
+from app.config import AssetNetwork, Preferences, PriorityMatrix, SourceInstance
 from app.constants import (
     ActionType,
     CaseStatus,
     EntityType,
     SourceSurface,
+    SourceType,
     Verdict,
 )
 from app.engine.case_manager import decide
@@ -34,6 +35,18 @@ from app.models import AuditDoc, Case, Entity, TriggerReason, UsageDoc
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+
+def _request(state):
+    """A minimal request bound to ``state``. Sign-in is off in these tests, so the
+    caller holds every grant (the timeline's cost and tokens included)."""
+    from fastapi import FastAPI
+    from starlette.requests import Request
+
+    app = FastAPI()
+    app.state.tlsoc = state
+    return Request({"type": "http", "method": "GET", "path": "/api/cases/x/timeline", "headers": [],
+                    "query_string": b"", "app": app, "client": ("127.0.0.1", 9)})
+
 def _case(
     *,
     case_id: str = "case-t1",
@@ -43,12 +56,14 @@ def _case(
     confidence: float = 0.8,
     severity_max: float | None = 8.0,
     escalation_level: int = 0,
+    source_id: str | None = None,
 ) -> Case:
     return Case(
         case_id=case_id,
         cluster_signature=f"sig:{case_id}",
         source_surface=SourceSurface.AUTOMATED_SCAN,
         entity=Entity(type=EntityType.IP, value=ip),
+        source_id=source_id,
         risk_score=risk,
         verdict=verdict,
         confidence=confidence,
@@ -66,17 +81,51 @@ def _case(
 # --------------------------------------------------------------------------- #
 # PURE derivation — severity / impact / urgency / priority
 # --------------------------------------------------------------------------- #
+def _declared_prefs(*, source_id: str = "src-0-10", ceiling: float = 10.0) -> Preferences:
+    """Preferences carrying ONE source that DECLARES its native severity ceiling.
+
+    The connector type is deliberately incidental — the ladder is described by the
+    declared NUMBER alone (``SourceInstance.severity_scale_max``), which is what every
+    severity surface projects through."""
+    return Preferences(
+        sources=[
+            SourceInstance(
+                id=source_id,
+                source_type=SourceType.ELASTICSEARCH,
+                display_name="declared 0-10 ladder",
+                severity_scale_max=ceiling,
+            )
+        ]
+    )
+
+
 def test_severity_band_is_source_asserted_not_risk():
-    # severity_max=8.0 (0-10 scale) -> 80 magnitude -> critical (5-band ladder), flagged
-    # source_asserted.
+    # The band is a function of the source's DECLARED severity ladder, never of risk.
+    #
+    # UNDECLARED (no prefs -> no ladder to resolve) is the IDENTITY projection: a raw 8
+    # is read as 8/100, because with no declaration there is no evidence the number means
+    # anything other than what it says. The retired ``raw <= 10 ? raw*10`` guess is what
+    # used to call this CRITICAL, and it inverted genuinely-low 0-100 scores just as
+    # badly as it inverted high 0-10 ratings.
     case = _case(severity_max=8.0, risk=10.0)
     sev = severity_band_from_events(case)
     assert sev["source"] == "source_asserted"
-    assert sev["band"] == "critical"
-    assert sev["value"] == 80.0
     assert sev["raw"] == 8.0
+    assert sev["scale_max"] == 100.0
+    assert sev["value"] == 8.0
+    assert sev["band"] == "low"
     # It must NOT track the (low) risk score — proving severity != risk.
     assert sev["value"] != case.risk_score
+
+    # DECLARE the source's real 0-10 ladder and the SAME raw 8 reads CRITICAL again —
+    # one declared number, one projection, no magnitude guess and no vendor branch.
+    declared_case = _case(severity_max=8.0, risk=10.0, source_id="src-0-10")
+    declared = severity_band_from_events(declared_case, _declared_prefs())
+    assert declared["source"] == "source_asserted"
+    assert declared["scale_max"] == 10.0
+    assert declared["value"] == 80.0
+    assert declared["band"] == "critical"
+    assert declared["value"] != declared_case.risk_score
 
 
 def test_severity_band_already_0_100_scale_not_doubled():
@@ -157,7 +206,10 @@ def test_derive_triage_four_distinct_chips():
         asset_criticality={"203.0.113.50": 95.0},
         priority_matrix=PriorityMatrix(enabled=True),
     )
-    case = _case(risk=72.0, severity_max=8.0)
+    # The source DECLARES a 0-10 ladder, so the raw 8 projects to a source-asserted 80 —
+    # a number that is honestly distinct from risk (72) and impact (95).
+    prefs.sources = _declared_prefs().sources
+    case = _case(risk=72.0, severity_max=8.0, source_id="src-0-10")
     chips = derive_triage(case, prefs)
     assert set(chips) == {"risk", "severity", "impact", "priority"}
     # The four chips are honestly distinct numbers, not the same value relabelled.
@@ -306,7 +358,7 @@ async def test_timeline_assembles_typed_spans_and_terminal_decision(app_state):
         action_type=ActionType.VERDICT, result_summary="verdict=TRUE_POSITIVE reasoning=clear xss",
     ))
 
-    res = await case_timeline("case-tl-1", state)
+    res = await case_timeline("case-tl-1", _request(state), state)
     spans = res["spans"]
     # step ordering preserved, step_index monotonic.
     assert [s["step_index"] for s in spans] == list(range(len(spans)))
@@ -340,7 +392,7 @@ async def test_timeline_separates_trusted_and_untrusted(app_state):
         ts="2026-06-16T10:00:01+00:00", case_id="case-tl-2", actor="router",
         action_type=ActionType.DECISION, result_summary="bucket=serious",
     ))
-    res = await case_timeline("case-tl-2", state)
+    res = await case_timeline("case-tl-2", _request(state), state)
     tool_span = next(s for s in res["spans"] if s["kind"] == "execute_tool")
     assert tool_span["trusted"] is False
     # The untrusted tool OUTPUT text is not surfaced as the span summary; the query is.
@@ -364,7 +416,7 @@ async def test_timeline_attributes_cost_from_usage_ledger(app_state):
         ts="2026-06-16T10:00:00+00:00", case_id="case-tl-3", actor="investigator",
         action_type=ActionType.VERDICT, result_summary="verdict=TRUE_POSITIVE",
     ))
-    res = await case_timeline("case-tl-3", state)
+    res = await case_timeline("case-tl-3", _request(state), state)
     inv = next(s for s in res["spans"] if s["name"] == "investigator")
     assert inv["cost"] == 0.0123
     assert inv["tokens"] == 150
@@ -374,10 +426,10 @@ async def test_timeline_attributes_cost_from_usage_ledger(app_state):
 async def test_timeline_never_404s_and_no_decision_without_verdict(app_state):
     state = app_state
     # Unknown case: empty spans, no crash.
-    empty = await case_timeline("ghost-case", state)
+    empty = await case_timeline("ghost-case", _request(state), state)
     assert empty["spans"] == []
     assert empty["total"] == 0
     # A case with NO verdict yet emits no terminal decision span.
     await state.cases.save(_case(case_id="case-noverdict", verdict=None))
-    res = await case_timeline("case-noverdict", state)
+    res = await case_timeline("case-noverdict", _request(state), state)
     assert all(s["kind"] != "decision" for s in res["spans"])

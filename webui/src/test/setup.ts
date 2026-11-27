@@ -5,6 +5,23 @@
  * browser APIs that EUI touches at render time but jsdom does not implement.
  */
 import '@testing-library/jest-dom/vitest';
+import { afterEach } from 'vitest';
+
+// Round 12 (SPEC D13): chat turns outlive their view in a module-level turn runner, and
+// the app-level activity store remembers them. Within one test file, a turn a test left
+// running would otherwise carry into the next test (e.g. open that thread busy). Forget
+// every turn after each test. The dynamic import also yields once, so the Testing
+// Library unmount (a synchronous afterEach) has run before the store notifies anyone.
+afterEach(async () => {
+  const { clearChatActivity } = await import('@/soc/chat-activity/activity');
+  clearChatActivity();
+});
+
+// Round 12 WP-ASK: the "Ask AI" chip's hosts load it on demand (it must stay off every
+// route's preload list in the entry chunk). Load it once up front, so a host renders it
+// synchronously under test, exactly as it does in the app once the chunk is cached,
+// instead of it arriving after the test's own act() scope has closed.
+await import('@/soc/components/AskAiChip');
 
 // EUI's responsive hooks read `window.matchMedia`, which jsdom omits.
 if (typeof window !== 'undefined' && !window.matchMedia) {
@@ -44,9 +61,16 @@ if (typeof Element !== 'undefined') {
 
 // jsdom has no layout engine, so Recharts' ResponsiveContainer would otherwise
 // measure 0x0 and emit a warning for every chart render. Model only the chart
-// wrapper: inherit an explicit pixel dimension from its ancestors (all shared
-// chart components set a truthful inline height) and use a stable desktop canvas
-// width when CSS layout would ordinarily provide the remaining dimension.
+// wrapper: inherit an explicit pixel dimension from its ancestors (nearly every
+// shared chart component sets a truthful inline height) and use a stable desktop
+// canvas width when CSS layout would ordinarily provide the remaining dimension.
+//
+// ONE documented exception: `MultiSeriesTrend fill` deliberately sets no inline
+// height — it is `absolute inset-0` and takes the size of a flex cell, which only a
+// real layout engine can resolve. The walk below then finds nothing and falls back
+// to TEST_CHART_HEIGHT, which is still non-zero, so Recharts stays quiet and
+// `npm run test:strict` stays clean. A `fill` chart's HEIGHT is therefore not
+// assertable in jsdom at all; assert the wrapper's classes instead.
 if (typeof Element !== 'undefined') {
   const nativeGetBoundingClientRect = Element.prototype.getBoundingClientRect;
   const TEST_CHART_WIDTH = 800;

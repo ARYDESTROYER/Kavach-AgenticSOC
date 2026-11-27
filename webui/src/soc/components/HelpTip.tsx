@@ -25,6 +25,30 @@ export interface HelpTipProps {
   code?: string;
   /** Accessible label for the trigger button. */
   label?: string;
+  /**
+   * Force the POPOVER presentation regardless of length.
+   *
+   * The default switch below is a LENGTH heuristic — short help gets a tooltip because it
+   * needs no room. Reachability is a different question: a Radix tooltip opens on hover and
+   * on focus, but never on TOUCH. So any help that carries text an operator must be able to
+   * read on a tablet — in particular a disclosure RELOCATED out of always-visible copy —
+   * has to be a popover (click / Enter / Space) however short it happens to be. Moving a
+   * disclosure somewhere a touch or keyboard user cannot reach is a regression, not a
+   * cleanup, and this flag is how a caller states that requirement instead of relying on
+   * its sentence happening to exceed 80 characters.
+   */
+  alwaysPopover?: boolean;
+  /**
+   * Told when the POPOVER presentation opens or closes, so a host can stand other floating
+   * surfaces down while it is up. Never fires for the tooltip presentation, which cannot
+   * coexist with anything (it closes the moment the pointer leaves).
+   */
+  onOpenChange?: (open: boolean) => void;
+  /**
+   * An action row under the help (e.g. a lazily loaded "Ask about this"). Forces the
+   * popover presentation: a tooltip cannot hold a control.
+   */
+  footer?: React.ReactNode;
   className?: string;
 }
 
@@ -49,8 +73,17 @@ const TriggerButton = React.forwardRef<
 ));
 TriggerButton.displayName = 'HelpTipTrigger';
 
-export function HelpTip({ text, link, code, label = 'More information', className }: HelpTipProps) {
-  const usePopover = Boolean(link || code || (text && text.length > 80));
+export function HelpTip({
+  text,
+  link,
+  code,
+  label = 'More information',
+  alwaysPopover = false,
+  onOpenChange,
+  footer,
+  className,
+}: HelpTipProps) {
+  const usePopover = Boolean(alwaysPopover || link || code || footer || (text && text.length > 80));
 
   if (!usePopover) {
     // Self-contained TooltipProvider so HelpTip works anywhere (some Settings
@@ -68,11 +101,11 @@ export function HelpTip({ text, link, code, label = 'More information', classNam
   }
 
   return (
-    <Popover>
+    <Popover onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <TriggerButton label={label} className={className} />
       </PopoverTrigger>
-      <PopoverContent className="w-80 space-y-2 text-xs leading-relaxed" align="start">
+      <PopoverContent aria-label={label} className="w-80 space-y-2 text-xs leading-relaxed" align="start">
         <p className="text-muted-foreground">{text}</p>
         {code ? (
           <pre className="overflow-x-auto rounded-md border border-border bg-muted/40 p-2 font-mono text-[11px] text-foreground">
@@ -89,6 +122,7 @@ export function HelpTip({ text, link, code, label = 'More information', classNam
             Learn more
           </a>
         ) : null}
+        {footer}
       </PopoverContent>
     </Popover>
   );

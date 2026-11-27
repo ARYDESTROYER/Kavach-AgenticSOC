@@ -14,6 +14,3172 @@ History is reconstructed from `git log`.
 
 No changes yet.
 
+## [0.2.0] - 2026-11-27
+
+The first release of the 0.2 line, and the first since v0.1.1 to carry the work built on
+`Testing` after 0.1.12, the never-tagged 0.1.13 candidate included. It brings Workspace Chat
+without per-question limits, with dynamic suggestions and reports; a Dashboards library; an
+Audit log you can search and export; rule sheets; one Runbooks feature in place of playbooks;
+a switch for role-based access; Team activity; screenshots on cases and a random review of
+automatic closes; and, new in this release, the AI agent's work shown live on a case, a
+segregated Case Manager with six tabs and a case facts inspector, a quiet sign-in page,
+numbers that explain themselves on hover or click, every stored case record reachable, What's
+new and a Communication page, 75 bug fixes and the Apache-2.0 license. Compatibility changes:
+writes to `/api/playbooks*` answer `410 runbooks_moved` while its reads stay for one release;
+`PUT /api/settings` answers `409 rbac_switch_moved` when it would change `rbac.enabled`;
+`playbooks:*` grants map onto `runbooks:*`; `AUTH_TOKEN_HOURS` is capped at 144; with
+role-based access on, every read needs its read grant; an account flagged to change its
+password must do so before any other request; `POST /api/auth/refresh` is deprecated; and chat
+sits outside the AI budget. Upgrade steps: set
+`AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env` before the bootstrap,
+which refuses to run without it; on PostgreSQL the first start widens `audit.id` to `bigint`
+in place, and a very large audit table can be widened beforehand in a maintenance window; on
+Elasticsearch the backend now adds the audit and cases mappings itself, and the manual audit
+template step is needed only when it logs that it could not. Rollback boundary: an image-only
+rollback keeps the data, but the earlier build drops the fields it does not know when it
+rewrites a document (recorded risk inputs and second-factor lock counters), the read grants
+and the server-side forced password change revert while it runs, and the widened column
+stays. A rollback to v0.1.1 also resets every setting it does not model at its graceful stop,
+so note the settings you changed first. Updater protocol 1, signed-plan schema 1, state schema
+1 and the frozen Compose base are unchanged.
+
+### Round 16
+
+Ten operator asks: show when the AI agent is working on a case, give the Case Manager its
+space back and segregate it into one question per region, a quiet sign-in page, every number
+explainable on hover or click, every stored case record reachable, a What's new screen and a
+Communication page that tracks every release, every confirmed bug from an application-wide bug
+hunt (81 ids, 75 fixes, 6 merged duplicates), version 0.2.0 under the
+`ARYDESTROYER/Kavach-AgenticSOC` identity, and the Apache-2.0 license. `decide()` and
+`engine/risk.py` are byte-identical, there is no new model call, no new index, table, KV
+namespace or SQL migration (the new fields are additive and defaulted; on Elasticsearch the
+cases mapping gains two properties additively, and the shipped client now applies the earlier
+additive audit mapping upgrade too), and no new runtime dependency. Bug ids refer to
+`docs/research/2026-11-round16/review/bug-hunt.md`.
+
+#### Added
+
+- **See the AI working on a case.** While the AI investigates a case:
+  - the case header shows "AI working · m:ss", or "AI queued" while the run waits for an
+    investigation slot, then "AI finished". A run that failed or was stopped ends as "AI
+    stopped", in a neutral colour with an alert mark, and its popover is titled "AI
+    investigation stopped". The chip keeps its words on any strip 30rem wide or wider,
+    where the AI verdict's label, the owner's name and the SLA make room first and the
+    status words always stay on the line. On a phone it shows the ring with the word "AI"
+    and no clock, so a still ring under reduced motion is never alone. Select it for the
+    five steps, who or what started the run ("You started it", "Started by a person", or
+    the automatic origin), the time against the investigation cap, and a link to its steps
+    in the Audit log;
+  - queue rows show "AI working" or "AI queued" in place of the status mark, at every queue
+    width. In a narrow queue the status words, the outcome badge and the severity word step
+    aside for it; the row's accessible name, the leading glyph and the case header keep all
+    of them. The row's accessible name ends "AI investigation running" or "AI investigation
+    waiting", with no elapsed time; the header chip has the clock;
+  - the Case Manager navigation item counts the cases the AI is investigating, and the queue
+    band says how many new alerts it is investigating;
+  - close, resolve, the bulk close and the bulk Acknowledge and Set status dialogs say that
+    the run's result will replace what you set now. Nothing is blocked. When the run ends,
+    the note names the verdict ("The AI investigation finished with the verdict Needs human
+    review. Check it before you close."), or says the run stopped or could not finish and
+    the case was not changed. No finish message covers the dialog while its note shows;
+  - Take action shows Reinvestigate as unavailable while a run is queued or running and says
+    why, and the header dims the verdict the run will replace;
+  - W opens the AI investigation tab at the live trace while a run is under way, and the
+    case's live narration ends with "Investigation finished". The open trace updates every
+    few seconds while the run is under way and does not blank when it ends, and the tab's
+    count is the AI's own steps, the same number as the trace's "N AI steps".
+- **Notices when a run ends.** The person who started a manual run (Reinvestigate, or Run
+  investigation on Entity investigation) gets a toast and an Inbox item when it finishes. A
+  person whose close an AI run replaced gets an Inbox item, and the change is recorded as a
+  `case.close_replaced` audit row. When that close was made on the case you are looking at,
+  while the run was queued or running, the page says so in a warning: "The AI investigation
+  replaced your close of CASE-0042. Status: Open · awaiting analyst. Your disposition and
+  note are kept." The Brief's People lane says it too: "The AI investigation then replaced
+  the close.", also after a move to Resolved from the status menu. A close made before you
+  reinvestigated the case is not replaced, so the finish message gives the new status. The
+  end of a run is said once: when the finish message or the case's own close or status
+  dialog says it, the header chip does not say it again. The notices name the needs-human
+  verdict "Needs human review", as the case does.
+- **Every number explains itself.** Hover a risk score, verdict, severity, priority, SLA,
+  cost or dashboard figure for a one-line formula with the real numbers. Click it, press
+  Enter or Space, or tap it for the full calculation: inputs, each step, rounding, where the
+  numbers came from, caveats and Copy calculation. Queue rows show the formula on mouse hover
+  only; the keyboard path is the header chip.
+  - Every new risk score records what it was computed from: event count, time span, rule
+    types, the reputation and where it came from, the asset match and the weights in force,
+    so the calculation reproduces the stored score after the case gains events or the
+    weights change. A case scored earlier says "not recorded" and shows today's weights,
+    labelled as such.
+  - The Decision card and the decision step show the decision as it was recorded: when it
+    was made, what code decided, why, both auto-close conditions with their numbers and the
+    thresholds the gate compared. They say when today's policy would decide differently. A
+    case decided before this release shows a decision re-derived with today's policy,
+    labelled as such.
+  - New case clocks: First event and Time to detect.
+  - The Cost page explains per call, per 1K tokens and tokens per call; Auto-tuning and the
+    auto-close review explain their Wilson intervals; Alert reduction shows its arithmetic.
+  - On Analytics, Average risk, Incident yield, Escalation rate, Containment and the
+    Posture SLA strip open their inputs, and so do the cells of a dashboard KPI strip and
+    the Team activity median. Every calculation an explanation prints gives the result it
+    prints.
+  - A dashboard change chip names both values and both windows. A chip beside a rate or a
+    time is a relative change, (now - before) / before x 100, and says it is not percentage
+    points; a rate chip also prints the counts behind both windows, such as "69.64% (39 of
+    56 verdicted cases)". A chip beside a count is the difference of the two counts.
+  - Human vs AI counts and shares explain their base, the closed cases of the window, and
+    the whole-percent rule: each share is rounded down and the points left go to the
+    largest fractions, so 45 of 62 is 72.58%, shown 73%. The donut snapshots add the
+    severity counts to the centre number and give each legend share.
+  - The Noisiest rules FP rate is the lower end of the Wilson range for the analyst-graded
+    cases, with the z the tuner uses, so 30 of 30 reads 89%, not 100%. Auto-close health,
+    spend per investigated case, SLA attainment and the strip cells that read "at least"
+    open their calculation. Cost explains Total cost, Tokens and LLM calls as the sums of
+    the per-model rows, and Today as the spend since midnight UTC.
+  - The Standup explains every figure: the strip counts and their change, each queue row's
+    risk and age, the SLA totals per priority, each breached line's overage, the workload
+    counts, the action items and the handoff sign-off. The report sends these inputs to the
+    page only; the summary sent to the AI model leaves them out.
+  - On Agent effectiveness, each outcome tile works both windows from their counts and the
+    change from the figures the server compared; the agreement, correction and turnaround
+    figures explain themselves when the server sends their counts, and a figure with no
+    prior window says "no comparable prior figure". The definitions use plain words.
+  - On Team activity, the median time to acknowledge lists the times it is taken from (up
+    to 200 around the middle) and works the median from them, a person's own median says how
+    many cases it covers, and People active names each person it counted (a sign-in
+    counts).
+  - "Why was this investigated?" prints the routing score with two decimals and its
+    weighted sum, for example (0.25 x 58.56 + 0.20 x 9.69 + 0.15 x 20) / 0.60 = 32.63, and
+    says the reading uses today's settings.
+  - The SLA panel adds Time left (rounded down, as the due line shows it) and Over by, and
+    the AI confidence says it was reported by the AI with its verdict, naming the run when
+    the decision recorded its gate.
+- **Dashboard figures show the cases behind them.** `GET /api/metrics/explain` returns the
+  cases behind MTTA, MTTR, dwell, MTTD, the Active risk index, the AI-verdict false positive
+  rate and SLA attainment, computed from the same population with the same code as the
+  figure, up to 200 cases centred on the median (the case rows need `cases:read` and respect
+  row-level data scope). Response times open a panel with the median, p90, mean and count;
+  **Show all** lists the cases with the median marked; MTTR is split by who closed each case.
+  `GET /api/metrics` adds `mttr_lifecycle` and `mttr_by_decider`, and every all-time metrics
+  payload says when its cases were read (`generated_at`, `case_population`).
+- **Every case record is one click away.**
+  - The Evidence tab lists the raw events behind a case, read again from their own source a
+    page at a time (`GET /api/cases/{id}/events`, needs `cases:read` and `sources:read`). On
+    Elasticsearch, OpenSearch and Wazuh it reads each event by its index and id together, so
+    copies of the same id in other indices of the data view never hide it. It says plainly
+    when events aged out, when a push source kept no copy, or when the source could not be
+    read. One event opens in a side sheet with Table and JSON views, Copy, an
+    NDJSON download and Open in Logs. Reading events writes one "Case events viewed" audit
+    row per person and case every ten minutes.
+  - The investigation cost in the case facts opens every AI call behind it
+    (`GET /api/cases/{id}/usage`, needs `cases:read` and `cost:view`): role, model, tier
+    (Standard, Flex or Batch), tokens, latency, attempts and an Estimated mark, with each
+    call's cost formula in its own numbers, where its price came from and the build that
+    wrote it. A price estimated from the model family, or the default price for a model not
+    in the price table, says so. A call whose recorded cost differs from its rates says so.
+    Case chat and runbook AI help each have their own line, so runbook AI help is no longer
+    counted as case chat; the route adds a `runbook` total beside `pipeline`, `chat` and
+    `other`.
+  - **View all fields** shows every stored field of a case in a searchable tree, with Copy
+    JSON and Download; costs are left out without `cost:view`.
+  - A finding shows its whole text with More, and Cites N events opens the events table
+    narrowed to those events. A case waiting for an investigation says why and opens the
+    gates behind it; a case on hold shows its recorded reason; History shows status reasons,
+    resolution notes, events attached later and the reason each automatic decision
+    recorded, and a long note shows three lines with Show more; trace steps open Details
+    (model, latency, tokens, cost, tool input, query and tool output, marked untrusted), and
+    the decision step says "No model call. Code made this decision."; gradings open their
+    full record; indicator reputation lists each provider and how the scores were combined,
+    beside the reading at investigation.
+  - A confirmed runbook step that started from an AI draft says so, with the model and the
+    time, and **Show the AI draft** shows the draft as the AI wrote it.
+  - Every new usage ledger row records the rates behind its cost (input, output, cache read
+    and cache write per million tokens, the cache-write TTL and the price basis: catalog, an
+    operator override, a self-hosted model, the mock provider or Demo Mode). Older rows have
+    no rates.
+- **What's new and Communication.** A release tracker under the new Communication navigation
+  group (Inbox and What's new), with highlights grouped by update, an area filter, search,
+  links to one highlight, "New to you" marks and the earlier release records. A short welcome
+  appears once after each update, after sign-in and never over another dialog or an open
+  record. A new account starts with it marked seen, so it is not welcomed to changes made
+  before it existed. **Show What's new after updates**, on the page or in
+  **Settings → Account → Appearance**, turns it off. Acknowledging it is audited as a
+  preferences change. The release badge links to What's new for the running version, and the
+  Help Center has a What's new page generated from the same notes, which chat's product help
+  reads. It lists every change since 0.1.1: twelve dated updates for 0.2.0 and an entry for
+  the 0.1 line. 44 of the 66 highlights of 0.2.0 have a screenshot, up from 18, each new one
+  in a light and a dark capture.
+- **AI runs on the server.** `GET /api/investigations/active` (needs `cases:read`) lists the
+  queued and running runs, the runs that finished in the last two minutes, how many runs on
+  new events have no case yet and the investigation slots in use; the requester's name is
+  shown only to a holder of `users:manage`. `case.investigation` frames carry ids and enums
+  only, on the `cases`, `cases:{id}` and new `investigations` topics. The registry is held in
+  memory by one backend process (`process_local: true`); Demo Mode keeps its own.
+- **License.** Agentic SOC is licensed under Apache-2.0. Each image carries the license text
+  and the `org.opencontainers.image.licenses` label, and the README lists the third-party
+  notices (the OFL fonts, the Unicode data and the MITRE ATT&CK corpus).
+- `GET /api/diagnostics/health` adds `case_population` (when the case figures were read) and
+  `event_loop` (the worst and 99th-percentile event-loop lag over the last minute).
+- `GET /api/cases/{id}/triage` adds the auto-close policy for the case's verdict, the case's
+  SLA reading (the same clock rules as SLA attainment) and, for a holder of `settings:read`,
+  the internal network range that holds the entity. `GET /api/cases/{id}/rationale` adds
+  `returned`, `rows_total`, `rows_total_relation` and `truncated`, and the
+  `GET /api/cases/{id}/forwarding` explanation adds the routing score and the floor, with
+  its weighted terms and weight sum (`routing_terms`, `routing_weight_total`).
+- `GET /api/metrics` adds `avg_risk_case_count`, how many scored cases Average risk
+  divides by, and the posture comparison of a rate adds `numerator`, `denominator`,
+  `prev_numerator` and `prev_denominator`. `GET /api/tuning/recommendations` adds
+  `wilson_z`, the Team activity read adds `ack_sample_seconds` and `ack_sample_offset` (at
+  most 200 sorted times around the median), and the Standup report's rows carry the inputs
+  their explanations need. All of these are additive.
+- Release checks: `scripts/check_version.py` requires the What's new notes file for the
+  current version (`docs/releases/notes/<VERSION>.json`) and the license label on all three
+  images. On `main`, a `v*` tag or a pull request into `main` it also requires an empty
+  `[Unreleased]` section, notes marked released and dated like the dated CHANGELOG heading
+  with every update dated, and a GitHub Release body of at most 100,000 characters.
+
+#### Changed
+
+- **Version 0.2.0, documentation line 0.2.** The never-tagged 0.1.13 candidate folds into
+  0.2.0. The installed Help Center moves to `/docs/0.2/`; every page under `/docs/0.1/`
+  redirects to the same page of 0.2 and keeps the part after `#`, so saved chat citations,
+  report links and bookmarks still work. Release plans admit source versions
+  `>=0.1.1,<0.3.0`.
+- **New repository identity.** The repository is `ARYDESTROYER/Kavach-AgenticSOC`: the update
+  trust root, the GHCR namespace, the OCI source label, the release-discovery default and the
+  public docs address. A saved Updates & releases preference that names the former repository
+  reads as the new one (compared ignoring case after the usual clean-up); forks are kept.
+  Artifacts of v0.1.12 and earlier stay valid under the former identity, and old Pages links
+  answer 404 because GitHub does not redirect project Pages after a rename.
+- **A segregated Case Manager.** The queue and the case start right under the top bar: there
+  is no page header, and Live, Refresh case queue and About Case Manager sit beside the queue
+  scope (in the view menu on a queue narrower than 400 px). Each row starts with its severity
+  symbol, which becomes the row's checkbox when you point at the row, select a case or use a
+  touch screen. The risk number is plain text. `[` folds the queue to a narrow strip with
+  Show queue, Previous and Next, and the choice is kept in this browser. With no case open,
+  the pane offers up to three counted shortcuts into the queue. The default queue width is
+  28% of the board, between 340 and 520 px. The shortcuts sheet lists `[`, `]` and W.
+- **Six case tabs, one lane each, with Chat last**: Brief, Evidence, AI investigation,
+  Response, Activity and Chat, on Alt+1 to Alt+6. Alt+2, Alt+4 and Alt+5 now open Evidence,
+  Response and Activity, and Chat moves to Alt+6. Old links to the Timeline and Threat context
+  tabs, and to the what happened, threat context and related cases sections, open Evidence.
+  The Brief opens with the runbook's next step and four lanes (Evidence, Assessment, Decision
+  and People) that never repeat the header's facts; Response holds the runbook and the case's
+  tasks for everyone. The AI lane is called Assessment, so it no longer reads "AI AI", and
+  the People lane names the newest status change or runbook step a person made ("Runbook
+  step done by asha.iyer, 12m ago"), or says "No status change by a person yet."
+- **A compact case header.** It is 118 px for every case: a title row with the primary
+  action, Take action, Ask AI, More options, the case facts toggle (`]`) and Back, and a
+  one-line meta strip with the case number, severity, status or outcome, risk, AI verdict,
+  owner, SLA and the review chip. The review sentence moved from a header band to the review
+  chip and the Brief. On a phone the case shows one Back control.
+- **Case facts are an inspector** beside the tabs from a 52rem pane, or a side sheet below
+  that, shown or hidden with `]`, with six sections that open and close (each viewer's
+  choices are kept; Record starts closed). It replaces the facts rail.
+- **The Brief's Decision lane and the case History** say in plain words who settled the case
+  and how, from one set of sentences ("Escalated by the system.", or "Sent to an analyst by
+  the case policy. Auto-close is off for this verdict."), and never show the engine's raw
+  rationale. The raw decision record is in Policy inputs, word for word. On a case a person
+  closed, the lane keeps the name Decision under its Analyst tag, shows what the policy
+  recorded before them and no longer repeats the person or the outcome. In the case facts,
+  the Outcome of a case nobody has classified reads "Not classified yet".
+- **A quiet sign-in page.** One column on the Console's own colours with a soft wash in the
+  organization accent and one short entrance; nothing moves after the page settles. The
+  heading names the organization ("Sign in to Acme SOC"); "Welcome back" appears only on a
+  device that remembers you. Continue is always shown and errors sit under their field.
+  Single sign-on buttons say "Sign in with Google", "Sign in with Microsoft" or the provider's
+  name, full width. The appearance control has three buttons. The six code boxes for
+  two-factor sign-in submit when the last digit arrives and clear after a wrong code; after
+  five wrong codes sign-in returns to the password step with a clear message. "Forgot
+  password?" says to ask an administrator. The spinner between the sign-in page and the
+  Console appears only when loading takes longer than 300 ms. The Branding preview matches
+  the new page.
+  - The column is top aligned, so a step change or an error grows the page downward and
+    never moves the heading or the field you are retyping. The forced password change shows
+    its errors under its fields.
+  - On a phone the text links, Back, the Demo Use button, the appearance buttons and the
+    password reveal button are at least 44 px tall, Back and Use line up with the column's
+    right edge, and every step keeps one 16 px rhythm.
+  - "Verify and continue" and "Set password & continue" stay enabled, and an empty submit
+    says what is missing under the field: "Enter the 6-digit code.", "Enter a recovery
+    code." or "Enter a new password.".
+  - The required two-factor setup uses the page's field and button grammar: the QR code sits
+    above the steps, the secret wraps instead of being cut off, the code field and "Verify
+    and sign in" are 44 px, and a code that does not work shows under the code field.
+  - A wide organization logo keeps its 40 px height, up to 192 px wide, on the page and in
+    the Branding preview. An alert's icon is centred on a one-line message.
+- **Remember me** shows only "Remember me". The warning the first time you tick it asks "Stay
+  signed in on this device?", keeps its advice about shared devices and states no duration.
+  The limits stay in Settings and the Help Center. When an administrator turned it off or the
+  connection is insecure, the row stays visible, disabled, with its reason. The box draws the
+  page's full-strength focus ring.
+- **Sign out.** The account menu says "Sign out", in the neutral menu colour, on desktop and
+  in the phone controls sheet; it said "Log out", in red.
+- **Reinvestigate no longer waits for the run.** The dialog closes at once and the header
+  shows the run; `POST /api/cases/{id}/reinvestigate` with `{"wait": false}` answers `202`
+  with the run id. Reinvestigating a closed case updates that case instead of opening a second
+  one. When an open case already holds its events, Reinvestigate and Investigate answer
+  `409 open_case_exists` with that case's id, and the bulk reinvestigate job fails that item
+  with the same reason. A second request while a run on the case, or on its events, is queued
+  or running answers `409 investigation_running`.
+- A run started from Entity investigation counts as a manual run of the person who asked.
+- **The Notifications navigation group is now Communication** (its id stays `notifications`).
+  The top-bar bell is still Notifications.
+- **Risk and scores.** Every shown score is rounded half up and coloured by the band of the
+  shown number, so a 73.6 reads 74 and is critical everywhere; the risk chip uses the
+  four-band ladder and states the weights in force. A score at an exact .5 boundary can move
+  one band.
+- **Analytics MTTR** is the lifecycle median from creation to the first resolved or closed
+  transition, over resolved and closed cases; a later comment, tag or grade no longer moves
+  it. Agreement rate names the grades it is computed from and reads Not measured when nothing
+  is graded.
+- **The case SLA reading** counts a person moving the case into Investigating, Escalated or On
+  hold as a response, the same rule as the dashboards. A clock is at risk from 80% of its
+  target. A response clock stopped by the close reads "closed with no human response".
+- **The trace** marks a person's steps as people, case chat as chat and automatic code steps
+  as system, so people's steps are no longer counted as AI steps. It says when it shows only
+  the newest records and counts spend over the case's whole life.
+- **Single sign-on roles must be built-in roles.** A `default_role` or group map value that
+  names a custom role is refused with a 422 that names the field. Mapping a group to a custom
+  role is in the backlog.
+- **The organization default theme has one home**: Settings, Branding. Appearance shows it
+  read-only and links there, and a choice made earlier in Appearance moves to Branding once.
+- Older stored procedures and their audit rows read "Older runbook".
+- "SLA breached" is defined as "Open cases past their response target."
+- The Add a local model dialog gives example URLs the backend container can reach in the
+  Compose stack (`http://host.docker.internal:4000/v1` and
+  `http://host.docker.internal:11434/v1`), with the Linux host-gateway step in a Compose
+  override file; the base URL error hint names the same address.
+- The Help Center's Release notes card opens the release line the Console belongs to
+  (`releases/0.2/` on 0.2.x), and the Settings, Knowledge copy names the Threat context
+  section of each case's Evidence tab.
+- Dependabot: the four action bumps from `main` are applied on `Testing`, version updates
+  target `Testing`, and the Python base image stays on 3.11.
+- **Screenshots.** Seventeen README, INSTALL and Help Center screenshots were captured again
+  for 0.2.0, among them the create-admin and second-factor pages and the Case Manager Brief
+  with its Assessment lane, and their alt text and captions match. The setup wizard's step
+  images still match 0.2.0 and were kept. The pages no longer say their images come from
+  0.1.13. The 60 review-only release captures moved under `docs/research/`, out of the Help
+  Center bundle.
+
+#### Fixed
+
+- **Pipeline and ingest.**
+  - A decided case, or one a person moved, is no longer rebuilt as a candidate or run again
+    when new events arrive through event detection or the Demo funnel; its verdict, decision
+    and escalation stay [B04].
+  - One more event no longer sends a candidate a person escalated, acknowledged or put on
+    hold to an automatic investigation that could close it as the agent. A person can still
+    ask for the AI from the case or from Entity investigation [B05].
+  - The deferred drain and the bulk reinvestigate job rebuild a case the way the Reinvestigate
+    button does, so one case gets one risk score, and a case whose events aged out no longer
+    fails in the job [B06].
+  - A detection rule's own correlation window widens the look-back, so a slow threshold rule
+    (for example 10 failures in an hour) can fire [B07].
+  - Automation rules no longer undo an acknowledgement, owner or comment a person adds while
+    a notification is sending [B08].
+  - Re-investigating a case keeps its automation record and its links to related cases on
+    other sources, and a link pass no longer overwrites newer work on a case [B09].
+  - A store timeout at the start of an investigation no longer creates a second open case
+    [B10].
+  - The deferred drain asks the store for deferred candidates directly: it no longer reads
+    every open case each tick or stops after the first 10,000, and candidates a person owns
+    never hold it up [B11]. Candidates that cannot be rebuilt, for example while their source
+    is down, no longer hold up the ones behind them either: the drain reads past them, up to
+    four pages a tick, and the next tick carries on where it stopped. It still takes the oldest
+    healthy candidates first and never runs more than the tick allows.
+  - A failed investigation keeps the case's AI cost and adds the failed run's recorded spend
+    [B12]; a bulk reinvestigation reports an item as failed when its investigation failed
+    [B14].
+  - LEEF events of the same event type, such as many LoginFailed events, are no longer merged
+    into one [B33].
+  - A deferred candidate that a person closed or took over while its run waited is no longer
+    investigated or duplicated.
+  - A person's case action and an AI run no longer erase each other's changes: the pipeline,
+    the case actions, feedback, comments, tags, assignment, new events attaching to a case,
+    the auto-close review, the precedent ratification, the analyst-policy close and the
+    candidate rebuild all hold the case's write lock.
+  - A person's close is no longer undone when the system saves a cross-source link, an
+    automation rule's result or a sent-notification record on the same case at the same
+    moment: these writers hold the same lock from their re-read to their save.
+  - Linking a case to a related case from another source no longer waits for an AI
+    investigation on that case to finish, so pushed batches and polls are not held up by
+    it.
+  - If you close a case that event detection just opened while its AI run waits for a free
+    slot, no second case is made with the same events. The run leaves your closed case as
+    it is, and the waiting run shows on that case.
+  - A case closed by a declared-benign rule keeps its links to related cases and its record
+    of sent notifications, so the related case no longer points one way only.
+  - A precedent ratification no longer brings back a case that was deleted.
+  - A failed AI investigation ends its live progress with a final failed step, and a
+    background job run that waits for investigation headroom shows as queued.
+- **Metrics and SLA.**
+  - SLA attainment no longer falls over time on cases the AI agent closed. A case the agent
+    closes before anyone responds stops its response clock at the close: inside the target it
+    counts as met, after it as late by a fixed amount that never grows. An acknowledgement
+    stops the response clock, and a reopened case runs its resolution clock again [B26, with
+    B58].
+  - Operational MTTR measures each case from creation to when it was first resolved or closed,
+    so a later edit no longer inflates it [B59].
+  - Standup and the SOC operations SLA counts use the same priority as Metrics posture and
+    stop the response clock at the first response, so a P4 case is no longer breached after
+    two hours and an acknowledged case is no longer breached; chat suggestions agree [B60].
+    They also count breaches with the case page and Posture rule: a case is breached only
+    after its target, at risk from 80 percent of it, and a case whose priority has no
+    target is not counted. There is no assumed 120-minute target. The Standup page uses the
+    same 80 percent share when a report has no SLA block, instead of 75.
+  - Urgency and the derived severity read the risk score as shown, rounded half up, so a
+    risk from 47.5 up to 48, or from 21.5 up to 22, can move up one band, and with it the
+    advisory priority and SLA target. The automatic close decision and the risk score are
+    unchanged.
+  - Dwell reads as the first response by a person; automatic closes are not counted.
+  - Top detection rules "N more rules" counts only rules with cases in the window [B68].
+  - The shift brief "Needs attention" list and its Word, Excel and Markdown exports carry each
+    case's created time [B39].
+  - A very large relative window on `/api/cases` or `/api/scans/notifications`, such as
+    `now-999999d`, answers 200 instead of 500 [B02].
+  - The chat feedback summary compares `since` as an instant, so zone offsets and `Z` work,
+    and a value it cannot read answers 422 [B03].
+- **The case page.**
+  - The case page stated the deprecated false-positive auto-close setting instead of the
+    policy the decision uses; it now reads the auto-close policy entry for the case's verdict
+    [B27].
+  - Change owner and Edit tags in Take action stay open instead of closing at once [B28];
+    Edit tags and T open the tag editor even when its section of the case facts is folded.
+  - Opening a case or Entity investigation no longer reads the settings without
+    `settings:read`, so those visits no longer write an Access denied row.
+  - Risk factor explanations no longer pair the case's current event count with the count used
+    at scoring, and the risk arithmetic reproduces the stored score [B13, with B62].
+  - The SLA countdown no longer rounds up the time left [B32].
+  - The Timeline's Decision stage shows the recorded decision and its own time, not the
+    case's last update re-derived with today's policy [B63].
+  - Adding or deleting a screenshot reads "Screenshot added (PNG, 107 B)." or "Screenshot
+    deleted." in the case activity, and deleted screenshots stay listed [B30]; choosing more
+    screenshots than a case has room for lists each file that was not added [B31].
+  - On the Evidence tab, How this case was clustered lists each related case by its case
+    number, and selecting one opens that case.
+  - The case header keeps the status words whole: on a short line the owner's name, then the
+    AI verdict's words, then the start of a long case number give way first. The AI verdict
+    keeps at least its glyph and confidence and hides where it no longer fits (below a 40rem
+    pane, or 48rem beside the AI run chip), so it never leaves an empty box that takes
+    keyboard focus. A case number longer than twelve characters ends in a middle ellipsis
+    that keeps its first five and last six characters ("CASE-…000041"); pointing at it shows
+    the whole number, screen readers read it in full, and default numbers ("CASE-000046")
+    stay whole. The outcome's Analyst tag drops whole before the outcome words end in an
+    ellipsis, the badge keeps its whole border, and hovering shows the whole outcome.
+  - On a phone the case tab row brings the selected tab into view, Alt+5 and Alt+6 included,
+    and fades at an edge that has more tabs past it; a live count no longer pulls a row you
+    swiped back to the selected tab. Every underline tab row that scrolls does the same.
+  - The Events table no longer squeezes the Message column at the default 1440 layout:
+    Severity, Source IP, User and Host appear as the pane gets wider.
+  - Reopen in the close notice reads the case first. It no longer reopens a case an AI run
+    already reopened, which wrote a false reason; it says so, or "This case was already
+    reopened." when a person did it, and the notice goes once the case is no longer closed.
+  - A screen reader reads the Activity tab count as "1 message", not "1 messages".
+  - A trigger sentence whose severity range has the same number at both ends reads as one
+    value ("severity 75") in the Brief, Evidence, the clustering card and the Noise reduction
+    lineage rows. The stored sentence is not changed.
+  - The AI investigation tab says when its rationale was built from the newest records
+    only.
+  - The AI investigation trace no longer counts or lists opening the Evidence tab; those rows
+    stay in Activity and the audit log. It shows its step counts once, beside its heading,
+    and while a filter is on says how many steps it shows ("3 of 12 steps"); a trace that
+    could not load shows only its error. Steps name the product Agentic SOC and people by
+    their names, as Activity does.
+  - Runbook AI help is its own trace actor with its own Runbook filter. Each call is named
+    after the person who asked and shows the cost of its own call, and case chat steps no
+    longer carry that spend. On a phone the seven trace filters wrap inside their row, so
+    the tab never scrolls sideways.
+  - The Response tab's phase tabs show their whole focus ring, and a tab reached with the
+    arrow keys scrolls fully into view, clear of the fade.
+  - In Cases, a case whose close a later AI investigation replaced no longer says "no
+    analyst has classified this case yet". Its Outcome note reads "Classified by an analyst
+    before a later AI investigation set the status".
+  - A status word cut short in a Case Manager queue row shows its whole value on hover.
+  - Focus returns to the control that opened a confirmation, or to the menu button when it
+    came from a menu.
+- **Dashboards.** The KPI drill-down Source column, filter and CSV show the log source a case
+  came from [B29]. A noise-flow share that mixes partial counters with case counts reads "not
+  measured: partial coverage" [B64]. The Respond and MTTD descriptions name the real clock and
+  the median [B66]. Latest cases labels closed cases Closed and resolved cases Resolved [B67].
+  A cases reset clears the cached dashboard figures straight away.
+  - Changing the Cyber Defence Center range no longer shows the old range's figures under
+    the new caption. The strip and the figures below it turn grey under "Loading 7 days",
+    their explanations are withheld, a drill-down opened meanwhile shows Loading, and the
+    new range's figures replace them without counting up from the old ones.
+  - The trends chart's first bucket counts only the part inside the window, so the 7-day
+    total matches the other panels (56, not 57, in the seeded Demo).
+    `GET /api/metrics/trends` clips that bucket; its shape is unchanged.
+  - SLA breaches and at risk says it counts the cases opened in the window. With none, it
+    says how many open cases from earlier are past their response target, and View the open
+    breaches opens the Standup, which lists them.
+- **Cases and Entity investigation.**
+  - The Cases bulk bar keeps every action on screen. It is centred on the page beside the
+    navigation rail and never covers it, its actions wrap onto a second row instead of
+    scrolling Close and Clear out of view, and in Demo Mode "Bulk changes are off in Demo
+    Mode." sits on its own line above them.
+  - Entity investigation finds addresses, users and hosts that only a push source holds.
+    When no source is named and the main log source holds nothing, the run looks further,
+    one source at a time: in Demo Mode the other Demo sources, otherwise the recent events
+    each push source delivered (its live tail, up to the last 500 events, held in memory).
+    Other pull sources are not searched. Each source is read through its own field mapping,
+    so the address in a QRadar LEEF record's `src` is found. A push source set to ignore is
+    never read, suppressed events stay out, and a record delivered twice counts once. The
+    case is built from the first source with matching events. When nothing matches, the
+    answer says "the last 365 days" instead of `now-365d`, and the page no longer offers a
+    wider lookback, because every run already searches back 365 days.
+- **Explanations.**
+  - The risk Velocity step is written from the recorded event count and window, so its
+    expression gives its result.
+  - The risk Total step and the hover line no longer print a division that does not give
+    the score. When the stored factors do not reproduce it, they say the score was
+    recorded from the unrounded factors.
+  - Priority and severity explanations print the shown risk score and half-open band
+    ranges.
+  - Percent steps are written from the counts, so 129 / 167 reads 77.2%, and a tile that
+    shows a whole percent ends its explanation on that figure. Copied calculations end a
+    worded step with its result.
+  - The noise flow's Detailed "Reduced by" figure names its inputs (alerts ingested and
+    cases that needed a human) and is withheld while the counters cover only part of the
+    window.
+  - The Open cases explanation says the count is not limited by the time range, strip
+    counts of sources and alerts no longer say they were counted over cases, and Average
+    risk names the scored cases it divides by.
+  - An indicator that no provider checked reads "Not checked" instead of a 0% reputation.
+  - A percentile step, on the case clocks and on the dashboard timing panels, prints
+    operands that give its printed result; time to detect reads "1 minute" for one minute;
+    and a whole-percent share panel such as Auto-close rate or Incident yield ends on the
+    figure the tile shows.
+  - The routing score is no longer cut to a whole number: "Why was this investigated?" and
+    a waiting case's reason keep two decimals (69.5 no longer reads 69). The gate is
+    unchanged.
+  - A manual case's trigger sentence and the "no events remain" refusal name the window in
+    words ("in the last 24 hours"), never a raw token such as `now-24h`.
+- **Setup, settings and administration.**
+  - In Demo Mode the setup wizard shows the Demo sources as "Managed by Demo Mode" with no
+    actions, and the server refuses a change to a Demo source with `409
+    source_demo_readonly`; a real source added during Demo Mode says it appears after Demo
+    Mode is turned off [B43].
+  - Make primary, and the source editor's Primary switch, appear only for a pull source and
+    report success only when the server made the source primary [B46].
+  - Approvals no longer shows a made-up confidence on automation checkpoints or tuning items
+    [B36], and a decided proposal says who decided it, when and why, with no Retry button and
+    no expiry [B37].
+  - Browser Back, Forward or a typed address asks before leaving a page with unsaved changes,
+    as in-app navigation does [B44].
+  - Two "organization default theme" controls no longer store different values [B45].
+  - In Demo Mode, data export, storage Apply, the reset tiers and the Knowledge import jobs
+    are disabled with a reason instead of failing with a raw 409 [B49].
+  - The notification preferences sheet is wide enough for every channel column [B53].
+  - Open in Audit log on a Team activity person sheet keeps the time window [B56].
+  - Permission resources have readable names on Roles and Users, such as Knowledge corpus and
+    In-app notifications [B57].
+- **Demo Mode.**
+  - Rule Test and preview reads the Demo sources and never a real source [B34].
+  - A fresh seeded Demo no longer shows "Agent health needs attention": the Demo knowledge
+    corpus is built after the seeded cases and reviews exist [B35, with B47 and B65].
+  - Seeded investigations have simulated cost ledger rows, so a case's investigation cost
+    matches its rows, the Cost page and Agent effectiveness; Demo spend is never billed [B48,
+    with B69].
+  - An analyst's seeded close records the chosen classification, so analyst true-positive
+    closes count as confirmed threats [B61].
+  - Every seeded risk score is computed from the case's own events, rules and entity, and
+    every seeded case keeps its own events, so the Evidence tab shows them [B62].
+  - Demo chat answers "Which cases need attention first?" with open cases, riskiest first
+    [B41]. A seeded review never contradicts an analyst who confirmed the same close.
+  - Reinvestigate no longer turns a benign or unrelated case into the "SQL injection to
+    webshell" storyline and escalates it: the Demo model reads a case's storyline only from
+    the case's own events, never from a precedent, a memory or a runbook.
+  - An investigation you start (Reinvestigate on a case, or Run investigation on Entity
+    investigation) takes a few seconds, so the AI working chip, the queue mark, the Case
+    Manager count and the close warning show while it runs. Its pauses stay within a quarter of the run's time cap. Chat, report summaries,
+    runbook help and automatic runs are not slowed.
+  - Seeded cases with an investigation cost show that investigation in the trace: the
+    investigator's prompt, one read-only log query and the verdict, on one run, matching
+    the ledger. Seeded notification records show their channel, for example Email, instead
+    of the word "Channel".
+  - Demo chat reads "closed by the AI agent" as the AI's closes: "How many cases were closed
+    by the AI agent in the last 24 hours?" answers with the automatic closes beside the
+    analysts' closes, not every closed case.
+- **Chat and local models.** Exported conversations name a log source under "Sources queried"
+  only when a lookup read it [B38]. Deleting a conversation says "Its report stays in
+  Reports" only when it has a report [B40]. A case cited under an answer's Sources shows its
+  case number, and an Add to case comment uses it too [B42]. A local model URL typed with a
+  trailing `/v1` works for chat, streamed chat and embeddings instead of calling
+  `/v1/v1/...`. Chat's product help sends "Kill the export job" and "Cancel the export" to
+  Analytics → Jobs and says how to cancel, and "Cancel a runbook run" to the case's runbook.
+  The Help Center's Analytics page has a Jobs section and names all seven pages the
+  Analytics group opens, and which three share the time range.
+- **Release and Help Center.** The top bar no longer offers "Enable updates" on SQLite or
+  Elasticsearch deployments, which show "Updates unavailable" [B52]. The Help Center always
+  links the published Stable documentation [B54]. Closing the System update panel returns
+  focus to the update control.
+- **Sign-in and Branding.** The sign-in page no longer shows text from a link's `sso_error`
+  parameter; each single sign-on error shows a fixed sentence [B25]. With no accent saved,
+  Branding shows the Console's real default accents, blue and indigo [B50]. After a wrong
+  recovery code, a refused password change or a refused first administrator setup, focus
+  returns to the field to fix.
+- **Sign-in.** A failed sign-in shows a fixed sentence under the field, such as "The
+  username or password is not correct.", "Could not reach the server. Try again." or "Too
+  many attempts. Wait a few minutes, then try again.", and a wrong code reads "That code is
+  not correct. Try again.". The page never shows the server's raw text, a browser network
+  message or a proxy error page. Setting a first admin still shows the password rule the
+  server names. The forced password change counts the new password without its outer
+  spaces, as the server does, and a refused change reads "New password must be at least 8
+  characters." or "Could not change the password.". Single sign-on buttons for an unnamed
+  Google or Microsoft provider read "Sign in with Google" or "Sign in with Microsoft", never
+  the internal id: `GET /api/auth/sso/providers` returns the stored display name, empty when
+  none is set, and a long provider name wraps. While Branding sets a light or dark default
+  theme, the first appearance button is named "Use the organization default theme", and the
+  pressed button always matches the theme on screen. Setting up two-factor, at sign-in or in
+  Settings, and turning it off show a fixed sentence too, such as "That code did not work.
+  Enter the current code from your app.", never the server's own text.
+- **What's new.** After See all changes the tracker marks the changes that were new to you,
+  and closing the reopened welcome or an enlarged screenshot returns focus to what opened it.
+  The Help Center's What's new page says the welcome is turned off in Settings → Account →
+  Appearance, where the switch is. On the page the switch has the same name as in
+  Settings, **Show What's new after updates**. A long code value, such as the `.env` line
+  the 0.2.0 notes ask for, wraps on a phone. The built-in Admin account the backend creates
+  when sign-in is turned on after setup is complete starts with What's new marked seen; the
+  local demo creates it before setup completes, so it still shows the welcome once.
+- **Accessibility.**
+  - "Skip to main content", and the setup wizard's skip link, move focus to the page content
+    without changing the address, so an open case is no longer lost to Overview [B71].
+  - The Audit log picks its columns from the width it has, so Actor and Summary are no longer
+    cut off between 640 and 1000 px and the page no longer scrolls sideways near 768 px [B72];
+    phone times wrap and keep their seconds [B79].
+  - The phone navigation menu returns focus to its button when it closes, and to the page
+    after you pick a destination [B73].
+  - In tables with a fixed first column, a focused header is no longer hidden under that
+    column [B74].
+  - Every popover is announced by name [B75], and the command palette's dividers are no
+    longer read as list items [B76].
+  - Opening a runbook moves focus to its heading, and going back to the library moves focus
+    to the runbook you left, on phones too [B77].
+  - Long code and raw-record blocks, and scrolling tables, can be scrolled with the keyboard
+    [B78]. The "Untrusted source data" label on case evidence wraps instead of being cut
+    mid-word [B80].
+  - On touch screens text fields use 16 px text, so iOS Safari no longer zooms in on focus
+    [B81; a device check is maintainer action M6].
+  - The selected phase tab on a case's Response tab shows its progress caption in full ink.
+    The muted caption was 4.22:1 on the selected fill in light, below the 4.5:1 bar. The
+    contrast gate now measures text on a selected fill in both themes.
+  - A disabled number field uses the muted fill and text colours instead of fading, so its
+    unit ("min", "%") keeps 4.5:1 in both themes.
+  - When a case's investigation cost opens its AI calls, a list too long to fit is a named
+    region a keyboard can focus and scroll. The percentile table on Metrics, Performance is one
+    too.
+  - Coloured chips on the top bar and on sticky bars, such as the Demo chip, the release badge
+    and status badges, keep 4.5:1 with any content scrolled beneath them.
+  - On Metrics, Posture, each MITRE heatmap cell prints its technique id and count on a 90%
+    opaque chip, so the count keeps 4.5:1 over every shade in both themes.
+  - Settings, Sessions & activity shows one plain sentence for each sign-in, password,
+    two-factor and session event, never the raw audit text, and its Activity table fits a
+    phone screen without cutting off the When column.
+
+#### Removed
+
+- The sign-in page's animated tiles, gradient button and gradient light and dark pill, and the
+  design gate that measured them; the contrast gate now checks the sign-in page's colours
+  (subject removal, SPEC D9).
+- The bundled Help Center's version selector, which asked for a version list the bundle does
+  not have, and the raw release-notes files from the Help Center bundle (the bundle check
+  rejects a build that includes them).
+- The facts rail and the header's review band (replaced by the case facts inspector and the
+  review chip).
+
+#### Performance
+
+- One realtime connection per page now carries every live update; it was up to about six.
+- On LIVE refresh the Console reads the all-time metrics at most once every 30 seconds, and
+  the server reads the cases behind them at most once a minute, showing the last reading,
+  marked with its read time, while one background read replaces it. Windowed figures still
+  refresh every 5 seconds.
+- Opening a case the AI agent closed reads the auto-close review ledger once instead of up to
+  three times, and the ledger is decoded again only after it changes.
+- Knowledge search on SQLite and PostgreSQL ranks chunks in process with an in-memory index:
+  about 10 to 20 ms instead of 1.4 seconds at 2,000 chunks, with the same results and scores,
+  near ties included. On PostgreSQL with pgvector, only a very large corpus is ranked in the
+  database.
+- The first page load no longer carries the case page's investigation narration.
+- The sign-in page loads the two-factor setup card only when an enrollment starts, so the
+  first page load is 13,173 B smaller (331,181 B to 318,008 B, built as CI builds it). If
+  the card cannot load, the page says "Two-factor setup could not load. Reload the page to
+  try again."
+
+#### Security
+
+- **Reads check their read grant** [B01, with B70]: case export, trace, rationale, activity,
+  thread and tasks, and the automated scans list and count need `cases:read`;
+  `GET /api/settings` needs `settings:read`; the standup reads need `metrics:view`;
+  `GET /api/llm/models`, `/api/models` and `/api/llm/providers` need `models:read`; a
+  source's feeds need `sources:read`; `GET /api/roles` needs `roles:read`. Every built-in role
+  holds these grants, so defaults do not change; a custom role or deny that removes one now
+  gets 403 and an Access denied row. A CI rule covers every `/api` GET.
+- **The server enforces the forced password change** [B20]: an account an administrator
+  creates or resets answers `403 password_change_required` on every route except signing out,
+  the change itself, `/api/auth/me`, `/api/account/me`, `/api/account/permissions`,
+  `/api/prefs/effective` and `/api/prefs/user`. The seeded demo Admin stays unflagged, and
+  the docs say so.
+- **Two-factor sign-in.** Ten wrong second-factor codes in a row lock second-factor checks
+  for 5 minutes, doubling up to an hour (429 and an `auth.mfa_locked` row), across the sign-in
+  check, both enrolment confirms and turning MFA off; a pending sign-in token is refused after
+  5 failures or once used [B19]. An enrolled account cannot replace its authenticator from a
+  session (409), and enrolling and turning MFA off need a recent sign-in [B17]. Each code is
+  consumed inside the user store's compare-and-swap, so one code sent twice at once signs in
+  once [B23]. An administrator turning MFA off for an account also clears its lock.
+- Password and recovery-code hashing run off the event loop, and a six-digit code never runs
+  the recovery-code hash loop [B18].
+- Changing your password signs out your other sessions, and an administrator's reset signs the
+  account out everywhere; both answers include `sessions_revoked` [B21].
+- Session lists and new-device notices record the trusted-proxy client address [B22].
+- `POST /api/auth/refresh` is deprecated: no sign-in issues a refresh token, and the docs say
+  so [B24].
+- **Single sign-on** [B15, B16]: a verified email links only to an account of the same
+  provider that has no subject yet, and an existing subject is never re-bound; only Google's
+  `hd` claim names a domain, and a Google account without one takes its domain only from a
+  verified email; every single sign-on settings change and provider client secret needs a
+  stored Super admin with a fresh sign-in, and the settings are read-only for anyone else; a
+  group map never changes a Super admin's role.
+- Settings refuses, with 422, an SLA time zone the clock cannot use, a tier that responds
+  later than it resolves, and an investigate lookback that is not before now, and the SLA and
+  Data scope pages show the same checks inline [B51]. `PUT /api/prefs/org` checks the whole
+  settings too.
+- Sessions and activity name each event the way the Audit log does [B55].
+- Cost figures written into audit text (the timeout row, the decision row, the runbook AI
+  row, a budget refusal and a replay experiment's spend row) are hidden from a viewer
+  without `cost:view` in the timeline, the trace, the rationale, the case activity feed,
+  chat's case rationale and the Audit log list and record, and a budget refusal's reason
+  shown on a case reads "(amount hidden)". Tool output and the text of other rows are shown
+  as recorded.
+- An audit log export (CSV or JSON Lines) hides the same cost figures from an exporter
+  without `cost:view` when it runs, as the Audit log page does: those rows read
+  `cost=hidden`, `spend_usd=hidden`, `bound_usd=hidden` or `(amount hidden)`. Tool output
+  and the text of other rows are written as recorded, and the full application export
+  keeps every row as stored. For such a person the Export menu and dialog say the file
+  hides AI spend, and no longer say a JSON Lines record is written unchanged.
+- The standup summary no longer shows its AI cost to people who may not see AI spend.
+- Recorded risk inputs are stored without being indexed, so a source-controlled rule value
+  that looks like a date can never block later case saves on Elasticsearch.
+
+#### Upgrade notes
+
+- **Set the repository first.** Put
+  `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env` before you
+  bootstrap the updater. The bootstrap refuses a missing line, the former name in any letter
+  case and the new name in the wrong case (the signing identity is case-sensitive), and it
+  never edits `.env`.
+- **Behaviour people will notice.** A role denied a read grant gets 403 from these reads;
+  flagged accounts must change their password first; MFA locks after 10 failures; a password
+  change signs out other sessions; only a Super admin with a fresh sign-in can change single
+  sign-on; Alt+2, Alt+4 and Alt+5 change meaning and Chat moves to Alt+6; Reinvestigate
+  updates a closed case in place; the Analytics MTTR changes definition; agent-closed cases
+  stop counting as late responses; a risk score at an exact .5 boundary can move one band,
+  and urgency, the derived severity and with them the advisory priority follow the shown
+  score.
+- **Elasticsearch.** Bootstrap can now read index templates through the shipped client, so an
+  upgraded deployment gains the cases mappings (`risk_breakdown.inputs`, stored and never
+  indexed, and `awaiting_reason`) and the Round 14 audit mapping upgrade; both only add
+  mappings. When a template cannot be read, the case store leaves the recorded inputs out and
+  the case reads "not recorded".
+- **Rolling back.** The previous release loads the new documents and drops the new fields
+  when it rewrites one: recorded risk inputs on cases it rewrites (they then read "not
+  recorded") and MFA lockout counters are lost, and the route gating and the server-side
+  forced password change revert. Ledger rate fields and What's new markers are kept. See the
+  [known limitations](docs/releases/known-limitations.md).
+- The investigation registry, the investigation gate and the realtime bus stay in one backend
+  process, as before.
+
+### Round 15
+
+Six operator asks: a switch for role-based access, truthful setup wording, a Team activity
+page, a stronger close with screenshots, a random review of automatic closes, and a calmer
+Case Manager. `decide()` is unchanged, there is no new model call, no new index, table or
+migration (the new state is in the key-value store), no new dependency, and the version
+stays 0.1.13.
+
+- Role-based access has a switch: **Settings → Security & access → Roles & permissions**
+  opens with a **Role-based access** group that shows the state, the active accounts per
+  role and **Turn on role-based access** (or **Turn off**), each behind a confirmation. Only
+  an account whose stored role is Super admin can change it, after a recent sign-in. The
+  Posture row on **Single sign-on & policy** gains **Manage**, which opens it. The same change
+  is `PUT /api/rbac`; `PUT /api/settings` no longer changes `rbac.enabled`.
+- The setup wizard tells the truth about the AI runtime. Without a key it says "No usable AI
+  provider yet" and that new cases wait for a person as Needs human review; a key the default
+  models cannot use says "Your key does not match the default models"; the review row reads
+  "No usable provider · cases wait for a person", or "Configured:" with every provider family
+  that has a key. **Ready for live triage** needs a source and a provider the default
+  investigation models can call. The "mock runtime" wording stays only in Demo Mode, where it
+  is true.
+- New **Analytics → Team activity** page: what each person did per day (acknowledged, closed
+  by disposition, reopened, escalated, commented, assigned, screenshots added, auto-close
+  reviews, runbook steps completed, sign-ins), counted from the audit log in the operator time
+  zone, with a per-day chart, a person sheet with their events and a CSV download. Counts with
+  context only: no ranking, score, IP address or session. It needs the new `team:view`
+  permission (SOC manager and Auditor; Super admin holds every grant), and while role-based
+  access is off only Super admins, SOC managers and Auditors can open it. An administrator can
+  turn the page off under **Single sign-on & policy → Team activity**.
+- The close dialog asks "what was it" once (the disposition), adds an optional **Actions
+  taken** list (11 fixed values, at most 8), asks for a note only when your classification
+  overrides the AI, and moves the stars and "What did the AI miss?" into a collapsed **Rate
+  the AI (optional)**. The agreement with the AI is shown as text, never asked. Tags moved to
+  the facts rail. The dialog no longer asks "What actually happened?" and never sends an
+  `actual_outcome` with the grade, so a later reclassification is not pinned by it. Sub
+  scores nobody rated show as **Not rated** on Analytics → Metrics and in chat instead of 0%.
+- Screenshots on cases: PNG, JPEG or WebP images on a case's Collaboration tab and in the
+  close dialog (paste, drag and drop or pick a file), with a caption, a lightbox and a
+  download. The server checks each image's structure and strips its metadata. Up to 20
+  screenshots and 20 MiB per case, 2 MiB per image. Uploads stay allowed on closed cases, a
+  close never waits for one, and no screenshot or caption ever reaches a model.
+- Auto-close review, on by default: about 5% of the cases the AI agent closes automatically,
+  at most 10 a day and 3 per rule, are picked at random for a person to classify. Case
+  Manager gains a **Review** scope with a pending count; the reviewer gives their own
+  classification before comparing it with the AI, and the answer is kept as independent ground
+  truth. A review never changes the case unless the reviewer reopens it. Agent effectiveness
+  gains an **Auto-close review** module (agreement with a Wilson interval from 30 reviews,
+  missed threats, rules, time spent). Settings are under **Settings → General → Detection →
+  Auto-close review**.
+- Case Manager redesign: a queue with one control band, two-line rows that show status or
+  outcome (never both) and the scope line in the footer; a header with one primary action
+  for the case's state, **Take action** for every other verb and one meta row; five tabs
+  (Overview, Runbook, Investigation, Collaboration, Chat, with Alt+1 to Alt+5) where Overview
+  absorbs the Timeline and Investigation absorbs Threat context; a facts rail of eight
+  sections. Links to the retired `tab=timeline` and `tab=threat` still work and open the
+  matching section. Bulk Set status and Set disposition leave out cases the AI agent closed
+  ("review them instead").
+- Demo Mode seeds Team activity rows for the Demo analysts and six auto-close reviews (three
+  pending, two agreeing, one disagreeing).
+
+Behaviour changes and fixes:
+
+- **Audit rows for human case work.** New rows from acknowledge, close, confirm false
+  positive, resolve, reopen, escalate, de-escalate, hold, resume, set disposition, set status,
+  assign, tag, comment and grade carry a structured action (`case.acknowledged` to
+  `case.graded`), the case as target, the request context and the changes. Their
+  `action_type`, `surface` and `result_summary` are unchanged, and the Audit log's older
+  `status`, `collab` and `feedback` filters still find them. Rows written by a bulk action
+  carry `run_id` `bulk-<id>`. Older rows are not rewritten.
+- **Attribution.** With sign-in on, the audit actor of a comment, tag change or assignment,
+  the analyst on the "assigned" history entry and the stored comment author are now the
+  signed-in person, never a name the request body sent.
+- **Re-investigation keeps people's work.** Rebuilding a case keeps its owner, comments,
+  grades, status history, acknowledgement, status reason, sent notifications and a
+  disposition an analyst set, instead of erasing them. The stored case is read again just
+  before the rebuild, so work done while the investigation ran survives, and a failed run
+  keeps the case number.
+- **Review grades are not agent statistics.** A grade recorded by an auto-close review feeds
+  ground truth (analyst-confirmed outcomes, threshold tuning, precedent) but is left out of
+  the feedback statistics and the agent-improvement comparisons, and a reopen made from the
+  recorded review of a picked case does not count as a human reopen of an agent close.
+- **Unrated stars are not zero.** `GET /api/feedback/stats` averages each sub-score over the
+  grades that rated it and adds `accuracy_rated`, `reasoning_quality_rated` and
+  `action_appropriateness_rated`. An average of 0.0 with a count of 0 means nobody rated it.
+- **Only a Super admin manages Super admin accounts.** Giving an account the Super admin
+  role, or changing, disabling or deleting an account that has it, through `POST`, `PUT`
+  or `DELETE /api/users` or `PUT /api/users/{username}/roles`, needs a caller whose stored
+  role is Super admin and a sign-in within the re-authentication window. Before, any
+  holder of `users:manage` (a SOC manager by default) could make itself Super admin in
+  one call and then use the role-based access switch, or reset a Super admin's password.
+  Anyone else now gets `403 super_admin_only` and an Access denied row.
+- **Repeated reviews of one case count once.** An agent-closed case that was not picked
+  for review can be reviewed again. Team activity now counts a person's latest review of a
+  case only (an earlier one is listed as replaced), so the agreement rate's 30-review bar
+  is 30 different cases, and a repeat disagreement by the same person sends the people who
+  can close cases no new Inbox item.
+- **The Team activity floor is a page limit.** While role-based access is off, the limit
+  to Super admins, SOC managers and Auditors applies to the Team activity page only: every
+  account still holds `audit:view` and `users:manage`. The documentation now says so.
+- **Team activity counts what was applied, and measures only what it read in full.** A
+  runbook step whose save lost to another change (its record followed by a
+  `step.*_failed` record) is no longer counted, as screenshots and reviews already were
+  not. An owner set in the Escalate dialog counts as Assigned. A case escalated or put on
+  hold without an Acknowledge is in the median time to acknowledge, as on Metrics. A read
+  that stopped before the end of the range now omits the median time to acknowledge
+  (`ack_status` `partial`), the agreement rate and the review times instead of giving
+  those of the oldest part, and its CSV ends with a line that says so.
+- **Agent effectiveness counts a review whose ledger write failed.** The Auto-close review
+  module now restores such a review from the case history itself, on a pending or an
+  expired pick, so a disagreement or a missed threat is not shown as pending or expired
+  until the Case Manager is opened.
+
+Details:
+
+- **New and changed API.** `GET` and `PUT /api/rbac`; `PUT /api/settings` answers `409
+  rbac_switch_moved` to a changed `rbac.enabled` and needs `roles:manage` and a fresh sign-in
+  for any other changed `rbac` field; `ai_runtime_ready` on `GET /api/setup/status`, and
+  `ai_runtime_ready` and `ai_runtime_provider` on `POST /api/setup/secrets`; `GET
+  /api/team/activity`, `GET /api/team/people` and `GET /api/team/people/{username}/events`;
+  `GET` and `POST /api/cases/{id}/files`, `DELETE /api/cases/{id}/files/{file_id}` and `GET
+  /api/cases/{id}/files/{file_id}/content`; `GET` and `POST /api/cases/{id}/review`, `GET
+  /api/auto-close-review/summary` and `GET /api/metrics/auto-close-review`; `review` on `GET
+  /api/cases` (echoed as `review_applied`); `actions_taken` and `review_via` on `POST
+  /api/cases/{id}/action` (bulk bodies refuse `review_via`); `origin` and `review_id` on
+  feedback entries; the `case.review` live frame on `cases:{id}` and `cases`, and a
+  `case.activity` frame naming the file for each screenshot added or deleted. Permission:
+  `team:view`. Settings: `team_activity` and `auto_close_review`. See the
+  [API](docs/reference/api.md), [Permissions](docs/reference/permissions.md) and
+  [Configuration](docs/reference/configuration.md) references.
+- **Screenshot limits.** PNG, JPEG and WebP only, recognised by their bytes; 2 MiB stored per
+  image after stripping, at most 8,192 px a side and 40 megapixels; a thumbnail of at most
+  48 KiB and 640 px a side; 20 images and 20 MiB per case; 2 GiB in all (`409
+  case_files_storage_full`); 5 per case and 64 MiB in all in Demo Mode and on the in-memory
+  store; 30 uploads a minute and 2 at once per person (`429 case_files_busy` with
+  `Retry-After`); a caption of at most 200 characters and a file name of at most 120. The same
+  image again returns the existing entry. The uploader, or anyone who can close cases, can
+  delete a screenshot. Every add and delete is recorded in the audit log first. The bundled
+  web proxy accepts 3 MiB on the upload path; a TLS proxy in front of the Console needs
+  `client_max_body_size 3m` or more. On Elasticsearch the config index maps the new
+  `case_file_data` field as binary (fresh installs, and at startup on an upgrade).
+- **Resets and export.** The cases and sources reset tiers clear screenshots and the review
+  ledger (receipts `kv:case_files:<n>` and `kv:auto_close_review:<n>`), and factory reset
+  removes them. Data export lists screenshot metadata per case without the images and
+  includes the review ledger. Deleting an account keeps the screenshots it added.
+- **Rolling back.** A rollback to the previous release resets the `team_activity` and
+  `auto_close_review` settings to their defaults; see the
+  [known limitations](docs/releases/known-limitations.md).
+
+### Documentation refresh
+
+Documentation only. No code, configuration default, wire identifier, dependency or release
+identity changes, and the version stays 0.1.13.
+
+- `README.md` is rewritten as the repository landing page: what the product is and is not,
+  key capabilities, a screenshot gallery, a system architecture diagram with a numbered
+  walk-through, the deployment topology, the safety model mapped to the 12 non-negotiables,
+  supported sources, a demo quick start, an installation summary, configuration layers,
+  release channels, the documentation map and the license status. The history of failed
+  release tags moves out of the README into the linked release pages.
+- New root `INSTALL.md`: a step-by-step installation guide for five paths (workstation demo,
+  the reference Compose stack, production hardening, attaching to an existing Elastic stack
+  and running from source). It shows every first-run screen (first administrator, sign-in and
+  the four setup stages) with numbered highlights, real health-check output, updates,
+  uninstall and troubleshooting.
+- New documentation assets: 25 real Console screenshots in `docs/assets/screenshots/`, taken
+  on a fresh first-run install and on the seeded demo, and hand-drawn light and dark SVG
+  diagrams of the system data flow and the Compose deployment in `docs/assets/architecture/`.
+- Help Center: the Install, First-run setup, Quickstart and Architecture pages use the same
+  screenshots and diagrams (offline, one select opens each full size), and the generated chat
+  knowledge corpus is regenerated from them. Seven screenshots that only the repository
+  README and INSTALL use are excluded from the bundled Help Center, so they do not enlarge
+  the Console image.
+- The guides record a known 0.1.13 Console issue: in the source editor, a required index
+  pattern that shows its default must be typed again before **Add source** accepts it.
+- A second pass checked every command, setting and screen label in README, INSTALL.md,
+  DEPLOY.md, the `.env.example` comments and the Help Center pages against the code, and
+  corrected what was wrong:
+  - Every `docker exec tlsoc-postgres` backup, restore and check command now reads
+    `POSTGRES_USER` and `POSTGRES_DB` inside the container, so it follows the documented
+    `TLSOC_PG_USER` and `TLSOC_PG_DB` overrides. Restores go into an empty database with
+    the backend stopped.
+  - Without a model provider key, no investigation falls back to a mock model: each
+    investigated cluster becomes a **Needs human** case naming the missing key. The
+    setup wizard's "limited mock runtime" wording is recorded as a known 0.1.13 issue
+    (Round 15 corrects the wording, above).
+  - Role-based access is off by default (every signed-in account acts as Super admin), and
+    the 0.1.13 Console has no switch for it. INSTALL.md and the new **Turn on role-based
+    access** section of the Users and RBAC page give the tested `PUT /api/settings` call
+    (Round 15 adds the switch and replaces that call with `PUT /api/rbac`, above).
+  - Smaller corrections: the CA certificate path inside the container, override files and
+    the enrichment overlay (the update supervisor does not read them, so apply them again
+    after an update), the SSO callback behind a TLS ingress, queue receivers that consume
+    and acknowledge messages, the path D management key privileges, the Python version for
+    running from source, and several troubleshooting rows.
+
+### Round 14 follow-up fixes
+
+Three bugs a staging rehearsal of Round 14 found. `decide()` is unchanged, no wire identifier
+is renamed, there is no new dependency and the version stays 0.1.13.
+
+- Rolling back: this build tolerates and keeps what a newer build writes, so the next release
+  can roll back to it cleanly.
+  - A job record of a kind this build does not know is kept unchanged, never run or listed,
+    counts toward capacity, is pruned once it has finished and never puts startup into
+    safe-stop. A corrupt job record or idempotency map still fails closed.
+  - Settings saves keep preference keys this build does not model (top level and nested) and
+    stored values it only clamped, without bringing back retired keys. A migration stamp keeps
+    only a newer build's valid stamp, and a save whose read of the stored settings fails
+    writes nothing.
+  - A corpus migration marker (KV namespace `rag_corpus_migration`, one document per source)
+    lets the knowledge projection replace another build's deliberate id scheme instead of
+    refusing it at the retention floor. A projection that would reach zero is still refused.
+  - New CI lane, N to N-1 rollback acceptance: the previous release pinned in
+    `scripts/rollback_previous_release.json` boots on PostgreSQL data this release wrote, and
+    this release boots as the previous one on synthetic future data it must keep.
+  - Rolling back to a build before Round 14 keeps three documented hazards (an audit export
+    job record puts it in safe-stop, its projection is refused, and its graceful stop drops
+    `runbooks.*` settings); see the upgrade notes.
+- Runbooks: the Generic incident fallback (any runbook that applies to every case) is no
+  longer given to the investigator as guidance. A staging A/B measured the FALSE_POSITIVE
+  verdict rate falling from about 69% to about 32% while a Round 14 Testing build fed it to
+  every investigation.
+  - It is still chosen, recorded on the case (Selected only) and attached for people, but adds
+    no runbook block and no extra knowledge searches. Like every Published runbook, its text
+    stays in the knowledge search while `runbooks.rag_corpus` is on.
+  - A specific runbook still guides the investigator. Guidance can change the verdict the
+    agent returns, never `decide()`. `runbooks.investigator_guidance: false` removes all
+    runbook guidance, and `runbooks.rag_corpus: false` also keeps runbook text out of the
+    knowledge search.
+  - The built-in Generic incident runbook is version 2: its two broad escalation lines now
+    name evidence of harm. The runbook editor shows a fallback as a checklist for people
+    instead of a guidance meter.
+  - New CI lane, Verdict stability gate: a deterministic offline two-arm run on frozen
+    fixtures fails when guidance or prompt text moves the FALSE_POSITIVE-verdict or
+    close-eligible rate more than 15 points, between the guided and unguided arms or from the
+    rates recorded on the fixtures.
+- Audit log on PostgreSQL: one `\u0000` (or lone surrogate) in an audit row no longer breaks
+  the Audit log, its count, its exports, account activity or chat's audit search.
+  - Audit text is cleaned on write in one place (`AuditDoc`): control characters are removed
+    from names, ids and labels (a name made only of them is recorded as U+FFFD), NUL from all
+    other text, and the actor is capped at 160 characters (a longer name an older build
+    allowed keeps its first characters and ends in a digest of the account, so two
+    accounts never share an actor; the audit actor filter and a retried audit row still
+    match the whole name an older build recorded).
+  - Rows an older build stored are read as if cleaned and are never rewritten. The cases,
+    usage and kv JSON reads, the kv compare-and-set among them, use the same NUL-safe reader.
+    SQLite reads are unchanged.
+  - A sign-in with a control character in the username is an ordinary 401, recorded cleaned
+    with the reason. New accounts are limited to 160 characters with no control characters:
+    user creation answers 422 (without repeating the name) and first-run setup 400. An account
+    an older build created with a longer name still signs in.
+  - Account activity answers `503 audit_unavailable`, and chat's `audit_search` says the audit
+    trail did not answer, instead of reporting no rows.
+  - Settings, Sessions and activity: the Activity tab shows the signed-in person's events again.
+    It read a response key the server never sent, so it always said "No recent activity."
+  - Every `backend/tests/test_postgres_*.py` module now runs in the PostgreSQL acceptance lane,
+    which fails if any of them is skipped.
+
+### Round 14
+
+- CI: the Bootstrap portability (macOS Bash 3.2) lane runs on `macos-15`, because GitHub
+  retired the `macos-14` runner image on 2 November 2026 and jobs on it no longer start. macOS 15
+  still ships Bash 3.2 as `/bin/bash`, so the lane proves the same thing.
+- Dashboards: the Overview item in the navigation opens a Dashboards library with four
+  built-in boards (Cyber Defence Center, marked Default, SOC operations, Detection and data
+  health, Executive summary) and your own boards. The Cyber Defence Center stays the landing
+  page. Built-ins are read-only; duplicate one to customise it. New GET /api/metrics/breakdown.
+- Audit log: server-paged, three scopes, search and filters in the URL, a record inspector with
+  what changed, and CSV or JSON Lines export (new audit:export permission, fresh sign-in,
+  audited). New audit fields on new rows: outcome, actor type, action, client, session, target,
+  changes, request id, run id. Every job artifact download is now audited.
+- Rules: clicking a detection rule anywhere opens a rule sheet with its alerts over time, top
+  sources and targets, latest alerts and cases, with "Open all in Logs". Logs and Cases accept an
+  exact rule filter.
+- Severity breakdowns use named levels per source scale, show the top rules per level, say what
+  was sampled, and offer Split by.
+- Runbooks: playbooks and runbooks are merged into one Runbooks feature: phased procedures with
+  five step kinds, deterministic matching with a reason, a per-case checklist with a Next step
+  card, Draft, In review, Published and Retired versions, and a library of 12 built-in runbooks.
+  Stored operator playbooks and runbooks are converted once at startup. For one release, the
+  /api/playbooks reads stay as deprecated aliases, and its writes answer 410. Automation rules
+  that ran a playbook now attach a runbook.
+- Console: a docked navigation rail that never moves its icons, the Overview's panels and header
+  on every page, grouped Settings, and many smaller fixes.
+- Chat: Timeouts and capacity defaults tripled (stored values that equal the old defaults move
+  once). The report summary wait stays below the web proxy limit.
+- Sign-in: the automatic sign-out notice no longer states how long the session lasted.
+- Closing fixes: chart time axes date their first tick and each new day, weeks read their start
+  day, severity charts keep all five levels, and the ATT&CK heatmap fits at 1,280 px; on a phone,
+  board Edit mode is a list with Move up and Move down; the rail toggle restyles the panel and
+  moves the page in consecutive frames (the page still moves once) and KPI numerals share one
+  line; the Cases Outcome cell names an unclassified case's source; "Open case trace" opens the
+  Investigation tab with the trace open; the runbook card keeps Confirm in place while an AI
+  draft waits; signed-out pages make no 401 requests and every spreadsheet writer defuses the
+  same formula leads; the Logs live-tail note says only the search box is ignored while a rule or
+  severity filter is applied.
+- Audit outcomes: engine, agent and notification rows record whether they succeeded, failed, were
+  denied or partly applied (a notify row says which channels did not send, or that none was
+  due), error text is stored with credentials removed, and an investigation group's outcome
+  follows how it ended (a group shown in part reads Not known until its steps are loaded).
+- Product help in chat links the page the answer is about, and Demo help follows the same rule.
+- Settings: in full-width sections a labelled switch or field stays next to its label, as in the
+  other sections.
+- Time range: the time range control is named from the words it shows ("Last 24h, time range"),
+  so a speech-input user can say what they see; the whole range stays its description and
+  tooltip.
+- Second acceptance fixes, permissions: the Console shows exactly what a person's roles allow,
+  because it reads the server's own access check (`GET /api/account/permissions`), so assigned
+  custom roles and denies count. Pages, panels and actions a role cannot use are not offered and
+  send no request; a typed link shows a plain refusal, and a permissions read that failed says so
+  with Retry. Metrics reads need `metrics:view`, and AI spend needs `cost:view` wherever it shows
+  (the budget status, a case's agent timeline, a case's own investigation cost and the recorded
+  cost in Agent effectiveness leave it out, and the Console says it is withheld or shows no cost
+  line). A job's file downloads only while its owner still
+  holds the permissions the job needed. Refused requests are recorded as Access denied, a refused
+  read at most once every five minutes per person, permission and route.
+- Second acceptance fixes, runbooks: a retired runbook opens read only and can be restored,
+  Reload after a save conflict loads the other person's version, the Applies when picker stays
+  open and Done adds a typed value, a send-back reason reaches the author, and each write is
+  announced once with focus kept in place. Runbook audit rows say what changed: a draft save
+  records every field it changed with its before and after (lookup filters as field = value
+  lines; long values cut to show where they changed; removed steps with their text). Every case
+  run row names the step by its title, evidence rows included, and seeded Demo rows read the
+  same. Approvals name the role by its label ("a SOC manager"). The Audit inspector names a
+  field inside a list by its item ("Step lookup: instructions", "Source wazuh: poll interval")
+  and shows an empty value as "Empty"; Preview as analyst announces once what it filled.
+- Second acceptance fixes, settings: in Demo Mode the Enrichment switches and cache lifetime save
+  to the Demo copy only, and provider key changes are audited; the save bar counts changed
+  values; a Discounted inference save is recorded under that name; the fresh sign-in dialog says
+  what it is for ("Sign in again to export audit events.") and a wrong password says so.
+
+Details:
+
+- **The /api/playbooks routes, precisely.** Reads (`GET /api/playbooks`, `/api/playbooks/{id}`,
+  `/coverage`, `/selection`, and `GET /api/runbooks?shape=v1`) stay as aliases with Deprecation
+  headers for one release; every old write, dry run and reload, `POST
+  /api/cases/{id}/run-playbook` and an old-shape body on `POST /api/runbooks` answer `410
+  runbooks_moved`.
+- **New and changed API.** `GET /api/audit` (scopes, `q`, `event`, `actor_contains`,
+  `actor_kind`, `outcome`, `target`, `ip`, signed `cursor`, `order`; `action` and `actor` keep
+  their meaning, and `limit` is now clamped to 1 to 200 with more rows through `next_cursor`, see
+  the upgrade notes), `GET /api/audit/count` and `GET /api/audit/records/{record_id}`;
+  the `audit_export` job; `GET /api/metrics/breakdown`; `GET /api/rules/summary`; `rule`,
+  `severity` and `severity_gte` on `GET /api/logs` (with `matched`) and `rule` and `closed_by`
+  on `GET /api/cases`; the governed runbook library under `/api/runbooks*`; runbook runs on a
+  case, `POST /api/runbooks/progress` and `POST /api/runbooks/lookup-test`; the
+  `open_steps_reason` and `require_open_steps_reason` close fields (`409 runbook_steps_open`)
+  and `open_steps_reason` on `case_lifecycle` jobs; `object_scoped` on `/api/auth/me`;
+  `X-Request-ID` on every response; `NotificationProvidersResponse.channel_types` is now a list
+  of type ids (the providers route answered 500 before); `RunbookLibrary.migrated_procedures`;
+  the `case.runbook` SSE frames on the new `runbooks` topic. Permissions: `audit:export`,
+  `runbooks:run` and `runbooks:publish` are new, and `playbooks:*` grants and denies map onto
+  `runbooks:*`.
+- **Audit before visible.** Settings, users, roles, account, sources, dashboards, runbook and
+  run writes append their audit row first: when the audit log cannot be written they answer
+  `503 audit_unavailable` and change nothing. Sign-in, sign-out and session events never block
+  (a dropped row is logged and counted). Settings saves can answer `409 settings_conflict` after
+  three racing saves.
+- **Runbooks in the agent path.** The investigator receives the matched Published runbook in a
+  budgeted, fenced block (never a draft), and the matching runbook attaches to cases that need a
+  person after the decision is saved; `decide()` is unchanged and automatic closes never read a
+  run. Retrieval indexes Published runbook text only.
+- **Second acceptance API changes.** New `PUT /api/enrichment/config` (a strict partial of the
+  enrichment settings, `cache_ttl_seconds` from 0 to 2,592,000; answers
+  `EnrichmentConfigSaveResult`, `403` under the settings lock, `409 demo_mode_changed`), and
+  `cache_ttl_seconds`, `demo_active` and `demo_run_id` on `GET /api/enrichment/providers`; the
+  `enrichment.secrets_updated` audit action on provider key saves. `RunbookDetail.retired`,
+  `RunbookVersionListItem.review_notes`, and `role_labels` on `CaseRunbooks` and
+  `RunbookRunUpdate`. `GET /api/account/permissions` lists the caller's effective actions as
+  concrete actions. `GET /api/metrics` needs `metrics:view` (its `cost` part is `{}` without
+  `cost:view`) and `GET /api/usage/summary` needs `cost:view`, both ungated before; `GET
+  /api/feedback/stats` needs `metrics:view`; without `cost:view`, `GET /api/budget/status`
+  answers `null` spend fields, `GET /api/cases/{id}/timeline` `null` cost and tokens, every case
+  the API returns (`GET /api/cases`, `GET /api/cases/{id}`, `GET /api/scans`, the case JSON
+  export and each single-case response) a `null` `token_cost` (the `Case` schema now documents
+  it as nullable), and `GET /api/metrics/agent-improvement` an unavailable `recorded_case_cost`. A job file
+  answers `403 job_artifact_permission_lost` for a real loss and `503
+  job_permission_unverifiable` when the check cannot be confirmed.
+- **Removed.** The playbook engine (`backend/app/playbooks/`), the bundled playbook Markdown
+  (`backend/playbooks/`), the old runbook service and stores, the hidden Automated scans page
+  (`#/scans` redirects to Case Manager filtered to cases the AI agent closed) and the
+  open-versus-closed burndown chart, which no page drew.
+
+### Earlier rounds in this cycle
+
+**Round 13 (chat): dynamic suggestions and a neater chat.** A new chat opens on a short
+start screen directly above the message box: a greeting, a "Since 09:12: …" line saying
+what changed since your last visit, three or four suggested questions about your own data
+right now (a case that needs a person, new cases, response targets, a quiet source, a
+noisy rule, a campaign, your shift, and more), each with a one-line reason, and category
+pills into the prompt library. The suggestions are computed by code under your own
+permissions, at no AI cost and without reading logs, and every number on them is exact.
+Hide one for a day, with Undo. An open conversation can show the same catch-up line above
+the message box, and Case Manager chat offers up to three questions chosen from the case's state.
+Follow-up chips now name something the answer shows, new conversations are named from
+their first answer, and answers read in one calm column with small results beside the
+text, quiet block headers, one shared scope line, the cost on the meta row and tokens in
+its usage card. The composer, run log, history rail and report panel are tidier, and Demo
+Mode answers every suggestion from its data. A suggestion never writes an id longer than
+27 characters into its question (a noisy-rule card then asks which rule created that
+many cases), except a case's internal id when case numbering is off, Demo Mode investigates the host, user, email address, IP address, domain,
+file hash, detection rule, log source or attack type a question names rather than the
+newest case, and its answers say when cases, rules or periods tie for the highest, the
+most or the oldest. Every figure in an answer reads the way its blocks show it ("78%",
+"7/100"), in the run log too; the shift brief's Needs human figure counts the cases its
+list badges as Needs human, and the Standup page shows the same figure under Needs human,
+with its old status count renamed Awaiting analyst; an investigation of a user, host or IP
+lists only the campaigns that involve it; campaign tables and text name every ATT&CK
+technique or say how many more ("and 3 more techniques", "and 6 more shared entities"),
+and so does a case's brief; "my cases" asked right after an assignment lists every case
+it counts; and a suggestion to widen a search always widens it. A suggestion's "times the
+usual" figure reads "15 times", never "15.0 times". The start screen appears once its
+suggestions arrive (a skeleton only after 600 ms), so on a phone nothing on it moves and the last card sits
+12 px above the category pills; a chat table shows one chip per ATT&CK technique and
+leaves a blank cell blank instead of a dash, and so does a report download, which keeps
+a dash only for a figure that was not measured; and the console header never breaks a page
+name inside a word (a word too long for a phone's header ends in an ellipsis). Entering,
+leaving or resetting Demo Mode refreshes the suggestions at once, never another run's, a case
+chat never shows an answer from before a reset, and a failed Demo status check no longer clears
+the case chat or the suggestions. The
+Help Center chat, settings,
+configuration, permissions and API pages are updated to match.
+
+**Round 12: chat without limits, a working indicator, Remember me, reliable report
+downloads, an exact Overview, and a Case Manager that records what a case was.** Workspace
+Chat no longer stops a question at a step, token or time limit, never cuts an answer
+short, and has no "Continue where this stopped": a question runs until the assistant
+has answered or the analyst presses Stop, with loop guards instead of caps, automatic
+continuation when the model reaches its output length, and a running conversation
+summary that keeps long conversations inside the model's context window. Chat counts
+every case exactly over any window (all time, calendar periods in the operator time
+zone, months, quarters, years and ISO ranges), compares periods, asks a clarifying
+question instead of guessing, offers one-click ways to widen an empty search, saves
+reports it is asked to create, and adds a step inspector, answer ratings, **Add to
+case**, a prompt library with promptbooks, `/compact`, **Ask AI** chips on entity values,
+and a conversation width preference. A turning ring on the Chat item (and, optionally,
+the logo) shows that an answer is being written while you work elsewhere, and returning
+or reloading rejoins it live. Chat is no longer covered by the AI budget (daily or
+monthly); an optional daily chat spending limit is its only spending bound. Sign-in
+gains **Remember me**, with a warning, browser-managed passwords and server-bounded
+remembered sessions. Report exports are reliable and add Word and Excel. Dashboards read
+exact store-wide totals and analyse up to 20,000 cases per window instead of a fixed
+newest page, and the Case Manager's queue, header and close dialog are rebuilt
+around one rule: once an analyst classifies a case, that classification is its headline.
+The Help Center chat, reports, sign-in, Overview, Case Manager, Cases, settings, KPI
+glossary, configuration and API pages are updated to match.
+
+**Workspace Chat, rebuilt as a read-only analyst assistant with reports.** One question can
+now run several read-only lookups (log search and statistics, cases and case decisions,
+metrics, the shift report, campaigns, indicator reputation, ATT&CK, the knowledge corpus,
+cost, source health, automation status, the audit log and the bundled Help Center), and
+the page shows each lookup as it runs with its parameters, row counts, sampling basis and
+exact query, plus a live token and cost counter. Answers lead with the direct answer and
+carry charts, tables, case lists, timelines and entity cards whose numbers come only from
+lookup results, never from model text; each block switches between the views its data
+honestly supports, copies or downloads its data, and opens **Open in Logs** or **Open in
+Cases** on exactly the same filter. Citations link the version-matched Help Center, and
+product questions are answered at no cost from the Help Center when no model can run.
+**Ask about this**, at the end of a dashboard KPI's help and beside the section name in
+Settings, opens a new chat that asks a fixed question about that metric or section.
+The page has three calm zones: searchable, pinnable history (50 conversations, 10 pins,
+Markdown/HTML/PDF export), the conversation with a one-row composer (scope chip, `@`
+scopes, `/` commands, saved prompts, a calibrated next-request estimate and today's budget
+ring, an opt-in **Type out answers** mode, server-side **Stop**), and an on-demand report
+panel. **Reports** collect blocks or whole answers with notes, an AI summary (one metered
+call, estimate first, 10 an hour) and Markdown, HTML, print, CSV and JSON exports with
+indicators defanged by default; the new **Triage → Workspace → Reports** library lists
+them. Case Manager's **Chat** tab uses the same engine, compact and case-scoped. Demo Mode
+demos all of it deterministically at $0. Administrators bound it under the new
+**Settings → General → Chat assistant** (live mode, per-question limits, indicator-lookup
+policy). The Help Center chat page, API, permissions and configuration references are
+rewritten to match.
+
+Security and RBAC: chat stays read-only by construction, and every lookup needs the same
+grant as its console page, checked without audit noise (a refused request writes one
+ACCESS_DENIED row). Logs reach the model only as aggregates; every log-, case- and
+document-derived string is fenced as untrusted, and forged fence markers are neutralised
+everywhere. An indicator is sent to an enrichment provider only when it came from the
+analyst's own words or this question's results; private, reserved and internal values are
+never sent, and policy refusals are reported as such rather than as missing permissions.
+Memory changes are only proposed and need a `memory:manage` confirmation; money figures
+need `models:read`; case-thread saves need `cases:comment`; reports and conversations are
+owner-scoped, server-resolved from saved answers (case content is unaddable), audited, and
+stored so they can never grow the shared Elasticsearch mapping. Every model call, including
+streamed, cancelled and summary calls, records exactly one usage row.
+
+Upgrade and rollback: on the **Elasticsearch** state backend, this release stores case
+discussion threads and Workspace Chat history in a new mapping-safe form that older builds
+cannot read. The first write converts the whole document, entries from before the upgrade
+included, and the change is one-way: after a manual rollback to an older image, case threads
+and the affected users' chat history appear empty, and the older build's next write to them
+removes the converted entries. **PostgreSQL and SQLite** keep the previous form, so the
+supervised image-only rollback keeps threads and transcripts, with two losses. The older
+build's first chat write for a user drops that user's conversation pins, linked reports,
+time ranges and usage totals (the reports themselves remain). And because this release lets
+up to 10 pinned conversations sit beyond the 50-conversation limit, the older build's first
+saved answer for a user with more than 50 conversations deletes that user's oldest
+conversations (by last activity, pinned ones included) until 50 remain. Before rolling back,
+users with more than 50 conversations should export the extras they want to keep and delete
+them. See DEPLOY.md, the upgrades page and the known limitations.
+
+Also in this change: the ATT&CK heatmap's tactic and cell labels move from 10 px to the
+11 px `text-2xs` token when the heatmap became its own module, and the flaky
+`test_batch_submission_lease_converges_across_independent_sql_stores` now races its two
+stores on a file-backed SQLite engine, because the shared in-memory engine served both
+through one connection (a test isolation fix; product behaviour is unchanged).
+
+**A dashboard that reads as one instrument panel.** The Human vs AI chart is rebuilt as
+stacked columns (AI agent, Human, System) on a labelled y axis with solid gridlines and UTC
+time labels. Hovering or arrowing to a column shows that bucket's full breakdown: the UTC
+range, closes by each closer with shares, arrivals, cases sent to a human, the false
+positive rate and alerts ingested. Unmeasured buckets are hatched, the still-filling bucket
+is dimmed, and the tooltip sits beside the column inside the card instead of over the KPI
+strip. The smoothed spline it replaced invented "humps" between zero-filled hours.
+
+The KPI strip keeps its six tiles and gains one muted **context line** under each numeral
+("17% of 47 cases", "36 of 47 verdicted", "arrivals, last 24h"), so each number answers
+"compared to what?" on its face. Labels are quiet sentence case, icons are gone, numerals
+are neutral ink with red reserved for a non-zero critical count, and the help and
+drill-down marks appear on hover or focus. The 16px gap and doubled hairline between the
+strip and the noise-reduction flow are gone: the strip's bottom rule is the flow's top
+edge. Section titles are sentence case. The flow's right-hand labels no longer wrap into
+each other. The open and resolved snapshot chips state small changes as counts ("+8")
+instead of percentages of a tiny base ("+400%"). Latest cases lead with the case title,
+with the id and age beneath, in a flat divided list. The KPI hover cards draw one column
+per bucket in its real time slot, with a dated readout for the bucket under the pointer
+and first, peak and latest values, instead of a curve through measured points only. No
+data was removed from either page.
+
+**A KPI strip whose captions outweighed its numbers.** Each landing tile carried a two-line
+mono caption under a 24px numeral, so the sentence about the metric was visually heavier than
+the metric, and the row's six-to-eight words of standing prose were read once and then became
+furniture. The captions are gone from the face and the numerals step to 30px. What a numeral
+counts, and the "out of what" behind it, now live in the tile's help — which opens on click
+and is reachable by keyboard and touch — and in its drill-down.
+
+Two things deliberately did NOT move, because they are not prose. A **conditional bound** is
+visible exactly when it is true, so relocating it to a help surface a reader may never open
+would turn a floor into a fact: the tile now marks the NUMBER itself with `≥` and announces
+the full sentence to assistive technology. A **withheld** value takes the same grammar from
+the other side — the em dash carries the explanation, so False Positive Rate no longer shows a
+bare dash with nothing to account for it once its caption is gone. And a **degradation notice**
+("Posture unavailable", or the server's own account of a window it could not measure) still
+takes the face unconditionally: it is the one caption worth the strip's height.
+
+A sixth tile, **Auto Closed**, states the agent's own share of the work from the server's
+`auto_closed_cases` and `automation_rate` — never a client tally over a bounded page, and never
+divided by the neighbouring numeral, which counts a policy-INCLUSIVE population the rate itself
+strips. It is a SUBSET of Resolved / Closed rather than a sixth independent total, and the row
+must not read as a set that sums; it says so by sitting immediately beside that tile, sharing
+its accent against five otherwise-distinct ones, naming its own denominator, and carrying the
+containment sentence in its accessible name, its help and its drill-down population. Its
+drill-down deliberately declares `rows-read` rather than a store-resolved population, because
+there is no server-side attribution filter and the caveat that follows from that is TRUE.
+
+The tiles' numerals are now **bottom-aligned**. Measured in a browser at 1280px, six labels
+wrapped to one, two and three lines and put the six numbers at y = 26/40/26/54/40/26 — a 28px
+stagger across a row the eye reads as one instrument. Growing labels upward from a shared
+baseline is length- and locale-independent where a reserved label height is not. The scale
+context ("43 of 59 verdicted") stays OFF that row for a measured reason too: both it and the
+numeral are shrinkable, and flex shrinks the numeral first — restored beside a 30px numeral at
+six columns, "72%" rendered as "7…" and "44" as "4.". It is in the help instead.
+
+A real clipping defect went with them: the numeral had neither `min-w-0` nor `truncate`, and a
+grouped integer offers no min-content break, so an oversize value was hard-clipped by the
+tile's `overflow-hidden` with no ellipsis — "543,210" rendered as "543,21", a readable WRONG
+number. It now shrinks, then abbreviates through a caller-supplied formatter with the exact
+value kept in the accessible name.
+
+**The flow diagram grew, and stopped mislabelling itself.** The inline band goes 184 → 216px
+(+28% of drawable pipeline), which separates the conversion labels that overlapped on the
+right-hand side at 1280 and 1440. The constant and its wrapper class move together, because
+the height flows into a `preserveAspectRatio` viewBox: changing one alone letterboxes the
+drawing and drifts the percentage-positioned label overlay off its nodes. The in-SVG
+"FULL ALERT-TO-CASE FLOW" caption is deleted — it was inside an `aria-hidden` element so it
+was never announced, it restated the heading directly above it, and it rendered
+unconditionally while the nodes it captioned are gated, so a deployment with warming counters
+read "FULL" over a flow that starts at cases opened, directly under a banner saying the
+opposite. The √-scale sentence beside it moved to the popover that already restates it, but a
+persistent `√ scale` chip stays on the face carrying the sentence as its accessible name: an
+unlabelled non-linear axis is a misleading chart, not a tidy one.
+
+**Human vs AI** dropped a subtitle and a share-line prefix that its help now carries, giving
+its chart ~38px it did not have; the bucket-granularity label stays, because it is the only
+axis caption the series has. The dashboard's own containers reclaim 8px a side (+16px at every
+width) — the page cap does not bind below roughly 2218px, so the real reclaim was the caption
+row, not the container.
+
+**A caption that fired on every refresh tick.** The dashboard defaults to LIVE, and posture
+reloads while the previous rollup stays on screen; captioning those numerals `Loading …` said
+something false about them and, once it was the only caption a tile carried, made the strip
+grow and shrink by ~18px on every tick. A first load with nothing to show still says so.
+
+**A drill-down that had to be read past, and a warning that only one page could show.**
+The KPI deep-inspection panel docked below the landing strip and pushed the instrument band
+down the page; its row table was capped at a 320px window whatever the screen; and the
+Agent-health warning it shared the page with was visible from the dashboard and nowhere else.
+
+The drill-down is now a MODAL — a fixed page-in-page, the same width as the dashboard it
+explains, with four pinned bands around exactly one scroll region. Removing the 320px cap and
+the page behind it turns 320px of rows into 568px at a 900px-tall viewport, and the
+completeness footer stays on screen at 700px. This deliberately REVERSES the non-modal
+decision this file recorded, and the reasoning is preserved in the component rather than
+discarded: one half of that case — comparing a tile with its four neighbours — is answered by
+the in-panel metric switcher, which is why the switcher gets its own always-visible row and is
+never breakpoint-gated; the other half, tabbing on into the page, is a real cost, mitigated
+only by Escape returning focus to the exact tile that opened the panel.
+
+Agent health moved into the notification bell, pinned above the inbox and outside its
+scroller, so a degradation is visible from every route and a healthy deployment spends no
+dashboard space at all. The shell reads it once, at a stated 24-hour window, and speaks it
+through the console's one live region; the trigger's accessible label carries the state,
+because every badge on it is `aria-hidden`.
+
+Two smaller corrections travel with them. The page gutter was a ladder that made content
+NARROWER as the viewport grew — crossing 1536px cost 31px of usable width — and is now flat
+from 640px up, paired with the Case Manager bleed that is tuned to it. And the always-visible
+copy under the KPI tiles was carrying explanations rather than qualifiers: the tautologies are
+gone, the long sentences moved to per-tile help that opens on click (a tooltip never opens on
+touch), and the strip's shared "select a metric" line became a mark on every tile, derived
+from the same property that announces the popup to assistive technology.
+
+**Dark mode is re-skinned** from near-black-and-ultraviolet to a deep-navy command centre:
+`#0c1018` ground, `#121826` panels, a mid-blue primary, cool blue-grey text, amber warning and
+a fresher green success, with a blue-led chart ramp. Light mode is untouched. Every measured
+contrast ratio in the file was re-measured rather than re-stated, and the palette clears the
+same 96-axis WCAG gate and the three-dichromacy chart-separation gate as before.
+
+
+**A landing dashboard that read as five stacked bands.** The Cyber Defence Center put its
+widest instrument — the noise-reduction flow — below the fold in a second grid, kept its
+time controls at the far right of the masthead away from the title they qualify, and stacked
+the open and resolved snapshots so half the page's horizontal space went unused. The two
+bands are now ONE twelve-column band, led by the flow: flow and close attribution, then the
+case snapshots, the timing pair and the live queue.
+The masthead's controls moved into the header's `meta` slot, which renders inside the title
+row, so title and controls read as one cluster; the strip runs at the shipped compact
+density.
+
+The grid is `xl`, never `lg`, and the reason is measurable rather than aesthetic: the flow
+diagram hides its graph below 608px of container width and falls back to a text rail, and at
+the tightest supported desktop an eight-of-twelve cell clears that by a margin thin enough
+that the document scrollbar decides it. The horizontal padding is `px-3` for exactly that
+reason, which also puts every cell of the band on one 12px rail.
+
+Opening a case from the queue or a drill-down row no longer navigates away from the numerals
+that prompted the click — it mounts the shared case surface over the page. Closing it now
+returns keyboard focus to the row that opened it; it previously dropped focus on the document
+body, because this sheet is opened by state rather than by a trigger and the dialog primitive
+suppresses its own restore before focusing a trigger that does not exist. Every consumer of
+that surface benefits.
+
+The KPI drill-down became a workspace rather than a single-metric readout: a metric switcher
+that re-points the panel without closing it (carrying an operator-set range and their free
+text, but never an untouched default onto a population that has no window), four scalars
+computed over exactly the rows the table lists, a records table of fields the case really
+carries, a detection-source facet, and a CSV export of the listed rows that neutralises
+spreadsheet formula prefixes on log-derived text. The Cases-burndown chart left the dashboard
+for Metrics → Posture, where it already renders as "Closure vs arrival"; the chart, its wire
+field and its backend are untouched.
+
+**A one-stop dashboard that still asked to be scrolled.** Measured in a real browser rather
+than derived from class tokens, the Cyber Defence Center fitted on no screen: 1,149px of
+content in a 1,080px viewport, 1,181px at 1280×800 — and most of the excess was empty. One of
+the five KPI tiles carried a three-row close-attribution partition — four where the backend
+separates declared-benign policy closes — that the other four did not, so a single tile set the
+height of the whole strip (144px, of which 82 was that partition). The
+attribution card's trend was pinned at `height={122}` inside a stretched flex cell, so every
+spare pixel of the row became dead space beneath it. And the timing pair was a full-width row
+of its own, holding two small stats across the entire console, directly below a snapshot cell
+that was already 65px shorter than the row it sat in.
+
+The partition moved into that tile's own drill-down, first inside the scroller so it and the
+numeral it partitions are both on screen — the same reconciled memo, so the panel, the tile
+and the instrument card still cannot disagree, and a withheld partition (an outage, a partial
+one, a stale window) is withheld there too. The trend chart gained a fill mode that sizes to
+the box it is given instead of to a constant, with a floor at the height it used to be pinned
+to, so it can only grow into space that was already dead. The two case snapshots stack inside
+four columns instead of sitting side by side across eight, which is what their own
+`last:border-b-0` rule was written for and lets the severity legend use the full cell width;
+the timing pair became the middle cell of that row, its two stats stacked at `xl` only — below
+it they keep the two columns they had, because there the cell is the full page wide. The strip
+runs one step tighter (`py-2`, and the value row `mt-1` with a gutter that clears the corner
+overlay), a change every compact strip on the console takes deliberately.
+
+The result is 998px of content at 1920×1080: the page no longer scrolls there, with 81px of
+slack — enough to absorb the partial-coverage warning, which the measurement already included.
+At 900px-tall viewports it is still 113–145px over. Closing that would mean cutting the
+noise-reduction flow band or retiring a whole band from the landing surface, which is a product
+decision rather than a layout one, and it is stated here rather than engineered around
+silently.
+
+**Repairing a corpus that could only be repaired forward.** The precedent projection is a
+bounded window, so a change to the chunk TEXT repaired only what the window happened to
+re-select; everything older kept the old rendering permanently, and the migration path
+carried it across every future embedding change by re-embedding the stored text verbatim.
+No metadata key records a chunk's text generation, so re-render-and-compare is the only
+selector available — the shipped builder is its own oracle, which also means this class of
+drift cannot recur silently. A prose selector was never an option: the lower-trust tier
+legitimately renders the very phrase a substring match would have keyed on, so a text sweep
+would have deleted that entire tier on any deployment that enabled it.
+
+`RagService.repair_precedent_projection` is a separate, explicitly-invoked pass that reads
+the corpus once, classifies each chunk per trust tier, re-embeds and upserts in place where
+the rendering has moved, and reports the rest. Eviction is deliberately narrow — only a case
+positively absent from the case store, with the evicted payload written to the append-only
+trail before removal and the removal confirmed by re-read. An excluded or label-withdrawn
+case is reported, never deleted: those are operator decisions whose home is the exclusion
+API. Repair is idempotent and re-derivable, but it is **not** reversible to the prior
+rendering, and the prior rendering is by definition the stale one.
+
+**A drill-down that answered whole-population questions from one page.** The Overview KPI
+panel read the newest rows and then computed populations, facet menus and "highest risk"
+over them, so anything past the first page was unreachable and a cohort present only outside
+it could not be discovered. It now sorts server-side behind a route-level allowlist, pages by
+offset under a pinned head, resolves multi-status populations from the product's own status
+constants server-side, and seeds its severity menu from the whole-window histogram. The
+footer says which narrowings were evaluated over the rows read rather than the population,
+and the drill-through carries the operator's filters into Cases and discloses anything it
+had to drop.
+
+The allowlist is a security fix, not a nicety: the Elasticsearch case store interpolated the
+sort field directly into the query DSL, the SQL store allowlisted only by accident of a
+fallback, and the in-memory test double accepts any key — so the offline suite would have
+passed on a field that fails in production. Both bundled stores also gained a unique sort
+tiebreaker, without which offset paging over tied scores repeats and skips rows on real
+Elasticsearch and PostgreSQL while both offline backends hide it.
+
+
+**The self-running deployment that stopped closing cases.** A field report from a
+long-running autonomous instance traced a fall from roughly 96% auto-close to zero,
+with no operator-visible signal anywhere in the product. The cause was not one bug but
+a chain: the resolved-case precedent corpus eroded and was then wiped outright, the
+threshold tuner recorded changes the pipeline structurally discarded, proposal approval
+could report failure while its effect was already live, and on PostgreSQL every
+privileged audit write was impossible. Each failure was silent, and the only trace of
+the corpus loss was an ordinary-looking `RAG seeded with 20 chunk(s)` at INFO — a line
+that reads identically whether the number is 2000 or 0. This release fixes the chain
+and, just as importantly, makes each of these conditions a state an operator can see.
+
+### Fixed
+
+- **Round 13 polish: Demo investigations, third pass.** In Demo Mode, a question about a
+  technique id, cost, sources and ingestion, tuning or approvals keeps its own answer
+  instead of a log search for the word ("Investigate T1059.001" describes the technique,
+  "What is ingestion doing?" shows source health, "What did spend do this week?" the AI
+  cost), and product words such as autopilot, enrichment or risk get the Help Center
+  again. A name keeps the dots inside it ("admin@corp.example", "T1059.001"), and an
+  email address is investigated as a user rather than as its domain. "Investigate" with
+  a detection rule counts that rule's cases by verdict, with a log source shows its
+  newest events (and says if it is silent or disabled, or lists the configured sources
+  when none has that name), with an attack type runs the hunt, and with a request for
+  records lists them ("the false positives from yesterday"); only a question that names
+  nothing Demo can look up still starts from the newest escalated case, and says so.
+  "Show activity by severity" counts log events by severity. Rules tied for the most are
+  never called "the rule with the most", periods of spend tie when their figures read the
+  same, and an in-depth look's rankings after a dated window no longer start inside the
+  window's brackets.
+- **Round 13 polish: chat layout, third pass.** A case number, technique id or rule id (up
+  to 27 characters, not counting the punctuation after it: the same limit the suggestions
+  use for the names they write) no longer breaks at its hyphen or inside its digits in
+  suggestion cards, case chips, case lists and table cells ("CASE-" / "000089?", "T107" /
+  "8", "sigma-" / "win-proc-creation-01?"); the sentence still wraps between words, and
+  on a card too narrow for the whole id it wraps inside the id rather than running past
+  the card. A longer case number from a custom format now wraps where its line ends
+  instead of running past the row on a phone. A start card's
+  question balances its lines so a case number is never left alone on the last one. A
+  table in an answer that is wider than its frame scrolls inside it and fades out on the
+  side that holds more columns, instead of looking clipped. Text inside a Brief (its
+  Next steps, section summaries and notes) keeps the answer's reading measure however wide
+  the Brief is. Indicator facts, provider names such as "demo-synthetic", case titles,
+  table text and KPI tile labels ("False-positive rate") set normal hyphens; figures keep
+  their aligned digits. On a phone the suggestion cards sit 16 px under the catch-up line
+  whatever their heights, and the greeting no longer moves down when the suggestions load
+  (spare height now sits under the cards, above the category pills). The History sheet's tooltip stays on screen and its date
+  reads like the answers' (2026-10-23 15:45 UTC). The thread menu offers the conversation
+  widths only where one changes the lane. The Campaign detail sheet's body is inset like
+  its header, its icon keeps its size beside a long name, its title sets normal hyphens,
+  and its shared entities read "IP:" rather than "Ip:". Case Manager chat's
+  suggestions end on the composer's right edge. In a running Demo, the event funnel's
+  baseline is saved in one write per batch instead of one per signature (each rewrote the
+  whole baseline document), which had stalled every request, the Case Manager
+  suggestions included, for 4 to 8 seconds every 15 to 20 seconds; a live deployment's
+  event funnel uses the same single write.
+- **Round 13 polish: chat workspace details.** A running lookup reads in the present
+  tense ("Searching logs", "Looking up an indicator") and switches to the past tense once
+  it ends; saved answers keep their labels. A history row you clicked keeps its time
+  instead of leaving an empty slot (the time gives way to the row's ⋯ button only while
+  that button shows). Picking a conversation from the History sheet on a phone no longer
+  opens the "History" tooltip over it: focus that the console hands back never opens a
+  tooltip, while focus you move with the keyboard still shows it; the collapsed rail's
+  Search chats now gets focus back too. "Ask about this case" stays on one line in Case
+  Manager chat on a phone. "Widen the search:" sits on its own line above its suggestions
+  on a narrow screen. Start-screen placeholders now take the height of the suggestion
+  cards, so the cards no longer push the greeting up when they arrive. On a phone the
+  first placeholder holds a longer question and the line under the greeting keeps room
+  for the catch-up line, so on a usual first load the greeting holds still as suggestions
+  arrive. Closing "What the assistant can access" with Escape no longer opens the
+  Read-only chip's tooltip over the composer, and after Collapse history, Show history or
+  the report panel's Close, focus moves to the button now on screen instead of dropping
+  to the page. A lookup's chips keep their order
+  when it finishes. Case Manager chat names the case by its number, and on a phone its
+  token estimate shows as the context ring once you type, so the question keeps more of
+  the field.
+- **Round 13 polish: my cases, close-to-target cases, the shift card, Demo case
+  numbers.** `search_cases` and `case_stats` take assignee `me`, which the server
+  resolves to the signed-in analyst (trimmed and case-insensitive, like every assignee
+  match), so "Which of my open cases should I work on first?" lists your own open cases
+  instead of the whole queue; with sign-in off, `me` matches no case and the answer says
+  so. The shift report lists the 5 open cases closest to their response target, nearest
+  first, with who has each (and each overdue case's owner), so the "close to their
+  response target" suggestions get a full answer from the same count the card shows. The
+  shift-start suggestion now counts as newer than your catch-up point (SPEC-chat §3.5),
+  so it ranks with the other new signals. Every seeded Demo case has a case number from
+  the Case-ID format template (CASE-000001 onwards, oldest first, the same after a
+  reset), cases the Demo creates continue the sequence, and chat case lists and related
+  cases carry the number, so cards, answers and the console no longer show internal ids
+  such as `case-3fa004…`. New case titles separate the entity and the rules with " · "
+  instead of an em dash; stored titles keep theirs and every title parser reads both.
+- **Round 13 polish: "my case" answers and distinct Demo titles.** In Demo Mode, "What
+  should I do next on case X?" also reads your own open cases (assignee `me`) and says
+  whether it is your only one, lists your others by risk, or says it is no longer
+  assigned to you. Demo conversation names now carry one detail that tells similar ones
+  apart: the case number ("CASE-000045 needs a person"), the ATT&CK technique ("ATT&CK
+  hunt for T1078"), the period ("Security posture, last 24 hours", "This month versus
+  last month"), the breakdown or the filters ("Open critical cases, this week"), or a
+  rule id that passes the rule grammar, so the history rail no longer shows a column of
+  "Indicator hunt" or "Case list" rows. A name is still 2 to 6 words and never repeats an
+  indicator, entity, log value or case title; a case is named by its rule ids, never its
+  title. A rule id can appear in a name, exactly as written, when the suggestion rules
+  accept it.
+- **Round 13 polish review: "my cases" questions, case numbers, Demo numbering.** A
+  "my cases" question that names more ("my closed cases", "my critical cases", "my cases
+  by severity", "my cases this week", "compare my cases this week with last week") keeps
+  every filter and reads only your cases (assignee `me`); an answer from figures that
+  cannot be narrowed to you (the shift report, the posture) says so. A username that is
+  also an assignee word ("nobody", "none") is matched as that name, never as the
+  unassigned queue, and with sign-in off a "my cases" lookup shows no zero figure or
+  empty list and offers only the lookup without the assignee filter. Demo case and brief
+  conversation names lead with the case number ("CASE-000005 identity_signin case"),
+  carry a rule id only when the suggestion rules accept it and it does not look like an
+  indicator, and product-help, response-action and out-of-scope names say which console
+  page or request they are about ("Sources help", "Isolation request"). A case asked for
+  by its internal id is answered by its number with that id beside it. Report summaries
+  receive case numbers beside the ids, campaign listings give member case numbers, and
+  Demo case reads and the brief suggestion name cases by number. Demo seeding numbers
+  every case from one sequence whatever the reset period, so no two Demo cases share a
+  number. On the visit that starts a shift the shift card comes before the Demo Mode
+  card, and the weekly card counts as newer than your catch-up point. New candidate
+  summaries read "Candidate awaiting analysis: …" without an em dash.
+- **Round 13 polish re-shoot: case numbers in exports and campaigns, prose hyphens,
+  long ids, history titles.** Word, Excel, Markdown, HTML and PDF report and conversation
+  exports name a case by its case number, as the screen does (a case without one keeps
+  its internal id); CSV adds a Case ID column and JSON keeps the internal id. The Campaigns detail sheet lists
+  member cases by number, with the internal id in the tooltip and in each Open button's
+  description (`GET /api/campaigns/{id}` adds `case_numbers`). Chat prose, your questions,
+  suggestion cards, the catch-up line, follow-up chips and history titles use
+  proportional numerals, so hyphens no longer read wide ("Read - only"); figures, tables
+  and meta rows keep tabular numerals. A long id or hash in a suggested question breaks
+  where its line ends, never leaving one or two characters alone on a line, and the
+  start-screen placeholders hand their height to the cards, so the greeting holds still
+  as suggestions arrive. A history search result shows its whole title in a tooltip, as
+  a history row does. Case Manager asks for a case's suggested questions as soon as its
+  Chat tab opens, beside loading the chat, instead of after the chat has loaded.
+- **Round 13 polish re-shoot: follow-ups, the campaign card, assignment time, shift
+  counts, rule names, cold case chips.** A follow-up names a case only when the answer
+  shows or names it, so an empty "close to their response target" answer no longer offers
+  "Investigate CASE-000005". The campaign card reads "What links the 5 cases in the most
+  recently active campaign?" and never shows the campaign's internal id; its answer looks
+  up that campaign. Assigning a case records when it was assigned on the case history, and
+  the "my cases" card says "Oldest assigned 2 min ago" only from that record, else "Oldest
+  opened 8 min ago". The shift brief states the total past SLA once, then exactly the
+  cases it names ("Work the 10 cases past SLA first, starting with the 3 most overdue:
+  …"), and the response-target answer says "The 5 most overdue:". Demo answers write a
+  detection rule one way, its id as the case list shows it (`demo_impossible_travel`).
+  The first chat request after a restart no longer imports every chat tool module on the
+  server's event loop, so a cold Case Manager chip read takes about 14 ms instead of 350.
+- **Round 13 polish review: the campaign card, assignment time, follow-ups, the shift
+  brief.** The campaign card names its campaign by one of its cases ("What links the 5
+  cases in the campaign that includes CASE-000046?"), so the answer is about the campaign
+  that holds that case even when a newer campaign has appeared, and it says plainly when
+  no campaign holds the case any more; `list_campaigns` gains a `case_id` filter. A new
+  campaign gets the card even when an older one was active more recently, and the
+  "since" line keeps "1 new campaign". Older campaign questions in saved chats still
+  replay with their reference kept apart from the question. Assigning a case to the person
+  who already owns it (Assign again, or a bulk assign over their own cases) no longer
+  resets "Oldest assigned". A follow-up about a case the answer names by a custom case
+  number ("INC/2026/0042", "SOC#0042", "IR 0042") is kept, and a follow-up about a case
+  the answer does not show is dropped, on help and conversation answers too. The shift
+  brief and handoff have one starting point: with cases past SLA they start with the
+  most overdue one, the first case the next steps name.
+- **Round 13 polish second re-shoot: case tables, long titles on a phone, block titles,
+  the start stack, case chips, campaign members.** A list of cases shown as a table (Show
+  table, Expand), copied with Copy data or downloaded as CSV names each case by its case
+  number, as the list does, and its link still opens that case; a CSV adds a Case ID
+  column with the internal id. On a phone, in the history sheet and on any touch screen,
+  a long conversation title wraps to up to three lines in the history and the toolbar
+  instead of being cut, since no tooltip can show there. Answer block titles, captions
+  and the answer's scope line use proportional numerals ("Highest-risk", not
+  "Highest - risk"). When suggestion cards arrive shorter than their placeholders, the
+  spare height sits above the cards instead of stretching them. Choosing a case's Chat
+  tab again within a minute no longer sends a suggestions request nobody uses. Campaign
+  members are listed in case-number order.
+- **Round 13 chat fixes.** Risk figures in chat step summaries round half up, the same
+  integer the Overview gauge shows (47.5 reads 48, not 47). The token meter no longer says
+  "last 12 exchanges" on a new chat ("History: none yet"; "History: 3 exchanges,
+  summarised near the limit" without limits; "History: summary of earlier messages" after
+  `/compact`). The report panel no longer says "No report yet" after an answer saved a
+  report: it lists **Saved from this chat** and updates when an answer saves one. On a
+  phone, block frames no longer hang past the scroll lane's edge, and **Jump to latest**
+  never covers a line. Follow-up chips no longer suggest a different technique than the
+  answer hunted. Zero-result chips say "Without the source IP filter", not "Without the
+  ip filter", and send "Show the same without the source IP filter". A missing figure in
+  chat text reads "not available" and an answer without usage reads "Usage not recorded",
+  never a dash; in charts and comparison rows a blank log value reads "(empty)" and a
+  category with no label "(none)". History search snippets and command-palette chat hits
+  are plain text without Markdown markers. The Account page loads and keeps the profile fields
+  (`api.account.*` unwrap the route's `user` object), so a display name shows in the
+  shell chip and in the start screen's greeting. Inline code no longer splits its border
+  across lines. Demo source names and seed case titles no longer contain em dashes.
+- **A case closed as false positive still read "Undetermined" / "Needs human review —
+  closed".** Resolving could not capture a disposition, and the case headline led with
+  the AI verdict even after an analyst classified the case; both are fixed, and the
+  outcome is computed by one rule shared by every case surface that mirrors the backend
+  ground-truth check. **Confirm FP** always records the false-positive class (benign is
+  kept), and a disposition sent on close or resolve without `disposition_declared` never
+  replaces a classification the case already carries.
+- **Noise funnel honesty in chat**: a window or trend bucket that ends before the alert
+  counters began (or is older than their 90-day retention) shows the alert stages as not
+  measured, never 0, and gives no overall reduction. A past range that is not whole hours
+  is named in the operator time zone's words, never as a raw UTC range.
+- **`/compact` replies** are a quiet note (`ChatResponse.command: "compact"`) with real
+  usage, or "No model call · $0"; they are never replayed or saved to reports.
+- **A chat outcome looked at on one console clears exactly that turn on the others**: a
+  case chat's newer answer is no longer cleared by a look at an older one, a look more
+  than 5 minutes after the answer still reaches the other consoles
+  (`POST /api/chat/turns/{turn_id}/seen` answers 204 for any well-formed id of the
+  caller's), and a Case Manager chat reports every answer it lists.
+- **Back/Forward on one page never repeats a one-shot request**: Forward to a new chat
+  no longer puts the question back in the composer or sends "Ask again" twice, and a
+  pasted link to the conversation chat last opened from a link is applied.
+- **Log statistics over several sources** never state "Top N of M" when a source did not
+  answer: the missing source may hold other values.
+- **Chat did not use the full width** when the side menus were collapsed; the lane now
+  grows with the space, the frame can no longer be scrolled by hidden headings, geometry
+  survives React StrictMode, Jump to latest never covers content, and KPI groups never
+  truncate or leave empty tracks.
+- **Data questions answered as "Product help" or refused**: questions such as "create a
+  report of lifetime performance" or monthly breakdowns now run their lookups; a false
+  "last 24 hours" default in the assistant's instructions and "lifetime" read as a short
+  window are gone. The scope chip adds **6mo**, **12mo** and **All time** (which never
+  limits a question). Its default, which sets no outer limit, now reads **Auto** instead
+  of "24h" (**24h** is a separate range that limits questions), and its popover says
+  what each lookup covers: with Auto, case counts, case searches and ATT&CK coverage
+  over all time, and log, metric, cost and audit lookups and the shift brief over the
+  last 24 hours; with a chosen range, which lookups do not follow it (the shift brief
+  covers at most 7 days, and agent improvement compares fixed periods). The presets
+  sit in a grid that every arrow key moves through, and the chip keeps the range
+  visible when a long source name is cut short.
+- **Long conversations showed only their newest 100 messages**, under a notice that said
+  conversations keep only their newest 100. Nothing is removed: the transcript now has
+  **Show earlier messages**, which pages older messages in (50 at a time, in full) above
+  the reader without moving their place, ending at **Start of the conversation**; a
+  search result or link to an older message loads back to it; exports and report
+  methodology read the whole conversation; and only a conversation an older version
+  shortened says how many of its first messages are gone.
+- **Counts that were samples**: chat totals and "still open" counts are now exact at any
+  store size, and dashboard figures no longer come from the newest 5,000 (or 2,000) cases
+  of the whole store: store-wide totals are exact, and window figures analyse up to
+  20,000 cases per window, shown as lower bounds beyond that.
+- **On-screen context longer than 600 characters was cut** before it reached the model:
+  a selection or query default on screen is now fenced whole as untrusted data instead
+  of being truncated (#9).
+- **Report downloads**: exports no longer fail or print blank pages, revoke their download
+  links too early, or start twice; a failed export says why and offers Retry.
+- **`/api/auth/me` now honours the session registry**: a revoked or expired session is
+  reported with its reason and its cookie is cleared, so the sign-in page can say why
+  the user was signed out.
+- **The Case Manager queue missed older open cases** (it filtered the newest 200 in the
+  browser), the case pane blanked while switching cases, and the close dialog's buttons
+  could scroll out of view.
+- **The case-chat transcript was lost** when switching case tabs, and leaving the chat
+  page aborted a running answer.
+
+- **The investigator now receives the alert fields that decide the case.** A field
+  report from a live deployment traced a detection rule that had never auto-closed
+  across ~600 cases to three independent hardcoded field allowlists, none of which
+  contained the field its verdict turns on. The prompt seam rendered a fixed 7-key
+  projection of every sample event under a heading claiming to be "raw log data";
+  `es_query` returned a fixed 9-key row, so an investigator that *noticed* the gap
+  could not query its way out of it; and the connector matched free-text `contains`
+  against four fields, so the missing evidence was not even searchable. `url.path`,
+  `http.request.method` and `user_agent.original` were present on the alert
+  document, survived OCSF normalisation intact, and sat in memory on
+  `RawEvent.source` at prompt-construction time — and were discarded three separate
+  times. The agent's "no HTTP or execution context" was a truthful report about
+  inputs that had been emptied upstream of it, and its zero-hit `contains:"http"`
+  query was then recorded as positive evidence that no HTTP context existed.
+  A single shared definition (`backend/app/evidence_fields.py`) now drives all
+  three surfaces, defaulting to the ECS set that most often carries the verdict
+  (`event.action`, `event.outcome`, `url.path`, `url.original`,
+  `http.request.method`, `http.response.status_code`, `user_agent.original`,
+  `process.name`, `process.command_line`, `file.path`, `destination.ip`) on top of
+  each surface's existing identity keys, so the previous projection is a strict
+  subset and no deployment loses a field it had. A field the model is shown is now
+  a field it can search for, by construction — bar three documented exceptions (the
+  two typed paths that cannot meaningfully be text-matched and would have failed the
+  whole query, the 24-field search fan-out cap against a 64-field projection, and a
+  multi-source cluster whose display list is a union while a search runs against one
+  source). An import-identity test fails if the three surfaces drift apart again.
+  Existing deployments pick this up on load with no migration.
+- **A free-text log query can no longer be read back as proof the data is absent.**
+  `es_query` now reports which fields its `contains` filter was actually matched
+  against, in `data` and in the result summary the model reads (`meta` is not shown
+  to the model), so a zero-hit result reads as "no match in *these* fields" rather
+  than "the record does not carry this". It also states the match SEMANTICS — the
+  free text is an analysed term match, never a substring scan, so an exact-value
+  field matches only its whole value — and an `ids` lookup, which returns the
+  requested documents verbatim and never applies `contains`, now says so outright
+  instead of presenting an unfiltered result as a filtered one. The connector's KQL
+  rendering — the operator's Discover deep-link and the audited `query_text` — now
+  names every field the query covered instead of claiming `message` alone, and drops
+  the `*…*` wildcards it never performed, so for the first time it is a faithful
+  description of the query that ran and an operator verifying an agent's finding
+  reproduces it exactly.
+- **Evidence is now bounded by an accounted budget instead of a blind cut.** Sample
+  events were fenced with the per-value `fence()`, which hard-truncates at 600
+  characters with no notice. Each projected event is now bounded by a configurable
+  per-event character budget (default 1200) that drops rule *definition* metadata
+  (`kibana.alert.rule.parameters`/`.note`/`.description` and siblings) before
+  anything evidential, names what it withheld back to the model under
+  `_omitted_fields`, and always keeps the identity keys — and the notice itself,
+  which is what a starved projection would otherwise swallow along with the evidence.
+  In whole-record mode it offers rule *definition* metadata last, so those blobs are
+  what a binding budget drops rather than the URL that decides the case, and it
+  reports a record too large to walk as `_record_truncated` so "not present here" is
+  never read as "not on the record". Record-derived keys are length-bounded like
+  values, since in that mode the key is attacker-sized too. The block is fenced with
+  `fence_block`, which scrubs forged markers per leaf *and* over the serialised
+  form — so those attacker-controlled keys are neutralised as well (#9). The
+  `es_query` row budget applies only where a model consumes the rows: Chat renders
+  them as an operator table and computes its facets over them, so it keeps the whole
+  result.
+
+  The shipped default is the curated allowlist rather than whole-record, deliberately:
+  a realistic alert serialises to ~10 KB and twelve of those would be several times
+  the per-case token budget, routing every case to `needs_human` on cost alone.
+  `["*"]` is available for deployments that raise the budget to match.
+- **One bulk analyst action can no longer flood the precedent window, and the window is
+  now genuinely newest-first.** Stratifying the bounded precedent projection by rule
+  identity fixed only the outer half of the starvation: inside every rule's bucket the
+  newest-first tiebreak still filled the slots with whatever outcome the deployment
+  currently produces most of, so a corpus could end up unanimous about a rule it has
+  never actually seen resolved two ways. The window is now round-robined over an
+  ORDERED LIST of projection metadata keys (`precedent.window.stratify_by`, defaulting
+  to rule identity then confirmed outcome) rather than a single hard-coded axis; a list
+  of keys was chosen over a second boolean so the selector — and the config type —
+  learn nothing about what a rule or an outcome is. An axis whose values are all
+  identical is skipped, so a single-rule or single-outcome deployment still degrades to
+  a plain newest-first window, and the shipped single-axis behaviour is unchanged
+  byte-for-byte. The second key is the analyst's CONFIRMED OUTCOME rather than the
+  agent's own verdict: the two differ exactly when an analyst overturned the agent, and
+  on a rule the agent calls the same way every time a verdict axis is all-identical,
+  gets skipped, and lets the newest-first tiebreak evict precisely those corrections —
+  the most valuable precedent in the corpus, and the only outcome key the precedent
+  authority actually counts. `stratify_by_rule` is kept as a deprecated alias and is now
+  the master switch for window fairness (the keys and the admission cap, plus the scan's
+  early exit), so a stored preference keeps switching fairness off; the two ordering
+  fixes below are unconditional and apply on that path too.
+  Alongside it, a SOFT per-transaction admission cap (a fraction of the window, never an
+  absolute count) stops one bulk confirmation buying more than half the slots; over-cap
+  cases are DEFERRED to the back of the ranking rather than dropped, so the window still
+  fills to its full size. Bulk case actions now stamp a transaction id on the history
+  entries they write; cases labelled before that marker existed fall back to a coarse
+  hour bucket of the confirming timestamp, which is approximate and documented as such.
+  Two ordering defects are fixed in the same pass: the two terminal statuses were paged
+  and sorted SEPARATELY and then concatenated, so the window was never actually
+  globally newest-first (they are now merge-sorted, with an unusable `created_at`
+  ranking last rather than silently first); and one shared scan budget let the larger
+  CLOSED population exhaust the bounded scan before any RESOLVED case — the strongest
+  analyst ground truth — was read at all (the budget is now shared per status, in whole
+  pages, with the leftover spent afterwards so a single-status deployment still scans
+  the full cap). The lower-trust `model_unconfirmed` tier reuses the same axes and cap,
+  but scans CLOSED cases only: a RESOLVED case is analyst-decided by construction and
+  can never be an unconfirmed candidate, so sharing the confirmed tier's status list
+  spent half that tier's budget — and half its recurrence evidence — on a status that
+  yields nothing.
+  **No migration, no backfill, and no forced re-embed:** the corpus source signature
+  excludes the new fields and appends them only when they are non-default, so a default
+  deployment's cached signature is byte-identical and upgrading does not re-embed a
+  corpus at the operator's expense.
+
+- **The agent no longer reads its own verdict back as analyst ground truth.** Every
+  analyst-confirmed precedent chunk opened `Resolved case X: analyst-confirmed outcome
+  {outcome}; model verdict {verdict}; …` and was rendered under the heading
+  "Prior analyst decisions (baseline)" — so the second clause of a sentence claiming
+  human provenance was the model's OWN prior output. Retrieved during a later
+  investigation of the same pattern, that made the agent's earlier escalations look
+  like confirmations of themselves, and a bad streak could ratify itself. A second,
+  compounding defect made it worse: prompt rendering truncates each chunk at 600
+  characters, and the analyst's note sat LAST while the model verdict sat at offset
+  ~67 — a realistic 365-character note started at offset 523, so the analyst's actual
+  reasoning was reliably amputated and the model's verdict reliably survived. The
+  verdict clause is removed from the chunk TEXT (it remains in chunk metadata, which
+  is what precedent promotion and threat-context already read, and which the keyword
+  tokeniser still indexes, so retrieval on the term is unchanged), and the outcome
+  plus the analyst note now lead the chunk so truncation can only ever cut
+  machine-derived context. The case id moved out of that leading clause with it: as a
+  prefix it made "a maximum-length analyst note always fits the budget" depend on how
+  long the id happened to be, and at the 37-character ids the product actually mints
+  the block ran to 611 characters and cut the tail off a long note anyway. It now
+  renders as a reference AFTER the analyst's words, on the machine-derived side of the
+  boundary, so the guarantee holds for every case. Both tiers are now built from an explicit per-tier
+  ALLOWLIST of field names — a value whose name is not on the list renders as nothing
+  — because the read side handles chunk text opaquely and could never have caught the
+  regression. The lower-trust `model_unconfirmed` tier keeps its model verdict (that
+  is its purpose) but now leads with its "NOT reviewed or confirmed by an analyst"
+  disclaimer, and keeps its trust class and shared document identity so a later
+  analyst confirmation still upgrades it in place. **No migration and no backfill:**
+  stored chunks re-render with the new shape on their next natural projection.
+
+- **The MFA enrollment QR code is now actually scannable.** The hand-rolled QR encoder
+  carried three ISO/IEC 18004 conformance defects: it never placed the two
+  version-information blocks required from symbol version 7 upward (every real
+  `otpauth://` provisioning URI is version 7+, so data bits landed in the modules a
+  scanner reads the version from), the first format-information copy was transposed
+  against the spec placement order, and the Reed-Solomon remainder loop applied the
+  generator polynomial one position late — so the error-correction bytes were not a
+  valid codeword at *any* version and every scan relied on reader error tolerance.
+  All three are fixed; the rewritten test suite includes an independent structural
+  decoder (format/version BCH checks, function-map rebuild, un-masking, zigzag walk,
+  block de-interleave, zero-syndrome verification, byte-mode round-trip at v3/v7/v10)
+  that fails on each defect individually when reverted.
+- **Changing the dashboard time range no longer stalls the headline numbers or blanks
+  the page.** Five endpoints behind the Overview (posture, noise-reduction,
+  auto-close-health, diagnostics health, sources coverage) each independently fetched
+  and re-validated a 5,000-document case page on every refresh — multiplied by the 5s
+  LIVE poll. A shared single-flight case-page cache (5s TTL, keyed by fetch limit,
+  guarded by store identity so Demo Mode's store swap self-invalidates) collapses the
+  fan-out to one scan per window; the sources-coverage count is pushed down to the
+  store (`count_created_since`: an ES `_count`, a SQL `COUNT`, a format-robust base
+  fallback) and fetches zero documents; the posture computation builds its per-case
+  timing index once (byte-identical outputs, ~31% faster at 5k cases). On the Console,
+  a window change now keeps the last snapshot visible with an explicit stale indicator
+  instead of flashing empty tiles, and a supersession guard stops a superseded
+  window's late responses from repainting newer data.
+- **A role-level MFA enforcement can no longer dead-end the env-seeded admin.**
+  `requires_mfa()` now refuses to mandate an env-managed account (it has no persisted
+  user record and could never complete enrollment) — previously
+  `mfa.enforce_for_roles` covering the seeded admin's role produced an unanswerable
+  challenge.
+- **The role editor grid no longer hides three resources.** The client's
+  permission-vocabulary mirror was missing `runbooks`, `system_updates`, and `rules`
+  relative to the backend policy, so those rows were silently absent from the custom
+  role matrix editor.
+
+- **A provider outage can no longer silently empty the knowledge corpus, and the
+  product can no longer report itself healthy while it happens.** A field report
+  described a deployment that lost its LLM/embedding API key: every call returned HTTP
+  401. The suite degraded exactly as designed — embeddings fell back to local hashing,
+  each case failed to a human, no wrong verdict was produced — and then destroyed its
+  own knowledge corpus without a single alarm. Chunks written during the outage carried
+  hash-space vectors that are meaningless in the real embedding space and carried no
+  marker distinguishing them; the next reprojection invalidated that space, re-seeded,
+  and left the corpus at **zero rows**. Because `ensure_seeded()` is lazy and
+  signature-cached, it considered itself finished and never rebuilt. For **three days**
+  every case retrieved 0 knowledge and 0 precedents and returned `NEEDS_HUMAN` at
+  0.96–0.98 confidence, auto-close sat at **0%** — and `GET /api/health` returned
+  `status: ok` with the Console showing **Healthy** throughout. The source of truth was
+  never lost: 892 analyst-confirmed cases were still in the database, and one forced
+  re-seed restored the corpus and resumed `FALSE_POSITIVE` verdicts immediately. This
+  was the second corpus loss of the same shape; the first also left
+  `RAG seeded with N chunk(s)` at INFO as its only trace.
+
+  - **A degraded embedding space can never become a durable write.** The gateway now
+    classifies each provider failure into a closed vocabulary
+    (`unauthenticated` / `quota` / `unsupported` / `unavailable` / `not_configured`) and
+    carries it on `EmbeddingBatch.fallback_reason`. RAG refuses to build a chunk from
+    any fallback batch except `not_configured` — the supported keyless/offline profile,
+    where local hashing is the intended, self-consistent space. Degrading a *read* is
+    still correct; degrading a *write* is corruption. Every chunk is additionally
+    stamped with `embedding_fallback_reason`, so a mixed-space corpus is detectable
+    rather than silently wrong, and an all-zero vector is now rejected before a partial
+    write (a contract the documentation already promised).
+  - **A projection can no longer reach zero.** A rebuild that yields no chunks while the
+    previous corpus held some, or that falls below the new
+    `rag.min_projection_retention` floor (default 0.5), is refused as a failed build:
+    the previous corpus is kept, the seed does not latch, and the condition is logged at
+    **ERROR** with a structured, durable record — not the INFO line that reads the same
+    whether the count is 2,000 or 0. The refusal record survives restart in a
+    `rag_health` KV document (no new index, table, or migration).
+  - **An empty corpus is a first-class health failure.** `GET /api/health` gained
+    additive `degraded` / `degraded_reasons` fields carrying opaque, count-free codes
+    (the endpoint is anonymous, so corpus detail stays on the `settings:read`-gated
+    `/api/diagnostics/health`), and the Console's health pill now shows **Degraded**
+    with a specific explanation instead of green "Healthy". Diagnostics gained the
+    reconciliation check the incident asked for — *"the corpus holds N documents but the
+    case history qualifies M records"* — measured against the bounded precedent window
+    so a normal `N < M` never alarms, and reported as an explicit unknown whenever a
+    truncated or lower-bound read means the answer cannot be trusted.
+  - **A provider outage is now a visible system state.** Consecutive authentication or
+    quota failures are tracked per provider and surface as
+    `llm_provider: unauthenticated` (distinct from quota and transport failures), and a
+    case that reached the investigation time cap *because* the provider is rejecting our
+    credentials now says so instead of reporting the time cap. The operator in the field
+    report chased latency and evidence quality for days because of that message.
+  - **Recovery is automatic or one action.** The seed signature now includes the
+    embedding-space identity, a retrieval that finds an empty corpus behind a satisfied
+    seed cache rebuilds once on its own, and a new `rag_rebuild` background Job provides
+    an explicit, idempotent, documented rebuild. A tiered reset now also invalidates the
+    seed cache, closing a path where a reset deployment could stay corpus-less forever.
+
+  Non-negotiable #3 is untouched: `decide()` is byte-identical, the verdict on a failed
+  run stays `NEEDS_HUMAN`, and nothing added here is read by the close/escalate decision.
+  Ledger behaviour (#6) is unchanged — the same number of usage rows per call.
+
+- **Analyst-confirmed precedent no longer arrives without rule identity, and a
+  precedent-rich rule can no longer be silently ignored.** A field report described an
+  operator reviewing 349 cases of one detection rule, confirming every one benign through
+  the supported `confirm_fp` path, and watching the precedent corpus grow 15 → 314 — while
+  the very next case of that rule still returned `NEEDS_HUMAN` at 0.98 confidence.
+  Retrieval was working: six analyst-confirmed benign precedents for the identical rule
+  were retrieved, one at a perfect score. The investigator was making an
+  **evidence-sufficiency** judgement ("these alerts carry no HTTP or execution context"),
+  which precedent volume can never move — so confirming 349 cases, or 3,490, would have
+  produced the same result. The precedent projection now records rule identity as
+  matchable metadata (`rule_identity` / `rule_ids`, on both trust tiers), existing corpora
+  are re-tagged in place from the case store on the next projection with no re-embedding,
+  and the new per-rule signal below can act on it.
+- **A bulk analyst action on one rule can no longer starve every other rule's precedent.**
+  The bounded precedent window was filled newest-first across all rules, so 229
+  confirmations newer than every other labelled case would have taken all 200 slots and
+  dropped every other rule — including one carrying most of the deployment's auto-close
+  volume — to zero. That is the precedent-starvation outage in a new form, triggered by an
+  operator doing exactly what the product asked of them. The window is now allocated
+  round-robin across rule identities (`precedent.window.stratify_by_rule`, ON), so every
+  active rule keeps a floor inside the same bounded window.
+- **An analyst rule policy can no longer override a person.** The guard asked "did a
+  model run?" (`verdict is not None`), but the analyst lifecycle path stamps
+  `decision_by=ANALYST` *without* assigning a verdict, and `OPEN_CASE_STATUSES` includes
+  escalated / on_hold / investigating / needs_human — so an analyst who **reopened** a
+  policy-closed case had it re-closed by the next matching alert, and an escalated
+  candidate was flipped back to closed. Their only per-case escape was a loop they could
+  not win. A case an analyst has acted on, like one the agent has already investigated, is
+  now left entirely alone.
+- **`force` always defeats a declaration.** The policy check ran before the force/stability
+  branch and took no `force` parameter, so `POST /api/cases/{id}/reinvestigate` returned a
+  fresh policy-closed case every time. An analyst tier holds `cases:reinvestigate` but only
+  `rules:read`, so they could neither investigate a declared-benign case they suspected was
+  a real attack nor revoke the declaration. An explicit per-case human request now always
+  wins.
+- **The policy-close marker is no longer erasable.** `is_policy_closed()` keyed only on
+  `decision_by`, which every analyst action overwrites — and `_guard_transition` permits a
+  same-status move, so `confirm_fp` on an already-closed policy case (including in bulk)
+  dropped it out of all seven statistical exclusions at once and let the threshold tuner
+  count one declaration as N independent analyst labels. The predicate now also reads the
+  durable `Case.analyst_policy` payload, which is written only by the policy close and
+  cleared by any writer that supersedes it.
+- **A partial `PUT /api/rules/analyst-policies/{id}` no longer widens authority.** Every
+  optional field defaulted to the widest blast radius and was written over the stored
+  record, so omitting `enabled` re-enabled a revoked declaration, omitting `expires_at`
+  cleared the expiry, and omitting `source_id` widened one source to all of them. Fields
+  the client did not send are now carried forward (`model_fields_set`).
+- **Declaration edits record what actually changed.** The audit row carried only the new
+  state, so a widened or re-enabled rule could not be traced back to what it was; it now
+  records `field: before -> after` for every field that moved.
+- **The precedent prompt block no longer claims diligence the code never performed.** It
+  asserted that the operator "reviewed these cases individually" (a bulk confirm classifies
+  many at once) and that the rule's alerts "are known to arrive without" request/execution
+  context — a factual claim about a detection that nothing in the pipeline measures. It now
+  states only what `analyst_confirmed_outcome` proves: each outcome carries an explicit
+  human classification.
+- **The Elasticsearch scan ceiling is no longer applied to every state backend.** The
+  in-memory and SQL stores materialise every row, so a complete PostgreSQL read of a corpus
+  past 10k chunks was reported as truncated — and since a truncated read withholds both
+  precedent promotion and the futility report, that silently disabled the feature on a
+  healthy large deployment.
+- **A `VectorStore` corpus-wide read is one pass, not one per document.** Adding
+  `list_all_chunks()` removes an O(documents x corpus) fan-out that the per-rule precedent
+  distribution and the rule-identity re-tag would otherwise have paid on every read: a
+  deployment with 846 precedent documents would have performed 846 full corpus scans to
+  answer one diagnostics request. The re-tag also short-circuits once the corpus has
+  converged, so the one-time migration is genuinely one-time.
+- **`GET /api/triage/*` no longer labels every close "Auto-closed by policy".** The
+  decision headline compared `decision_by` against the literal string `"human"`, which no
+  `DecisionBy` value has ever equalled, so an analyst's own close was reported as
+  automation. It now compares against the real vocabulary.
+- **Overview posture values can no longer cross time ranges.** The shared posture
+  loader keys state to `window_hours` plus comparison mode, aborts superseded reads,
+  validates the response's echoed window, and hides an old snapshot synchronously while
+  a new one loads. A slow 24-hour response therefore cannot repaint False Positive Rate
+  or Auto-resolved after the operator has selected 7 or 30 days; retained LIVE callbacks
+  also read the current range rather than closing over a previous one.
+- **Missing historical retrieval instrumentation no longer becomes a measured zero.**
+  `Case.knowledge_used` keeps its backward-compatible array shape. The new
+  `retrieval_observation_status` (`measured`, `not_measured`, or `unavailable`) is
+  authoritative for interpreting that array: `[]` is a measured zero only when the
+  observation status is `measured`. The separate `retrieval_history_status` lifetime
+  marker remains authoritative for completeness; legacy cases stay `unavailable` even
+  after a modern update or re-investigation because their earlier lifetime cannot be
+  reconstructed. Latest-run audit provenance separately records retrieval as `measured`,
+  `not_attempted`, or `unavailable`, with a machine-readable reason. A fail-soft RAG
+  outage, unverified last-known-good corpus, or partial query-group failure may still
+  provide bounded context to the investigator, but the run remains unavailable and does
+  not manufacture a measured zero or completed Case observation.
+- **Privileged audit writes were impossible on PostgreSQL.** `SqlAuditRepository.write_strict`
+  maps an event id to a deterministic negative 63-bit surrogate key, but `audit.id` was a
+  32-bit column, so every keyed strict write failed out of int32 range. Proposal approve and
+  reject both write a decision audit row before finalising, so both returned 503 on every
+  attempt and no proposal-decision audit row could ever exist. The offline suite never
+  caught it because SQLite's `INTEGER` is already 64-bit. The column and its sequence are
+  now 64-bit, existing deployments are migrated in place at boot, and the dialect-level
+  contract is pinned in tests that need no database server.
+- **Proposal approval applied its effect before auditing the decision.** A failure in a
+  later step released the lease and returned "no success was reported" while the tuning
+  ledger row, the configuration change, and an approval audit line were all already
+  written and the proposal was still pending and re-offered. Approval is now four explicit
+  phases — prepare, audit, effect, finalise — so an effect can never precede its own audit
+  row. This strengthens non-negotiable #2 rather than trading against it: every step was
+  already idempotent, so a retry converges instead of double-applying. The swallowed
+  exception is now logged, and the failure message is phase-specific instead of always
+  claiming a clean no-op.
+- **The resolved-case precedent corpus eroded, then was deleted.** Three defects
+  compounded. The precedent window counted raw terminal cases, so the agent's own
+  unlabelled auto-closes consumed every slot and the corpus shrank precisely as the agent
+  succeeded. The bulk and incremental indexing paths wrote different text for the same
+  document id, so whichever ran last silently won. And the incremental path never set a
+  per-case document id, which grouped every feedback-indexed precedent under one synthetic
+  document that the stale sweep could remove in a single call — that, not the erosion, is
+  what destroyed the reported corpus. The window now pages until it holds the requested
+  number of qualifying items, both paths share one text builder, precedent carries per-case
+  document identity, and `resolved_case` is excluded from the stale sweep because its
+  projection is a bounded window (absence means "outside the window", never "withdrawn").
+  A projection may no longer silently shrink a still-enabled source.
+- **The threshold tuner drafted correlation changes the pipeline discards.** Correlation
+  deliberately forces `mode=EVERY, n=1` for any group carrying an alerts-role event, and a
+  correlation defined inline on a rule definition takes precedence over the entry a
+  `correlation_n` raise writes. In both cases the tuner recorded a change as auto-applied
+  and reversible while every poll ignored it, then re-drafted the same rule forever.
+  Inertness is now detected from positive evidence only — an explicitly configured
+  `mode=EVERY`, an inline rule correlation of any mode, or unanimous case evidence that
+  every observed firing used the effective override — and such a rule is surfaced as
+  untunable-by-`n` with the structural reason instead of being drafted.
+- **The primary close can now supply ground truth — but only when a human actually
+  says so.** The Console's main "Close with a disposition" posted the chosen
+  disposition and the backend parsed it and threw it away: only `set_disposition` /
+  `confirm_fp` ever wrote `case.disposition`, and the history row recorded
+  `action: "close"`, which is not a classification verb. So the highest-volume analyst
+  action in the product could never produce an analyst-confirmed outcome, and the
+  precedent corpus and threshold tuner starved. `close` now assigns the disposition —
+  and records it as INDEPENDENT evidence only on an explicit
+  `CaseAction.disposition_declared` (additive, default `false`). The gate is
+  load-bearing rather than ceremonial: `case_manager.apply()` derives a disposition
+  from the LLM verdict, so a client that reads a case and posts its stored disposition
+  straight back is quoting the model to itself, and recording that as
+  `explicit_analyst_disposition` would let the tuner "confirm" the very verdicts it
+  audits. The close dialog's picker therefore opens EMPTY instead of pre-seeded from
+  `case.disposition`, which also makes its long-claimed "a disposition is mandatory"
+  guard real. Applying and classifying are now separate: an undeclared close still
+  honours the disposition and simply records no label. Nothing is relabelled, no
+  history row is rewritten, and `decide()` is untouched (#3).
+- **A bundled playbook id no longer silently swallows an operator's own procedure.**
+  Renaming a bundled playbook can land on an id a deployment already authored —
+  `create_durable` refuses a colliding id, so this is reachable only from the bundled
+  side. `_merge_snapshot` dropped the operator row from the live set (correct) while
+  every ownership answer still keyed off the stored rows (not): the bundled procedure
+  was reported `source_type: operator, protected: false, editable: true`,
+  `read_document` served the shadowed Markdown next to the bundled parsed object, and
+  `PUT` wrote the store, consumed the CAS revision, audited an update that never
+  happened and returned HTTP 200 with the unchanged bundled playbook. Ownership is now
+  keyed off the bundled set, a shadowed id fails closed with the read-only error, and
+  the displacement is reported in the reload summary (`shadowed_by_bundled`) and on the
+  entry itself (`shadowed_operator_document`) instead of only in a log line.
+- **A degraded model provider no longer costs an investigation its reasoning, and can
+  no longer spend the whole case budget on one request.** Each investigator model call
+  is now bounded by `min(caps.request_timeout_seconds, the case time actually left)`,
+  and the ReAct loop stops COOPERATIVELY — so the partial reasoning reaches the VERDICT
+  audit row and the spend lands on the normal return path instead of being reconstructed
+  from the timeout side-channel. The reserve held back for the closing formatter call is
+  a small fraction of the case budget (15%, itself clamped by the configured per-request
+  timeout), NOT one whole per-request slice: at the shipped defaults the latter came to
+  exactly half of `caps.timeout_seconds`, which would have made half of every
+  operator-configured timeout unreachable. The loop also declines to START a request
+  under a slice shorter than the longest request the same case has already completed,
+  because a request that is issued and then abandoned costs real provider spend and
+  returns no reasoning. Whatever the loop stops on, the verdict is NEEDS_HUMAN, which
+  never auto-closes (#3 untouched).
+- **A request that was issued and then abandoned still reaches the usage ledger.**
+  `asyncio.CancelledError` is a `BaseException`, so a cancelled provider call slipped
+  past the gateway's error handling and wrote no `UsageDoc` at all — provider spend
+  invisible to the cost page and to every budget rollup. It is now recorded once, with
+  the deliberately non-provider failure class `abandoned`: stopping a call is our
+  decision, not evidence about the provider, so it never feeds the health tracker or the
+  circuit breaker (#6 restored without polluting the provider failure vocabulary).
+- **An out-of-range `caps` value in a settings request is rejected, not silently
+  rewritten.** `PUT /api/settings` carrying `caps.timeout_seconds = 0` answered 200 and
+  stored 1 — a value the operator never typed and just as unusable as the one they meant
+  to reject — because the repair validator that keeps an already-stored document loadable
+  runs before any field constraint can fire. The request body is now checked against the
+  declared floors and answers 422, while a STORED document is still repaired rather than
+  reverting the whole `Preferences` document. `GET /api/settings/schema` also publishes
+  each declared `minimum`/`maximum`, so the schema-driven Advanced settings renderer can
+  bound a control instead of learning the floor from a rejection.
+- **The provider circuit breaker scores the evidence it actually holds.** The trip
+  evaluation read a stale, pre-trim alias of the outcome ring, so a single failure after
+  an idle gap could open a key whose quorum is ten — logging a transition that reported
+  `samples=1` against a policy declaring `minimum_calls: 10` — while the 21st sample was
+  scored over 21 entries rather than the 20 the ring keeps. `outcome_max_age_seconds` is
+  also now an IDLE-GAP bound rather than a per-sample expiry: expiring each sample drained
+  the ring faster than a modest deployment filled it, making the failure-rate arm dead
+  code below roughly 240 calls a day per key — the exact volume dependency a COUNT window
+  exists to remove. Evidence is aged on READ as well as on write, so a decommissioned
+  provider/model/role key drains and clears itself instead of naming an outage nobody can
+  clear; a drained key never clears before its OPEN wait has elapsed.
+- **`Preferences.resilience` is actually read.** The block was persisted, published in
+  the settings schema and rendered as live controls, while nothing passed it to the
+  health tracker: `enforce` did not enforce, every size was ignored, and
+  `/api/diagnostics/health` reported a policy the operator never configured. A
+  default-constructed block is byte-identical to the mirrored defaults and leaves
+  `enforce` off, so a deployment that never edits it is unchanged.
+- **One rate-limited provider call can no longer park a worker for the whole case
+  budget.** `RETRY_AFTER_MAX_SECONDS` clamped each individual sleep but not their sum, so
+  an ordinary `Retry-After: 60` cost `(attempts - 1) x 60s` — 120s at the default three
+  attempts, the entire default `caps.timeout_seconds`, and an interactive chat turn has
+  no case budget to be cut off by at all. The budget is now cumulative over the call.
+- **An unset API key says which key to set again.** Sanitising the gateway's failure
+  message (which exists to keep attacker-influenceable provider response bodies out of
+  Case fields and therefore out of prompts, #9) also flattened the gateway's OWN
+  pre-request messages, so the model-test dialog answered "provider call failed
+  (not_configured)". Those three literals contain no provider bytes and now pass through;
+  a provider body echoing one of them still cannot, because the allowlist matches our own
+  exception type as well as our own text.
+- **Excluding a precedent case now removes it, or says it did not.** The removal was
+  reported `complete: true` whenever the fail-soft delete returned "not found" — which is
+  also what it returns when the store RAISED, so a store outage read as a finished
+  removal while the precedent stayed in the corpus and kept being retrieved into prompts.
+  Completeness is verified by re-reading, and fails closed. Precedent still held under the
+  pre-fix shared `seed:resolved_case` grouping is converged onto its per-case document
+  instead of being skipped, which was the only handle the delete had — skipping it made
+  the exclusion a permanent no-op that a re-issue and a full rebuild could not finish.
+  And retrieval now filters excluded cases as a backstop, so a chunk that could not be
+  deleted still cannot reach a prompt.
+- **An unreadable exclusion store no longer means "nothing is excluded".** On a process
+  that had never held the set — a cold start whose first read failed — the empty
+  in-memory set was treated as an empty DENY LIST, so the next projection re-derived
+  every excluded precedent; because `resolved_case` is exempt from the stale sweep, those
+  chunks then survived a full `rebuild_corpus()` and the exclusion silently undid itself.
+  "Unknown" is now distinguished from "stale but known": a projection that cannot know
+  leaves the existing corpus untouched, and the single-case producers derive nothing
+  rather than everything. A process that has read the set once still keeps its last
+  known-good copy and projects normally.
+- **The investigation-progress stream reaches a rendered surface.** The client listened
+  on `agent`, a channel nothing has ever published (the pipeline publishes `agent.step`),
+  and after the name was corrected every subscribed component still dropped the frame.
+  `CaseActivityFeed` now draws in-flight agent steps as transient rows above the
+  persisted timeline, on the SAME subscription the activity nudge already uses — one
+  socket per case room. The steps are a narration: nothing is decided from them, and the
+  authoritative case record still comes from the API.
+
+### Added
+
+- **Dynamic chat suggestions (Round 13).** `GET /api/chat/starters?surface=home|thread|case`
+  serves the new-chat cards, the catch-up line and Case Manager case chips
+  (`ChatStartersInfo`), computed by `engine/chat_starters.py` from cases, source health,
+  campaigns, approvals and spend under the caller's grants and tool catalogue: no model
+  call, no log read, no audit row, no usage record, exact counts only, cached per caller
+  for 60 seconds. Seventeen signal families are ranked by urgency, recency, whether they
+  concern the caller's own cases, and novelty, then filled with everyday questions. A card
+  that names a case, rule, source, campaign or ATT&CK technique carries a server-worded
+  question (`agents/chat_starter_text.py`) that the client sends byte for byte with
+  `origin: "starter"`; the engine sends the value to the model in its own `entity_ref`
+  untrusted fence with a fixed note, live and on replay, and refuses values that fail the
+  per-kind grammar or start like a role marker. `POST /api/chat/starters/events` records
+  `viewed`, `used` and `dismissed` (opaque keys only, at most 30 a minute) in the new
+  per-user `chat_starters` KV document (visit clock, counters and hidden-for-a-day
+  families; never question text), cleared with the user and by a factory reset. Visits
+  drive a "Since …" catch-up line and shift cards (a first visit after 8 hours starts a
+  shift; a handoff card 7 to 13 hours later). The organisation switch
+  `chat_agent.dynamic_starters` and the personal switches **Suggestions when a chat
+  starts** and **Suggested follow-ups** (`UserPrefs.misc.chat_suggest_start`,
+  `chat_suggest_follow_ups`) default on.
+- **The start screen (Round 13).** A bottom-anchored stack above the docked composer: a
+  greeting with the analyst's first name, the catch-up line or "Ask about cases, logs,
+  metrics or this console.", 3 or 4 suggestion cards by the measured lane width (never
+  truncated; reason line; urgency dot), **Hide for a day** with Undo (the next card takes
+  the hidden card's own slot; Delete or Backspace on a focused card), and category pills
+  (Investigate, Hunt, Posture, Report, Learn the app, All prompts) that open the prompt
+  library filtered. One tab stop with arrow keys, Home and End; refreshes every two
+  minutes but never under the pointer or focus. A quiet catch-up line can sit above the
+  composer in a conversation whose last answer is 30 minutes old, and Case Manager chat
+  offers up to three value-free case questions.
+- **Anchored follow-ups (Round 13).** `agents/chat_followups.py` picks at most 3 follow-ups
+  per answer, live and in Demo, from deterministic value-free chips built from the
+  answer's own results and the model's own suggestions that name something the answer
+  shows; repeats and chips needing a lookup the caller cannot run are dropped, and no
+  extra model call is made. They sit in one quiet row with the zero-result chips; after
+  five unused answers only the first shows.
+- **Conversation titles from the first answer (Round 13).** The final header gains
+  `title`, asked for only on a conversation's first answer and accepted only as one
+  sentence-case line of at most 48 characters; the store applies it only when it creates
+  the conversation, so a rename always wins. While the first answer is written, the
+  toolbar and a temporary history row show the question's first words.
+- **Settings and options (Round 13).** **Settings → General → Chat assistant** gains
+  **Suggest questions from live data** and one **Typed-out answers** control (Off,
+  Allowed (off by default), Allowed (on by default)) over the existing two keys. The
+  composer's Options menu gains the two suggestion switches. The shortcut sheet lists
+  "Hide a suggestion for a day: Delete or Backspace".
+- **Chat without per-question limits** (`ChatAgentConfig.limits_mode`, default
+  `unlimited`). A question ends when the model writes its answer or the analyst presses
+  Stop. Guards end pathological loops without cutting a working answer: an identical
+  lookup is reused instead of re-run, three steps without progress force a final answer
+  ("Stopped repeating the same lookup"), a model call silent for `model_step_timeout_s`
+  (default 300 s) is retried once, and a hidden fuse of 200 model calls or 60 minutes
+  makes the assistant answer from what it gathered ("Wrapped up after a very long
+  investigation"). `bounded` keeps the previous per-question limits for operators who
+  want them.
+- **Automatic continuation.** Every model step asks for the model's maximum output on a
+  streaming provider (4,000 tokens per step on a blocking provider); an answer that
+  reaches it continues in another step through the same gateway, keeps streaming, and is
+  never shown cut (`text.continued` stream event, `ChatResponse.continued`).
+- **Context-window management instead of caps.** Replayed history past about 35% of the
+  model's context window is folded into a running conversation summary (one metered
+  call, stored on the conversation, replayed inside a new `CONVERSATION_SUMMARY`
+  untrusted fence); inside a long investigation, older lookup results shrink to their
+  result lines and the new read-only `recall_observation` lookup reads them back. Type
+  `/compact` to summarise on demand.
+- **Exact case aggregation for chat and dashboards** (`engine/case_aggregate.py`,
+  `engine/time_windows.py`): Elasticsearch composite and calendar `date_histogram` and
+  SQL `GROUP BY` push-downs, else a bounded streaming fold that keeps only counters. The
+  new `case_stats` lookup counts and breaks down every case (by month, week, severity,
+  status, verdict, rule, assignee, source, ATT&CK and more, with up to four compared
+  periods); `search_cases` totals are exact; `cost_usage` reads the usage aggregate;
+  `log_stats` buckets by week, month, quarter and year. A store failure mid-scan is
+  reported as partial with the counted share, never as a smaller exact number.
+- **Any time window in chat**: all time, `now-N[d|w|M|y]`, calendar periods (today …
+  last year, year to date) in the operator time zone (`SlaPolicy.timezone`), named
+  months, quarters and years, and ISO ranges; "previous period" and "same period last
+  year" comparisons drawn as comparison tiles and grouped columns ("new" for a zero
+  baseline, a small-sample badge under 20 cases).
+- **Clarifying questions** (`ChatResponse.clarify`, origin `clarify`): up to four options
+  plus "Something else…"; the history row shows Needs input. **Zero-result suggestions**:
+  one-click chips that widen an empty search.
+- **Reports from chat** (`ChatResponse.saved_report`): an answer that asks for a report is
+  saved to the Reports library by the server from the persisted answer, with **Open** and
+  **Export** under it (`POST /api/reports/from-answer` retries a failed save); **Save
+  conversation as report** (`POST /api/reports/from-conversation`); new `executive`,
+  `monthly`, `infographic` and `investigation_brief` templates and an infographic Brief
+  layout; reports hold 60 items, and a long whole answer continues in "(continued)"
+  sections; the Reports library shows each report's source conversation
+  (`source_conversation_id`).
+- **Step inspector** (`GET /api/chat/conversations/{id}/messages/{message_id}/steps/{index}`):
+  what each lookup sent and exactly what the model saw, with Retry step and Explain this
+  step; invisible and look-alike characters are shown as escapes.
+- **Answer ratings** (`POST /api/chat/feedback`, `GET /api/chat/feedback`,
+  `GET /api/chat/feedback/summary`): thumbs up or down with a reason and a comment,
+  owner-scoped, audited, never used for training; chat's metrics lookup reports your
+  own counts.
+- **Add to case**: post a Workspace answer to a case thread as your own comment, after
+  previewing it (`cases:comment`); the case's status, verdict and disposition never
+  change. An answer to a clarify option quotes the question and the option ("Show me the
+  trend → Cases").
+- **Prompt library and promptbooks**: categories, favorites, search and read-only
+  starter prompts; `{name}` placeholders filled before sending; promptbooks run 2–10
+  prompts as consecutive questions with a step counter and Stop, stored in the existing
+  saved prompts.
+- **Ask AI** chips beside IPs, hosts, users, hashes, domains, URLs, e-mail addresses,
+  rules and case IDs in Cases, Logs and Case Manager (`POST /api/chat/entity-question`):
+  a new chat asks a server-worded question about the value, which stays fenced as
+  untrusted and never counts as the analyst's own words for indicator lookups.
+- **Agent-working indicator and rejoin.** A turning ring on the Chat item in every
+  navigation form (accent dot for a new answer, amber for a question waiting for input
+  until it is opened, red for a failure), an optional ring around the logo (**Animate the logo while chat
+  works**), history-row statuses, a tab-title prefix and one "Answer ready" notice when
+  chat is off screen. Leaving the chat detaches instead of aborting; returning or
+  reloading rejoins the answer live (`GET /api/chat/turns/active`,
+  `GET /api/chat/turns/{turn_id}/events?after=`, owner-only `chat.turn` events on the
+  `chat` topic). The rejoin buffer keeps at most 1,000,000 characters of the newest
+  answer text per turn; a rejoin from before text it dropped restarts the live text from
+  what it kept (a `text.reset` line), and the finished answer is always whole.
+  An answer, question or failure seen on one console is no news on the
+  others: marking a conversation read and showing a turn's outcome
+  (`POST /api/chat/turns/{turn_id}/seen`) publish an owner-only `chat.read` event on the
+  same topic. Case chat keeps its transcript across tab switches.
+- **Conversation width**: Comfortable, Wide or Full width (default: the chat fills the
+  screen when the side menus are collapsed) in the thread menu, saved per user; prose
+  keeps a readable measure while blocks use the whole lane. Charts gain Group by, zoom,
+  legend toggles, line end labels sized to the chart, PNG and SVG download and per-block
+  Full width; long answers get a contents list and Jump to end; Ctrl/⌘+Shift+C copies
+  the last answer.
+- **Optional daily chat spending limit** (`chat_agent.chat_daily_cap_usd`, off by
+  default).
+- **Remember me** on sign-in: a warning dialog, a remembered username, passwords saved
+  only by the browser's password manager, and a persistent server-bounded session
+  (6, 12 or 24 hours, default and maximum 24, never past the absolute lifetime; the
+  standard idle limit still applies unless a separate one is set). MFA and step-up are
+  never skipped. Administrators turn it off, shorten it, add an inactivity limit or
+  exclude roles under the session policy (`session_policy.remember_me`); it needs HTTPS
+  with secure cookies. Account and Admin sessions show a Remembered badge and an Expires
+  column. Turning it off or excluding a role ends live remembered sessions where an
+  ordinary sign-in would (at `AUTH_TOKEN_HOURS` from sign-in).
+- **Word and Excel report exports**, generated in the browser with an in-repo ZIP
+  writer (no new dependency), and a one-click **Download PDF**.
+- **Reduce transparency** (Settings → Account → Appearance & customization) for the
+  console's frosted top bar and toolbars, alongside the device's reduced-transparency,
+  reduced-motion and increased-contrast settings.
+- **Analyst-confirmed false positives** beside the AI-verdict FP rate
+  (`analyst_confirmed_fp`), counted only from graded feedback or an explicit
+  classification.
+- **Case Manager**: a server-backed queue (Active, Mine, All; exact totals; search,
+  filters and sort over the whole store; Load more; live updates over a new `cases`
+  realtime topic), a keyboard model (J/K, X, Shift-select, A/C/E/H/R/M/T, Alt+1…6, `?`),
+  a facts rail beside every tab, **Close & next**, and **Reopen** for eight seconds after
+  a close. `GET /api/cases` gains `q`, `assignee`, `severity` and an exact `verdict`
+  filter.
+
+- **A replay harness, because the A/B question could not be answered by waiting.**
+  A new durable job kind, `replay_experiment`, replays FROZEN investigation fixtures
+  through one or two named arm *configurations*, now, against one pinned corpus
+  snapshot, and scores close-eligibility per fixture by importing and calling the
+  production `case_manager.decide()` offline against the deployer's configured policy.
+  Scoring is paired: an exact-binomial McNemar over the discordant cells, never
+  reported without `a`, `b`, `c`, `d` and `n_pairs` beside it. Before any arm-versus-arm
+  claim the run MEASURES each arm's own self-consistency from its repeats — the shipped
+  default completion family drops the configured temperature entirely at the provider
+  boundary while other providers send it, so the floor is deployment-specific and only
+  a measurement is honest. A difference that does not clearly exceed that floor is
+  reported as `indistinguishable_from_noise` in a machine-readable field, and an
+  insufficient-evidence result is never converted into a score — an insufficient
+  comparison ships its raw counts and NO rate, difference or p-value beside them. The
+  guard compares like with like: `rate_difference` is a NET signed difference, so it is
+  tested against the largest NET close-rate swing any arm shows against itself, never
+  against the GROSS per-fixture flip rate (both are reported, on their own scales).
+  `exceeds_noise_floor` is a conjunction whose parts — `above_noise_floor` and
+  `significant_at_alpha` — are reported separately and stay `null` where no comparison
+  was performed, and a difference that clears the floor on too few discordant pairs for
+  any split to reach `alpha` is reported as `underpowered` ("add fixtures") rather than
+  as noise. Every rate ships with its denominator and is `null` when that denominator is
+  zero; the per-arm headline rate is computed over the PAIRED population so it cannot
+  contradict the paired table beside it. The report and manifest record the decision
+  POLICY (`policy.fingerprint`) as well as the corpus, because `close_eligible` is a
+  function of both.
+
+  Two things this deliberately does **not** claim. It cannot answer the retrospective
+  question about a change that already shipped: the only two paths from a stored case
+  back to its alert content either re-query the live log surface (whose contents roll
+  with retention) or synthesise placeholder events with the record content stripped,
+  and no snapshot of the earlier knowledge corpus exists. That comparison is *refused
+  by the API* — there is no parameter through which it can be expressed — rather than
+  discouraged in prose. And it cannot execute two code builds in one process; the
+  cross-build procedure is manual and is valid only when both artifacts report the same
+  `corpus_fingerprint` AND the same `policy.fingerprint`, which the harness emits so the
+  check is mechanical. The corpus pin is sorted on exactly what its fingerprint hashes,
+  so equal-scoring chunks cannot be presented in a different order between two runs that
+  report the same fingerprint.
+
+  **Fixture capture runs forward and is ON by default** (`Preferences.replay_capture`),
+  bounded by construction: a fixed slot ring over the existing shared KV — no new index,
+  table, or migration — so worst-case storage is `ring_size x max_fixture_bytes`
+  (12.5 MiB at the defaults). That bound holds across a CONFIG CHANGE too: every slot the
+  catalog stops naming is scrubbed at the moment it is evicted, so lowering `ring_size`
+  to hold LESS raw log data cannot instead strand the old records where neither the ring
+  nor the purge can reach them. An oversize body or an overlong cluster is skipped
+  WHOLE, never truncated and never sampled, because either would silently change the
+  evidence a later replay is scored on. Capture happens after deterministic risk and
+  before any model call, is fully error-isolated, and pins the RESOLVED evidence
+  projection AND the capturing source's effective field mapping — without the latter a
+  non-ECS source's frozen records would be queried with the global ECS defaults and the
+  investigator's log tool would return nothing where production returned real evidence.
+  A cluster whose sources disagree on a mapping key has no faithful frozen surface and
+  is not captured at all. The log-bearing half of a body is stored as one opaque
+  canonical-JSON string, so attacker-named log fields can never become document field
+  NAMES in the shared, dynamically-mapped KV index; the frozen log surface is derived
+  from the cluster at load rather than stored a second time. Fixtures hold raw records
+  and are never returned by any API; the cases/sources tiered resets, the factory purge,
+  and `DELETE /api/replay/fixtures` all scrub the body slots, and the on-demand purge
+  sweeps the whole slot space the ring has ever addressed.
+
+  The gateway is **real** — a mock proves nothing about model behaviour — so spend is
+  real, and is therefore made visible rather than hidden: every usage row lands in the
+  real ledger tagged `surface = "replay"` — one stable, low-cardinality bucket, so a
+  replay cannot evict real production surfaces from the ledger's bounded surface
+  breakdown — and one keyed audit row names who spent how much. That tag makes replay
+  spend identifiable; no automatic exclusion ships, so it does appear in the headline
+  cost total, and per-run spend is read from the job record rather than from the
+  ledger's surface dimension. The required `spend_bound_usd` is enforced before every
+  completion and every embedding, and on realised actuals at every CELL boundary;
+  exceeding it CANCELS the run rather than truncating it, and no cell produced after the
+  trip enters any rate or the paired table — a blocked completion surfaces as
+  `NEEDS_HUMAN`, which is precisely the metric under study. Cancellation, authority and
+  the lease are observed at that same cell boundary, so an operator Cancel costs at most
+  the cell in flight rather than every remaining cell of the fixture. The bound is per
+  JOB and a job spends in exactly one attempt: a run recovered after a worker restart is
+  refused, having spent nothing, rather than resumed with a fresh copy of the ceiling.
+  Everything else is isolated per cell on the Demo Mode pattern: a replay writes zero
+  rows to the production case store, zero rows to any shared KV store, and zero audit
+  rows beyond the job's own lifecycle transitions and that one spend row.
+  `engine/case_manager.py` is untouched (#3), and the run is refused, having spent
+  nothing, when the knowledge corpus is empty or not in the space queries would use.
+  See `docs/development/replay-harness.md`.
+
+- **Case evidence fields are configurable, globally and per source.**
+  `Preferences.evidence_fields` / `evidence_max_chars_per_event` (Settings ›
+  General › Case evidence fields) and the matching per-source
+  `SourceInstance.config` keys let a deployment whose alerts carry decision-relevant
+  fields the ECS default does not name surface them without a code change. `["*"]`
+  ships the whole record bounded only by the budget; `[]` restores the previous
+  narrow projection. Sources co-correlated into one cluster *union* their lists, so
+  one source's narrow setting cannot blind another. `POST /api/sources/{id}/analyze-sample`
+  additionally answers "do my alerts carry the fields that decide the case?" via
+  `suggested_evidence_fields` — matched against the backend's own constants, so no
+  path from the untrusted sample is ever echoed back.
+
+- **The landing dashboard answers "how much is the agent actually closing?"** The
+  Active Risk Index — a number no percentage could honestly qualify — gives up its
+  place to a **Human vs AI** card: agent, human, and system close counts with their
+  shares, over a windowed two-series trendline. The backend now partitions closed
+  cases exactly (`human_closed` and `system_closed` join `auto_closed` in both the
+  trend buckets and `quality_metrics`), so the unattributed residual is a visible
+  band rather than something quietly folded into "human", and the shares total
+  exactly one hundred by largest-remainder. Every band falls back to an em dash with
+  a named reason when the partition does not reconcile or the sample is bounded, and
+  the card states plainly that attribution is last-recorded-decider — an agent-closed
+  case a human later merely acknowledges migrates into the human band.
+- **Every landing metric now shows its share beside the number**, through a new
+  plain-text secondary slot, each against a denominator drawn from the same
+  population as its numerator, and each with an explicit condition under which it
+  refuses to state a rate rather than divide by a truncated sample.
+- **The noise funnel's Simple view shows percentages again**, one per stage against
+  its flow parent, so the dispositions of a stage visibly sum to it. The denominator
+  is named in every accessible label, and the same rule now holds in the narrow-width
+  rail — the view states one rule and shows one rule at every size.
+- **Source log browsing became contract-complete**: `GET /api/sources` reports
+  `can_browse` from the same predicate the browse routes gate on, `GET /api/logs`
+  accepts an optional `source_id` scope, every per-source entry reports whether it is
+  a real backing search or a volatile tail, and both routes share one truncation rule
+  so they can no longer disagree about the same rows. Pagination, filters, sort,
+  columns, deep links, and export remain deliberately deferred.
+
+- **Admin-mandated MFA, enforced inside the login phase.** A per-user `mfa_required`
+  flag (settable at creation or later; distinct from `mfa_enabled`, which means
+  *enrolled* — it never mints a secret and is not caught by the
+  admin-cannot-enable-MFA guard). A mandated-but-unenrolled user's login returns an
+  additive `mfa_enrollment_required` phase-1 response with a short-lived pending
+  token; two pending-token-gated endpoints (`POST /api/auth/mfa/enroll-setup`,
+  `/enroll-confirm`) let the user complete authenticator enrollment during sign-in and
+  land in a full session — there is no way past the screen without enrolling. Pending
+  tokens stay rejected on every other surface, an already-enrolled account cannot
+  replace its factor through this path, and every step is audited.
+- **User accounts carry contact identity, and creation shows what a role grants.**
+  Create/edit now accept full name, email, and mobile number (rendered as plain text
+  everywhere), plus the Require-MFA switch; the users table shows MFA status
+  (On / Required / —) and a name-and-email line. The create dialog displays a live
+  per-resource permission summary for the selected role (wildcards exploded against
+  the shared vocabulary; unknown server resources rendered honestly), lets existing
+  custom roles be attached at creation (validated exactly like post-hoc assignment),
+  and offers inline fine-graining: an "Adjust permissions…" flow opens the existing
+  role matrix editor seeded to inherit the chosen base role, behind the standard
+  fresh-auth step-up.
+- **19 new enrichment providers (38 registered) with built-in setup guides.** Keyless
+  and default-on: CIRCL hashlookup, SANS ISC DShield, Tor Onionoo. Keyless but
+  default-off (resolver/latency caveats): Spamhaus ZEN/DBL, Team Cymru MHR, Robtex,
+  crt.sh. Keyed, default-off: CrowdSec CTI, Google Safe Browsing, IPQualityScore,
+  ipdata, APIVoid, Maltiverse, SecurityTrails, Criminal IP, Netlas, Hybrid Analysis,
+  MetaDefender, EmailRep. Every provider manifest (existing ones included) now carries
+  `setup_steps` — concrete operator steps naming the exact env var — and an `example`
+  of how the source helps triage, rendered on the provider cards as a collapsible
+  "How to set up" guide. Score discipline holds: verdict feeds 80-90, graded
+  reputations map directly, context feeds cap at 40 and never set `malicious`, so no
+  context source alone can cross the fusion cut.
+- **Hover trendlines on every landing-dashboard metric with an honest series.** A new
+  `GET /api/metrics/trends` (metrics:view) serves zero-filled, UTC-aligned cohort
+  buckets that reconcile with the quality metrics — `fp_rate` distinguishes a real
+  zero from not-measured, alert volume comes from the durable noise counters — and a
+  reusable hover/focus affordance (WCAG 1.4.13 keyboard-reachable) reveals the
+  trendline, window, and bucket disclosure for 11 landing metrics. Metrics with no
+  honest series (Critical/High split, Active Risk Index, Dwell) deliberately show
+  none rather than an invented one.
+
+- **A Console home for both new controls.** `analyst_rule_policies` is an array-of-model
+  and `precedent.promotion` a nested object, and the generic Advanced settings form can
+  only DESCRIBE structured fields ("edit in its dedicated section") — a section that did
+  not exist, so both were reachable only through the raw API. **Settings → Case policy →
+  Declared benign** now lists, edits, scopes, bounds, expires and revokes declarations
+  behind a confirm dialog, stating in the operator's own words that a declaration closes
+  matching alerts with no model call and no human. **Settings → Knowledge & threat context
+  → Analyst-confirmed precedent promotion** carries the promotion opt-in and its
+  thresholds. For a feature that closes cases without a human, being able to see and
+  revoke it is not cosmetic.
+- **An optional per-declaration risk ceiling.** `decide()` bounds FALSE_POSITIVE
+  auto-close with `max_risk_score`; a declaration had no equivalent and closed at any
+  computed risk. An operator can now say "benign here, but investigate an unusually
+  high-scoring instance".
+- **Analyst rule policies — an operator can state a rule-level fact and have it honoured
+  deterministically.** For a detection whose alerts carry no per-case evidence, no amount
+  of confirmation can help: the investigation cannot verify that *this* instance is
+  benign, so it correctly routes to a human every time. `Preferences.analyst_rule_policies`
+  is the exit — an explicit, audited, revocable declaration that a detection is benign in
+  this estate. A matching cluster is CLOSED with `disposition=false_positive` and the new
+  `DecisionBy.ANALYST_POLICY`, **with no LLM call at all**. Managed through
+  `GET/PUT/DELETE /api/rules/analyst-policies[/{id}]` and
+  `POST /api/rules/analyst-policies/{id}/enabled` under the unified `rules:read` /
+  `rules:manage` grant. Unlike `suppression_rules` (a field==value event DROP) the case
+  stays visible, audited and reopenable, so the volume remains countable. Every rule on a
+  cluster must be declared before it closes, so a cluster that also fired an undeclared
+  detection is still investigated. `decide()` is untouched (#3): the declaration is
+  evaluated before any verdict exists, and it is excluded from every agent-performance
+  statistic — false-positive rate, automation rate, auto-close health, the Noise-Reduction
+  funnel, case lineage, tuner observed volume and agent-improvement evidence — so it can
+  never flatter the agent. It is deliberately invisible to `analyst_confirmed_outcome`, so
+  the automation can never train on its own output.
+- **Analyst-confirmed precedent promotion (`precedent.promotion`, opt-in, OFF by
+  default).** When the rule identity under investigation carries a unanimous, sufficiently
+  large body of analyst-confirmed benign outcomes, the investigator is now told so
+  explicitly and in **structured** form — a code-computed count in its own TRUSTED prompt
+  block — rather than being left to infer it from a handful of retrieved prose snippets.
+  This is *evidence promotion*, not a close authority: the verdict still comes from the
+  model and `decide()` still applies the operator's auto-close policy. Gates: promotion
+  enabled, rule identity matches exactly (a perfect-similarity hit from a **different**
+  rule never qualifies), the rule's analyst history is unanimous (`max_conflicting`,
+  default 0), at least `min_confirmed` confirmed benign outcomes exist, and at least one
+  matching precedent was actually retrieved for this case above `min_similarity`. The
+  agent's own lower-trust `model_unconfirmed` tier can never be promoted. The result is
+  recorded on the case as `precedent_signal` — with an explicit status when it did *not*
+  qualify — and surfaced on the Deterministic decision card, so a close that leaned on
+  institutional history is auditable and reversible.
+- **The product now says when more confirmations cannot help.** `GET
+  /api/diagnostics/health` gains `precedent_effectiveness`: the per-rule precedent
+  distribution (so starvation is visible before it bites) and a `futile_rules` list naming
+  every rule that holds abundant analyst-confirmed precedent yet still routes its cases to
+  a human, with the two remedies that *can* work — enrich the source, or apply an analyst
+  rule policy. Each becomes a `precedent_not_effective:{rule}` warning on the existing
+  alerts list, so it also reaches the Overview degradation strip. Precedent projected
+  before rule identity existed is reported separately as `unattributed_documents` rather
+  than counted as absent. The Console's **Analytics → Effectiveness** health panel adds a
+  "Precedent by rule" tile.
+- **Durable application background jobs.** `POST /api/jobs` now admits self-scoped,
+  idempotent long work into one bounded strict-CAS StateStore registry. Renewable
+  five-minute leases, audit-before-effect and audit-before-visible transitions, restart recovery, live-grant
+  checkpoints, cooperative cancellation, terminal compaction, bounded failure details,
+  actor-scoped Inbox/SSE progress, polling fallback, and verified persistent ZIP
+  artifacts cover Case Manager bulk lifecycle/reinvestigation/assignment/tagging, Data
+  export archive/segment, precedent bootstrap, Runbook reindex, Knowledge import, tiered
+  reset, and Storage lifecycle apply. The Console's **Analytics → Jobs** page is open to
+  ordinary authenticated Inbox users for their own work, conditionally adds related LLM
+  Batch rows for `models:read`, and adds list-only worker health for threshold tuning,
+  campaign correlation, Batch cadence loops, and the event-driven `baseline_producer`
+  (`cadence=on_ingest`) for `automation:read`. Newly accepted local LLM Batch rows freeze a strict, maximum-200,
+  generation-bound active effective-`models:read` audience and reconcile one stable safe
+  progress/terminal Inbox note per recipient. Authorization-store outage stays pending;
+  permission/generation loss revokes the note; later users/grants and legacy rows remain
+  list-only. Batch notes expose bounded provider/model/count copy only and have no Cancel,
+  Download, or completion toast. The audience/outbox path is regression-backed across
+  strict-store outage, stable retry, revocation, account replacement, and reset fencing.
+  Case-result links are strict, privacy-bounded status/assignee/
+  tag context filters—not immutable exact cohorts. The updater's separate private-
+  supervisor job protocol is unchanged. Factory reset replaces prior Jobs/Inbox/artifact
+  state with one privileged actorless sanitized receipt. In the supported single-backend-
+  process profile it drains HTTP/SSE mutation admission, quiesces producers and detached
+  writers, strictly clears tenant stores/RAG/usage/audit/runtime overlays, and releases
+  its fences only after the new receipt lineage is audited. A factory privacy failure
+  keeps the application fenced/degraded, blocks ordinary work, and permits only a new
+  freshly authorized factory retry. Successful submit/retry/cancel `202` responses and
+  terminal Inbox/SSE projection wait for their transition audit; reconciliation repairs
+  audit gaps before projection. Retired direct reset and
+  storage-apply mutations return 410; `POST /api/jobs` is the canonical mutation path.
+  Direct archive/segment export, precedent bootstrap, RAG import, and full-catalog
+  Runbook reindex remain executable OpenAPI-deprecated compatibility primitives;
+  Console/user workflows use Jobs, while targeted Runbook reindex remains direct.
+- **Durable one-file, server-assembled portable export.** The direct
+  `POST /api/admin/export/archive` walks the same safe scopes and bounded pages as the
+  resumable segment contract, writes
+  one NDJSON member per scope plus a terminal provenance-bearing `manifest.json` into a
+  stdlib ZIP on temporary server disk, and serves it only after every selected scope has
+  emitted its starting count under its declared consistency. Elasticsearch retains its fixed PIT; PostgreSQL reports the honest
+  non-exact `bounded_at_start` view and KV collections remain `live_values_at_read`.
+  Permission and fresh-auth are rechecked before response creation, a strict append-only
+  audit row records the prepared artifact (not client receipt), and temporary files/PITs are released on success,
+  failure, cancellation, or disconnect. The Console now submits either
+  `data_export_archive` or `data_export_segment` to the application-job registry; both
+  complete server-side and retain one verified ZIP behind `artifact_id`, while segment
+  mode follows and packages all numbered envelopes without a browser loop. The direct
+  archive/segment routes remain executable OpenAPI-deprecated compatibility primitives,
+  and the legacy bounded v1 route remains a compatibility contract.
+- **Producing-build provenance on operational records.** Every newly created case carries
+  immutable creation-build `app_version` and `build_sha`; re-investigation preserves those
+  original values. Every new append-only audit and usage row carries the build that first
+  appended it, and idempotent retries preserve the first writer's stamp. The fields reuse
+  the non-secret `/api/health/build-info` identity: the application version comes from the
+  running code, and a missing `TLSOC_BUILD_SHA` remains the honest literal `unknown`.
+  Historical records remain `null` and are never attributed to the build that merely reads
+  or updates them.
+- **Evidence-qualified knowledge-reference coverage in `GET /api/metrics`.** The additive
+  `retrieval_history` block reports case-level reference coverage only: investigated cases
+  that ever recorded at least one reference divided by cases with at least one completed,
+  instrumented retrieval attempt, proven by `retrieval_observation_status=measured`. Array
+  presence alone is never evidence. It is not retrieval quality and not a per-run hit rate.
+  A truncated read or any investigated case with lifetime history unavailable keeps the
+  count/rate `null` and `unavailable`; a history-complete cohort with no measured attempt
+  is `insufficient_evidence`. History-complete `not_measured` cases are excluded rather
+  than counted as zero.
+- **`GET /api/diagnostics/health`** (auth + `settings:read`) — the operator roll-up for the
+  conditions that used to fail silently: precedent-corpus size and per-source counts, an
+  explicit "0 analyst-confirmed precedents available" flag, the analyst-confirmed ground
+  truth actually present in case history (so a labelling gap is distinguishable from a
+  broken projection), the SQL schema-migration state with its remediation SQL, and
+  auto-close health. It returns **separate `alerts` and `unknowns` lists** and no composite
+  score, so "nothing is wrong" and "nothing could be measured" stay different answers. It
+  is read-only and seed-free — asking about corpus health never triggers an embedding
+  spend — and it is deliberately not on the unauthenticated `GET /api/health`, which is
+  byte-identical.
+- **`GET /api/metrics/auto-close-health`** (auth + `metrics:view`) — the rolling auto-close
+  rate as a first-class signal with one explicit status: `disabled`, `no_volume`,
+  `collapsed`, `never_fired`, `degraded`, `insufficient_evidence`, or `ok`. A near-zero
+  rate only means an outage while decided volume holds steady, which is what separates
+  "auto-close died" from "quiet night"; thin evidence reports an unavailable rate and a
+  reason rather than a healthy-looking number.
+- **Console: one shared Agent-health authority with a focused home.** The complete
+  diagnostics roll-up now lives above **Analytics → Effectiveness** and follows that
+  tab's 24h/7d/30d range at the stable `#/metrics?tab=effectiveness` URL. Overview uses
+  the same reducer but renders only one compact strip for a positively detected
+  degradation; healthy, unsupported, or unauthorized signals take no dashboard space,
+  and unknown/unmeasured evidence remains distinct from healthy. Each endpoint keeps
+  its independent `settings:read` or `metrics:view` grant, and superseded health reads
+  cannot cross ranges.
+- **An opt-in, default-off lower-trust precedent tier.** A fully autonomous deployment
+  produces no analyst-confirmed outcomes, so its precedent corpus is permanently empty:
+  auto-close depends on precedent, precedent depends on analyst labels, and analyst labels
+  only exist if somebody works a queue the product exists to keep empty. The escape hatch is
+  a separate, explicitly weaker tier — `rag.use_unconfirmed_resolved_cases` — that indexes
+  the agent's own auto-closed verdicts as a distinct `model_unconfirmed` class, never a
+  loosening of the analyst-confirmed gate, which is untouched. Four composing guards
+  (confidence floor, minimum recurrence, age-out, context-share cap) plus a rank penalty and
+  an unconditional ordering invariant stop the agent's own drift being fed back to it as
+  evidence. Both tiers remain UNTRUSTED-fenced (#9) and render under headings that cannot be
+  confused. `POST /api/rag/precedent/bootstrap` bulk-ratifies a backlog — permission-gated,
+  audited, bounded, idempotent, dry-runnable, and requiring an exact acknowledgement string —
+  and writes a history event that is deliberately invisible to the analyst-outcome
+  classifier, so the threshold tuner sees exactly what it saw before.
+- **Console: the tier and its guards in Knowledge settings**, labelled lower-trust and
+  off by default, and described as feeding the agent prior model judgements rather than
+  analyst decisions.
+- **Console: the tuning inertness reason** wherever per-rule noise is shown, so a noisy
+  rule that receives no correlation-threshold recommendation says why instead of going
+  silent. `GET /api/tuning/recommendations` rule rows gained the additive
+  `correlation_n_inert`, `correlation_n_inert_reason` and `correlation_n_inert_detail`
+  fields.
+- **Console: the analyst-comment disclosure.** A note written on a close or a
+  confirm-false-positive, and a comment written on the AI grading, are embedded into the
+  resolved-case precedent chunk and read back by the investigator on similar future cases.
+  In production an ordinary operational aside became durable evidence and depressed
+  investigator confidence to just under the auto-close bar, so nothing closed — the text was
+  well-formed, and its meaning was the problem, which no amount of sanitising could have
+  caught. Both fields now carry a short label saying what the note becomes.
+
+- **`POST /api/proposals/bulk-reject`** (`proposals:approve`) — clearing a stale queue no
+  longer means one request per proposal. Bounded to 200 ids with a mandatory reason, it
+  reuses the single-reject body per proposal so every rejection still goes through the
+  strict append-only audit path, and reports per-item outcomes so one bad item never
+  aborts the batch. The field report asked for this to *avoid* the strict-audit path
+  because that path was broken; it is fixed now, and bypassing it would have traded a
+  fixed bug for a permanent hole in the audit log.
+
+### Changed
+
+- **Overview modules on grouped panels (Round 13).** Each Overview module, the KPI strip and
+  the Deeper analytics header sit on a soft tinted panel (a step deeper than the page in
+  light, a step lighter in dark) with rounded corners and no border or shadow, so where one
+  card ends and the next begins is plain at a glance; band titles stay on the page. The
+  panel is the new `--panel` theme token (`.surface-panel`, `bg-panel`), measured by the
+  contrast gate, and the temporary `?separation=` preview switch is gone. Inside a panel the
+  progress tracks, hover and selected states, control edges and badge text step with it, so
+  nothing that showed on the page fades into the panel (measured in both themes, under
+  increased contrast too), and the Case outcomes legend stacks under its ring when its panel
+  is narrow.
+- **A neater chat (Round 13).** Answers keep one 42rem reading column on the lane's left
+  edge (prose at a 38rem measure and 15/24, about 85 characters a line), and small results
+  (up to four key figures, an indicator, a case list, ATT&CK techniques, a short table, a
+  small categorical chart) stay in it; larger blocks use the whole width. A block header
+  shows only its `⋯` menu at rest (provenance moves to the menu's first line, Add to
+  report shows on hover or focus), and caption parts shared by consecutive blocks are
+  stated once in a scope line. The meta row reads "4 lookups · 6.2 s · $0.004 · Sources
+  3": the cost opens the usage card that holds the tokens, an **In report** chip shows
+  while the answer is in the report, and Add to report, Add to case and Ask again move to
+  `⋯`. The toolbar drops its inline total; the thread menu opens with "This chat: 12.4k
+  tokens · $0.03" and a **View** group for the width. The run log reads "Reading your
+  question…" and "Choosing lookups…", shows status as icons, and reserves each block's
+  height. The composer has a plain placeholder, a "/ commands · @ scope" hint only while
+  focused and empty, a meter hidden until you type, a quieter focus frame, two-line `/`
+  menu rows with sticky headings, a one-line scope hint with "How ranges work", and
+  permission sentences in the access list. History search shows every hit's snippet, the
+  report panel lists reports saved from the chat, the prompt library row is its Use with
+  "Favourites", the Active Risk Index tile matches its neighbours' height, and Case
+  Manager's quick actions read "Summarise the case", "Check indicators" and "Suggest
+  remediation". The prompt asks for a takeaway that names at most two figures a block
+  shows and never ends an answer with a question or an offer.
+- **`GET /api/chat/context` `starters`** keeps its shape but returns only the static
+  everyday set (the Demo Mode card first in Demo) and no longer reads the case store; live
+  suggestions moved to `GET /api/chat/starters`.
+- **Chat is no longer covered by the AI budget, daily or monthly.** Chat calls
+  (`role=chat` on the `chat` surface) are never blocked by the budget gate, and their
+  spend is excluded from both of its ceilings (`budget.daily_usd` and
+  `budget.monthly_usd`), so chat can neither be paused by investigations' spend nor
+  push investigations to Needs human. Chat's only spending bound is the optional daily
+  `chat_agent.chat_daily_cap_usd`; there is no monthly chat bound. Every chat call is
+  still metered through the one gateway and written to the ledger;
+  `GET /api/budget/status` reports chat's share as `excluded_today`. Report summaries
+  still count toward the budget. The composer's budget alert now describes what happens
+  to automatic investigations.
+- **Chat limits migrate once** (`chat_limits_version`): stored configurations become
+  `unlimited` unless an operator had changed a per-question limit, which keeps `bounded`
+  with those values. Concurrency defaults rise to 4 questions per user and 16 per
+  backend (a capacity bound; over it the client waits with "Waiting for another answer
+  to finish"), and `model_step_timeout_s` to 300 s. In Bounded mode `max_parallel` is
+  limited to `max_tool_calls` at run time only, so switching modes is lossless.
+- **Sign-in without Remember me now uses a browser-session cookie** instead of a
+  persistent 12-hour cookie; `AUTH_TOKEN_HOURS` now sets the token lifetime of those
+  sign-ins only. Bearer-token clients are unaffected by the cookie change; their token
+  lifetime is `AUTH_TOKEN_HOURS`, now at most 144 hours.
+- **`AUTH_TOKEN_HOURS` above 144 is reduced to 144** with a startup warning, so a revoked
+  token cannot outlive its session-registry row. This also applies to bearer tokens:
+  automation that relied on longer-lived tokens (for example 720 hours) must
+  re-authenticate at least every 6 days.
+- **New chat error responses.** `409 chat_request_in_progress` now also carries the
+  running turn's `turn_id` and `conversation_id` when that turn runs on this backend
+  (beside `retry_after`), so a client can rejoin it;
+  a same-key retry of a billed turn that ended without a saved answer returns
+  `409 chat_request_failed` (send the question again with a new idempotency key); a
+  turn whose account record cannot be read is refused with
+  `503 chat_account_unavailable` and `retry_after`; and `429 chat_busy` gains `scope`
+  (`user` or `global`) and `limit`. A running answer stops when its sign-in or access
+  ends (sign-out, a revoked session, sign out everywhere, a disabled, deleted or
+  replaced account, an expired access token, or a role change that removes a grant it
+  uses): the stream ends with a non-retryable `turn.error` (`internal`), and
+  `POST /api/chat` answers `401 session_invalid` (reason `session_ended`) or
+  `403 chat_access_changed`.
+- **Deleting a user account also deletes that user's Workspace chat conversations,
+  answer ratings and reports**, and stops their running chat answers. Audit records are
+  kept.
+- **Stop** abandons an in-flight model call at once in Unlimited mode (ledgered as
+  abandoned) and keeps what was written; Bounded mode still lets the call finish.
+- **Chat answers and conversations are stored in full**: each answer also gets its own
+  exchange document, so answers of any length replay byte for byte and messages are no
+  longer removed from a conversation; the conversation detail returns the newest 100
+  messages with `earlier_message_count`, and older ones are paged
+  (`GET /api/chat/conversations/{id}/messages`). Conversations carry `status`
+  and `unread`. A running turn's lease (10 minutes) is renewed every minute.
+- **Honest routing.** `unsupported` is honoured only when no data lookup ran; otherwise
+  the answer carries the new `limited` notice ("Answered with what chat can read").
+  "Product help" is shown only when no data lookup ran. Unknown lookup inputs are
+  refused visibly. A tool window wholly outside the selected time chip is refused
+  (`OUTSIDE_SELECTED_RANGE`) instead of silently replaced, and chat time windows have no
+  90-day ceiling.
+- **Dashboard counts.** The `/api/metrics` headline counts (total, open, needs human,
+  closed, and the counts by status, verdict and disposition) and the Open Cases stock are
+  exact store-wide counts at any size and agree with chat. Every Overview window figure
+  (Total Cases, Total Critical, Resolved / Closed, Auto Closed, the AI-verdict FP rate)
+  and the heavier rollups analyse up to 20,000 cases per window, instead of reading a
+  fixed newest page; a larger window is marked truncated, its counts shown as lower
+  bounds (`≥`) and its rates withheld. SLA attainment is `null` with a
+  reason, not 0%, when nothing was scored, and SLA scores use the priority shown on the
+  case.
+- **Overview**: two titled bands (Alert flow; Cases and response) instead of stacked
+  cards, KPI numerals that never truncate, **AI-verdict FP rate** (was False Positive
+  Rate), a **Response time** card, and one **Deeper analytics** section whose open state
+  follows the user across devices and which summarises its contents while closed. The
+  Metrics page's store-wide total is labelled **Total cases (all time)** (was "Total
+  cases (7d)").
+- **Case outcome headline.** Once an analyst classifies a case, the classification is
+  the headline everywhere ("Closed as false positive") with the AI verdict as a labelled
+  second line; the Cases list gains an **Outcome** column and its **Needs human** tile
+  counts open cases only. Every close and resolve path, single and bulk, captures a
+  disposition, which starts empty; bulk close requests accept `disposition` and
+  `disposition_declared`. Agreement statistics count only real comparisons.
+- **Report exports**: one flat export menu (PDF, Word, Excel, Markdown, HTML, CSV,
+  JSON); defanging covers PDF, Word, Markdown, HTML and the Excel Report sheet, never the
+  Excel table sheets, CSV or JSON; log text is escaped in Markdown.
+- **Apple design foundations**: size-specific tracking, concentric radii, one material
+  for floating chrome, one spring vocabulary, overlays that scale from their trigger, and
+  KPI tiles whose context wraps under the number.
+
+- **`web_application_abuse` is now a RESERVED bundled playbook id.** The bundled
+  web-application procedure was renamed off one deployer's LMS product name as part of
+  the vendor-agnostic pass. A deployment that had already authored an operator playbook
+  under that id keeps the stored document, but the bundled procedure becomes
+  authoritative and the operator row is inert — surfaced as `shadowed_by_bundled` in
+  the playbook reload summary. Re-author the displaced procedure under a
+  deployment-specific id.
+- **The bundled-playbook portability lint covers every rule-name criterion, under one
+  grammar.** `registry.select_playbook` matches `match.rule_ids`, `match.any_tags` and
+  `match.mitre` against the same cluster rule set — and a playbook declaring only the
+  soft criteria is selectable *solely* on such a hit — so linting `rule_ids` alone let a
+  copied SIEM title in `any_tags` deployment-lock a playbook while the contract reported
+  clean. All three are now linted (`mitre` against the ATT&CK technique grammar), and
+  `rule_ids` shares the one `PORTABLE_ID` grammar used for seeded `RuleDefinition.name`
+  values, since `RawEvent.from_hit` makes them the same namespace. The two previously
+  disagreed on the shipped `waf-nginx-access`, certifying it at one end and rejecting it
+  at the other.
+- **The sign-in surface gained two identity accents, rebuilt from first principles.**
+  The primary CTA is now a gradient-faced `ShineButton`: a blurred cyan-to-orchid halo
+  sits rotated and invisible at rest and un-rotates into place on hover or keyboard
+  focus, a soft gradient blob sweeps the face once per interaction, and the label is
+  gradient-clipped until hover flattens it to solid white. The corner appearance
+  control is now a `ThemeModePill` that names the mode you are in — a crescent on the
+  left and a disc on the right scale-swap, the label slides toward whichever glyph is
+  showing, and two blurred orbs behind the pill trade sides on every toggle. Both are
+  pure CSS scoped to `.login-auth-canvas`; no animation library is involved and neither
+  lands on a lazy chunk, so first paint is unchanged. The CTA also moved to the
+  full-width 48px geometry the page's other primary actions already used.
+  All three theme modes remain reachable: the pill reflects and sets the *resolved*
+  appearance, and a round *Use system theme* reset beside it keeps `system` a first-class
+  choice.
+- **Login accent colour is now measured and gated, not chosen by eye.** These are the
+  only surfaces in the console that paint text on a raw gradient rather than a semantic
+  token pair, so the existing token-contrast gate is structurally blind to them. A new
+  `login accents` design gate re-derives the worst case straight from `theme.css` on
+  every `npm run gates` and every Vitest run: it composites each face stop with the
+  sweep at its peak keyframe opacity and the overlay tint at its declared per-theme
+  opacity, measures against both label stops, and samples the pill's label zone across
+  the span the sliding label can actually occupy. All 362 composites clear 4.5:1. The
+  ramps these are modelled on do not — which is exactly why the shipped ones are deeper.
+- **The login focus ring is visible again.** The identity canvas overrode `--ring` to a
+  grey measuring 1.84:1 on the white slab, well under the 3:1 WCAG 2.4.11 bar for a
+  focus indicator. Light is now 4.74:1 and dark 5.65:1, which every control on the
+  canvas inherits. The indicator is also drawn on each accent's opaque child rather
+  than on the button, because an element's outer box-shadow paints before its
+  descendants — a ring on the button sat underneath the halo, on exactly the state that
+  shows the ring.
+- **The login accents survive forced-colors mode.** `forced-color-adjust: none` opts an
+  element out of the UA's own correction, so any state selector that outranked the
+  fallback on specificity kept a hard-coded colour the system theme never sees: the
+  appearance pill's dark-state navy ink, and the disabled CTA's muted face and label.
+  The disabled CTA is the resting state of the password step, so that was the default
+  rendering, not an edge case. Both now hand back to `ButtonFace`/`ButtonText`, with
+  `GrayText` for the genuinely inert state.
+- **A submitting sign-in button no longer looks like a dead one.** The CTA is disabled
+  both while nothing is typed and while the request is in flight; the inert treatment
+  now excludes the busy state, so clicking Sign in keeps the gradient and shows the
+  spinner instead of flattening to grey.
+- **A log source now DECLARES its severity ladder instead of the suite guessing it.**
+  Every severity surface (the case severity chip, the Noise-Reduction band split, the
+  OCSF `severity_id` a normaliser stamps, a feed's `severity_floor` gate) used to
+  reconstruct a source's native range from a mix of connector type and the magnitude of
+  the value itself — `raw <= 10 ? raw * 10 : raw`. That guess cannot tell a genuinely low
+  0-100 score from a high 0-10 rating, and it inverted both: an OCSF Informational score
+  of 8 read as High, while a rule level of 12 from a source the type branch could not
+  classify read as Low. A source now
+  carries ONE number, `severity_scale_max` (**Log Sources → the source → Advanced →
+  Severity ladder maximum**), and every surface projects through the same formula,
+  `min(100, max(0, raw / severity_scale_max × 100))`.
+
+  **What an operator must do:** *declare `severity_scale_max` for any source that does
+  not rate severity on 0-100* — for example `10` for a 0-10 ladder, or `16` for a 0-16
+  rule level. A source that leaves it blank is read AS-IS on 0-100 (the identity
+  projection, which is what every OCSF normaliser already emits). One connector ships a
+  seeded default (a 0-16 rule level), applied only where the operator has declared
+  nothing; declaring your own value always wins, and the seed then stands aside.
+
+  No migration, no backfill, and no new required config: the field is optional
+  everywhere, already-stored source configs validate unchanged, and nothing is persisted
+  onto a case. Note that the durable Noise-Reduction counters are bucketed by band at
+  WRITE time, so a band split recorded under a different ceiling cannot be re-projected —
+  the posture comparison reports itself unavailable across such a boundary rather than
+  crediting the change as a measurement.
+- **The top KPI is Critical alone**, not Critical/High, and deep-links to that
+  severity.
+- **Demo mode moved into the top bar.** The banner took a full-width strip above
+  every route; a compact pill now sits beside the release badge on every viewport,
+  its popover keeping the isolation explanation and the Reset and Exit-and-clear
+  actions.
+
+- **The landing dashboard is now the "Cyber Defence Center"** (renamed from
+  "Security Command Center"; the exported constant and boot-guard anchor are
+  unchanged, and append-only history keeps the old name). The design pass unifies the
+  band framing across the KPI strip, instrument band, and operations band, gives the
+  burndown chart a real legend, and discloses the new hover-trend affordance in a
+  quiet footnote — all inside the existing token system.
+- **The false-positive-rate tile no longer shows a comparison percentage.** The delta
+  chip compared against the previous window without saying so; it and its footnote are
+  removed (the Analytics posture page's compare machinery is untouched).
+
+- **Proposals carry an evidence fingerprint and derived provenance.** A proposal records a
+  deterministic fingerprint over the keys defining its recommendation and over the
+  analyst-sample counts with their provenance, and approval refuses a mismatch with a
+  machine-readable code rather than applying stale reasoning. `analyst_samples` is now
+  broken down into independent analyst outcomes, feedback labels, explicit dispositions,
+  bulk-ratified model verdicts, and unlabelled cases — and that provenance is **derived,
+  never self-declared**, so a payload claiming independent evidence while carrying only
+  bulk ratifications is still reported as `bulk_ratified` and is unapprovable. Bulk
+  ratifications are counted out of the sample total, so they cannot move a threshold. This
+  is the defect that let a backfill present model verdicts as analyst-confirmed evidence.
+  **Every pre-existing pending tuning proposal that would apply a change is therefore
+  unapprovable until re-drafted** — deliberately, because those are precisely the rows
+  whose analyst labels may be backfilled model verdicts.
+- **Lapsed proposals expire.** `expires_at` existed but nothing swept it and expired
+  proposals still rendered as actionable. A lapsed row is now projected as `expired` at
+  read time (a view, never a write, so a failed sweep costs durability but never honesty)
+  and swept durably. Approving an expired proposal is refused at the claim, before any
+  audit row or effect; rejecting one stays available, which is what makes a queue
+  clearable. Suppression proposals are exempt, because their `expires_at` is the lifetime
+  of the rule approval materialises rather than a review deadline.
+- Analyst notes carried into a precedent chunk are bounded and flattened, so an
+  operational note cannot reshape the corpus. Where the bulk projection has no
+  caller-supplied note it recovers the note already persisted on the case, so a
+  reprojection no longer blanks every note.
+- Approval audit summaries now record `decision=authorized effect=pending
+  finalization=pending`, so a row never claims a confirmed effect before it has run.
+
+### Upgrade notes
+
+- **Round 14: Elasticsearch audit index.** Before Round 14 writers run on an Elasticsearch
+  state backend, apply `deploy/mappings/tlsoc-agent-audit.template.json` as the index template
+  `tlsoc-agent-audit-template`, then roll the audit write index (`POST
+  tlsoc-agent-audit/_rollover`). Until then a date-like value in a new audit row can map a field
+  as a date, and later audit-first writes answer `503 audit_unavailable`. Bootstrap cannot
+  tell whether the step was done, so it logs a warning naming the step on every start after
+  the first, even once the step is done (a deployment whose audit index was first created by
+  Round 14 needs nothing). The shipped template has no lifecycle settings, so where Storage &
+  retention is active the step also takes the audit index out of its lifecycle policy until
+  you put it back ([Applying the Round 14 audit
+  template](docs/operations/upgrades.md#applying-the-round-14-audit-template)).
+- **Round 14: audit before visible.** Settings and account changes now fail with `503
+  audit_unavailable` (nothing changed) when the audit log cannot be written. During an audit
+  outage on Elasticsearch state, `POST /api/setup/secrets` still applies `es_mgmt_api_key`,
+  `es_url` and `es_ca_cert` first, so a broken audit store key can be repaired.
+- **Round 14: `TRUSTED_PROXIES`.** The audit client address is read from `X-Forwarded-For`
+  only when the request came from a listed proxy (default the bundled Web UI service,
+  `tlsoc-webui`); a load balancer in front of the Web UI must be added to the list.
+- **Round 14: chat limits version 2.** A stored chat limit that equals the earlier default moves
+  once to the tripled value (lookups at once 12, tool timeout 45 s, model step timeout 900 s,
+  12 questions per person and 48 per backend); any other value an administrator chose is kept,
+  though a deliberate choice of exactly the old default moves too. The report AI summary wait
+  is capped at 280 s, below the Web UI proxy's limit.
+- **Round 14: runbook migration.** On the first start, stored playbooks and runbooks are
+  converted once into the runbook library, audited (one row per document plus a summary row):
+  valid content stays Published with an "Imported" badge and an immediate review date, content
+  that cannot be kept as it was becomes a Draft with a note, and retrieval is reprojected from
+  Published text only. The legacy namespaces are left as they were and read only through a
+  read-only decoder, so a rollback finds them unchanged. Automation rules that ran a playbook
+  now attach the matching runbook at fire time and write `run.attach_skipped` when they cannot.
+  RBAC: every stored `playbooks` grant and deny is mapped onto `runbooks` on load, and a layer
+  that granted `manage` also grants `runbooks:publish` once.
+- **Round 14: audit exports in Demo Mode** are refused (`409 audit_export_demo_mode`); the data
+  export manifest is schema 2.
+- **Round 14: audit API paging.** `GET /api/audit` keeps every earlier parameter's meaning, but
+  `limit` is now clamped to 1 to 200 (it was capped at 500; without `scope` the default stays
+  100), more rows come through `next_cursor`, and `total` now counts every matching row (exact
+  when `total_relation` is `eq`, a lower bound when it is `gte`) where before Round 14 it was the
+  number of rows returned.
+- **Round 14: Discounted inference permission.** The Flex and Batch policy moved from the Jobs
+  page to Settings → General → Discounted inference and saves with Settings, so changing it needs
+  `settings:manage` instead of `models:manage`; every built-in role holds both grants or neither.
+- **Round 14: retired settings keys.** `playbooks.enabled: false` becomes
+  `runbooks.investigator_guidance: false`; the earlier `runbooks.enabled: false` (stop reference
+  runbook retrieval) and `rag.use_runbooks: false` become `runbooks.rag_corpus: false`; the new
+  `runbooks.enabled` is always on after the upgrade, and `playbooks.llm_select` is dropped.
+
+- **Chat limits migration.** Review **Settings → General → Chat assistant** after
+  upgrading: a stored configuration becomes Unlimited unless an operator had changed a
+  per-question limit. Set the daily chat spending limit if chat spend needs a bound,
+  since chat is no longer covered by the AI budget's daily or monthly ceiling
+  (`budget.daily_usd`, `budget.monthly_usd`); there is no monthly chat bound.
+- **Sign-in cookie change.** Users who relied on staying signed in across browser
+  restarts should use Remember me. Remember me needs `AUTH_COOKIE_SECURE=true` behind
+  TLS (unless `session_policy.remember_me.allow_insecure_http` is on, which is not
+  recommended); a reverse proxy on the backend's own host must send `X-Forwarded-For`.
+- **Token lifetime cap.** `AUTH_TOKEN_HOURS` above 144 is reduced to 144 with a startup
+  warning, for browser sign-ins and bearer-token API clients alike; automation that used
+  longer-lived tokens must re-authenticate at least every 6 days.
+- **Chat storage and rollback.** New answers are stored in full in exchange documents in
+  the existing chat namespace (plus summary, step-result, archive and live-state
+  documents) and ratings in a new `chat_feedback` namespace; no migration, index or table
+  is added. An image-only rollback shows each message's compact copy (answers over 24,000
+  characters end there; archived messages of very long conversations are not shown) and
+  ignores the chat limits mode and spending limit. See DEPLOY.md and the upgrades page.
+- **Single replica.** Running chat turns and the rejoin buffer are process-local; a
+  backend restart ends running answers.
+
+- **No version bump, SQL migration, or historical backfill is required for record
+  provenance or retrieval history.** The change is additive under the existing `0.1.13`
+  source version. PostgreSQL and SQLite keep these fields inside existing JSON documents.
+  Legacy `app_version` and `build_sha` values remain `null`.
+  The Case wire contract continues to return `knowledge_used` as an array. Legacy
+  `retrieval_history_status` remains `unavailable`; the new observation
+  marker starts `unavailable` rather than being inferred from the historical array. A
+  later fully measured modern run may advance `retrieval_observation_status` to
+  `measured`, but it cannot reconstruct or change the lifetime-history marker.
+- **Existing Elasticsearch templates and indices are not automatically remapped.** New
+  installations receive the additive provenance/retrieval fields from the current bundled
+  templates. Existing installations must update the Agentic SOC-owned templates and
+  mappings through their normal Elasticsearch change process if explicit mappings are
+  required; ordinary boot only creates missing templates/indices and does not reindex or
+  mutate existing ones. Dynamic mapping may accept the fields, but that is not equivalent
+  to applying the shipped templates retrospectively.
+- **PostgreSQL deployments are migrated in place at boot** (`audit.id` → `bigint`, with the
+  sequence widened); the migration is idempotent, preserves rows, and never blocks boot. If
+  it fails it logs at ERROR with the exact remediation SQL and reports a `failed` state on
+  the new diagnostics endpoint. If you apply that SQL by hand, do **not** apply it against a
+  running backend: each pooled connection will raise one transient
+  `InvalidCachedStatementError` on its next use because its cached plan no longer matches
+  the column type. Restart the backend after a manual `ALTER`.
+- **The approval audit `result_summary` text changed.** A proposal left mid-decision across
+  the upgrade — one whose `…:approve` audit row was written by pre-fix code and never
+  finalised — will collide with the new summary on retry and needs an administrator to
+  clear it. This cannot occur on PostgreSQL, where no such row could ever have been written
+  in the first place.
+- **Disabling `rag.use_resolved_cases` no longer deletes precedent chunks.** They remain in
+  the store and simply stop being retrievable, so re-enabling the source restores the
+  accumulated corpus instead of starting from nothing.
+- **The precedent projection window is now shared fairly across detection rules.** This
+  changes WHICH analyst-confirmed cases are projected on the next re-seed — the window size
+  is unchanged (`precedent.window.size`, 200), but a rule that previously took every slot
+  now keeps a proportional share. Set `precedent.window.stratify_by_rule` to `false` to
+  restore the previous newest-first behaviour.
+- **Existing precedent is re-tagged with rule identity on the next projection.** The
+  re-tag reads rule ids from the case store (never parsed out of chunk prose), reuses the
+  existing document identity, and does not re-embed, so it costs no gateway spend. Chunks
+  whose case can no longer be read are left alone and reported as
+  `unattributed_documents` — they stay retrievable but cannot be rule-matched, so
+  precedent promotion will not count them until their case is re-confirmed or re-indexed.
+- **`DecisionBy` has a fourth value, `analyst_policy`.** It appears only on cases closed by
+  an operator's analyst rule policy, so nothing changes until a declaration exists. Any
+  integration that switches exhaustively on `decision_by` should treat it as neither agent
+  nor human: it is excluded from agent-performance statistics by design, and treating it as
+  an analyst outcome would let the automation train on its own output.
+- **An analyst rule policy never applies to a case the agent has already investigated.**
+  A cluster signature is entity-centric and excludes rule ids, so a later alert carrying
+  only a declared rule can re-enter an open case. A case that already carries a verdict is
+  left entirely alone, and coverage is checked against the rule set the closed record will
+  actually carry (cluster + case), so an undeclared detection can never be absorbed into a
+  no-model close. Analyst-owned state on an un-investigated case — grades, tags, comments,
+  assignment — survives the close.
+- **A grade recorded on a policy-closed case is ground truth but not agent quality.** It
+  counts for the threshold tuner and the precedent corpus (an analyst labelled the alert),
+  and is excluded from agreement/correction rates (no model judged it, so agreeing or
+  disagreeing with it measures nothing about the agent).
+- **Precedent promotion is OFF by default and must be enabled deliberately.** It changes
+  what the investigator is told, so it is not adopted silently on upgrade. The window
+  fairness fix and the futility report are read-side only and are on.
+- **Pending tuning proposals drafted before this release cannot be approved.** They carry
+  no evidence fingerprint, so they are reported as `unverified` and refused with
+  `evidence_fingerprint_missing`. Reject them (bulk reject is the fast path) and let the
+  tuner re-draft against verifiable evidence. On the first run after deploying, a rule with
+  a stale pending proposal may briefly show both the old row and its honest re-draft; the
+  old one lapses at its own expiry and is then swept.
+
+### Legacy bootstrap correction
+
+This correction was built as the 0.1.13 candidate, which was never tagged. It ships in 0.2.0
+and is described only here.
+
+**Canonical legacy-bootstrap identity correction.** The immutable `v0.1.12`
+release passed protected source and tag CI, published the complete signed release,
+and exposed all three public digest-pinned images. Canonical v0.1.1 runtime
+acceptance then failed closed before any application mutation because those final
+pre-supervisor backend and Web images both legitimately omit the state-schema OCI
+label. The supervisor normalized the missing backend value to `unknown` but compared
+the raw missing Web value, incorrectly treating two matching legacy identities as a
+mismatch.
+
+#### Fixed
+
+- The updater now normalizes an absent state-schema label on both installed
+  application components to the same explicit `unknown` value before coherence
+  comparison. This admits only the existing one-time v0.1.1 host-bootstrap path.
+- A mixed deployment, where only one component carries the state-schema label, still
+  fails identity coherence. Any post-v0.1.1 deployment without the exact Stable
+  channel, immutable revision, and schema-1 labels still fails the managed-identity
+  and state-schema gates.
+- Regression coverage exercises matching absent legacy labels and the mixed-label
+  rejection in addition to the existing preflight tests for the v0.1.1 exception and
+  unmanaged later releases.
+
+#### Release boundary
+
+- The correction itself introduces no application-state migration, updater-protocol change,
+  signed-plan schema change, privilege expansion or frozen-base change.
+- Version 0.2.0 as a whole adds two changes to that boundary: the publisher identity, the
+  GHCR namespace and the OCI source label move to `ARYDESTROYER/Kavach-AgenticSOC`
+  (artifacts of v0.1.12 and earlier stay valid under the former identity), and on
+  PostgreSQL the first start widens `audit.id` to `bigint` in place. Updater protocol 1,
+  signed-plan schema 1 and state schema 1 stay. `deploy/docker-compose.agnostic.yml`
+  remains byte-identical with updater-protocol-1 SHA-256
+  `e3f7ecbb0f749cc9d88f4392c58c9a63ddbd064e80ecde9f21fe9de199086fd4`.
+- Version 0.2.0 must pass the complete protected Testing, `main` and tag, signed-publication,
+  anonymous-pull, signature, canonical v0.1.1 bootstrap, supervisor-receipt and
+  browser-acceptance gates under its own immutable tag.
+
+## Development snapshot - 2026-08-05 - 0.1.13 Testing candidate (never tagged; folded into 0.2.0)
+
+Folded into [0.2.0]; see Legacy bootstrap correction.
+
 ## [0.1.12] - 2026-08-05
 
 **Governed constrained-verifier cleanup correction.** The immutable `v0.1.11`
@@ -63,6 +3229,18 @@ moved, reused, or repaired.
 - Version 0.1.12 repeats every `Testing`, promotion, `main`, exact-tag,
   signed-publication, canonical bootstrap, and browser-acceptance gate under a new
   immutable identity. It is not installable until all those gates complete.
+
+### Publication outcome
+
+- Protected Testing, main, and exact-tag CI passed; the complete public GitHub
+  Release, signed plan and bundle, three dual-platform digest-pinned images,
+  anonymous reads, keyless signatures, and Stable documentation all published and
+  independently verified.
+- Canonical v0.1.1 bootstrap then failed closed during preflight because both legacy
+  application images omit the state-schema OCI label and the updater compared one
+  normalized absence with one raw absence. No application switch, database backup,
+  or state mutation began. The immutable release is cryptographically valid but is
+  bootstrap-blocked and superseded by 0.1.13; never move, reuse, or repair its tag.
 
 ## [0.1.11] - 2026-08-05
 

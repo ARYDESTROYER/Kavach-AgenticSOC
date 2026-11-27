@@ -114,8 +114,27 @@ function CeilingField({
   );
 }
 
+/** What a window says when the server withholds its spend (a viewer without `cost:view`). */
+export const SPEND_WITHHELD = 'You do not have access to AI spend.';
+
 function WindowRow({ label, w }: { label: string; w: BudgetWindowStatus }) {
-  const band = BAND_META[w.band] ?? BAND_META.ok;
+  if (w.spent == null) {
+    // Without cost:view the server leaves the spend, the fraction and the band out
+    // (Round 14 second acceptance pass, roles-11): show the ceiling and say why, never a
+    // band the viewer cannot have, which would read OK.
+    return (
+      <div className="space-y-2 rounded-md border border-border bg-surface p-4">
+        <span className="text-sm font-medium text-foreground">{label}</span>
+        <div className="flex items-baseline justify-between gap-4 text-sm">
+          <span className="text-muted-foreground">{SPEND_WITHHELD}</span>
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+            {w.cap != null ? `Ceiling ${fmtMoney(w.cap)}` : 'no ceiling'}
+          </span>
+        </div>
+      </div>
+    );
+  }
+  const band = (w.band != null ? BAND_META[w.band] : undefined) ?? BAND_META.ok;
   const pct = w.fraction != null ? Math.min(100, Math.max(0, w.fraction * 100)) : null;
   return (
     <div className="space-y-2 rounded-md border border-border bg-surface p-4">

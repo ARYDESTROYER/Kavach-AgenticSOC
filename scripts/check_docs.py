@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import sys
+import unicodedata
 from collections import Counter
 from pathlib import Path
 from urllib.parse import unquote
@@ -57,6 +58,27 @@ EXPECTED_TOP_LEVEL_NAV = [
     "Reference",
     "Releases and versions",
 ]
+
+# Characters a reader cannot see: Unicode "format" (Cf: zero-width spaces and joiners,
+# bidirectional overrides, the byte-order mark, the soft hyphen) and "control" (Cc)
+# characters, bar the whitespace a Markdown file is made of. A public page that holds
+# one renders an empty-looking example (an escape the console shows as `\u200b` must be
+# written as that visible text), and the app-knowledge corpus built from these pages
+# would carry the hidden character into chat's product-help answers.
+HIDDEN_CHARACTER_CATEGORIES = frozenset({"Cf", "Cc"})
+ALLOWED_CONTROL_CHARACTERS = frozenset({"\t", "\r"})
+
+
+def hidden_characters(source: str) -> list[tuple[int, int, str]]:
+    """Every invisible character in ``source`` as ``(line, column, "U+XXXX")``, 1-based."""
+    found: list[tuple[int, int, str]] = []
+    for line_number, line in enumerate(source.split("\n"), start=1):
+        for column, character in enumerate(line, start=1):
+            if character in ALLOWED_CONTROL_CHARACTERS:
+                continue
+            if unicodedata.category(character) in HIDDEN_CHARACTER_CATEGORIES:
+                found.append((line_number, column, f"U+{ord(character):04X}"))
+    return found
 
 
 def public_pages() -> set[Path]:
@@ -155,6 +177,12 @@ def main() -> int:
         absolute = DOCS / page
         source = absolute.read_text(encoding="utf-8")
         prose = prose_without_fences(source)
+
+        for line_number, column, code in hidden_characters(source):
+            failures.append(
+                f"docs/{page.as_posix()}:{line_number}:{column}: invisible character "
+                f"{code}; write it as a visible escape (for example `\\u200b`) or remove it"
+            )
 
         if not source.startswith("---\n"):
             failures.append(f"docs/{page.as_posix()}: missing YAML front matter")

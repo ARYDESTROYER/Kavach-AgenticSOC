@@ -67,6 +67,13 @@ def test_all_providers_registered_and_well_formed() -> None:
         "abuseipdb", "virustotal", "greynoise", "shodan_internetdb", "shodan",
         "censys", "binaryedge", "ipinfo", "otx", "pulsedive", "spur", "xforce",
         "urlhaus", "threatfox", "malwarebazaar", "rdap", "urlscan", "hibp",
+        # Round 11 keyless
+        "circl_hashlookup", "dshield", "onionoo", "spamhaus", "cymru_mhr",
+        "robtex", "crt_sh",
+        # Round 11 key-gated
+        "crowdsec", "google_safebrowsing", "ipqualityscore", "ipdata", "apivoid",
+        "maltiverse", "securitytrails", "criminalip", "netlas", "hybrid_analysis",
+        "metadefender", "emailrep",
     }
     assert expected.issubset(names)
     # Project Honeypot is REGISTERED as of Round 3 Wave 2b (its config gaps —
@@ -79,29 +86,73 @@ def test_all_providers_registered_and_well_formed() -> None:
         # A key-gated provider declares secret fields; a keyless one declares none.
         if not m.keyless:
             assert m.secret_fields, m.name
+        # Round 11: every manifest carries the operator setup guide + example blurb.
+        assert m.setup_steps and all(isinstance(s, str) and s for s in m.setup_steps), m.name
+        assert isinstance(m.example, str) and m.example, m.name
 
 
 def test_keyless_providers_default_on_key_gated_default_off() -> None:
     by = {c.manifest().name: c.manifest() for c in BUILTIN_PROVIDERS}
-    for keyless_on in ("shodan_internetdb", "ipinfo", "urlhaus", "threatfox", "malwarebazaar", "rdap"):
+    for keyless_on in (
+        "shodan_internetdb", "ipinfo", "urlhaus", "threatfox", "malwarebazaar", "rdap",
+        # Round 11 quota-safe keyless trio
+        "circl_hashlookup", "dshield", "onionoo",
+    ):
         assert by[keyless_on].default_enabled is True, keyless_on
         assert (by[keyless_on].keyless or not by[keyless_on].secret_fields), keyless_on
-    for keyed_off in ("greynoise", "shodan", "censys", "binaryedge", "otx", "pulsedive", "spur", "xforce", "urlscan", "hibp"):
+    # Round 11 keyless-but-caveated providers (own-resolver / latency caveats):
+    # keyless yet DEFAULT-OFF — a supported combination via the use_* toggle.
+    for keyless_off in ("spamhaus", "cymru_mhr", "robtex", "crt_sh"):
+        assert by[keyless_off].default_enabled is False, keyless_off
+        assert (by[keyless_off].keyless or not by[keyless_off].secret_fields), keyless_off
+    for keyed_off in (
+        "greynoise", "shodan", "censys", "binaryedge", "otx", "pulsedive", "spur",
+        "xforce", "urlscan", "hibp",
+        # Round 11 key-gated providers
+        "crowdsec", "google_safebrowsing", "ipqualityscore", "ipdata", "apivoid",
+        "maltiverse", "securitytrails", "criminalip", "netlas", "hybrid_analysis",
+        "metadefender", "emailrep",
+    ):
         assert by[keyed_off].default_enabled is False, keyed_off
         assert by[keyed_off].secret_fields, keyed_off
 
 
+def test_manifest_default_enabled_mirrors_shipped_enrichment_config() -> None:
+    # The manifest's default_enabled must MIRROR the shipped EnrichmentConfig default
+    # for its config_key (the UI shows the out-of-the-box state from the manifest).
+    cfg = EnrichmentConfig()
+    for cls in BUILTIN_PROVIDERS:
+        m = cls.manifest()
+        if not m.config_key:
+            continue
+        assert hasattr(cfg, m.config_key), m.name
+        assert bool(getattr(cfg, m.config_key)) is bool(m.default_enabled), m.name
+
+
 def test_registry_routes_indicator_kinds_to_the_right_providers() -> None:
     reg = get_provider_registry()
-    # An email indicator → only HIBP handles it (and only when keyed+on).
+    # An email indicator → only HIBP fires out of the box (the Round-11 EMAIL
+    # handlers — emailrep / ipqualityscore — are key-gated + default-OFF).
     s = _secrets(hibp_api_key="k")
     cfg = EnrichmentConfig(use_hibp=True)
     email_providers = [c.name for c in reg.for_indicator(IndicatorKind.EMAIL, cfg, s)]
     assert email_providers == ["hibp"]
+    # Enabling + keying EmailRep adds it as the second EMAIL provider.
+    s2 = _secrets(hibp_api_key="k", emailrep_api_key="e")
+    cfg2 = EnrichmentConfig(use_hibp=True, use_emailrep=True)
+    email_providers2 = [c.name for c in reg.for_indicator(IndicatorKind.EMAIL, cfg2, s2)]
+    assert email_providers2 == ["emailrep", "hibp"]  # sorted by name, deterministic
     # A file hash → the keyless abuse.ch + (keyed) providers that handle FILE_HASH.
     hash_providers = set(c.name for c in reg.for_indicator(IndicatorKind.FILE_HASH, EnrichmentConfig(), _secrets()))
-    assert {"malwarebazaar", "threatfox"}.issubset(hash_providers)  # keyless, default-on
+    assert {"malwarebazaar", "threatfox", "circl_hashlookup"}.issubset(hash_providers)  # keyless, default-on
     assert "hibp" not in hash_providers
+    # The keyless-but-default-OFF Round-11 providers do NOT fire out of the box.
+    ip_providers = set(c.name for c in reg.for_indicator(IndicatorKind.IP, EnrichmentConfig(), _secrets()))
+    assert {"dshield", "onionoo"}.issubset(ip_providers)          # keyless, default-on
+    assert "spamhaus" not in ip_providers and "robtex" not in ip_providers
+    assert "cymru_mhr" not in set(
+        c.name for c in reg.for_indicator(IndicatorKind.FILE_HASH, EnrichmentConfig(), _secrets())
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -514,6 +565,9 @@ async def test_threat_context_non_ip_section_fences(monkeypatch) -> None:
 
 async def test_threat_context_ip_path_unchanged() -> None:
     # The IP branch still uses enrich_ip (legacy shape) — non-IP wiring is additive.
+    # Round 16 (SPEC §4.5 WP13, [dv] R7): the IP row also lists its providers; a
+    # duck-typed enrich_ip(ip) without the ``detail`` keyword still works, and its row
+    # says the provider results were not recorded.
     from app.engine import threat_context as tc
 
     class _FakeEnrich:
@@ -527,7 +581,8 @@ async def test_threat_context_ip_path_unchanged() -> None:
 
     case = _case("case-2", EntityType.IP, "8.8.8.8")
     section = await tc._ioc_section(case, Preferences(), _FakeEnrich())
-    assert section and section[0]["type"] == "ip" and "providers" not in section[0]
+    assert section and section[0]["type"] == "ip" and section[0]["sources"] == {"note": "x"}
+    assert section[0]["providers"] == [] and section[0]["providers_status"] == "not_recorded"
 
 
 async def test_threat_context_unenrichable_entity_is_empty() -> None:
@@ -598,17 +653,24 @@ async def test_router_lookup_invalid_kind_400(app_state) -> None:
 
 
 async def test_router_set_secrets_in_memory(app_state) -> None:
+    """A key is set and cleared in the in-memory tier. Round 14: each change is audited
+    first in the real audit log, naming the key, never its value (#10)."""
     from app.api.routes_enrichment import ProviderSecretsBody, set_enrichment_secrets
 
     body = ProviderSecretsBody(secrets={"greynoise_api_key": "k1"})
-    out = await set_enrichment_secrets(name="greynoise", body=body, state=app_state)
+    out = await set_enrichment_secrets(name="greynoise", body=body, request=None, state=app_state)
     assert out["ok"] and out["key_present"] is True
     assert app_state.secrets.greynoise_api_key == "k1"  # written to the in-memory tier
     # Clearing with None removes it.
     out2 = await set_enrichment_secrets(
-        name="greynoise", body=ProviderSecretsBody(secrets={"greynoise_api_key": None}), state=app_state)
+        name="greynoise", body=ProviderSecretsBody(secrets={"greynoise_api_key": None}),
+        request=None, state=app_state)
     assert out2["key_present"] is False
     assert app_state.secrets.greynoise_api_key is None
+    rows = [r for r in await app_state.control_audit.records(limit=100)
+            if r.get("action") == "enrichment.secrets_updated"]
+    assert len(rows) == 2
+    assert all("k1" not in str(r) for r in rows)
 
 
 async def test_router_set_secrets_rejects_unknown_field(app_state) -> None:
@@ -618,7 +680,7 @@ async def test_router_set_secrets_rejects_unknown_field(app_state) -> None:
 
     with pytest.raises(HTTPException) as exc:
         await set_enrichment_secrets(
-            name="greynoise", body=ProviderSecretsBody(secrets={"bogus": "x"}), state=app_state)
+            name="greynoise", body=ProviderSecretsBody(secrets={"bogus": "x"}), request=None, state=app_state)
     assert exc.value.status_code == 400
 
 
@@ -629,7 +691,7 @@ async def test_router_set_secrets_keyless_is_400(app_state) -> None:
 
     with pytest.raises(HTTPException) as exc:
         await set_enrichment_secrets(
-            name="shodan_internetdb", body=ProviderSecretsBody(secrets={"x": "y"}), state=app_state)
+            name="shodan_internetdb", body=ProviderSecretsBody(secrets={"x": "y"}), request=None, state=app_state)
     assert exc.value.status_code == 400
 
 
@@ -640,7 +702,7 @@ async def test_router_set_secrets_unknown_provider_404(app_state) -> None:
 
     with pytest.raises(HTTPException) as exc:
         await set_enrichment_secrets(
-            name="nope", body=ProviderSecretsBody(secrets={"x": "y"}), state=app_state)
+            name="nope", body=ProviderSecretsBody(secrets={"x": "y"}), request=None, state=app_state)
     assert exc.value.status_code == 404
 
 

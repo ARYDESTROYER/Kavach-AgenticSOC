@@ -20,11 +20,15 @@ import { describe, it, expect } from 'vitest';
 import { checkTokenExistence } from '../../../scripts/gate-tokens.mjs';
 import {
   checkContrast,
+  SELECTED_FILLS,
+  SELECTED_TEXT_AXES,
   SEMANTIC_FILL_AXES,
+  SIGN_IN_NON_TEXT_AXES,
+  SIGN_IN_TEXT_AXES,
   TEXT_WASH_AXES,
 } from '../../../scripts/gate-contrast.mjs';
 import { checkCvd, CHART_TOKENS, SEMANTIC_AXES } from '../../../scripts/gate-cvd.mjs';
-import { checkGrepGuards, loadBaseline } from '../../../scripts/lib/grep-guard.mjs';
+import { checkGrepGuards, loadBaseline, PATTERNS } from '../../../scripts/lib/grep-guard.mjs';
 
 describe('design gate: token existence (theme.css ⇄ ALLOWED_TOKENS ⇄ palette)', () => {
   it('every ALLOWED_TOKENS + palette token() name exists in :root AND .dark', () => {
@@ -101,6 +105,17 @@ describe('design gate: no NEW arbitrary text sizes / raw hex in .tsx', () => {
     expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
     expect(ok).toBe(true);
   });
+
+  it('counts a colour literal, never an identifier that merely contains "#" and six hex digits', () => {
+    const hits = (text: string) => text.match(new RegExp(PATTERNS['raw-hex-color'].source, 'g'))?.length ?? 0;
+    for (const colour of ["'#aabbcc'", 'bg-[#aabbcc]', 'fill="#00FF00"', 'color: #123abc;']) {
+      expect(hits(colour), colour).toBe(1);
+    }
+    // A case reference such as INC#000042 is not a colour.
+    for (const id of ['INC#000042', 'case INC#000042 escalated', 'SOC#abcdef']) {
+      expect(hits(id), id).toBe(0);
+    }
+  });
 });
 
 /**
@@ -143,5 +158,45 @@ describe('design gate: grep baseline only ratchets DOWN (M1 anti-grandfather)', 
     // violations (the M1 defect), so the assertion is deliberately a hard `<=`.
     const total = Object.values(textBase).reduce((a, b) => a + b, 0);
     expect(total).toBeLessThanOrEqual(75);
+  });
+});
+
+describe('design gate: text on a selected fill', () => {
+  // A selected runbook phase tab and a pressed KPI tile raise their muted text to the
+  // foreground ink, because muted text on the panel's selected wash is 4.2:1 in light.
+  it('measures the foreground on the canvas and the panel selected fills, in both themes', () => {
+    const { results } = checkContrast();
+    const selected = results.filter((r) => r.kind === 'selected-text');
+    expect(selected.length).toBe(SELECTED_TEXT_AXES.length * SELECTED_FILLS.length * 2);
+    const failures = selected.filter((r) => !r.pass);
+    expect(failures, JSON.stringify(failures, null, 2)).toEqual([]);
+    for (const name of ['foreground on accent (selected fill)', 'foreground on panel-accent (selected fill)']) {
+      for (const theme of ['light', 'dark']) {
+        const hit = selected.find((r) => r.name === name && r.theme === theme);
+        expect(hit, `${theme} ${name}`).toBeDefined();
+        expect(hit!.bar).toBe(4.5);
+      }
+    }
+  });
+});
+
+describe('design gate: the sign-in page measures on the canvas (Round 16 D9)', () => {
+  // The sign-in page paints Console tokens straight on `--canvas`. These pairs replace the
+  // retired login-accents gate, whose subject (the gradient button and pill) was deleted.
+  it('measures body, secondary and error text, the field edge and the ring, in both themes', () => {
+    const { results } = checkContrast();
+    const signIn = results.filter((r) => r.kind === 'sign-in-text' || r.kind === 'sign-in-nontext');
+    expect(signIn.length).toBe((SIGN_IN_TEXT_AXES.length + SIGN_IN_NON_TEXT_AXES.length) * 2);
+    const failures = signIn.filter((r) => !r.pass);
+    expect(failures, JSON.stringify(failures, null, 2)).toEqual([]);
+    for (const name of ['input on canvas (sign-in)', 'input on background (sign-in field fill)', 'muted-foreground on canvas (sign-in)']) {
+      for (const theme of ['light', 'dark']) {
+        const hit = signIn.find((r) => r.name === name && r.theme === theme);
+        expect(hit, `${theme} ${name}`).toBeDefined();
+        expect(hit!.ratio).toBeGreaterThanOrEqual(hit!.bar);
+      }
+    }
+    // Text is held to 4.5:1 and the edges to 3:1, never the other way round.
+    for (const r of signIn) expect(r.bar).toBe(r.kind === 'sign-in-text' ? 4.5 : 3);
   });
 });

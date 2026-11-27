@@ -1,11 +1,11 @@
 ---
 title: Development
-description: Repository orientation, contribution flow, invariants, and development entry points for Agentic SOC 0.1.
+description: Repository orientation, contribution flow, invariants, and development entry points for Agentic SOC 0.2.
 ---
 
 # Development
 
-Agentic SOC 0.1 is developed as one repository containing the
+Agentic SOC 0.2 is developed as one repository containing the
 Agentic SOC API, Agentic SOC Console, deployment assets, and versioned documentation.
 
 ## Contribution flow
@@ -14,16 +14,16 @@ Use a short-lived feature branch, merge accepted work into `Testing`, and promot
 the accepted source tree through a protected pull request to `main`, the Stable branch:
 
 ```text
-feature branch -> Testing -> main (Stable) -> v0.1.12
+feature branch -> Testing -> main (Stable) -> v0.2.0
 ```
 
 Do not develop directly on `main`. `Testing` is the integration and acceptance
 channel, not a different edition of the product. Package/API/image metadata uses
-Semantic Version **0.1.12**; public documentation uses the **0.1** line.
+Semantic Version **0.2.0**; public documentation uses the **0.2** line.
 
-The remote uses `Testing` for integration and default `main` for accepted Stable
-source. Version 0.1.12 is Stable only when the exact verified `main` commit has the
-immutable `v0.1.12` tag and matching signed/public artifacts. Repository owners
+The remote uses `Testing` for integration and `main` for accepted Stable
+source. Version 0.2.0 is Stable only when the exact verified `main` commit has the
+immutable `v0.2.0` tag and matching signed/public artifacts. Repository owners
 must independently verify pull-request protection, required checks, and release-
 environment policy; source topology alone does not prove that a change passed
 acceptance.
@@ -41,9 +41,9 @@ See [Release channels](../releases/channels.md) for the promotion contract.
 |---|---|
 | `backend/app/` | FastAPI application, agents, deterministic engine, connectors, OCSF, auth, stores, notifications, and provider integrations |
 | `backend/tests/` | Offline backend regression and contract tests |
-| `backend/playbooks/` | Operator-authored deterministic-selection playbooks |
+| `backend/app/runbooks/library/` | The 12 built-in runbooks (package data) |
 | `webui/src/` | React/TypeScript Agentic SOC Console |
-| `webui/src/design-system/` | Cross-cutting loading feedback, source assets, and machine-readable Console catalog |
+| `webui/src/design-system/` | Cross-cutting loading feedback, the Console material, the panel and list grammar (`Panel`, `SectionTitle`, `ListRow`, `RowActions`, `StatusDot`, `Callout`), source assets, and machine-readable Console catalog |
 | `webui/scripts/` | Design gates and OpenAPI/type-generation tooling |
 | `deploy/` | Standalone and legacy-merge Compose definitions |
 | `docs/` | Public MkDocs documentation and source content |
@@ -92,7 +92,7 @@ down whenever a change touches the relevant boundary.
 5. Update the hand-maintained domain types and Console client if the response shape changed.
 6. Add backend and frontend regression tests.
 7. Run the relevant test, lint, type, design, build, version, and docs gates.
-8. Update public documentation for behavior visible in version 0.1.
+8. Update public documentation for behavior visible in version 0.2.
 
 Read [Extensions](extensions.md) before adding a connector, provider, channel, tool,
 route family, or persistence implementation. Use [Testing](testing.md) for the

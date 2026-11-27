@@ -1,39 +1,47 @@
 /**
- * Sessions & Activity — the signed-in user's own sessions + recent activity.
+ * Sessions and activity: the signed-in user's own sessions and recent activity.
  *
- * (Round-2 Wave 3; Wave 4 folds this into Settings > Account > Security.)
+ * (Round-2 Wave 3; Round 14 renders it as the "Sessions & activity" Settings section.)
  *
  * Two tabs:
- *   1. "Sessions" — a table of the user's active sessions. The current session is
- *      pinned to the top with a "This device" badge; per-row destructive Revoke
- *      (AlertDialog confirm); a top-right "Sign out all other sessions".
- *   2. "Activity" — recent audit events for this user (GET /api/account/activity).
+ *   1. "Sessions": a table of the user's active sessions. The current session is pinned
+ *      to the top with a "This device" badge; each row has a neutral "Sign out" action
+ *      (confirmed in a dialog, where the red button lives) and the section's actions hold
+ *      "Sign out all other sessions".
+ *   2. "Activity": recent audit events for this user (GET /api/account/activity).
  *
- * Every session/activity value is request-derived (User-Agent / IP / geo) and is
- * therefore UNTRUSTED — it is rendered as PLAIN text only (#9). No secret/token is
- * ever present (#10). When auth is OFF there are no sessions; we surface a note.
+ * Every session and activity value is request-derived (User-Agent, IP, geo) and is
+ * therefore untrusted: it renders as plain text only (#9). No secret or token is ever
+ * present (#10). When auth is off there are no sessions, and a note says so.
+ *
+ * Round 12 (Remember me): a remembered session carries a compact "Remembered" badge
+ * (its end time in the tooltip), every row shows in an "Expires" column when the server
+ * will end it (the live policy, computed by the backend: the earlier of the inactivity
+ * deadline and the hard limit), a session that already ended under the live policy reads
+ * "Ended (inactive)" or "Ended (time limit)" and is never shown as remembered, and
+ * "Forget this device" clears the username this browser keeps for the sign-in page (it
+ * does not sign anyone out).
  */
 import * as React from 'react';
-import {
-  MonitorSmartphone,
-  Laptop,
-  RefreshCw,
-  LogOut,
-  Loader2,
-  ShieldOff,
-  History,
-} from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api, ApiError } from '@/lib/api';
-import type { ActivityEvent, Session } from '@/lib/types';
-import { humanizeAge, formatTimestamp, humanizeToken, DASH } from '@/lib/format';
+import type { ActivityEvent, ActivityResponse, Session } from '@/lib/types';
+import { cn } from '@/lib/cn';
+import { humanizeAge, humanizeUntil, formatTimestamp, humanizeToken, DASH } from '@/lib/format';
+import { focusRing } from '@/lib/ui-recipes';
 import { useAuth } from '@/soc/auth';
-import { PageHeader } from '@/soc/components/PageHeader';
+import {
+  clearRememberedSessionEnd,
+  forgetDevice,
+  readRememberedUsername,
+} from '@/soc/components/auth/rememberMe';
 import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
+import { RefreshButton } from '@/soc/components/RefreshButton';
+import { Callout, LoadingGlyph, Panel } from '@/design-system';
 import { Button } from '@/ui/button';
 import { Badge } from '@/ui/badge';
-import { Alert, AlertDescription } from '@/ui/alert';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/ui/tabs';
 import {
   AlertDialog,
@@ -45,6 +53,27 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
 } from '@/ui/alert-dialog';
+import { SettingsPageSection } from '@/soc/pages/settings/primitives';
+import { SECTION_META_BY_ID } from '@/soc/pages/settings/settings-sections-meta';
+
+/** The section's help tip: the registry's `sessions` help, the one source. */
+const SESSIONS_HELP = SECTION_META_BY_ID.sessions?.help;
+
+/**
+ * The row action's accessible name: the verb and the session a person recognises (its
+ * device, place, whether it is this device, and whose it is), never the internal id.
+ * Exported for tests.
+ */
+export function sessionActionLabel(
+  verb: string,
+  s: Pick<Session, 'ua_browser' | 'ua_os' | 'ua_raw' | 'location' | 'ip_city' | 'ip_country' | 'current' | 'username'>,
+  showUser = false,
+): string {
+  const place = sessionLocation(s);
+  return `${verb} ${sessionDevice(s)}${place ? `, ${place}` : ''}${s.current ? ' (this device)' : ''}${
+    showUser && s.username ? ` for ${s.username}` : ''
+  }`;
+}
 
 function errMsg(e: unknown, fallback: string): string {
   return e instanceof ApiError && e.message ? e.message : fallback;
@@ -55,6 +84,79 @@ export function sessionLocation(s: Pick<Session, 'location' | 'ip_city' | 'ip_co
   if (s.location && s.location.trim()) return s.location.trim();
   const parts = [s.ip_city, s.ip_country].map((p) => (p ?? '').trim()).filter(Boolean);
   return parts.length ? parts.join(', ') : '';
+}
+
+/** "Oct 11, 10:00": the compact local end time used in the Remembered badge. */
+export function sessionUntilLabel(iso?: string | null): string {
+  if (!iso) return '';
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return '';
+  try {
+    return new Date(ms).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Whether a session can no longer be used: revoked, or ended under the live policy
+ * (the backend's `active: false`, e.g. after a period of inactivity).
+ */
+export function sessionEnded(s: Pick<Session, 'revoked' | 'active'>): boolean {
+  return Boolean(s.revoked) || s.active === false;
+}
+
+/** The plain label for a session that ended on its own (not revoked). */
+export function sessionEndedLabel(s: Pick<Session, 'ended_reason'>): string {
+  switch (s.ended_reason) {
+    case 'idle_expired':
+      return 'Ended (inactive)';
+    case 'absolute_expired':
+      return 'Ended (time limit)';
+    default:
+      return 'Ended';
+  }
+}
+
+/**
+ * True when a live session ends sooner through inactivity than through its hard
+ * limit: `expires_at` (the earlier of the two) then moves later with each use, up
+ * to `effective_absolute_expires_at`.
+ */
+function idleEndsFirst(s: Pick<Session, 'expires_at' | 'effective_absolute_expires_at'>): boolean {
+  const end = Date.parse(s.expires_at ?? '');
+  const latest = Date.parse(s.effective_absolute_expires_at ?? '');
+  return !Number.isNaN(end) && !Number.isNaN(latest) && latest - end > 60_000;
+}
+
+/** The tooltip for the "Expires" cell of a live session. */
+export function sessionExpiresTitle(
+  s: Pick<Session, 'expires_at' | 'effective_absolute_expires_at'>,
+): string {
+  if (idleEndsFirst(s)) {
+    return `${formatTimestamp(s.expires_at)} if it isn't used again, ${formatTimestamp(
+      s.effective_absolute_expires_at,
+    )} at the latest`;
+  }
+  return formatTimestamp(s.expires_at);
+}
+
+/** The tooltip for the "Remembered" badge of a live session. */
+export function sessionRememberedTitle(
+  s: Pick<Session, 'expires_at' | 'effective_absolute_expires_at'>,
+): string | undefined {
+  const end = sessionUntilLabel(s.expires_at);
+  if (!end) return undefined;
+  if (idleEndsFirst(s)) {
+    const latest = sessionUntilLabel(s.effective_absolute_expires_at);
+    return `Remembered until ${end} if it isn't used again, ${latest} at the latest`;
+  }
+  return `Remembered until ${end}`;
 }
 
 /** A "Browser on OS" device label from the parsed UA fields. */
@@ -79,19 +181,19 @@ export interface SessionsTableProps {
   busySid: string | null;
   /** Show the owning username column (admin console). */
   showUser?: boolean;
-  /** Label for the destructive verb (default "Revoke"; admin uses "Terminate"). */
+  /** The row action's verb (default "Sign out"). */
   revokeLabel?: string;
   ariaLabel?: string;
 }
 
-/** Plain-text session table; the current session sorts to the top + is badged. */
+/** Plain-text session table; the current session sorts to the top and is badged. */
 export function SessionsTable({
   sessions,
   loading,
   onRevoke,
   busySid,
   showUser = false,
-  revokeLabel = 'Revoke',
+  revokeLabel = 'Sign out',
   ariaLabel = 'Sessions',
 }: SessionsTableProps) {
   const ordered = React.useMemo(() => {
@@ -119,32 +221,45 @@ export function SessionsTable({
       : []),
     {
       id: 'device',
-      header: 'Device / Browser',
+      header: 'Device',
       cell: (s) => (
-        <div className="flex items-center gap-2">
-          {s.current ? (
-            <Laptop className="h-4 w-4 text-primary" aria-hidden />
-          ) : (
-            <MonitorSmartphone className="h-4 w-4 text-muted-foreground" aria-hidden />
-          )}
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="truncate text-sm text-foreground">{sessionDevice(s)}</span>
-              {s.current ? (
-                <Badge variant="success" className="text-2xs">
-                  This device
-                </Badge>
+        <div className="min-w-0">
+          {/* Badges wrap under the device name when the column is narrow, so the table
+              keeps its actions in view at laptop widths. */}
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+            <span className="min-w-0 max-w-full truncate text-sm text-foreground">{sessionDevice(s)}</span>
+            {s.current ? (
+              <Badge variant="success" className="text-2xs">
+                This device
+              </Badge>
+            ) : null}
+            {s.revoked ? (
+              <Badge variant="secondary" className="text-2xs">
+                Revoked
+              </Badge>
+            ) : null}
+          </div>
+          {s.client_type || (s.remember && !sessionEnded(s)) ? (
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
+              {s.client_type ? (
+                <span className="text-xs text-muted-foreground">
+                  {humanizeToken(String(s.client_type))}
+                </span>
               ) : null}
-              {s.revoked ? (
-                <Badge variant="secondary" className="text-2xs">
-                  Revoked
+              {s.remember && !sessionEnded(s) ? (
+                // Compact so the table keeps its actions in view; the end time is in the
+                // Expires column and the tooltip. Never on an ended session.
+                <Badge
+                  variant="outline"
+                  className="text-2xs"
+                  data-session-remembered
+                  title={sessionRememberedTitle(s)}
+                >
+                  Remembered
                 </Badge>
               ) : null}
             </div>
-            {s.client_type ? (
-              <span className="text-xs text-muted-foreground">{humanizeToken(String(s.client_type))}</span>
-            ) : null}
-          </div>
+          ) : null}
         </div>
       ),
     },
@@ -182,63 +297,178 @@ export function SessionsTable({
       ),
     },
     {
+      id: 'expires',
+      header: 'Expires',
+      cell: (s) =>
+        s.revoked ? (
+          <span className="text-sm text-muted-foreground">{DASH}</span>
+        ) : s.active === false ? (
+          // Ended under the live policy (e.g. inactivity): never a future time.
+          <span
+            className="whitespace-nowrap text-sm text-muted-foreground"
+            title={s.expires_at ? `Ended ${formatTimestamp(s.expires_at)}` : undefined}
+            data-session-ended
+          >
+            {sessionEndedLabel(s)}
+          </span>
+        ) : !s.expires_at ? (
+          <span className="text-sm text-muted-foreground">{DASH}</span>
+        ) : (
+          <span
+            className="whitespace-nowrap text-sm text-muted-foreground"
+            title={sessionExpiresTitle(s)}
+            data-session-expires
+          >
+            {humanizeUntil(s.expires_at)}
+          </span>
+        ),
+    },
+    {
       id: 'actions',
       header: '',
       align: 'right',
       cell: (s) => (
+        // Neutral at rest; red only on hover and keyboard focus. The dialog that follows
+        // holds the red button (ui-standard, destructive actions).
         <Button
           variant="ghost"
           size="sm"
-          className="h-8 text-critical hover:text-critical"
+          className={cn(
+            'h-8 text-muted-foreground hover:bg-critical/10 hover:text-critical-text focus-visible:text-critical-text',
+            focusRing,
+          )}
           onClick={() => onRevoke(s)}
           disabled={busySid === s.sid || s.revoked}
-          aria-label={`${revokeLabel} session ${s.sid}`}
+          aria-busy={busySid === s.sid || undefined}
+          aria-label={sessionActionLabel(revokeLabel, s, showUser)}
+          title={revokeLabel}
         >
           {busySid === s.sid ? (
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            <LoadingGlyph size="sm" className="size-4" aria-hidden />
           ) : (
-            <LogOut className="h-4 w-4" aria-hidden />
+            <LogOut className="size-4" aria-hidden />
           )}
-          {revokeLabel}
+          {/* In a narrow table the action keeps its icon (named by aria-label and the
+              tooltip) so every column, the action included, stays in view. */}
+          <span className="hidden @[52rem]/sessions:inline" data-session-action-label>
+            {revokeLabel}
+          </span>
         </Button>
       ),
     },
   ];
 
+  // The table bleeds to the edge of the panel its caller draws (Round 14, C9 option A).
   return (
-    <DataTable<Session>
-      columns={columns}
-      rows={ordered}
-      getRowId={(s) => s.sid}
-      loading={loading}
-      ariaLabel={ariaLabel}
-      empty="No active sessions."
-    />
+    <div className="@container/sessions" data-sessions-table>
+      <DataTable<Session>
+        columns={columns}
+        rows={ordered}
+        getRowId={(s) => s.sid}
+        loading={loading}
+        surface="panel"
+        ariaLabel={ariaLabel}
+        empty="No active sessions."
+      />
+    </div>
   );
 }
 
 // --------------------------------------------------------------------------- //
 // Activity tab
 // --------------------------------------------------------------------------- //
-function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: boolean }) {
+/**
+ * The activity rows of a `GET /api/account/activity` answer. The server sends audit
+ * records under `activity`, so each row's event name, summary and client address are
+ * mapped onto the fields the list shows (`action`, `event_label`, `detail`, `ip`).
+ */
+export function activityRows(res: ActivityResponse | null | undefined): ActivityEvent[] {
+  const rows = Array.isArray(res?.activity) ? res.activity : Array.isArray(res?.events) ? res.events : [];
+  return rows.map((row) => {
+    const text = (value: unknown): string | undefined =>
+      typeof value === 'string' && value ? value : undefined;
+    const client = row.client && typeof row.client === 'object' ? (row.client as { ip?: unknown }) : {};
+    return {
+      ...row,
+      action: text(row.action) ?? text(row.action_type),
+      event_label: text(row.event_label),
+      detail: text(row.detail) ?? text(row.result_summary),
+      ip: text(row.ip) ?? text(client.ip) ?? null,
+    };
+  });
+}
+
+/**
+ * The plain sentence under each known account and session event. The audit row's own
+ * summary (`detail`, such as "session_create sid=... new session") is an internal record
+ * and never shows here; an event this list does not know shows its name alone.
+ */
+const ACTIVITY_SENTENCES: Readonly<Record<string, string>> = {
+  'auth.login': 'You signed in.',
+  'auth.login_failed': 'A sign-in to this account failed.',
+  'auth.logout': 'You signed out.',
+  'auth.reauthenticated': 'You confirmed your password for a protected action.',
+  'auth.reauth_failed': 'A password confirmation failed.',
+  'auth.password_changed': 'The password of this account was changed.',
+  'auth.password_change_failed': 'A password change failed.',
+  'auth.mfa_setup_started': 'Two-factor setup started.',
+  'auth.mfa_enrolled': 'Two-factor authentication was set up.',
+  'auth.mfa_challenged': 'A two-factor code was asked for.',
+  'auth.mfa_failed': 'A two-factor code was not accepted.',
+  'auth.mfa_locked': 'Two-factor checks were paused after too many wrong codes.',
+  'auth.mfa_disabled': 'Two-factor authentication was turned off.',
+  'session.created': 'A new session started.',
+  'session.refreshed': 'A session was renewed.',
+  'session.revoked': 'A session was signed out.',
+  'user.preferences_updated': 'Your personal preferences changed.',
+};
+
+/** The sentence for an event's action, or null when the list does not know it. Exported for tests. */
+export function activitySentence(action: unknown): string | null {
+  return typeof action === 'string' && Object.prototype.hasOwnProperty.call(ACTIVITY_SENTENCES, action)
+    ? ACTIVITY_SENTENCES[action]
+    : null;
+}
+
+function ActivityList({
+  events,
+  loading,
+  failed = false,
+}: {
+  events: ActivityEvent[];
+  loading: boolean;
+  /** The last read failed: the empty slot says so instead of "No recent activity." */
+  failed?: boolean;
+}) {
+  // A fixed layout (the Where and When widths) keeps the table inside a phone panel: the
+  // list holds nothing a keyboard can focus, so a table wider than its panel would be a
+  // scroll region no keyboard can reach, with the When column cut off. Its planned
+  // minimum is 6rem + 8rem (224 px); the sentence wraps instead of being cut short.
   const columns: DataTableColumn<ActivityEvent>[] = [
     {
       id: 'action',
       header: 'Event',
-      cell: (e) => (
-        <div className="min-w-0">
-          <span className="block truncate text-sm font-medium text-foreground">
-            {e.action ? humanizeToken(String(e.action)) : 'Event'}
-          </span>
-          {e.detail ? (
-            <span className="block truncate text-xs text-muted-foreground">{e.detail}</span>
-          ) : null}
-        </div>
-      ),
+      wrap: true,
+      cell: (e) => {
+        const sentence = activitySentence(e.action);
+        return (
+          <div className="min-w-0">
+            <span className="block truncate text-sm font-medium text-foreground">
+              {e.event_label || (e.action ? humanizeToken(String(e.action)) : 'Event')}
+            </span>
+            {sentence ? (
+              <span className="block break-words text-xs text-muted-foreground" data-activity-sentence>
+                {sentence}
+              </span>
+            ) : null}
+          </div>
+        );
+      },
     },
     {
       id: 'location',
       header: 'Where',
+      width: '30%',
       cell: (e) => {
         const loc = sessionLocation(e);
         const dev = sessionDevice(e);
@@ -256,6 +486,7 @@ function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: b
       id: 'ts',
       header: 'When',
       align: 'right',
+      width: '6rem',
       cell: (e) => (
         <span className="text-sm text-muted-foreground" title={formatTimestamp(e.ts)}>
           {humanizeAge(e.ts)}
@@ -269,8 +500,9 @@ function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: b
       rows={events}
       getRowId={(e, i) => e.id ?? `${e.ts ?? ''}-${i}`}
       loading={loading}
+      surface="panel"
       ariaLabel="Recent account activity"
-      empty="No recent activity."
+      empty={failed ? 'Activity could not be loaded. Use Refresh to try again.' : 'No recent activity.'}
     />
   );
 }
@@ -288,9 +520,9 @@ export default function Sessions(_props: SessionsPageProps) {
 }
 
 /**
- * The "Sessions & activity" body, without the page wrapper. Exported so Settings can
- * embed it under the Account (Personal) group. No `<Can>` gate: every signed-in user
- * manages their OWN sessions (the backend scopes the listing to the caller).
+ * The "Sessions & activity" body. Exported so Settings can embed it as a section. No
+ * `<Can>` gate: every signed-in user manages their own sessions (the backend scopes the
+ * listing to the caller).
  */
 export interface SessionsInnerProps {
   /** True when this body is hosted beneath the Settings page header. */
@@ -303,10 +535,16 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
   const [activity, setActivity] = React.useState<ActivityEvent[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [activityLoading, setActivityLoading] = React.useState(true);
+  // A failed activity read is said as such, never shown as "No recent activity."
+  const [activityFailed, setActivityFailed] = React.useState(false);
   const [busySid, setBusySid] = React.useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = React.useState<Session | null>(null);
   const [revokeOthersOpen, setRevokeOthersOpen] = React.useState(false);
   const [busyOthers, setBusyOthers] = React.useState(false);
+  // The sign-in page's remembered username lives only in this browser.
+  const [deviceRemembers, setDeviceRemembers] = React.useState(() =>
+    Boolean(readRememberedUsername()),
+  );
 
   const loadSessions = React.useCallback(async () => {
     setLoading(true);
@@ -324,11 +562,13 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
     setActivityLoading(true);
     try {
       const res = await api.account_activity();
-      setActivity(res.events ?? []);
+      setActivity(activityRows(res));
+      setActivityFailed(false);
     } catch (e) {
       // Activity is best-effort; a failure shouldn't break the page.
       toast.error(errMsg(e, 'Could not load activity.'));
       setActivity([]);
+      setActivityFailed(true);
     } finally {
       setActivityLoading(false);
     }
@@ -340,19 +580,22 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
   }, [loadSessions, loadActivity]);
 
   const otherCount = sessions.filter((s) => !s.current && !s.revoked).length;
-  // Only signed-in + auth-on shows the session tabs; in the other two states the body
-  // is an informational Alert, so the Refresh + destructive header actions (which
-  // would fire pointless / 401'ing calls) are hidden to match.
+  // Only signed-in with auth on shows the session tabs; in the other two states the body
+  // is a note, so Refresh and the sign-out actions (which would fire pointless or
+  // unauthorised calls) are hidden to match.
   const active = authEnabled && isAuthenticated;
 
   const doRevoke = async (s: Session) => {
     setBusySid(s.sid);
     try {
       await api.sessions.revoke(s.sid);
-      toast.success(s.current ? 'Signed out this device.' : 'Session revoked.');
+      // Signing out this device is deliberate, not an expiry, so no automatic sign-out
+      // notice follows on the next sign-in page.
+      if (s.current) clearRememberedSessionEnd();
+      toast.success(s.current ? 'Signed out this device.' : 'Session signed out.');
       await loadSessions();
     } catch (e) {
-      toast.error(errMsg(e, 'Could not revoke the session.'));
+      toast.error(errMsg(e, 'Could not sign out the session.'));
     } finally {
       setBusySid(null);
     }
@@ -375,85 +618,88 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
     }
   };
 
+  const refreshing = loading || activityLoading;
+
   return (
-    <div className="space-y-6">
-      <PageHeader
-        embedded={embedded}
-        icon={MonitorSmartphone}
-        eyebrow="Account"
-        title="Sessions & activity"
-        description="Review where you're signed in and your recent account activity."
-        actions={
-          active ? (
-            <div className="flex items-center gap-2">
+    <SettingsPageSection
+      embedded={embedded}
+      title="Sessions & activity"
+      help={SESSIONS_HELP}
+      width="full"
+      actions={
+        active ? (
+          // Wraps on narrow screens so no action is ever pushed off-screen.
+          <div className="flex flex-wrap items-center justify-end gap-2" data-sessions-actions>
+            {deviceRemembers ? (
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  void loadSessions();
-                  void loadActivity();
+                  forgetDevice();
+                  setDeviceRemembers(false);
+                  toast.success("This device won't remember your username anymore.");
                 }}
-                disabled={loading}
+                title="Stop showing your username on this browser's sign-in page. You stay signed in."
               >
-                <RefreshCw className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} aria-hidden />
-                Refresh
+                Forget this device
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-critical hover:text-critical"
-                onClick={() => setRevokeOthersOpen(true)}
-                disabled={loading || otherCount === 0}
-              >
-                <ShieldOff className="h-4 w-4" aria-hidden />
-                Sign out all other sessions
-              </Button>
-            </div>
-          ) : undefined
-        }
-      />
-
+            ) : null}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setRevokeOthersOpen(true)}
+              disabled={loading || otherCount === 0}
+            >
+              Sign out all other sessions
+            </Button>
+            <RefreshButton
+              refreshing={refreshing}
+              onClick={() => {
+                void loadSessions();
+                void loadActivity();
+              }}
+            />
+          </div>
+        ) : undefined
+      }
+    >
       {authEnabled && !isAuthenticated ? (
-        <Alert>
-          <AlertDescription>Sign in to manage your sessions.</AlertDescription>
-        </Alert>
+        <Callout intent="warning" title="Not signed in">
+          Sign in to manage your sessions.
+        </Callout>
       ) : !authEnabled ? (
-        <Alert>
-          <AlertDescription>
-            Authentication is disabled, so there are no sessions to manage. Enable auth on the
-            backend to track signed-in devices.
-          </AlertDescription>
-        </Alert>
+        <Callout intent="warning" title="Sign-in is off">
+          Authentication is disabled, so there are no sessions to manage. Turn on sign-in on
+          the backend to track signed-in devices.
+        </Callout>
       ) : (
         <Tabs defaultValue="sessions" className="space-y-4">
-          <TabsList>
-            <TabsTrigger value="sessions">
-              <MonitorSmartphone className="mr-1.5 h-4 w-4" aria-hidden />
-              Sessions
-            </TabsTrigger>
-            <TabsTrigger value="activity">
-              <History className="mr-1.5 h-4 w-4" aria-hidden />
-              Activity
-            </TabsTrigger>
+          <TabsList variant="underline" aria-label="Sessions and activity">
+            <TabsTrigger value="sessions">Sessions</TabsTrigger>
+            <TabsTrigger value="activity">Activity</TabsTrigger>
           </TabsList>
 
           <TabsContent value="sessions">
-            <SessionsTable
-              sessions={sessions}
-              loading={loading}
-              busySid={busySid}
-              onRevoke={(s) => setRevokeTarget(s)}
-              ariaLabel="Your sessions"
-            />
+            <Panel as="div" padding="none" data-sessions-panel="sessions">
+              <SessionsTable
+                sessions={sessions}
+                loading={loading}
+                busySid={busySid}
+                onRevoke={(s) => setRevokeTarget(s)}
+                ariaLabel="Your sessions"
+              />
+            </Panel>
           </TabsContent>
 
           <TabsContent value="activity">
-            <ActivityList events={activity} loading={activityLoading} />
+            <Panel as="div" padding="none" data-sessions-panel="activity">
+              <ActivityList events={activity} loading={activityLoading} failed={activityFailed} />
+            </Panel>
           </TabsContent>
         </Tabs>
       )}
 
-      {/* Per-session revoke confirm */}
+      {/* Per-session sign-out confirm */}
       <AlertDialog
         open={!!revokeTarget}
         onOpenChange={(open) => {
@@ -463,12 +709,12 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {revokeTarget?.current ? 'Sign out this device?' : 'Revoke this session?'}
+              {revokeTarget?.current ? 'Sign out this device?' : 'Sign out this session?'}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {revokeTarget?.current
-                ? 'You will be signed out of this device and returned to the login screen.'
-                : 'The chosen device will be signed out immediately and will need to sign in again.'}
+                ? 'You will be signed out of this device and returned to the sign-in page.'
+                : 'The chosen device is signed out now and will need to sign in again.'}
               {revokeTarget ? (
                 <span className="mt-2 block text-xs text-muted-foreground">
                   {sessionDevice(revokeTarget)}
@@ -487,20 +733,20 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
                 if (t) void doRevoke(t);
               }}
             >
-              {revokeTarget?.current ? 'Sign out' : 'Revoke'}
+              Sign out
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Revoke-others confirm */}
+      {/* Sign-out-others confirm */}
       <AlertDialog open={revokeOthersOpen} onOpenChange={setRevokeOthersOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Sign out all other sessions?</AlertDialogTitle>
             <AlertDialogDescription>
-              Every session except this device will be signed out immediately. This is useful if
-              you suspect an account has been accessed from a device you don&apos;t recognise.
+              Every session except this device is signed out now. Use this if you think your
+              account was used from a device you don&apos;t recognise.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -515,6 +761,6 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </SettingsPageSection>
   );
 }

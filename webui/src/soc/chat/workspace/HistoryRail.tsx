@@ -1,0 +1,914 @@
+/**
+ * HistoryRail — the Workspace conversation list (chat revamp SPEC §10.2), docked at
+ * 264 px or inside the left History Sheet, plus the 48 px icon strip it collapses to.
+ *
+ *  - Header: New chat and a server-side content search (`?q=`) whose hits show a
+ *    snippet under the title; opening a hit selects that thread and highlights the
+ *    matching message.
+ *  - Groups: Pinned, Today, Yesterday, Previous 7 days, Previous 30 days, then month.
+ *  - One-line rows: title + relative time, with the full title and exact date in a
+ *    tooltip. The accessible name is "<title> — <exact date> · N messages"; the active
+ *    row carries `aria-current`. ↑/↓/Home/End move between rows (one roving tab stop
+ *    that always lands on an existing, enabled row).
+ *  - Group labels are labels of `role="group"`, not headings: the page's heading
+ *    outline is h1 Chat → h2 thread title → h3 turns (SPEC §10.1a).
+ *  - Inline rename returns focus to the row it replaced.
+ *  - Row menu: Rename (inline), Pin/Unpin, Open report (when the thread has one),
+ *    Export ▸, Delete (disabled for a thread a turn is running in).
+ *  - Footer: the retention note when history was truncated or ≥ 45 threads exist.
+ *  - Live statuses (Round 12, SPEC D13): a small turning ring replaces the time while
+ *    an answer is being written; a dot before the time marks an unread answer (accent),
+ *    a question waiting on the analyst (amber) or a failed answer (red), and the row's
+ *    name says so. Rows are never disabled by a running turn: answers keep streaming
+ *    while another thread is open. The collapsed strip's "Show history" carries a dot
+ *    while a thread that is not on screen is working or has news.
+ *
+ * History truth is fail-closed: a read failure is an explicit retryable error, never
+ * the calm "No previous conversations" state. Titles and snippets are display text.
+ *
+ * Round 13 (SPEC-chat T6, T21, T26, T27, T33):
+ *  - Titles (now model-written) render as text nodes only, everywhere.
+ *  - While a New chat's first answer is written, its temporary row tops Today with the
+ *    running glyph and `aria-current`; it has no actions until it is saved.
+ *  - The row menu reads Rename, Pin (Unpin), Export, Delete, the same words as the
+ *    thread menu.
+ *  - In the History sheet the search field takes focus on open (`data-autofocus`, read
+ *    by `useOpenerFocus`), so no New chat tooltip covers it; every search hit shows its
+ *    snippet under the title, two lines, the matching words in `font-medium`.
+ *  - Row time labels keep their distance from the title (`shrink-0 pl-3 tabular-nums`).
+ *  - Long titles (re-shoot PW3-2): in the History sheet (a phone or a narrow window) and
+ *    on any touch screen, where no tooltip can show, a row's and a search hit's title wrap
+ *    to up to three lines instead of one ({@link railTitleClass}), so a rename (80
+ *    characters at most) is read whole; the docked rail on a pointer that hovers keeps one
+ *    line with the tooltip.
+ */
+import * as React from 'react';
+import {
+  Check,
+  Download,
+  FileText,
+  MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Pencil,
+  Pin,
+  PinOff,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from 'lucide-react';
+
+import { cn } from '@/lib/cn';
+import type { ChatConversationSearchHit, ChatConversationSummary } from '@/lib/types';
+import { Button } from '@/ui/button';
+import { Input } from '@/ui/input';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/ui/dropdown-menu';
+import { LoadingState } from '@/design-system/loading';
+import { ActivityGlyph } from '@/soc/chat-activity/glyph';
+import { isChatActivityViewed, useChatActivity } from '@/soc/chat-activity/activity';
+import { IconButton, type IconButtonProps } from '@/soc/components/IconButton';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
+import { formatUtc } from '../blocks/format';
+import { UNTITLED_CONVERSATION } from '../chat-api';
+import { shortcutLabel, type ShortcutKey } from '../shortcuts/shortcut-list';
+import { isPendingThreadRow, type ChatRetentionInfo } from '../useChatConversations';
+import { plainSnippet } from './plain-snippet';
+import { focusQuietly, quietFocusGuard } from '../quiet-focus';
+
+export type ConversationExportFormat = 'markdown' | 'html' | 'print';
+
+export const EXPORT_FORMATS: ReadonlyArray<{ format: ConversationExportFormat; label: string }> = [
+  { format: 'markdown', label: 'Markdown (.md)' },
+  { format: 'html', label: 'HTML (.html)' },
+  { format: 'print', label: 'Print / Save as PDF' },
+];
+
+/* -------------------------------------------------------------------------- */
+/* Grouping and time labels (pure; exported for tests).                        */
+/* -------------------------------------------------------------------------- */
+
+export interface HistoryGroup {
+  label: string;
+  conversations: ChatConversationSummary[];
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Calendar-day ordinal in local time (immune to 23/25-hour DST days). */
+const localDay = (date: Date) => Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / DAY_MS);
+
+/** Pinned first (as listed), then Today / Yesterday / Previous 7 days / Previous 30 days / month. */
+export function groupConversations(conversations: readonly ChatConversationSummary[], now = new Date()): HistoryGroup[] {
+  const pinned: ChatConversationSummary[] = [];
+  const fixed: HistoryGroup[] = [
+    { label: 'Today', conversations: [] },
+    { label: 'Yesterday', conversations: [] },
+    { label: 'Previous 7 days', conversations: [] },
+    { label: 'Previous 30 days', conversations: [] },
+  ];
+  const months = new Map<string, HistoryGroup>();
+  const today = localDay(now);
+  for (const conversation of conversations) {
+    if (conversation.pinned) {
+      pinned.push(conversation);
+      continue;
+    }
+    const ms = Date.parse(conversation.updated_at);
+    if (!Number.isFinite(ms)) {
+      const older = months.get('Older') ?? { label: 'Older', conversations: [] };
+      older.conversations.push(conversation);
+      months.set('Older', older);
+      continue;
+    }
+    const date = new Date(ms);
+    const age = Math.max(0, today - localDay(date));
+    if (age === 0) fixed[0].conversations.push(conversation);
+    else if (age === 1) fixed[1].conversations.push(conversation);
+    else if (age < 7) fixed[2].conversations.push(conversation);
+    else if (age < 30) fixed[3].conversations.push(conversation);
+    else {
+      const label = date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+      const group = months.get(label) ?? { label, conversations: [] };
+      group.conversations.push(conversation);
+      months.set(label, group);
+    }
+  }
+  const out: HistoryGroup[] = [];
+  if (pinned.length) out.push({ label: 'Pinned', conversations: pinned });
+  out.push(...fixed.filter((group) => group.conversations.length));
+  // Months keep the newest-first order the rows arrived in; "Older" (unparsable) last.
+  const monthGroups = Array.from(months.values());
+  out.push(...monthGroups.filter((g) => g.label !== 'Older'), ...monthGroups.filter((g) => g.label === 'Older'));
+  return out;
+}
+
+/** "now", "5m", "3h", "Tue", "Sep 12", "Sep 2025" — the row's quiet time stamp. */
+export function shortAge(iso: string, now = new Date()): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return '';
+  const diff = Math.max(0, now.getTime() - ms);
+  if (diff < 60_000) return 'now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
+  const date = new Date(ms);
+  const days = localDay(now) - localDay(date);
+  if (days === 0) return `${Math.floor(diff / 3_600_000)}h`;
+  if (days < 7) return date.toLocaleDateString(undefined, { weekday: 'short' });
+  if (date.getFullYear() === now.getFullYear()) return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Shortcut hints.                                                             */
+/* -------------------------------------------------------------------------- */
+
+/** The visible keys of the rail / toolbar shortcuts (SPEC §10.4a). */
+export const SHORTCUT_HINT_KEYS = {
+  newChat: ['Mod', 'Shift', 'O'],
+  toggleHistory: ['Mod', 'Shift', 'S'],
+} as const satisfies Record<string, readonly ShortcutKey[]>;
+
+/**
+ * An icon button whose tooltip adds the keyboard shortcut ("New chat (Ctrl+Shift+O)")
+ * while its accessible name stays the plain label; `aria-keyshortcuts` carries the
+ * machine form.
+ */
+export function HintedIconButton({
+  label,
+  hint,
+  tooltipSide = 'top',
+  onFocus,
+  ...props
+}: Omit<IconButtonProps, 'tooltip'> & { hint?: readonly ShortcutKey[] }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <IconButton
+          label={label}
+          tooltip={false}
+          {...props}
+          // Focus handed back by code (a sheet closing) does not open the hint.
+          onFocus={(event) => {
+            onFocus?.(event);
+            quietFocusGuard(event);
+          }}
+        />
+      </TooltipTrigger>
+      <TooltipContent side={tooltipSide}>{hint ? `${label} (${shortcutLabel(hint)})` : label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** A row's live state, most important first (the server's, overlaid with this tab's). */
+export function rowActivity(conversation: ChatConversationSummary): 'running' | 'needs_input' | 'failed' | 'unread' | null {
+  if (conversation.status === 'running' || conversation.status === 'needs_input' || conversation.status === 'failed') {
+    return conversation.status;
+  }
+  return conversation.unread ? 'unread' : null;
+}
+
+const ROW_STATUS_TEXT = {
+  running: 'answering',
+  needs_input: 'needs your input',
+  failed: 'answer failed',
+  unread: 'new answer',
+} as const;
+
+/**
+ * A row or search hit title: one line cut with an ellipsis where a tooltip can show the
+ * rest; up to three wrapped lines in the History sheet and on a touch screen (no hover,
+ * no tooltip). (No `block` with the clamp: it would override line-clamp's box.)
+ */
+export function railTitleClass(inSheet: boolean): string {
+  return inSheet
+    ? 'line-clamp-3 break-words'
+    : 'truncate [@media(hover:none)]:line-clamp-3 [@media(hover:none)]:whitespace-normal [@media(hover:none)]:break-words';
+}
+
+function rowName(conversation: ChatConversationSummary): string {
+  const count = conversation.message_count;
+  const status = rowActivity(conversation);
+  const head = `${conversation.title || UNTITLED_CONVERSATION}${status ? `, ${ROW_STATUS_TEXT[status]}` : ''}, ${formatUtc(conversation.updated_at)}`;
+  // The New chat's temporary row (T21) holds the question on screen but nothing saved
+  // yet: no count, which would read "0 messages".
+  if (isPendingThreadRow(conversation)) return head;
+  return `${head} · ${count} ${count === 1 ? 'message' : 'messages'}`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Rows.                                                                       */
+/* -------------------------------------------------------------------------- */
+
+interface RowActions {
+  activeId: string | null | undefined;
+  /** The open thread's turn is running: it cannot be deleted (other rows stay open). */
+  busy: boolean;
+  onSelect: (conversation: ChatConversationSummary) => void;
+  onRename: (conversation: ChatConversationSummary, title: string) => void;
+  onTogglePin: (conversation: ChatConversationSummary) => void;
+  onOpenReport?: (conversation: ChatConversationSummary) => void;
+  onExport?: (conversation: ChatConversationSummary, format: ConversationExportFormat) => void;
+  onDelete: (conversation: ChatConversationSummary) => void;
+}
+
+function RenameField({
+  conversation,
+  onCommit,
+  onCancel,
+}: {
+  conversation: ChatConversationSummary;
+  onCommit: (title: string) => void;
+  /** Escape, Cancel, or a commit with no change. */
+  onCancel: () => void;
+}) {
+  const [value, setValue] = React.useState(conversation.title);
+  const ref = React.useRef<HTMLInputElement>(null);
+  React.useEffect(() => {
+    ref.current?.focus();
+    ref.current?.select();
+  }, []);
+  const commit = () => {
+    const title = value.replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (title && title !== conversation.title) onCommit(title);
+    else onCancel();
+  };
+  return (
+    <div className="flex h-8 items-center gap-1 px-1">
+      <Input
+        ref={ref}
+        value={value}
+        maxLength={80}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          // An IME composition's Enter picks a candidate; it must not commit.
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            commit();
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+        className="h-7 rounded-sm px-2 text-sm"
+        aria-label={`Rename ${conversation.title || UNTITLED_CONVERSATION}`}
+      />
+      <IconButton label="Save conversation name" size="sm" onClick={commit}>
+        <Check aria-hidden />
+      </IconButton>
+      <IconButton label="Cancel rename" size="sm" onClick={onCancel}>
+        <X aria-hidden />
+      </IconButton>
+    </div>
+  );
+}
+
+/**
+ * When a row's ⋯ trigger shows, and the same three states hide the row's time in its
+ * place: the pointer is over the row, keyboard focus is in the row (the row itself or
+ * the trigger: `:focus-visible`, so a row focused by a click keeps its time), or the
+ * trigger's menu is open. One condition for both, so the time and the trigger are never
+ * hidden together (Round 13 polish).
+ */
+const ROW_MENU_SHOWN =
+  'group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100 group-has-[[data-state=open]]/row:opacity-100';
+const ROW_TIME_HIDDEN =
+  'group-hover/row:invisible group-has-[:focus-visible]/row:invisible group-has-[[data-state=open]]/row:invisible';
+
+function RowMenu({ conversation, actions, onRename, tabIndex }: { conversation: ChatConversationSummary; actions: RowActions; onRename: () => void; tabIndex: number }) {
+  const title = conversation.title || UNTITLED_CONVERSATION;
+  const deleteLocked = (actions.busy && actions.activeId === conversation.id) || conversation.status === 'running';
+  // Rename replaces the row (and this trigger) with a field that takes focus. It starts
+  // only once the menu has closed: Radix runs an item's onSelect synchronously while the
+  // menu's focus trap is still active, which would pull focus back out of the field.
+  const renamingRef = React.useRef(false);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          tabIndex={tabIndex}
+          aria-label={`Actions for ${title}`}
+          className={cn(
+            'absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            ROW_MENU_SHOWN,
+          )}
+        >
+          <MoreHorizontal className="size-4" aria-hidden />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        // The 16 px screen-edge gap the chat's layers keep (SPEC-chat T23, audit C8).
+        collisionPadding={16}
+        className="w-48"
+        onCloseAutoFocus={(event) => {
+          if (!renamingRef.current) return;
+          renamingRef.current = false;
+          // Not back to the trigger, which the rename field replaces.
+          event.preventDefault();
+          onRename();
+        }}
+      >
+        <DropdownMenuItem
+          onSelect={() => {
+            renamingRef.current = true;
+          }}
+        >
+          <Pencil aria-hidden />
+          Rename
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => actions.onTogglePin(conversation)}>
+          {conversation.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
+          {conversation.pinned ? 'Unpin' : 'Pin'}
+        </DropdownMenuItem>
+        {conversation.report_id && actions.onOpenReport ? (
+          <DropdownMenuItem onSelect={() => actions.onOpenReport?.(conversation)}>
+            <FileText aria-hidden />
+            Open report
+          </DropdownMenuItem>
+        ) : null}
+        {actions.onExport ? (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              {/* A sub-trigger does not size its icon like a menu item does (16 px, muted). */}
+              <Download className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+              Export
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent collisionPadding={16}>
+              {EXPORT_FORMATS.map(({ format, label }) => (
+                <DropdownMenuItem key={format} onSelect={() => actions.onExport?.(conversation, format)}>
+                  {label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        ) : null}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="text-critical-text focus:text-critical-text"
+          disabled={deleteLocked}
+          onSelect={() => actions.onDelete(conversation)}
+        >
+          <Trash2 aria-hidden />
+          {deleteLocked ? 'Delete (answer in progress)' : 'Delete'}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* The rail.                                                                   */
+/* -------------------------------------------------------------------------- */
+
+export interface HistoryRailSearch {
+  query: string;
+  setQuery: (query: string) => void;
+  results: ChatConversationSearchHit[] | null;
+  searching: boolean;
+  error: string | null;
+  openHit: (hit: ChatConversationSearchHit) => void;
+}
+
+export interface HistoryRailProps extends RowActions {
+  conversations: readonly ChatConversationSummary[];
+  loading: boolean;
+  error: string | null;
+  retention: ChatRetentionInfo;
+  search: HistoryRailSearch;
+  onRetry: () => void;
+  onNewChat: () => void;
+  /** Docked rail: collapse to the icon strip (Ctrl/Cmd+Shift+S). */
+  onCollapse?: () => void;
+  autoFocusSearch?: boolean;
+  /** `aria-keyshortcuts` for New chat / the collapse toggle. */
+  shortcuts?: { newChat?: string; toggle?: string };
+  /** Leave room for a Sheet's own close button in the header. */
+  inSheet?: boolean;
+  className?: string;
+}
+
+export function HistoryRail({
+  conversations,
+  loading,
+  error,
+  retention,
+  search,
+  onRetry,
+  onNewChat,
+  onCollapse,
+  autoFocusSearch = false,
+  shortcuts,
+  inSheet = false,
+  className,
+  ...actions
+}: HistoryRailProps) {
+  const { activeId } = actions;
+  const [renamingId, setRenamingId] = React.useState<string | null>(null);
+  const [focusIndex, setFocusIndex] = React.useState<number | null>(null);
+  /** A row to focus once it renders again (after an inline rename ends). */
+  const [refocusId, setRefocusId] = React.useState<string | null>(null);
+  const searchRef = React.useRef<HTMLInputElement>(null);
+  const listRef = React.useRef<HTMLDivElement>(null);
+  const headingPrefix = `chat-history-${React.useId().replace(/[^A-Za-z0-9_-]/g, '')}`;
+
+  React.useEffect(() => {
+    if (autoFocusSearch) searchRef.current?.focus();
+  }, [autoFocusSearch]);
+
+  const searching = search.query.trim().length > 0;
+  const groups = React.useMemo(() => groupConversations(conversations), [conversations]);
+  const ordered = React.useMemo(() => groups.flatMap((group) => group.conversations), [groups]);
+  const activeIndex = ordered.findIndex((row) => row.id === activeId);
+  // The one tab stop: the last focused row while it still exists, else the active row,
+  // else the first row. A deleted row or a shorter list never leaves the history
+  // without a tab stop.
+  const tabStop = (() => {
+    if (focusIndex !== null && focusIndex < ordered.length) return focusIndex;
+    return activeIndex >= 0 ? activeIndex : 0;
+  })();
+  const tabIndexFor = (index: number) => (index === tabStop ? 0 : -1);
+
+  React.useEffect(() => {
+    if (!refocusId) return;
+    const row = Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>('[data-rail-row]') ?? []).find(
+      (candidate) => candidate.dataset.conversationId === refocusId,
+    );
+    // Handed back by code after a rename: not a reason to open the row's tooltip.
+    focusQuietly(row);
+    setRefocusId(null);
+  }, [refocusId, renamingId]);
+
+  const endRename = (id: string) => {
+    setRenamingId(null);
+    setRefocusId(id);
+  };
+
+  const moveFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    // Only the rows rove: keys in the rename field or on a row's ⋯ trigger (which
+    // opens its menu on ArrowDown) keep their own meaning.
+    if (!(event.target instanceof HTMLElement) || !event.target.matches('[data-rail-row]')) return;
+    const rows = Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>('[data-rail-row]') ?? []);
+    if (!rows.length) return;
+    const current = rows.indexOf(document.activeElement as HTMLButtonElement);
+    let next = current;
+    if (event.key === 'ArrowDown') next = current < 0 ? 0 : Math.min(rows.length - 1, current + 1);
+    if (event.key === 'ArrowUp') next = current < 0 ? 0 : Math.max(0, current - 1);
+    if (event.key === 'Home') next = 0;
+    if (event.key === 'End') next = rows.length - 1;
+    event.preventDefault();
+    setFocusIndex(next);
+    rows[next]?.focus();
+  };
+
+  const showEmpty = !loading && !error && conversations.length === 0;
+
+  return (
+    <div className={cn('flex h-full min-h-0 flex-col', className)}>
+      <div className={cn('shrink-0 space-y-2 px-3 pb-2 pt-3', inSheet && 'pr-12')}>
+        <div className="flex items-center gap-1.5">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 flex-1 justify-start gap-2"
+                onClick={onNewChat}
+                aria-keyshortcuts={shortcuts?.newChat}
+              >
+                <Plus aria-hidden />
+                New chat
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">{`New chat (${shortcutLabel(SHORTCUT_HINT_KEYS.newChat)})`}</TooltipContent>
+          </Tooltip>
+          {onCollapse ? (
+            <HintedIconButton
+              label="Collapse history"
+              hint={SHORTCUT_HINT_KEYS.toggleHistory}
+              onClick={onCollapse}
+              aria-keyshortcuts={shortcuts?.toggle}
+              // The host focuses the strip's Show history after a collapse, and this after an expand.
+              data-history-toggle=""
+            >
+              <PanelLeftClose aria-hidden />
+            </HintedIconButton>
+          ) : null}
+        </div>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
+          <Input
+            ref={searchRef}
+            type="search"
+            value={search.query}
+            onChange={(event) => search.setQuery(event.target.value)}
+            placeholder="Search chats"
+            aria-label="Search chats"
+            // The History sheet focuses this on open (useOpenerFocus), not New chat.
+            data-autofocus={inSheet ? '' : undefined}
+            className="h-8 rounded-md pl-8 text-sm"
+          />
+        </div>
+      </div>
+
+      <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label="Chat history" aria-busy={loading || search.searching}>
+        {searching ? (
+          <SearchResults search={search} headingPrefix={headingPrefix} inSheet={inSheet} />
+        ) : (
+          <>
+            {loading && conversations.length === 0 ? (
+              <LoadingState layout="inline" label="Loading conversations" className="px-2 py-4" />
+            ) : null}
+            {error ? (
+              <div className="mx-1 my-2 border-l-2 border-critical px-2 py-1 text-xs text-muted-foreground" role="note">
+                <p>{error}</p>
+                <Button type="button" size="sm" variant="ghost" className="mt-1 h-7 px-2" onClick={onRetry}>
+                  Retry
+                </Button>
+              </div>
+            ) : null}
+            {showEmpty ? (
+              <div className="px-2 py-6">
+                <p className="text-sm font-medium text-foreground">No previous conversations</p>
+                <p className="mt-1 text-xs text-muted-foreground">A conversation appears here after its first answer.</p>
+              </div>
+            ) : null}
+            {/* Arrow keys move between rows (one roving tab stop for the whole list). */}
+            {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
+            <div ref={listRef} onKeyDown={moveFocus}>
+              {groups.map((group) => {
+                const headingId = `${headingPrefix}-${group.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+                return (
+                  <div key={group.label} role="group" aria-labelledby={headingId} className="pt-2">
+                    <p id={headingId} className="px-2 pb-1 text-2xs font-medium text-muted-foreground">
+                      {group.label}
+                    </p>
+                    <ul className="space-y-px">
+                      {group.conversations.map((conversation) => {
+                        const index = ordered.indexOf(conversation);
+                        // A new thread whose first answer is on screen is the current one
+                        // before it has an id of its own in the selection (T21).
+                        const pending = isPendingThreadRow(conversation);
+                        const active = pending || conversation.id === activeId;
+                        const tabIndex = tabIndexFor(index);
+                        const status = rowActivity(conversation);
+                        if (renamingId === conversation.id) {
+                          return (
+                            <li key={conversation.id}>
+                              <RenameField
+                                conversation={conversation}
+                                onCommit={(title) => {
+                                  endRename(conversation.id);
+                                  actions.onRename(conversation, title);
+                                }}
+                                onCancel={() => endRename(conversation.id)}
+                              />
+                            </li>
+                          );
+                        }
+                        return (
+                          <li key={conversation.id} className="group/row relative">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  data-rail-row=""
+                                  data-conversation-id={conversation.id}
+                                  tabIndex={tabIndex}
+                                  aria-current={active ? 'page' : undefined}
+                                  aria-label={rowName(conversation)}
+                                  data-status={status ?? undefined}
+                                  data-pending={pending ? '' : undefined}
+                                  onFocus={(event) => {
+                                    setFocusIndex(index);
+                                    quietFocusGuard(event);
+                                  }}
+                                  // The pending row is already on screen and not saved: the
+                                  // selection ignores it, and the host still closes its
+                                  // history sheet (on a phone, like any other row).
+                                  onClick={() => actions.onSelect(conversation)}
+                                  className={cn(
+                                    // No reserved gutter: the ⋯ menu takes the time's place on
+                                    // hover/focus (the time keeps a 28 px box for it), so titles use
+                                    // the full row at rest.
+                                    // At least 32 px; taller only while a long title wraps.
+                                    'flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm outline-none transition-colors motion-reduce:transition-none',
+                                    'hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                                    'disabled:cursor-not-allowed disabled:opacity-60',
+                                    active ? 'bg-accent font-medium text-accent-foreground' : 'text-foreground',
+                                  )}
+                                >
+                                  <span className={cn('min-w-0 flex-1 proportional-nums', railTitleClass(inSheet))} data-testid="rail-row-title">
+                                    {conversation.title || UNTITLED_CONVERSATION}
+                                  </span>
+                                  <span
+                                    // Hidden exactly when the ⋯ trigger shows (ROW_MENU_SHOWN):
+                                    // on hover, on keyboard focus in the row, and while its menu
+                                    // is open (focus is then in the portalled menu and the
+                                    // pointer may have left the row). A row focused by a click
+                                    // keeps its time: the trigger stays hidden then, and the two
+                                    // are never hidden together. A running answer shows its ring
+                                    // in the time's place; a dot marks news before the time.
+                                    className={cn(
+                                      'inline-flex min-w-7 shrink-0 items-center justify-end gap-1.5 pl-3 text-right text-2xs tabular-nums text-muted-foreground',
+                                      // The pending row has no ⋯ to make room for.
+                                      !pending && ROW_TIME_HIDDEN,
+                                    )}
+                                    aria-hidden
+                                  >
+                                    {status === 'running' ? (
+                                      <ActivityGlyph status="running" />
+                                    ) : (
+                                      <>
+                                        <ActivityGlyph status={status} className="size-1.5" />
+                                        {shortAge(conversation.updated_at)}
+                                      </>
+                                    )}
+                                  </span>
+                                </button>
+                              </TooltipTrigger>
+                              {/* The full title (rows truncate) and the exact date (SPEC §10.2), in
+                                  the answers' form ("2026-10-23 15:45 UTC"). In the History sheet
+                                  the row fills the width, so the tip opens below it, kept 16 px
+                                  inside the screen like the other popovers (PW4-6). */}
+                              <TooltipContent
+                                side={inSheet ? 'bottom' : 'right'}
+                                align={inSheet ? 'start' : 'center'}
+                                collisionPadding={16}
+                                className="max-w-xs break-words"
+                              >
+                                <span className="block font-medium">{conversation.title || UNTITLED_CONVERSATION}</span>
+                                <span className="block tabular-nums text-muted-foreground">
+                                  {status ? `${ROW_STATUS_TEXT[status].replace(/^./, (c) => c.toUpperCase())} · ` : ''}
+                                  {formatUtc(conversation.updated_at)}
+                                </span>
+                              </TooltipContent>
+                            </Tooltip>
+                            {pending ? null : (
+                              <RowMenu
+                                conversation={conversation}
+                                actions={actions}
+                                tabIndex={tabIndex}
+                                onRename={() => setRenamingId(conversation.id)}
+                              />
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </nav>
+
+      {retention.showNote ? (
+        <p className="shrink-0 border-t border-border px-3 py-2 text-2xs leading-relaxed text-muted-foreground" role="note">
+          {retention.truncated
+            ? `Showing the latest ${conversations.length}${retention.total > conversations.length ? ` of ${retention.total}` : ''} conversations. Older ones were removed by retention; pin up to 10 to keep them.`
+            : `Chat keeps your latest ${retention.limit} conversations. Pin up to 10 to keep them.`}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+export { plainSnippet };
+
+const foldText = (text: string) => text.replace(/\u2026/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * The match snippet worth showing under a hit's title: none when it only repeats the
+ * title. Round 13 (T27) shows every hit's snippet; this stays for callers that want to
+ * avoid a repeated sentence.
+ */
+export function distinctSnippet(title: string, snippet: string | null | undefined): string {
+  if (!snippet) return '';
+  const a = foldText(snippet);
+  const b = foldText(title);
+  if (!a || a === b || b.startsWith(a) || a.startsWith(b)) return '';
+  return snippet;
+}
+
+/** One run of snippet text, marked when it matches the search. */
+export interface SnippetSegment {
+  text: string;
+  match: boolean;
+}
+
+/**
+ * Split `text` into plain and matching runs for the search `query` (T27): the whole
+ * query, else each word of 2 or more characters, case-insensitive, overlaps merged.
+ * Pure text segments, rendered as React text (never HTML built from the snippet).
+ */
+export function snippetSegments(text: string, query: string): SnippetSegment[] {
+  if (!text) return [];
+  const phrase = query.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!phrase) return [{ text, match: false }];
+  const lower = text.toLowerCase();
+  // `toLowerCase` can change a string's length (a few Unicode letters): fall back to
+  // no highlight rather than mark the wrong characters.
+  if (lower.length !== text.length) return [{ text, match: false }];
+  const terms = lower.includes(phrase)
+    ? [phrase]
+    : Array.from(new Set(phrase.split(' ').filter((word) => word.length >= 2)));
+  const ranges: Array<[number, number]> = [];
+  for (const term of terms) {
+    let from = 0;
+    for (;;) {
+      const at = lower.indexOf(term, from);
+      if (at < 0) break;
+      ranges.push([at, at + term.length]);
+      from = at + term.length;
+    }
+  }
+  if (!ranges.length) return [{ text, match: false }];
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const range of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
+    else merged.push([range[0], range[1]]);
+  }
+  const out: SnippetSegment[] = [];
+  let cursor = 0;
+  for (const [start, end] of merged) {
+    if (start > cursor) out.push({ text: text.slice(cursor, start), match: false });
+    out.push({ text: text.slice(start, end), match: true });
+    cursor = end;
+  }
+  if (cursor < text.length) out.push({ text: text.slice(cursor), match: false });
+  return out;
+}
+
+function SearchResults({ search, headingPrefix, inSheet }: { search: HistoryRailSearch; headingPrefix: string; inSheet: boolean }) {
+  const results = search.results;
+  const headingId = `${headingPrefix}-results`;
+  return (
+    <div role="group" aria-labelledby={headingId} className="pt-2">
+      <p id={headingId} className="px-2 pb-1 text-2xs font-medium text-muted-foreground">
+        {search.searching ? 'Searching…' : results ? `${results.length} ${results.length === 1 ? 'match' : 'matches'}` : 'Search'}
+      </p>
+      {search.error ? (
+        <p className="px-2 py-2 text-xs text-muted-foreground" role="note">
+          {search.error}
+        </p>
+      ) : null}
+      {results && results.length === 0 && !search.searching && !search.error ? (
+        <div className="px-2 py-4">
+          <p className="text-sm font-medium text-foreground">No matching conversations</p>
+          <p className="mt-1 text-xs text-muted-foreground">Search looks at titles, questions, answers and chart titles.</p>
+        </div>
+      ) : null}
+      <ul className="space-y-px">
+        {(results ?? []).map((hit) => {
+          const title = hit.title || UNTITLED_CONVERSATION;
+          const snippet = plainSnippet(hit.match?.snippet);
+          // Every hit SHOWS its snippet (T27); its name says a snippet that only repeats
+          // the title once.
+          const spoken = distinctSnippet(title, snippet);
+          return (
+            <li key={hit.id}>
+              {/* The full title on hover and keyboard focus, as on a history row (one line here). */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => search.openHit(hit)}
+                    aria-label={`${title}${spoken ? `: ${spoken}` : ''}`}
+                    className="block w-full min-w-0 rounded-md px-2 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-60"
+                  >
+                    <span className={cn('text-sm text-foreground proportional-nums', inSheet ? railTitleClass(true) : `block ${railTitleClass(false)}`)} data-testid="hit-title">
+                      {title}
+                    </span>
+                    {snippet ? (
+                      // No `block`: it would override line-clamp's box and show a third line.
+                      <span className="mt-0.5 line-clamp-2 break-words text-xs text-muted-foreground" data-testid="hit-snippet">
+                        {snippetSegments(snippet, search.query).map((segment, index) =>
+                          segment.match ? (
+                            <span key={index} className="font-medium text-foreground" data-match="">
+                              {segment.text}
+                            </span>
+                          ) : (
+                            <React.Fragment key={index}>{segment.text}</React.Fragment>
+                          ),
+                        )}
+                      </span>
+                    ) : null}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side={inSheet ? 'bottom' : 'right'} align={inSheet ? 'start' : 'center'} collisionPadding={16} className="max-w-xs break-words">
+                  {title}
+                </TooltipContent>
+              </Tooltip>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* The 48 px strip.                                                            */
+/* -------------------------------------------------------------------------- */
+
+export interface HistoryStripProps {
+  onNewChat: () => void;
+  onSearch: () => void;
+  onExpand: () => void;
+  /** Kept for the host's wiring; New chat stays available while an answer is written. */
+  busy?: boolean;
+  shortcuts?: { newChat?: string; toggle?: string };
+}
+
+/**
+ * The collapsed rail: New chat, Search, Expand (SPEC §10.1). "Show history" carries a
+ * dot while a thread that is not on screen is working or has news (SPEC D13).
+ */
+export function HistoryStrip({ onNewChat, onSearch, onExpand, shortcuts }: HistoryStripProps) {
+  const { entries } = useChatActivity();
+  const elsewhere = entries.find((entry) => entry.kind === 'workspace' && !entry.seen && !isChatActivityViewed(entry.scope));
+  return (
+    <nav className="flex h-full flex-col items-center gap-1 py-3" aria-label="Chat history">
+      <HintedIconButton
+        label="New chat"
+        hint={SHORTCUT_HINT_KEYS.newChat}
+        tooltipSide="right"
+        onClick={onNewChat}
+        aria-keyshortcuts={shortcuts?.newChat}
+      >
+        <Plus aria-hidden />
+      </HintedIconButton>
+      <IconButton label="Search chats" tooltipSide="right" onClick={onSearch} onFocus={quietFocusGuard}>
+        <Search aria-hidden />
+      </IconButton>
+      <HintedIconButton
+        label="Show history"
+        hint={SHORTCUT_HINT_KEYS.toggleHistory}
+        tooltipSide="right"
+        onClick={onExpand}
+        aria-keyshortcuts={shortcuts?.toggle}
+        data-history-toggle=""
+        aria-description={elsewhere ? (elsewhere.status === 'running' ? 'An answer is being written in another chat' : 'Another chat has news') : undefined}
+        className="relative"
+      >
+        <PanelLeftOpen aria-hidden />
+        <ActivityGlyph status={elsewhere?.status ?? null} className="chat-activity-badge" />
+      </HintedIconButton>
+    </nav>
+  );
+}

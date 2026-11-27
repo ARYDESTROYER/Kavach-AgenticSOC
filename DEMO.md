@@ -29,7 +29,7 @@ through every headline feature in order. Budget ~25-30 minutes for the full tour
 > (campaigns, entity baseline, threshold auto-tuning), **case collaboration**
 > (threads/tasks/@mentions), **custom dashboards**, a **local/self-hosted model
 > provider**, **MITRE ATT&CK coverage + Navigator export**, the **audit viewer**,
-> and the Overview **Security Command Center**.
+> and the Overview **Cyber Defence Center**.
 
 ---
 
@@ -125,8 +125,10 @@ Things to point out on the **redesigned login** before you sign in:
   the **MFA** step (a 6-cell segmented OTP input), and any configured **SSO**
   buttons (per-provider Google / Microsoft / generic brand icons).
 
-Sign in. (For a real deployment, change this immediately — see `docs/USAGE.md`
-§24 for the forced-change-password OOBE flow.)
+Sign in. The seeded demo `Admin` is deliberately not asked to change its password.
+For a real deployment, change it immediately, or set `AUTH_SEED_ADMIN=false` on the backend
+and create the first administrator in the setup flow (`docs/USAGE.md` §24). The forced
+password change applies to accounts an administrator creates or resets.
 
 > If you ran `run-demo.sh`, these creds are also echoed in the startup banner.
 
@@ -151,7 +153,10 @@ cursors. It is **fully reversible in one click**.
     scheduled source-native alerts and Agentic SOC detections advance a shared MITRE
     ATT&CK storyline, so visible activity is guaranteed while you present.
 - Notice the amber **Demo banner** pinned in the app shell and the **`SAMPLE`**
-  badge on every demo row; cost tiles read **"(simulated)"**. The Sources UI disables
+  badge on every demo row; cost tiles read **"(simulated)"**. Since 0.2.0 every seeded
+  case with a cost has simulated Demo ledger rows (`price_basis` `demo_simulated`), so its
+  investigation cost, its usage popover, the Cost page and Agent effectiveness agree, and
+  Demo spend is never billed. The Sources UI disables
   real connector controls and outbound notification tests are refused while the
   demo is active. Other organization/admin settings remain live: do not edit them
   during a presentation if you want the underlying deployment unchanged.
@@ -241,11 +246,13 @@ cursors. It is **fully reversible in one click**.
   simply doesn't appear (and the rail auto-jumps off a hidden active section).
   When auth is off, everything shows.
 - This is a *Settings*-only regroup — it's separate from the app's top-level
-  left-nav, which has its own **six groups**: **Overview** (Dashboard, Dashboards,
-  Standup), **Triage** (Cases, Campaigns, Logs, Workspace → Chat/Investigate,
-  Automated scans, Approvals), **Intelligence** (Knowledge, Memory, Playbooks),
-  **Analytics** (Metrics, Cost, Models, Baseline, Batch jobs), **Notifications**
-  (Inbox), and **Platform** (Sources, Audit log, Auto-tuning, Settings). Point out
+  left-nav, which has its own **six groups**: **Overview** (Cyber Defence Center,
+  Dashboards, Standup), **Triage** (Cases, Case Manager, Campaigns, Logs, Workspace →
+  Chat/Entity investigation/Reports, Approvals), **Intelligence** (Knowledge corpus,
+  Runbooks, Operator memory, Agent personas), **Analytics** (Metrics, Team activity, Agent
+  effectiveness, Cost, Models, Baseline, Jobs), **Communication** (Inbox and What's new,
+  since 0.2.0), and **Platform** (Sources, Audit log, Auto-tuning, Settings, and Help
+  Center at the foot of the rail). Point out
   Sources and Audit log are standalone **Platform** pages now, not buried in
   Settings.
 
@@ -364,7 +371,7 @@ cursors. It is **fully reversible in one click**.
 ### 3k. The self-improving detection loop — campaigns, entity baseline & auto-tuning
 - **Campaigns** (*Triage → Campaigns*): a daily deterministic pass groups
   already-created cases that share an entity into a `Campaign` — show one, and a
-  case's campaign chip on its Overview tab. Talking point: a campaign only
+  case's campaign chip in its case facts. Talking point: a campaign only
   **references** case ids — it never re-clusters, closes, or escalates a member
   case.
 - **Entity baseline** (*Analytics → Baseline*): an online per-signature anomaly
@@ -387,12 +394,13 @@ cursors. It is **fully reversible in one click**.
   tasking — ever reads or sets the case's `status`/`verdict`/`disposition`. A
   deleted message is always a soft-delete tombstone, never erased (#2).
 
-### 3m. The in-app inbox — *Notifications → Inbox*
+### 3m. The in-app inbox: *Communication → Inbox*
 - Open **Inbox**: your personal, self-scoped notification feed, including the
   @mention you just triggered in §3l. Show the unread-count bell badge, mark one
   read, mark all read, and the per-category × channel delivery **prefs**
   (`GET/PUT /api/notifications/prefs`) — a user manages their own inbox; there's
-  no admin view into someone else's.
+  no admin view into someone else's. The top-bar bell keeps the name
+  **Notifications**; only the navigation group is now Communication.
 
 ### 3n. Custom dashboards — *Overview → Dashboards*
 - Create a new dashboard and drag/resize widgets on the 12-column grid
@@ -432,12 +440,28 @@ cursors. It is **fully reversible in one click**.
   attributed to the operator in the **real** append-only audit, which becomes
   visible here after **Exit & clear**.
 
-### 3r. Overview — the Security Command Center
+### 3r. Overview — the Cyber Defence Center
 - Land on the **Overview** (Dashboard). Walk it top to bottom:
   - **Masthead** — the time-range picker, auto-refresh, and a "last updated" stamp.
-  - **KPI strip** — 5 tiles: **Open Cases**, **Critical / High**, **Escalated To
-    Human**, **False Positive Rate**, **Auto-Resolved** (all populated by Demo
-    Mode, with period-over-period deltas).
+  - **KPI strip** — 5 server-fed tiles: **Total Cases**, **Total Critical**,
+    **Open Cases**, **False Positive Rate**, **Resolved / Closed** (all populated
+    by Demo Mode; hover or focus a tile with an honest series to reveal its
+    selected-window trendline). Four are the selected window's arrival cohort;
+    **Open Cases** is deliberately the open-case count *right now* — it is not
+    window-filtered and never sums with the other four, and its sub says so.
+    **Resolved / Closed** reconciles with the Human-vs-AI instrument; select the
+    tile and its drill-down opens with the close attribution (AI agent / Human /
+    System, plus Declared benign where the backend reports it) at the top.
+  - **KPI drill-down** — click (or press Enter/Space on) any tile: a detail panel
+    docks *under* the strip without leaving the page, so the other four numerals
+    stay in view for comparison. It lists that tile's own population with a
+    filter box, a severity and status facet, a sort order and its **own** time
+    range — note that **Open Cases** opens all-time, because the tile is a stock,
+    not a window cohort. The footer states how much of the store it actually
+    read rather than implying the list equals the numeral above it; **Open in
+    Cases** hands the same population to the full list (Resolved / Closed uses
+    the *Terminal* facet, which covers resolved **and** closed). Escape closes it
+    and returns focus to the tile.
   - **Hero row** — the **Active Risk Index** (the one risk instrument on the
     page — the old Active-Risk-Index glitch is fixed), plus a "Cases resolved"
     and an "Open cases" donut snapshot.
@@ -446,12 +470,13 @@ cursors. It is **fully reversible in one click**.
     *cases* → *auto_cleared* / *escalated* / *closed-by-human*. Hover a stage for
     its exact count, share, and a per-severity/per-disposition breakdown; point
     out the "noise reduced by X%" figure.
-  - **Third row** — a cases **burndown** (opened vs. resolved), a card showing
-    real **MTTD** (mean time-to-detect, measured from the cluster's first event to
-    case creation) alongside **first-response time** (the ACK clock — a talking
-    point: this was deliberately renamed *away* from "MTTR" mid-round because it
-    measures first human response, not full dwell/resolution time), and a
-    **top-open-cases** work list.
+  - **Second lattice row** — three cells: the stacked open/resolved severity
+    rings, then real **MTTD** (mean time-to-detect, measured from the cluster's
+    first event to case creation) alongside **first-response time** (the ACK
+    clock — a talking point: this was deliberately labelled *away* from "MTTR"
+    because it measures first human response, not full dwell/resolution time),
+    then the live **Latest cases** queue. There is no third row: the cases
+    burndown moved to Metrics → Posture as "Closure vs arrival".
   - **Deeper analytics** (collapsed by default) — the LLM spend tripwire, full
     response-timing detail, the autonomy split, connector health, case volume,
     workload, and top signatures/entities.

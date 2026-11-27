@@ -1,13 +1,13 @@
 /**
- * Cases — per-cell SEVERITY provenance (Round-7 #9b, W1.B).
+ * Cases: per-row SEVERITY provenance, said by the chip (Round 14, SPEC §4.9.4, C7).
  *
  * Severity is the one advisory field whose provenance FLIPS per row: a SIEM that
- * asserts a severity is tagged `severity_source: 'source_asserted'` (→ a `source`
- * provenance), while a case whose severity was derived from the deterministic risk
- * score is `'derived'` (→ a `code` provenance). This pins that the Cases "Severity"
- * cell renders a `<ProvenanceTag variant="icon">` beside the badge and that the tag
- * flips per row within the SAME table (unlike risk/verdict/confidence whose constant
- * provenance is declared once at the column header).
+ * asserts a severity is tagged `severity_source: 'source_asserted'` (reported by the
+ * source), while a case whose severity was derived from the deterministic risk score is
+ * `'derived'` (code). Round 14 dropped the provenance glyph from the row: the severity
+ * chip's tooltip says where the severity came from, and the same words reach assistive
+ * technology as screen-reader text. Risk, verdict and confidence keep their constant
+ * provenance at the column header.
  *
  * Fully mocked (offline); nothing here touches #3 runtime behaviour.
  */
@@ -73,9 +73,8 @@ const CASES = [
   },
 ];
 
-// ProvenanceTag icon-variant accessible names (the fixed, controlled descriptions).
-const SOURCE_NAME = /SIEM-asserted \(from the source\)/;
-const CODE_NAME = /Deterministic \(code-derived\)/;
+const SOURCE_WORDS = 'Severity reported by the source';
+const CODE_WORDS = 'Severity derived from the risk score';
 
 function renderCases() {
   return render(
@@ -101,37 +100,42 @@ function rowFor(title: string): HTMLElement {
   return row;
 }
 
-describe('Cases — per-cell severity provenance (#9b)', () => {
+/** The severity cell's chip wrapper (the element that carries the provenance). */
+function severityOf(title: string): HTMLElement {
+  const chip = rowFor(title).querySelector<HTMLElement>('[data-severity-source]');
+  if (!chip) throw new Error(`severity chip for ${title} not found`);
+  return chip;
+}
+
+describe('Cases: per-row severity provenance (Round 14)', () => {
   beforeEach(() => {
     listCasesMock.mockReset().mockResolvedValue({ cases: CASES, total: CASES.length });
     window.localStorage.clear();
   });
 
-  it('tags the SIEM-asserted severity cell with a `source` provenance', async () => {
+  it('says a SIEM-asserted severity came from the source', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('SourceCase')).toBeInTheDocument());
-    const row = rowFor('SourceCase');
-    // The source row carries a `source` provenance and NOT a `code` one.
-    expect(within(row).getByRole('img', { name: SOURCE_NAME })).toBeInTheDocument();
-    expect(within(row).queryByRole('img', { name: CODE_NAME })).toBeNull();
+    const chip = severityOf('SourceCase');
+    expect(chip).toHaveAttribute('title', SOURCE_WORDS);
+    expect(chip).toHaveAttribute('data-severity-source', 'source');
+    // The same words for assistive technology.
+    expect(within(chip).getByText(`, ${SOURCE_WORDS.toLowerCase()}`)).toHaveClass('sr-only');
   });
 
-  it('tags the code-derived severity cell with a `code` provenance', async () => {
+  it('says a code-derived severity came from the risk score', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('DerivedCase')).toBeInTheDocument());
-    const row = rowFor('DerivedCase');
-    // The derived row carries a `code` provenance and NOT a `source` one.
-    expect(within(row).getByRole('img', { name: CODE_NAME })).toBeInTheDocument();
-    expect(within(row).queryByRole('img', { name: SOURCE_NAME })).toBeNull();
+    const chip = severityOf('DerivedCase');
+    expect(chip).toHaveAttribute('title', CODE_WORDS);
+    expect(chip).toHaveAttribute('data-severity-source', 'code');
   });
 
-  it('flips the provenance per row within the same table', async () => {
+  it('draws no provenance glyph in the row (the chip says it once)', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('SourceCase')).toBeInTheDocument());
-    const src = within(rowFor('SourceCase')).getByRole('img', { name: SOURCE_NAME });
-    const der = within(rowFor('DerivedCase')).getByRole('img', { name: CODE_NAME });
-    // Distinct provenance kinds for the two rows (the flip).
-    expect(src.getAttribute('data-provenance')).toBe('source');
-    expect(der.getAttribute('data-provenance')).toBe('code');
+    for (const title of ['SourceCase', 'DerivedCase']) {
+      expect(rowFor(title).querySelector('[data-provenance]')).toBeNull();
+    }
   });
 });

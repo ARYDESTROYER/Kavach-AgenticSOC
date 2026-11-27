@@ -1,10 +1,10 @@
 /**
- * SuppressionRuleBuilder — the operator field==value suppression-rule editor (G6 R6,
+ * SuppressionRuleBuilder: the operator field==value suppression-rule editor (G6 R6,
  * DESIGN_STANDARD §8, RESEARCH_RULES_UX §7). Writes `Preferences.suppression_rules`
  * (a `SuppressionRuleConfig[]`) via deep-merge PUT /api/settings.
  *
  * SEMANTICS (#4 non-destructive, honestly framed): a live suppression rule drops a
- * matching event BEFORE it becomes a candidate — this is the ONE rule family that can
+ * matching event BEFORE it becomes a candidate: this is the ONE rule family that can
  * hide events, so the copy is explicit and every rule carries provenance
  * (`created_by="operator"`) + an off-switch (`enabled`) + optional expiry. It is a
  * CONFIG WRITER only: it never calls `decide()`, never sets a case status, never bills
@@ -16,10 +16,14 @@
  *
  * CONTROLLED: `rules` + `onChange`; the host owns dirty/save (StickySaveBar) and any
  * ConfirmDialog on delete of a live rule.
+ *
+ * Round 14 (SPEC §4.9.6): each rule is a hairline-divided row on its host's panel, like
+ * the declarations in `AnalystPolicyBuilder` beside it (no bordered box per rule).
+ * `intro={false}` drops the standing warning for a host whose caption already says it
+ * (the Settings group), so the explanation is said once and never as a permanent box.
  */
 import { Ban, Bot, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { SuppressionRuleConfig } from '@/lib/types';
-import { humanizeToken } from '@/lib/format';
 
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
@@ -36,6 +40,11 @@ export interface SuppressionRuleBuilderProps {
   /** Called instead of a direct remove for a LIVE rule (host shows a ConfirmDialog). */
   onRequestRemove?: (index: number, rule: SuppressionRuleConfig) => void;
   disabled?: boolean;
+  /**
+   * Show the standing warning that suppression drops events before triage (default
+   * true). A host whose own caption already says it passes `false`.
+   */
+  intro?: boolean;
 }
 
 /** A new, operator-authored suppression rule (provenance stamped). */
@@ -55,27 +64,32 @@ function SuppressionRow({
   disabled?: boolean;
 }) {
   const isAgent = (rule.created_by ?? '') === 'agent';
+  const enabled = rule.enabled ?? true;
+  const field = rule.field.trim();
   return (
-    <div className="space-y-3 rounded-md border border-border bg-surface px-4 py-3">
+    <li className="space-y-3 py-4 first:pt-0 last:pb-0" data-suppression-rule="">
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Ban className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-          <span className="text-xs font-medium text-muted-foreground">Drop matching events</span>
-          {isAgent ? (
-            <Badge variant="secondary" className="gap-1">
-              <Bot className="h-3 w-3" aria-hidden />
-              agent-drafted
-            </Badge>
-          ) : null}
-          {!(rule.enabled ?? true) ? <Badge variant="outline">disabled</Badge> : null}
+        {/* The glyph stays beside the text at every width; only the badges wrap. */}
+        <div className="flex min-w-0 items-start gap-2">
+          <Ban className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="min-w-0 text-sm font-medium text-foreground">Drop matching events</span>
+            {isAgent ? (
+              <Badge variant="secondary" className="gap-1">
+                <Bot className="h-3 w-3" aria-hidden />
+                Drafted by the agent
+              </Badge>
+            ) : null}
+            {!enabled ? <Badge variant="outline">Off</Badge> : null}
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span aria-hidden>Enabled</span>
             <Switch
-              checked={rule.enabled ?? true}
+              checked={enabled}
               disabled={disabled}
-              aria-label={`Rule ${rule.enabled ?? true ? 'enabled' : 'disabled'} — toggle`}
+              aria-label={field ? `Suppression rule for ${field} enabled` : 'Suppression rule enabled'}
               onCheckedChange={(v) => onChange({ ...rule, enabled: v })}
             />
           </span>
@@ -92,26 +106,30 @@ function SuppressionRow({
         </div>
       </div>
 
-      <div className="grid items-center gap-3 sm:grid-cols-[1fr_auto_1fr]">
-        <Field label="Field" hideLabel>
+      {/* Visible labels, as on the declarations beside these rows: a placeholder is not a
+          label (WCAG 3.3.2), and each field's name is its label (2.5.3). "equals" sits on
+          the inputs' line, under the labels. */}
+      <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-end">
+        <Field label="Field">
           <Input
             value={rule.field}
             disabled={disabled}
-            placeholder="rule.name / source.ip / user.name"
-            aria-label="Field to match"
+            placeholder="rule.name, source.ip or user.name"
             onChange={(e) => onChange({ ...rule, field: e.target.value })}
             className="font-mono text-sm"
           />
         </Field>
-        <span className="text-center text-xs font-medium text-muted-foreground" aria-hidden>
+        <span
+          className="flex text-xs font-medium text-muted-foreground sm:h-9 sm:items-center sm:justify-center"
+          aria-hidden
+        >
           equals
         </span>
-        <Field label="Value" hideLabel>
+        <Field label="Value">
           <Input
             value={rule.value}
             disabled={disabled}
-            placeholder="value to match (exact)"
-            aria-label="Value to match"
+            placeholder="Exact value to match"
             onChange={(e) => onChange({ ...rule, value: e.target.value })}
             className="font-mono text-sm"
           />
@@ -119,21 +137,19 @@ function SuppressionRow({
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Reason" hideLabel>
+        <Field label="Reason">
           <Input
             value={rule.reason ?? ''}
             disabled={disabled}
-            placeholder="Why suppress? (e.g. known benign scanner)"
-            aria-label="Suppression reason"
+            placeholder="For example, a known scanner"
             onChange={(e) => onChange({ ...rule, reason: e.target.value })}
           />
         </Field>
-        <Field label="Expires (optional)" hideLabel>
+        <Field label="Expires (optional)">
           <Input
             type="date"
             value={(rule.expires_at ?? '').slice(0, 10)}
             disabled={disabled}
-            aria-label="Expiry date (optional)"
             onChange={(e) =>
               onChange({
                 ...rule,
@@ -151,11 +167,13 @@ function SuppressionRow({
         </p>
       ) : null}
       {(rule.created_by ?? '') ? (
-        <p className="text-2xs text-muted-foreground">
-          Created by {humanizeToken(rule.created_by)}
+        <p className="text-xs text-muted-foreground">
+          {/* The stored author as it is (a username keeps its case), as the declarations
+              beside these rows say "Declared by operator". */}
+          Created by {rule.created_by}
         </p>
       ) : null}
-    </div>
+    </li>
   );
 }
 
@@ -164,10 +182,11 @@ export function SuppressionRuleBuilder({
   onChange,
   onRequestRemove,
   disabled,
+  intro = true,
 }: SuppressionRuleBuilderProps) {
   const remove = (i: number) => {
     const rule = rules[i];
-    // A LIVE (enabled) rule can silently hide events — route through the host's
+    // A LIVE (enabled) rule can silently hide events: route through the host's
     // ConfirmDialog when one is provided; otherwise remove directly.
     if ((rule?.enabled ?? true) && onRequestRemove) {
       onRequestRemove(i, rule);
@@ -178,20 +197,22 @@ export function SuppressionRuleBuilder({
 
   return (
     <div className="space-y-4">
-      <Alert variant="warning">
-        <TriangleAlert className="h-4 w-4" aria-hidden />
-        <AlertTitle>Suppression drops events before triage</AlertTitle>
-        <AlertDescription>
-          A matching event is dropped and never becomes a candidate. Suppression can
-          silently hide true positives if the match is too broad — keep rules narrow,
-          set an expiry where you can, and prefer disabling over deleting. The decision
-          engine is untouched: this only controls what reaches it.
-        </AlertDescription>
-      </Alert>
+      {intro ? (
+        <Alert variant="warning">
+          <TriangleAlert className="h-4 w-4" aria-hidden />
+          <AlertTitle>Suppression drops events before triage</AlertTitle>
+          <AlertDescription>
+            A matching event is dropped and never becomes a candidate. Suppression can
+            silently hide true positives if the match is too broad, so keep rules narrow,
+            set an expiry where you can, and prefer turning a rule off over deleting it.
+            The decision engine is untouched: this only controls what reaches it.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-muted-foreground">
-          {rules.length} suppression rule{rules.length === 1 ? '' : 's'}
+        <p className="text-sm tabular-nums text-muted-foreground">
+          {rules.length.toLocaleString()} suppression rule{rules.length === 1 ? '' : 's'}
         </p>
         <Button
           size="sm"
@@ -205,7 +226,7 @@ export function SuppressionRuleBuilder({
       </div>
 
       {rules.length ? (
-        <div className="space-y-3">
+        <ul className="divide-y divide-border/70" aria-label="Suppression rules">
           {rules.map((rule, i) => (
             <SuppressionRow
               key={i}
@@ -215,7 +236,7 @@ export function SuppressionRuleBuilder({
               onRemove={() => remove(i)}
             />
           ))}
-        </div>
+        </ul>
       ) : (
         <EmptyState
           compact

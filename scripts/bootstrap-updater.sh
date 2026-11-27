@@ -41,8 +41,23 @@ cd "${repo_root}"
 version="$(tr -d '[:space:]' < VERSION)"
 [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "VERSION is not semantic."
 tag="v${version}"
+# The trusted repository is the signing identity of every release plan. The frozen
+# Compose base still defaults to the former name, so bootstrap requires the value
+# in .env and never edits that file. Bash 3.2 has no ${var,,}; fold case with tr.
+canonical_repository="ARYDESTROYER/Kavach-AgenticSOC"
+former_repository="ARYDESTROYER/Agentic-Kibana"
+fold_case() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
 repository="$(read_env AGENTIC_SOC_UPDATE_REPOSITORY)"
-repository="${repository:-ARYDESTROYER/Agentic-Kibana}"
+[[ -n "${repository}" ]] \
+  || die "AGENTIC_SOC_UPDATE_REPOSITORY is not set in ${env_file}. Add the line AGENTIC_SOC_UPDATE_REPOSITORY=${canonical_repository} and run this script again."
+[[ "$(fold_case "${repository}")" != "$(fold_case "${former_repository}")" ]] \
+  || die "AGENTIC_SOC_UPDATE_REPOSITORY names the former repository ${repository}. Releases are now signed as ${canonical_repository}. Change the line in ${env_file} to AGENTIC_SOC_UPDATE_REPOSITORY=${canonical_repository} and run this script again."
+if [[ "$(fold_case "${repository}")" == "$(fold_case "${canonical_repository}")" \
+  && "${repository}" != "${canonical_repository}" ]]; then
+  die "AGENTIC_SOC_UPDATE_REPOSITORY is ${repository}, but the signing identity is case-sensitive. Change the line in ${env_file} to AGENTIC_SOC_UPDATE_REPOSITORY=${canonical_repository} exactly and run this script again."
+fi
 [[ "${repository}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || die "AGENTIC_SOC_UPDATE_REPOSITORY must be owner/name."
 

@@ -36,6 +36,7 @@ from app.llm.providers import MockProvider
 from app.state import AppState
 from app.utils import now_utc, to_millis
 from tests.conftest import make_log_event
+from tests._auth_helpers import ready_user
 
 INDEX_A = "all-logs-2026.06.30"
 
@@ -447,6 +448,7 @@ def test_underprivileged_role_is_forbidden_from_managing_rules() -> None:
         assert c.post("/api/users", json={
             "username": "aud", "password": "aud-pass-1",
             "role": UserRole.AUDITOR.value}).status_code == 200
+        ready_user(c, "aud", "aud-pass-1")
 
         _login("aud", "aud-pass-1")
         # Auditor can READ rules (rules:read mirrors settings:read).
@@ -523,6 +525,7 @@ def test_custom_role_with_only_rules_grant_can_read_ledger_and_rollback() -> Non
         assert c.post("/api/users", json={
             "username": "ru", "password": "ru-pass-1",
             "role": UserRole.AUDITOR.value}).status_code == 200
+        ready_user(c, "ru", "ru-pass-1")
         c.portal.call(lambda: state.users.update("ru", prefs={"custom_roles": ["rules_only"]}))
 
         _login("ru", "ru-pass-1")

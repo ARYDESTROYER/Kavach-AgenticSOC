@@ -33,15 +33,16 @@ interface LifecycleMetricCopy {
 
 /**
  * The ONE honest source of the lifecycle-timing copy shared by the Overview
- * ("Security Command Center") + Metrics posture surfaces. It mirrors exactly what
+ * ("Cyber Defence Center") + Metrics posture surfaces. It mirrors exactly what
  * `engine/metrics.py::lifecycle_intervals` measures — no invented "MTTD".
  *
  * The backend measures each interval from case CREATION (or the explicit detection
  * anchor when populated) to a status-history transition, and reports p50 / p90 / mean:
  *   • MTTA  → first ACK transition (investigating / escalated / on-hold).
  *   • MTTR  → first TERMINAL transition (resolved / closed).
- *   • Dwell → first RESPONSE transition (investigating / escalated / on-hold /
- *             resolved / closed) — i.e. time-to-first-response.
+ *   • Dwell → first human RESPONSE transition (investigating, escalated, on hold,
+ *             resolved or closed, by a person; automatic closes are not counted),
+ *             that is time to first response.
  *
  * ⚠ Dwell is deliberately NOT labelled "MTTD" (mean-time-to-detect): we do not measure
  * log-arrival→detection latency, so surfacing it as detection time would be dishonest.
@@ -61,7 +62,7 @@ export const LIFECYCLE_METRICS: Record<LifecycleMetricKey, LifecycleMetricCopy> 
   dwell: {
     label: 'Dwell',
     sub: 'Time to first response',
-    help: 'Median (p50) time from case creation — or detection when known — to the first active response (investigating, escalated, on-hold, resolved, or closed). This is time-to-first-response, not time-to-detect.',
+    help: 'Median (p50) time from case creation (or detection when known) to the first response by a person (investigating, escalated, on hold, resolved or closed). Automatic closes are not counted. This is time to first response, not time to detect.',
   },
 };
 

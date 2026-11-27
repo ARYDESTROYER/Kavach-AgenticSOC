@@ -124,7 +124,10 @@ export function DashboardGroup({
                     isOpen ? 'rotate-0' : '-rotate-90',
                   )}
                 />
-                <span className="truncate text-sm font-semibold uppercase tracking-wide text-foreground">
+                {/* The TITLE never truncates; the description beside it gives way first. At
+                    phone width "Deeper analytics" used to ellipsize to "Deeper an…" while
+                    the less important description kept its room. */}
+                <span className="shrink-0 whitespace-nowrap text-sm font-semibold text-foreground">
                   {title}
                 </span>
                 {count != null ? (
@@ -133,7 +136,7 @@ export function DashboardGroup({
                   </span>
                 ) : null}
                 {description ? (
-                  <span className="truncate text-xs font-normal normal-case tracking-normal text-muted-foreground">
+                  <span className="min-w-0 truncate text-xs font-normal normal-case tracking-normal text-muted-foreground">
                     {description}
                   </span>
                 ) : null}

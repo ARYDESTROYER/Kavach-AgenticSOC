@@ -92,6 +92,23 @@ export interface RuleNoise {
   volume_ewma: number | null;
   /** True when this rule has enough samples AND clears the FP-rate target. */
   over_target: boolean;
+  /**
+   * True when a `correlation_n` raise for this rule could NOT take effect, so the tuner
+   * deliberately never drafts one. Without this an operator sees a rule flagged
+   * `over_target` with no recommendation and no reason — the same silence that made the
+   * original defect invisible. Additive; absent on an older backend.
+   */
+  correlation_n_inert?: boolean;
+  /**
+   * The machine reason code: `alerts_role_every_override` (every observed firing recorded
+   * an effective mode=EVERY, which an alerts-role feed forces) · `correlation_mode_every`
+   * (the rule is explicitly configured mode=EVERY, which never consults n) ·
+   * `inline_rule_definition_correlation` (the rule's correlation is defined inline on its
+   * rule definition, which takes precedence over the entry a raise would write).
+   */
+  correlation_n_inert_reason?: string;
+  /** The backend's operator-readable sentence for that reason code (plain text). */
+  correlation_n_inert_detail?: string;
 }
 
 /** One dry-run proposed bounded change for a rule. */
@@ -167,6 +184,8 @@ export interface TuningRecommendationsResponse {
   cadence: string;
   fp_rate_target: number;
   min_samples: number;
+  /** The z of the Wilson lower bound behind every `fp_rate` (absent from an older server: 1.96). */
+  wilson_z?: number;
   auto_apply_confirmed: boolean;
   window_cases: number;
   rule_noise: RuleNoise[];

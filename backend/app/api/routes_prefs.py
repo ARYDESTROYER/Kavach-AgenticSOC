@@ -16,7 +16,12 @@ It owns three closely-related surfaces:
 NON-NEGOTIABLES held: #9 — all terminology / view / branding text is plain DATA
 rendered by the UI, never markup, never an LLM prompt input; ORG writers are
 admin-gated; personal writers are self-service (each user edits only their own
-bucket). #2 — org-default + terminology writes record an append-only audit row.
+bucket). #2: every org-level write (branding, org defaults, terminology) is a
+settings change AUDITED BEFORE IT IS VISIBLE (Round 14 SPEC §3.6,
+``audit.prefs_write``): a ``settings.updated`` row naming every changed field is
+appended first, and a failed append answers ``503 audit_unavailable`` with nothing
+saved. A personal change to the Round 14 preference keys (``misc.dashboards_hidden``,
+``misc.dismissed_intros``) is audited the same way as ``user.preferences_updated``.
 """
 
 from __future__ import annotations
@@ -27,9 +32,21 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..config import BrandingConfig, CustomizationConfig
+from ..audit.changes import diff_changes
+from ..audit.context import audit_context
+from ..audit.prefs_write import audited_prefs_write
+from ..audit.write import audited_write
+from ..config import BrandingConfig, CustomizationConfig, Preferences
 from ..constants import ActionType
-from ..models import ColumnState, SavedView
+from ..models import (
+    DASHBOARDS_HIDDEN_PREF_KEY,
+    DISMISSED_INTROS_PREF_KEY,
+    MAX_CHAT_PROMPTS,
+    WHATS_NEW_SEEN_PREF_KEY,
+    ChatPrompt,
+    ColumnState,
+    SavedView,
+)
 from ..state import AppState
 from ..stores.user_prefs import resolve_effective_prefs
 from .deps import current_user, current_username, get_state, require_admin
@@ -47,6 +64,7 @@ async def branding_get(state: AppState = Depends(get_state)) -> BrandingConfig:
 @router.put("/branding")
 async def branding_put(
     body: BrandingConfig,
+    request: Request,
     state: AppState = Depends(get_state),
     _admin=Depends(require_admin),  # ADMIN-ONLY: org-wide branding is an admin surface
 ) -> dict[str, Any]:
@@ -55,7 +73,10 @@ async def branding_put(
             raise HTTPException(status_code=403, detail="settings are read-only")
         return current.model_copy(update={"branding": body})
 
-    prefs = await state.mutate_prefs(_apply)
+    _before, prefs = await audited_prefs_write(
+        state, transform=_apply, actor=current_username(request) or "admin",
+        context=audit_context(request), summary="updated branding",
+    )
     # Persist exactly as before, then ADDITIVELY annotate the response with a WCAG-AA
     # contrast advisory (Wave-4): the exact higher-contrast black/white *-foreground
     # derived for each operator accent (auto_corrected) + plain-text warnings only for
@@ -100,6 +121,10 @@ class UserPrefsPatchBody(BaseModel):
     last_list_state: dict[str, dict[str, Any]] | None = None
     pinned_view_ids: list[str] | None = None
     misc: dict[str, Any] | None = None
+    # The full replacement list of the user's saved chat prompts (chat revamp SPEC
+    # §10.4: <= 50 of {id, title <= 60, text <= 2000}). Plain user text; the store
+    # re-validates through UserPrefs, which sanitises and bounds it again.
+    chat_prompts: list[ChatPrompt] | None = Field(default=None, max_length=MAX_CHAT_PROMPTS)
 
 
 class SavedViewBody(BaseModel):
@@ -154,10 +179,102 @@ async def prefs_user_put(
     body: UserPrefsPatchBody, request: Request, state: AppState = Depends(get_state)
 ) -> dict[str, Any]:
     """Patch the caller's PERSONAL prefs (theme, pins, last-list-state, …). Only the
-    provided fields change. NOT admin-gated — every user edits only their own bucket."""
+    provided fields change. NOT admin-gated — every user edits only their own bucket.
+
+    A change to the saved chat prompts (the Round 12 prompt library) writes one
+    append-only audit row (#2) with counts only — never a prompt's title or text."""
     uid = _prefs_user_id(request, state)
-    updated = await state.user_prefs.patch(uid, **body.model_dump(exclude_none=True))
+    stored = await state.user_prefs.get(uid)
+    before = stored.chat_prompts if body.chat_prompts is not None else None
+    fields = body.model_dump(exclude_none=True)
+    audited = _audited_misc_changes(stored, body.misc)
+    if audited:
+        # Round 14 (SPEC §3.5, §3.6): a change to a Round 14 personal preference
+        # (built-in boards hidden from the Dashboards library, dismissed notices) is
+        # audited before it is saved, to the real audit log (never Demo-swapped).
+        actor = current_username(request) or uid or "default"
+        updated = await audited_write(
+            state, sink="control", action="user.preferences_updated",
+            target={"type": "user", "id": actor, "label": actor},
+            expected_revision=None, changes=audited,
+            write=lambda: state.user_prefs.patch(uid, **fields),
+            action_type=ActionType.USER_MGMT, actor=actor, surface="prefs",
+            context=audit_context(request),
+            result_summary="updated personal preferences: " + ", ".join(
+                sorted({c.field.split(".")[1] for c in audited})
+            ),
+        )
+    else:
+        updated = await state.user_prefs.patch(uid, **fields)
+    if before is not None:
+        changes = chat_prompt_changes(before, updated.chat_prompts)
+        if changes is not None:
+            try:
+                await state.control_audit.record(
+                    action_type=ActionType.USER_MGMT, surface="chat",
+                    actor=current_username(request) or "default",
+                    # Written after the prompt library was saved.
+                    outcome="success", actor_type="human",
+                    result_summary=(
+                        f"chat prompt library updated: added={changes['added']} "
+                        f"edited={changes['edited']} removed={changes['removed']} "
+                        f"favorites_changed={changes['favorites']} "
+                        f"reordered={'yes' if changes['reordered'] else 'no'} total={changes['total']}"
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 -- the saved prompts stand; the row is best effort
+                logger.warning("chat prompt library audit failed (%s)", type(exc).__name__)
     return updated.model_dump(mode="json")
+
+
+#: The personal preference keys whose changes are audited (SPEC §3.5): set by the
+#: Round 14 Dashboards library (Hide, Unhide) and notices (dismissed intros). Round 16
+#: (SPEC D7): the What's new acknowledgement (``whats_new_seen``) is audited the same
+#: way, one row per person per update; the personal switch ``whats_new_auto`` is not.
+_AUDITED_MISC_KEYS: tuple[str, ...] = (
+    DASHBOARDS_HIDDEN_PREF_KEY, DISMISSED_INTROS_PREF_KEY, WHATS_NEW_SEEN_PREF_KEY,
+)
+
+
+def _audited_misc_changes(stored: Any, misc: dict[str, Any] | None) -> list[Any]:
+    """The audit ``changes`` of a personal preferences patch, for the audited misc keys
+    only, compared after the same normalisation the store applies (so a no-op resend
+    or a value the store would drop is not a change)."""
+    if not misc:
+        return []
+    keys = [k for k in _AUDITED_MISC_KEYS if k in misc]
+    if not keys:
+        return []
+    current = dict(getattr(stored, "misc", None) or {})
+    try:
+        probe = stored.model_copy(update={"misc": {**current, **{k: misc[k] for k in keys}}})
+        probe = type(stored).model_validate(probe.model_dump())
+        proposed = dict(probe.misc or {})
+    except Exception:  # noqa: BLE001 (the store's own validation answers a bad value)
+        proposed = {**current, **{k: misc[k] for k in keys}}
+    before = {k: current.get(k) for k in keys if current.get(k) is not None}
+    after = {k: proposed.get(k) for k in keys if proposed.get(k) is not None}
+    return diff_changes(before, after, prefix="misc")
+
+
+def chat_prompt_changes(before: list[ChatPrompt], after: list[ChatPrompt]) -> dict[str, Any] | None:
+    """How the saved chat prompts changed, as counts (``None`` when nothing did):
+    prompts added, edited (title, text or category), removed, favorites toggled,
+    and whether the order changed. Ids are compared; no text is returned."""
+    old = {prompt.id: prompt for prompt in before}
+    new = {prompt.id: prompt for prompt in after}
+    added = sum(1 for pid in new if pid not in old)
+    removed = sum(1 for pid in old if pid not in new)
+    edited = sum(
+        1 for pid, prompt in new.items() if pid in old
+        and (old[pid].title, old[pid].text, old[pid].category) != (prompt.title, prompt.text, prompt.category)
+    )
+    favorites = sum(1 for pid, prompt in new.items() if pid in old and old[pid].favorite != prompt.favorite)
+    reordered = [p.id for p in before if p.id in new] != [p.id for p in after if p.id in old]
+    if not (added or removed or edited or favorites or reordered):
+        return None
+    return {"added": added, "edited": edited, "removed": removed, "favorites": favorites,
+            "reordered": reordered, "total": len(after)}
 
 
 @router.get("/prefs/org", response_model=CustomizationConfig)
@@ -176,17 +293,26 @@ async def prefs_org_put(
     _admin=Depends(require_admin),  # ADMIN-ONLY: org defaults are an admin surface
 ) -> dict[str, Any]:
     """Replace the ORG customization defaults (admin-only). Validated/bounded by
-    CustomizationConfig. All free-text is plain data (#9)."""
+    CustomizationConfig. All free-text is plain data (#9).
+
+    Round 16 (WP16): the new settings are validated as a whole ``Preferences``, so its
+    after-validators run on this write as on every other: a legacy
+    ``customization.default_theme`` other than ``system`` is moved into Branding (B45)
+    and is never stored here."""
     def _apply(current):
         if current.read_only_settings_mode:
             raise HTTPException(status_code=403, detail="settings are read-only")
-        return current.model_copy(update={"customization": body})
+        merged = current.model_dump(mode="json")
+        merged["customization"] = body.model_dump(mode="json")
+        try:
+            return Preferences.model_validate(merged)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=422, detail=f"Invalid settings: {exc}") from exc
 
-    prefs = await state.mutate_prefs(_apply)
-    await state.control_audit.record(
-        action_type=ActionType.USER_MGMT, surface="settings",
-        actor=current_username(request) or "admin",
-        result_summary="updated org customization defaults",
+    _before, prefs = await audited_prefs_write(
+        state, transform=_apply, actor=current_username(request) or "admin",
+        context=audit_context(request), summary="updated org customization defaults",
+        action_type=ActionType.USER_MGMT,
     )
     return prefs.customization.model_dump(mode="json")
 
@@ -207,10 +333,7 @@ async def terminology_put(
 ) -> dict[str, Any]:
     """Replace the ORG terminology map (admin-only). Bounded/validated by
     CustomizationConfig. Plain data (#9)."""
-    custom: CustomizationConfig | None = None
-
     def _apply(current):
-        nonlocal custom
         if current.read_only_settings_mode:
             raise HTTPException(status_code=403, detail="settings are read-only")
         custom = current.customization.model_copy(
@@ -220,14 +343,12 @@ async def terminology_put(
         custom = CustomizationConfig.model_validate(custom.model_dump())
         return current.model_copy(update={"customization": custom})
 
-    await state.mutate_prefs(_apply)
-    assert custom is not None
-    await state.control_audit.record(
-        action_type=ActionType.USER_MGMT, surface="settings",
-        actor=current_username(request) or "admin",
-        result_summary="updated terminology",
+    _before, prefs = await audited_prefs_write(
+        state, transform=_apply, actor=current_username(request) or "admin",
+        context=audit_context(request), summary="updated terminology",
+        action_type=ActionType.USER_MGMT,
     )
-    return {"terminology": dict(custom.terminology)}
+    return {"terminology": dict(prefs.customization.terminology)}
 
 
 @router.get("/views")

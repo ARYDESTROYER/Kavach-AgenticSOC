@@ -1,15 +1,19 @@
 /**
- * CustomizationSection — Settings > Appearance & customization (Wave 7).
+ * CustomizationSection: Settings > Account > Appearance (Wave 7; renamed in Round 14).
  *
  * Two-store model surfaced in one panel:
- *  - PERSONAL (every signed-in user): the colour-mode theme + a manager for the
- *    user's saved views (delete + clone an org-shared one into the personal set).
- *  - ORG (admin-only, wrapped in <Can>): the terminology label editor + the org
- *    default theme. Org edits go through `api.prefs.putOrg` / `api.terminology.put`,
- *    then the cascade is refreshed so the change applies immediately.
+ *  - PERSONAL (every signed-in user): the colour-mode theme, "Reduce transparency"
+ *    (Round 12: the in-app override for browsers that never report
+ *    `prefers-reduced-transparency`) + a manager for the user's saved views (delete +
+ *    clone an org-shared one into the personal set).
+ *  - ORG (admin-only, wrapped in <Can>): the terminology label editor. Edits go through
+ *    `api.terminology.put`, then the cascade is refreshed so the change applies at once.
+ *  - The organization default theme is Branding's `default_theme`, the only one (Round 16
+ *    B45). This panel shows it read-only and links administrators to Branding; it never
+ *    writes the legacy `customization.default_theme`.
  *
- * SECURITY (#9): every terminology key/label + saved-view name is user/operator DATA
- * — rendered as plain text, never markup, never an LLM-prompt input.
+ * SECURITY (#9): every terminology key/label + saved-view name is user/operator DATA,
+ * rendered as plain text, never markup, never an LLM-prompt input.
  *
  * IMPORTANT (React #310): every hook is declared at the top of the component, ABOVE
  * any conditional return.
@@ -17,22 +21,25 @@
 import * as React from 'react';
 import { Sun, Moon, Monitor, Trash2, Copy, Save, Bookmark, Users } from 'lucide-react';
 import { api, ApiError } from '@/lib/api';
-import type { OrgCustomization, ThemeMode } from '@/lib/types';
+import type { ThemeMode } from '@/lib/types';
 import { usePrefs, DEFAULT_TERMS } from '@/soc/prefs';
+import { useTheme } from '@/soc/theme';
+import { effectiveBrandingTheme } from '@/soc/theme-tokens';
+import { settingsSectionHash } from '@/soc/router';
+import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
 import { Can, useCan } from '@/soc/components/Can';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
+import { Switch } from '@/ui/switch';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { SectionTitle } from '@/soc/pages/settings/primitives';
 import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from '@/ui/select';
+  applyTransparencyPreference,
+  TRANSPARENCY_PREF_KEY,
+  type TransparencyPreference,
+} from '@/design-system/transparency';
 import { toast } from 'sonner';
 
 const THEME_OPTIONS: Array<{ value: ThemeMode; label: string; icon: typeof Sun }> = [
@@ -41,29 +48,64 @@ const THEME_OPTIONS: Array<{ value: ThemeMode; label: string; icon: typeof Sun }
   { value: 'dark', label: 'Dark', icon: Moon },
 ];
 
-/** The high-traffic terminology keys offered in the editor (each defaulted). */
-const TERM_KEYS: Array<{ key: string; help: string }> = [
-  { key: 'cases', help: 'The "Cases" nav + page title' },
-  { key: 'case', help: 'The singular noun, e.g. "this case"' },
-  { key: 'alerts', help: 'The "Alerts" label' },
-  { key: 'alert', help: 'The singular alert noun' },
-  { key: 'sources', help: 'The "Sources" label' },
-  { key: 'source', help: 'The singular source noun' },
-  { key: 'analyst', help: 'The operator role noun' },
+/** The words for an organization default theme (Branding `default_theme`). */
+const ORG_THEME_LABEL: Record<ThemeMode, string> = { system: 'System', light: 'Light', dark: 'Dark' };
+
+/** Branding, where the organization default theme is changed (Settings, Branding). */
+const BRANDING_HREF = settingsSectionHash('appearance');
+
+const TRANSPARENCY_OPTIONS: Array<{ value: TransparencyPreference; label: string }> = [
+  { value: 'system', label: 'System' },
+  { value: 'reduced', label: 'On' },
+];
+
+/**
+ * The high-traffic terminology keys offered in the editor (each defaulted). Each field is
+ * labelled by the word it renames, never by its stored key; the key is only the wire name.
+ */
+const TERM_KEYS: Array<{ key: string; label: string; help: string }> = [
+  { key: 'cases', label: 'Cases (plural)', help: 'In navigation and page titles.' },
+  { key: 'case', label: 'Case (singular)', help: 'In sentences, for example "this case".' },
+  { key: 'alerts', label: 'Alerts (plural)', help: 'Where alerts are listed.' },
+  { key: 'alert', label: 'Alert (singular)', help: 'In sentences, for example "this alert".' },
+  { key: 'sources', label: 'Sources (plural)', help: 'In navigation and page titles.' },
+  { key: 'source', label: 'Source (singular)', help: 'In sentences, for example "this source".' },
+  { key: 'analyst', label: 'Analyst', help: 'The role of the people who triage cases.' },
 ];
 
 export const CustomizationSection: React.FC = () => {
-  const { themeMode, setThemeMode, savedViews, deleteView, cloneView, refresh } = usePrefs();
+  const { prefs, themeMode, setThemeMode, savedViews, deleteView, cloneView, refresh, patchMisc } = usePrefs();
   const isAdmin = useCan('settings', 'manage');
+  // The one organization default theme is Branding's (B45), read here, never written.
+  const { branding } = useTheme();
+  const orgDefault = effectiveBrandingTheme(branding);
+  const brandingHref = safeRouteHref(BRANDING_HREF);
+  const openBranding = useRouteLinkClick(brandingHref);
+
+  // "Reduce transparency": start from what the page is showing right now (the pre-paint
+  // stamp from this device's mirror, or the account value prefs.tsx already applied),
+  // then follow the account's stored choice once the cascade hydrates.
+  const [transparency, setTransparency] = React.useState<TransparencyPreference>(() =>
+    document.documentElement.dataset.transparency === 'reduced' ? 'reduced' : 'system',
+  );
+  const storedTransparency = prefs.misc?.[TRANSPARENCY_PREF_KEY];
+  React.useEffect(() => {
+    if (storedTransparency === 'reduced' || storedTransparency === 'system') {
+      setTransparency(storedTransparency);
+    }
+  }, [storedTransparency]);
+  const changeTransparency = React.useCallback((next: TransparencyPreference) => {
+    // Optimistic, like the theme: apply now, persist to the account in the background.
+    // The device mirror keeps the choice here even if the save fails.
+    setTransparency(next);
+    applyTransparencyPreference(next);
+    void api.prefs.putUser({ misc: { [TRANSPARENCY_PREF_KEY]: next } }).catch(() => {
+      /* best-effort: the local apply already happened */
+    });
+  }, []);
 
   // ORG terminology draft (admin). Hydrated from the org prefs on mount.
   const [terms, setTerms] = React.useState<Record<string, string>>({});
-  const [orgTheme, setOrgTheme] = React.useState<ThemeMode>('system');
-  // The FULL org customization as last loaded, so a partial save (e.g. "Save default"
-  // theme) can round-trip the fields this panel has no editor for — org saved views,
-  // pinned view ids, and per-role default dashboards. `PUT /api/prefs/org` REPLACES the
-  // whole object (no server-side merge), so omitting them would silently wipe them.
-  const [orgFull, setOrgFull] = React.useState<OrgCustomization>({});
   const [orgLoaded, setOrgLoaded] = React.useState(false);
   const [savingOrg, setSavingOrg] = React.useState(false);
 
@@ -73,11 +115,9 @@ export const CustomizationSection: React.FC = () => {
       try {
         const org = await api.prefs.getOrg();
         if (!alive) return;
-        setOrgFull(org);
         setTerms({ ...(org.terminology ?? {}) });
-        setOrgTheme((org.default_theme as ThemeMode) ?? 'system');
       } catch {
-        /* non-admins may 403 on a future write — the GET is allowed, but be safe */
+        /* non-admins may 403 on a future write; the GET is allowed, but be safe */
       } finally {
         if (alive) setOrgLoaded(true);
       }
@@ -104,7 +144,6 @@ export const CustomizationSection: React.FC = () => {
     const cleaned = cleanTerms(terms);
     try {
       await api.terminology.put(cleaned);
-      setOrgFull((o) => ({ ...o, terminology: cleaned }));
       await refresh();
       toast.success('Terminology saved');
     } catch (e) {
@@ -115,34 +154,11 @@ export const CustomizationSection: React.FC = () => {
     }
   };
 
-  const saveOrgDefaults = async () => {
-    setSavingOrg(true);
-    try {
-      // Spread the full loaded org so the REPLACE PUT preserves fields with no editor
-      // here (saved views / pinned ids / default dashboards); override only the theme,
-      // and carry the latest terminology draft so an unsaved rename isn't reverted.
-      const patch: OrgCustomization = {
-        ...orgFull,
-        terminology: cleanTerms(terms),
-        default_theme: orgTheme,
-      };
-      const saved = await api.prefs.putOrg(patch);
-      setOrgFull(saved);
-      await refresh();
-      toast.success('Org defaults saved');
-    } catch (e) {
-      const msg = e instanceof ApiError ? e.message : 'Could not save org defaults';
-      toast.error(msg);
-    } finally {
-      setSavingOrg(false);
-    }
-  };
-
   return (
     <div className="space-y-0" data-testid="customization-settings-surface">
       <SectionTitle
-        title="Appearance & customization"
-        sub="Choose your personal theme, manage saved views, and—when permitted—set organization terminology and defaults."
+        title="Appearance"
+        sub="Choose your personal theme and manage saved views. Administrators also set the organization's terminology."
       />
 
       {/* ---- Personal theme -------------------------------------------------- */}
@@ -169,6 +185,67 @@ export const CustomizationSection: React.FC = () => {
           }))}
           className="max-w-full"
         />
+        {orgDefault ? (
+          <p className="text-sm text-muted-foreground" data-testid="org-default-theme">
+            Organization default: {ORG_THEME_LABEL[orgDefault]}.
+            {isAdmin && brandingHref ? (
+              <>
+                {' '}
+                <a
+                  href={brandingHref}
+                  onClick={openBranding}
+                  className="font-medium text-primary underline-offset-4 hover:underline"
+                >
+                  Change it in Branding
+                </a>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+      </section>
+
+      {/* ---- Reduce transparency (personal) --------------------------------- */}
+      <section className="space-y-3 border-t border-border py-5">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">Reduce transparency</h3>
+          <p className="text-sm text-muted-foreground">
+            Shows the top bar and sticky toolbars as solid surfaces instead of frosted
+            glass. “System” follows your device’s Reduce transparency setting, but Safari
+            and Firefox don’t pass that setting on, so choose “On” to apply it there.
+            Saved to your account.
+          </p>
+        </div>
+        <SegmentedControl
+          aria-label="Reduce transparency"
+          value={transparency}
+          onValueChange={changeTransparency}
+          size="sm"
+          options={TRANSPARENCY_OPTIONS}
+          className="max-w-full"
+        />
+      </section>
+
+      {/* ---- What's new after updates (personal, Round 16 D7) ---------------- */}
+      <section className="border-t border-border py-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 id="whats-new-auto-label" className="text-sm font-semibold text-foreground">
+              Show What&apos;s new after updates
+            </h3>
+            <p id="whats-new-auto-help" className="text-sm text-muted-foreground">
+              After an update, a short welcome shows once with what changed. Every release
+              stays in Communication, What&apos;s new. Saved to your account.
+            </p>
+          </div>
+          <Switch
+            aria-labelledby="whats-new-auto-label"
+            aria-describedby="whats-new-auto-help"
+            checked={prefs.misc?.whats_new_auto !== false}
+            onCheckedChange={(on) => void patchMisc({ whats_new_auto: on })}
+            className="mt-0.5"
+            data-testid="whats-new-auto-switch"
+          />
+        </div>
       </section>
 
       {/* ---- Saved views (personal) ----------------------------------------- */}
@@ -177,7 +254,7 @@ export const CustomizationSection: React.FC = () => {
           <h3 className="text-sm font-semibold text-foreground">Saved views</h3>
           <p className="text-sm text-muted-foreground">
             Reusable list configurations. Create them from a list’s “Save view”
-            button; manage them here. Org-shared views are marked.
+            button; manage them here. Views shared with the organization are marked.
           </p>
         </div>
         {savedViews.length === 0 ? (
@@ -221,7 +298,8 @@ export const CustomizationSection: React.FC = () => {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-8 text-critical hover:text-critical"
+                    // Neutral at rest; red only on hover and focus (SPEC §4.9.2 RowActions).
+                    className="size-8 text-muted-foreground hover:bg-critical/10 hover:text-critical-text focus-visible:text-critical-text"
                     aria-label={`Delete ${v.name}`}
                     onClick={() =>
                       void deleteView(v.id).then((ok) =>
@@ -240,36 +318,38 @@ export const CustomizationSection: React.FC = () => {
         )}
       </section>
 
-      {/* ---- Terminology + org defaults (admin only) ------------------------ */}
+      {/* ---- Terminology (admin only) ---------------------------------------- */}
       <Can resource="settings" action="manage">
         <section className="space-y-4 border-t border-border py-5">
           <div>
             <h3 className="text-sm font-semibold text-foreground">
-              Terminology <span className="text-xs font-normal text-muted-foreground">(org default — admin)</span>
+              Terminology <span className="text-xs font-normal text-muted-foreground">(organization default, administrators)</span>
             </h3>
             <p className="text-sm text-muted-foreground">
-              Rename high-traffic labels org-wide (e.g. call a case an “incident”).
+              Rename high-traffic labels organization-wide (for example, call a case an “incident”).
               Leave blank to use the built-in label. Plain text only.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            {TERM_KEYS.map(({ key, help }) => (
+            {TERM_KEYS.map(({ key, label, help }) => (
               <div key={key} className="space-y-1">
-                <Label htmlFor={`term-${key}`} className="text-xs text-muted-foreground">
-                  {key}{' '}
-                  <span className="text-muted-foreground/70">
-                    (default: {DEFAULT_TERMS[key] ?? key})
-                  </span>
+                {/* Named by its visible label (WCAG 2.5.3); the built-in word is the
+                    placeholder, and the help line says where the word appears. */}
+                <Label htmlFor={`term-${key}`} className="text-sm font-medium text-foreground">
+                  {label}
                 </Label>
                 <Input
                   id={`term-${key}`}
                   value={terms[key] ?? ''}
                   onChange={(e) => setTerm(key, e.target.value)}
                   placeholder={DEFAULT_TERMS[key] ?? key}
-                  aria-label={`Terminology for ${key} — ${help}`}
+                  aria-describedby={`term-${key}-help`}
                   disabled={!orgLoaded}
                   maxLength={120}
                 />
+                <p id={`term-${key}-help`} className="text-xs text-muted-foreground">
+                  {help}
+                </p>
               </div>
             ))}
           </div>
@@ -280,38 +360,12 @@ export const CustomizationSection: React.FC = () => {
             </Button>
           </div>
 
-          <div className="space-y-2 pt-2">
-            <Label className="text-xs text-muted-foreground">Org default theme</Label>
-            <div className="flex items-center gap-2">
-              <Select value={orgTheme} onValueChange={(v) => setOrgTheme(v as ThemeMode)}>
-                <SelectTrigger className="w-[12rem]" aria-label="Org default theme">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="system">System</SelectItem>
-                  <SelectItem value="light">Light</SelectItem>
-                  <SelectItem value="dark">Dark</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void saveOrgDefaults()}
-                disabled={savingOrg || !orgLoaded}
-              >
-                Save default
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Applied to users who haven’t picked their own theme.
-            </p>
-          </div>
         </section>
       </Can>
 
       {!isAdmin ? (
         <p className="border-t border-border pt-4 text-xs text-muted-foreground">
-          Terminology &amp; organization defaults are managed by an administrator.
+          Terminology is managed by an administrator.
         </p>
       ) : null}
     </div>

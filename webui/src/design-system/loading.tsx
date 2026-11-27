@@ -68,7 +68,7 @@ export interface LoadingShapeProps extends React.HTMLAttributes<HTMLDivElement> 
 }
 
 const StaticBlock = ({ className }: { className: string }) => (
-  <span className={cn('block rounded-[4px] bg-muted/75', className)} />
+  <span className={cn('block rounded-sm bg-muted/75', className)} />
 );
 
 /**

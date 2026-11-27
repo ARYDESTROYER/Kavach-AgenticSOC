@@ -5,7 +5,12 @@ A single, in-memory ``EventBus`` is the server->client push spine for the live U
 * in-app notifications (#8 — :class:`app.models.InAppNotification`),
 * case activity / collaboration (#4 — :class:`app.models.CaseActivity`,
   status changes, comments, assignments), and
-* agent investigation steps (#12 — :class:`app.models.TraceSpan` projections).
+* agent investigation steps (#12 — :class:`app.models.TraceSpan` projections), and
+* the caller's own chat turns (Round 12 — owner-only ``chat.turn`` frames, see
+  :func:`publish_chat_turn`), and
+* AI investigation runs (Round 16, ``case.investigation`` frames, see
+  :func:`publish_case_investigation`), one event on several topics through
+  :meth:`EventBus.publish_many`.
 
 Design goals (all enforced here, no network needed to exercise them):
 
@@ -74,6 +79,66 @@ DEFAULT_HEARTBEAT_SECONDS = 15
 
 
 # --------------------------------------------------------------------------- #
+# Canonical SSE event-type (channel) names — the ONE registry of what this backend
+# publishes.
+#
+# ⚠ WHY THIS EXISTS. A browser ``EventSource`` matches a typed ``event:`` field
+# EXACTLY: ``addEventListener('agent', …)`` receives NOTHING from a producer that
+# publishes ``agent.step``. Neither end can observe the mismatch — the publish
+# succeeds, the subscription succeeds, the frames are simply never delivered — so the
+# investigation-progress channel was silently dead from the day it was written.
+# Naming the channels once, here, is what stops the two ends drifting again; the
+# browser client mirrors this list in ``webui/src/lib/useEventStream.ts`` and its
+# tests assert the two agree.
+#
+# These are TRANSPORT names only. Nothing here decides anything (#3): a frame is a
+# NUDGE and the client always refetches authoritative state.
+AGENT_STEP_EVENT = "agent.step"      # investigator/pipeline progress, room cases:{id}
+CASE_ACTIVITY_EVENT = "case.activity"  # case collaboration timeline, room cases:{id}
+INAPP_EVENT = "inapp"                # in-app notifications, topics notifications/inbox
+JOB_EVENT = "job"                    # durable background-job progress, topic jobs
+CHAT_TURN_EVENT = "chat.turn"        # the caller's own chat turn lifecycle, topic chat
+CHAT_READ_EVENT = "chat.read"        # the caller read a conversation's answer, topic chat
+CASE_CHANGED_EVENT = "case.changed"  # a case was saved (created or updated), topic cases
+CASE_RUNBOOK_EVENT = "case.runbook"  # a case's runbook run changed (progress only), topic runbooks
+CASE_REVIEW_EVENT = "case.review"  # an auto-close review was picked or recorded, topics cases:{id}, cases
+# An AI investigation run was queued, started, attached its case or finished (Round 16
+# SPEC §4.5 WP08), topics cases, cases:{id} and investigations.
+CASE_INVESTIGATION_EVENT = "case.investigation"
+OVERFLOW_EVENT = "overflow"          # bus control frame: this subscriber dropped events
+
+SSE_EVENT_TYPES: frozenset[str] = frozenset({
+    AGENT_STEP_EVENT,
+    CASE_ACTIVITY_EVENT,
+    INAPP_EVENT,
+    JOB_EVENT,
+    CHAT_TURN_EVENT,
+    CHAT_READ_EVENT,
+    CASE_CHANGED_EVENT,
+    CASE_RUNBOOK_EVENT,
+    CASE_REVIEW_EVENT,
+    CASE_INVESTIGATION_EVENT,
+    OVERFLOW_EVENT,
+})
+
+# The topic chat turn frames are published on (``GET /api/events?topics=chat``).
+CHAT_TOPIC = "chat"
+
+# The topic case-save frames are published on (``GET /api/events?topics=cases``).
+CASES_TOPIC = "cases"
+
+# The topic runbook-run frames are published on (``GET /api/events?topics=runbooks``,
+# Round 14 SPEC §4.10.15). ``GET /api/events`` serves it only to a caller holding
+# BOTH ``runbooks:read`` and ``cases:read``.
+RUNBOOKS_TOPIC = "runbooks"
+
+# The low-volume topic AI investigation frames are also published on (Round 16 SPEC
+# S8): the shell's Case Manager count subscribes to it alone, without the ``cases``
+# stream. ``GET /api/events`` serves it only with ``cases:read`` (WP08).
+INVESTIGATIONS_TOPIC = "investigations"
+
+
+# --------------------------------------------------------------------------- #
 # SSE frame formatting (pure functions — unit-testable with no network).
 # --------------------------------------------------------------------------- #
 def _data_lines(payload: str) -> str:
@@ -122,9 +187,13 @@ class _Event:
     ``audience`` is None for a broadcast (every subscriber on the topic) or a set of
     lowercased usernames for a targeted delivery (only those subscribers). ``seq`` is a
     monotonic per-bus counter used both as the SSE ``id`` (for Last-Event-ID replay)
-    and to order replay deterministically."""
+    and to order replay deterministically.
 
-    __slots__ = ("seq", "id", "topic", "event_type", "payload", "audience", "ts")
+    ``topics`` is every topic the event was published on: one for :meth:`EventBus.
+    publish`, several for :meth:`EventBus.publish_many` (Round 16), which publishes ONE
+    event under one ``seq`` into each topic's ring. ``topic`` is the first of them."""
+
+    __slots__ = ("seq", "id", "topic", "topics", "event_type", "payload", "audience", "ts")
 
     def __init__(
         self,
@@ -133,10 +202,12 @@ class _Event:
         event_type: str,
         payload: str,
         audience: frozenset[str] | None,
+        topics: frozenset[str] | None = None,
     ) -> None:
         self.seq = seq
         self.id = f"{seq}"
         self.topic = topic
+        self.topics = topics if topics else frozenset({topic})
         self.event_type = event_type
         self.payload = payload
         self.audience = audience
@@ -188,7 +259,7 @@ class _Subscriber:
         self._event.set()
 
     def wants(self, event: _Event) -> bool:
-        return event.topic in self.topics and event.visible_to(self.user)
+        return not self.topics.isdisjoint(event.topics) and event.visible_to(self.user)
 
     async def drain(self) -> list[_Event]:
         """Wait until at least one event is queued, then atomically return + clear the
@@ -262,6 +333,7 @@ class EventBus:
         data: Any,
         *,
         audience: Iterable[str] | None = None,
+        retain: bool = True,
     ) -> str:
         """Publish ``data`` to ``topic`` under the SSE ``event_type`` channel.
 
@@ -277,6 +349,39 @@ class EventBus:
         ``data`` is JSON-encoded with ``default=str`` so a Pydantic ``model_dump`` dict,
         a datetime, etc. all serialise; a non-serialisable value never raises into the
         producer (it falls back to a stringified payload)."""
+        return self._publish((topic,), event_type, data, audience=audience, retain=retain)
+
+    def publish_many(
+        self,
+        topics: Iterable[str],
+        event_type: str,
+        data: Any,
+        *,
+        audience: Iterable[str] | None = None,
+        retain: bool = True,
+    ) -> str | None:
+        """Publish ONE event on several topics (Round 16 SPEC §4.3 WP01, Appendix C27).
+
+        The event gets one ``seq`` and so one SSE ``id``. With ``retain`` it is appended
+        to each topic's replay ring, and it is offered ONCE to each subscriber whose
+        topics meet any of ``topics``, so a client subscribed to all of them receives one
+        frame, not one per topic; :meth:`replay` dedupes it by ``seq`` across a
+        subscriber's topics. Otherwise the same contract as :meth:`publish`. Returns the
+        event id, or ``None`` when ``topics`` names no topic (nothing is published)."""
+        ordered = tuple(dict.fromkeys(str(t) for t in topics if str(t)))
+        if not ordered:
+            return None
+        return self._publish(ordered, event_type, data, audience=audience, retain=retain)
+
+    def _publish(
+        self,
+        topics: tuple[str, ...],
+        event_type: str,
+        data: Any,
+        *,
+        audience: Iterable[str] | None,
+        retain: bool,
+    ) -> str:
         aud: frozenset[str] | None
         if audience is None:
             aud = None
@@ -284,21 +389,23 @@ class EventBus:
             aud = frozenset(str(u).strip().lower() for u in audience if str(u).strip())
         payload = _encode(data)
         self._seq += 1
-        event = _Event(self._seq, topic, event_type, payload, aud)
-        # Replay history (bounded) — even with no subscribers, so a client that
-        # connects-then-reconnects can catch up via Last-Event-ID.
-        if self._history_per_topic > 0:
-            ring = self._history.get(topic)
-            if ring is None:
-                ring = deque(maxlen=self._history_per_topic)
-                self._history[topic] = ring
-                # LRU-evict the least-recently-published topic past the cap (audit #32).
-                while len(self._history) > self._max_history_topics:
-                    self._history.popitem(last=False)
-            else:
-                self._history.move_to_end(topic)  # mark most-recently-published
-            ring.append(event)
-        # Fan out (non-blocking offer to each matching subscriber).
+        event = _Event(self._seq, topics[0], event_type, payload, aud, frozenset(topics))
+        # Replay history is normally bounded and retained even with no subscribers.
+        # A producer may explicitly disable retention for identity-sensitive data
+        # whose audience key is mutable (for example a deleted/recreated username).
+        if retain and self._history_per_topic > 0:
+            for topic in topics:
+                ring = self._history.get(topic)
+                if ring is None:
+                    ring = deque(maxlen=self._history_per_topic)
+                    self._history[topic] = ring
+                    # LRU-evict the least-recently-published topic past the cap (audit #32).
+                    while len(self._history) > self._max_history_topics:
+                        self._history.popitem(last=False)
+                else:
+                    self._history.move_to_end(topic)  # mark most-recently-published
+                ring.append(event)
+        # Fan out (non-blocking offer to each matching subscriber, once each).
         for sub in self._subscribers.values():
             if sub.wants(event):
                 sub.offer(event)
@@ -309,20 +416,21 @@ class EventBus:
         """Events on ``topics`` visible to ``user`` with ``seq`` strictly greater than
         ``after_id`` (the client's Last-Event-ID), in seq order. Empty when ``after_id``
         is None/invalid or nothing newer exists. Used to replay missed events on
-        reconnect. Bounded by the per-topic history ring."""
+        reconnect. Bounded by the per-topic history ring. An event published on several
+        of ``topics`` (:meth:`publish_many`) sits in each of their rings and is
+        returned once (deduped by ``seq``)."""
         if after_id is None:
             return []
         try:
             after = int(str(after_id).strip())
         except (TypeError, ValueError):
             return []
-        out: list[_Event] = []
+        found: dict[int, _Event] = {}
         for topic in topics:
             for ev in self._history.get(topic, ()):  # type: ignore[arg-type]
-                if ev.seq > after and ev.visible_to(user):
-                    out.append(ev)
-        out.sort(key=lambda e: e.seq)
-        return out
+                if ev.seq > after and ev.seq not in found and ev.visible_to(user):
+                    found[ev.seq] = ev
+        return [found[seq] for seq in sorted(found)]
 
     # --- subscribe (async generator yielding SSE-framed bytes) ---
     async def subscribe(
@@ -385,7 +493,7 @@ class EventBus:
                     # Tell the client it missed events (it can refetch authoritative
                     # state). A control event on a reserved channel, never a real model.
                     yield format_sse(
-                        "overflow",
+                        OVERFLOW_EVENT,
                         _encode({"dropped": dropped, "ts": iso_now()}),
                     ).encode("utf-8")
                 for ev in batch:
@@ -414,6 +522,162 @@ class EventBus:
         for sub_id in list(self._subscribers):
             self._unregister(sub_id)
         self._history.clear()
+
+
+def publish_chat_turn(
+    bus: "EventBus", owner: str | None, payload: Any, *, retain: bool = False,
+) -> str | None:
+    """Publish one ``chat.turn`` frame (Round 12 SPEC D13, §3.2) to its OWNER only.
+
+    A chat turn belongs to one principal: the frame is always TARGETED with
+    ``audience = {owner}`` and never broadcast, so no other user and no anonymous
+    subscriber (auth disabled) ever receives it; with auth disabled the client polls
+    ``GET /api/chat/turns/active`` instead. ``payload`` carries ids, counts and an
+    engine label only (never prompt, answer or log text). Frames are NOT retained in
+    the topic's replay ring by default: the audience is a username, which can be
+    deleted and created again, and a new account must never replay its
+    predecessor's frames (the same rule as the Jobs and Inbox frames); a client that
+    missed frames reconciles through ``GET /api/chat/turns/active``. Returns the event
+    id, or ``None`` when there is no owner to address (nothing is published)."""
+    name = str(owner or "").strip().lower()
+    if not name:
+        return None
+    return bus.publish(CHAT_TOPIC, CHAT_TURN_EVENT, payload, audience=[name], retain=retain)
+
+
+def publish_chat_read(
+    bus: "EventBus", owner: str | None, conversation_id: str | None = None, *,
+    turn_id: str | None = None, case_id: str | None = None,
+) -> str | None:
+    """Publish one ``chat.read`` frame (Round 12 SPEC D13, §3.2) to its OWNER only.
+
+    The owner has the conversation's newest answer on screen somewhere (another tab,
+    device or browser posted ``…/read``), or one turn's outcome (an answer, a question or
+    a failure, in a Workspace or a Case Manager chat: ``POST /chat/turns/{id}/seen``), so
+    every other console of theirs drops the mark it may hold for it. Targeted like
+    ``chat.turn`` (never broadcast, never to an anonymous subscriber) and never retained,
+    for the same reason. The payload carries ids only (``conversation_id``, plus
+    ``turn_id`` and ``case_id`` for a turn), never a title, prompt or answer. Returns the
+    event id, or ``None`` when there is no owner or nothing to name (nothing is
+    published)."""
+    name = str(owner or "").strip().lower()
+    payload: dict[str, str] = {}
+    if turn_id:
+        payload["turn_id"] = str(turn_id)
+    if conversation_id:
+        payload["conversation_id"] = str(conversation_id)
+    if case_id:
+        payload["case_id"] = str(case_id)
+    if not name or not payload:
+        return None
+    return bus.publish(CHAT_TOPIC, CHAT_READ_EVENT, payload, audience=[name], retain=False)
+
+
+def publish_case_changed(
+    case: Any, *, created: bool = False, bus: "EventBus | None" = None,
+) -> str | None:
+    """Publish one ``case.changed`` frame on the ``cases`` topic after a case was saved.
+
+    Round 12 (WP-CM): the Case Manager queue refreshes live instead of waiting for a
+    manual reload. The frame is a NUDGE only: the console refetches the authoritative
+    page, it never renders the payload. The payload therefore carries identifiers, the
+    lifecycle status and timestamps ONLY — never a title, summary, entity, evidence or
+    any log-derived text (#7/#9) — and nothing here decides anything (#3).
+
+    Called by the bundled case repositories immediately after a successful write, so
+    every save path (pipeline, ingest, analyst actions, bulk jobs, demo) is covered by
+    one producer. FIRE-AND-FORGET: any failure is swallowed so a realtime problem can
+    never fail a case write. Returns the event id, or ``None`` when nothing was sent."""
+    try:
+        case_id = str(getattr(case, "case_id", "") or "").strip()
+        if not case_id:
+            return None
+        status = getattr(case, "status", None)
+        status = getattr(status, "value", status)
+        payload = {
+            "case_id": case_id,
+            "status": str(status or ""),
+            "updated_at": str(getattr(case, "updated_at", "") or ""),
+            "created": bool(created),
+        }
+        return (bus or get_event_bus()).publish(CASES_TOPIC, CASE_CHANGED_EVENT, payload)
+    except Exception:  # noqa: BLE001 — realtime is advisory; a save must never fail on it
+        return None
+
+
+def publish_case_runbook(
+    bus: "EventBus | None", case_id: str, run_id: str, progress: Any, revision: int,
+) -> str | None:
+    """Publish one ``case.runbook`` frame on the ``runbooks`` topic after a run change
+    was saved and audited (Round 14 SPEC §4.10.15).
+
+    A NUDGE only: the console refetches ``GET /api/cases/{id}/runbooks``. The payload
+    carries the case id, the run id, the run's progress counts and the case's runs
+    revision ONLY, never a step title, note, lookup result or any log-derived text
+    (#7/#9), and nothing here decides anything (#3). ``GET /api/events`` serves the
+    topic only to holders of ``runbooks:read`` and ``cases:read``. FIRE-AND-FORGET:
+    a failure is swallowed so a realtime problem never fails a run write. Returns the
+    event id, or ``None`` when nothing was sent."""
+    try:
+        cid = str(case_id or "").strip()
+        rid = str(run_id or "").strip()
+        if not cid or not rid:
+            return None
+        counts: dict[str, int] = {}
+        if isinstance(progress, dict):
+            for key, value in progress.items():
+                if isinstance(value, int) and not isinstance(value, bool):
+                    counts[str(key)] = value
+        payload = {"case_id": cid, "run_id": rid, "progress": counts, "revision": int(revision)}
+        return (bus or get_event_bus()).publish(RUNBOOKS_TOPIC, CASE_RUNBOOK_EVENT, payload)
+    except Exception:  # noqa: BLE001 (realtime is advisory; a run write never fails on it)
+        return None
+
+
+#: The exact keys of a ``case.investigation`` frame (Round 16 SPEC §4.5 WP08): the
+#: ``InvestigationView`` fields without the caller-scoped ``requested_by_you`` and
+#: ``requested_by`` (a broadcast never names a person), plus ``active`` (queued or
+#: running runs) and ``new_runs`` (runs whose case does not exist yet).
+CASE_INVESTIGATION_FRAME_KEYS: tuple[str, ...] = (
+    "run_id", "case_id", "state", "phase", "trigger",
+    "queued_at", "started_at", "deadline_at", "time_cap_seconds", "finished_at",
+    "outcome", "status_after", "verdict_after",
+    "active", "new_runs",
+)
+
+
+def case_investigation_payload(view: Any, *, active: int, new_runs: int) -> dict[str, Any]:
+    """The ``case.investigation`` frame body for ``view`` (an ``InvestigationView`` or
+    its dict): exactly :data:`CASE_INVESTIGATION_FRAME_KEYS`. Ids, enums, ISO
+    timestamps and integers only (#7, #9)."""
+    source = view.model_dump(mode="json") if hasattr(view, "model_dump") else dict(view or {})
+    payload = {key: source.get(key) for key in CASE_INVESTIGATION_FRAME_KEYS[:-2]}
+    payload["active"] = int(active)
+    payload["new_runs"] = int(new_runs)
+    return payload
+
+
+def publish_case_investigation(
+    bus: "EventBus | None", view: Any, *, active: int, new_runs: int,
+) -> str | None:
+    """Publish one ``case.investigation`` frame (Round 16 SPEC §4.3 WP01, §4.5 WP08).
+
+    ONE event (one SSE id) on ``cases``, on ``cases:{case_id}`` when the run's case is
+    known, and on ``investigations``, through :meth:`EventBus.publish_many`, so a client
+    on all three receives it once. A NUDGE: the Console reconciles through
+    ``GET /api/investigations/active``. Never retained: the registry is memory only and
+    a reconnecting client reads the route instead of a replayed frame, and the ``cases``
+    ring keeps its ``case.changed`` history. FIRE-AND-FORGET: a failure is swallowed so
+    a realtime problem never touches a run. Returns the event id, or ``None``."""
+    try:
+        payload = case_investigation_payload(view, active=active, new_runs=new_runs)
+        case_id = str(payload.get("case_id") or "").strip()
+        topics = [CASES_TOPIC, *([f"cases:{case_id}"] if case_id else []), INVESTIGATIONS_TOPIC]
+        return (bus or get_event_bus()).publish_many(
+            topics, CASE_INVESTIGATION_EVENT, payload, retain=False,
+        )
+    except Exception:  # noqa: BLE001 (realtime is advisory; a run never fails on it)
+        return None
 
 
 def _encode(data: Any) -> str:

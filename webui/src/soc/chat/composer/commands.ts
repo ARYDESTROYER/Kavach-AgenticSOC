@@ -1,0 +1,639 @@
+/**
+ * The composer's `/` commands and `@` scopes (SPEC §10.4) as pure data + parsers.
+ *
+ * Commands are filtered by the caller's tool catalogue from `/chat/context`: a command
+ * is offered only when every tool it needs is allowed (fail closed: an unknown tool or
+ * a missing catalogue hides it). Commands without an argument send a fixed question
+ * with `origin: "command"`. Commands that take an argument never send by themselves:
+ * they fill the composer with the question and select the placeholder, so the value
+ * the analyst types is their own text and is sent with `origin: "user"` — the only
+ * origin the indicator taint rule accepts (SPEC §4.8). `/report <template>` inserts the
+ * template's section request the same way; it asks to CREATE the report, so the answer
+ * is also saved to the Reports library (Round 12 SPEC D11). `/compact` sends the literal
+ * command the engine recognises (D4), never with text after it (the engine only knows the
+ * bare word), and only in a saved conversation (a new chat has no summary to keep).
+ *
+ * Words after `/` that are not a command search the analyst's prompts and the starter
+ * prompts by their whole text ("/weekly re" finds "Weekly review").
+ */
+import type { ChatContextInfo, ChatPrompt, ChatScope, ChatToolInfo, ReportTemplateName } from '@/lib/types';
+import { CHAT_SCOPES } from '../stream-events';
+import { isKindGated, permissionNeedText } from './access-copy';
+import { SCOPE_DESCRIPTIONS, SCOPE_LABELS } from './format';
+import {
+  CATEGORY_LABEL,
+  isPromptbook,
+  orderPrompts,
+  paramLabel,
+  planPrompt,
+  promptbookSteps,
+  visibleStarters,
+  type LibraryPrompt,
+} from './prompt-library';
+
+/* -------------------------------------------------------------------------- */
+/* Tool access.                                                                */
+/* -------------------------------------------------------------------------- */
+
+/** The copy for a tool (or scope) the deployment switched off (SPEC A30). */
+export const TURNED_OFF_COPY = 'Turned off on this deployment';
+
+/** The deployment switched this tool off (SPEC A30): no grant would help. */
+export function toolTurnedOff(tool: ChatToolInfo): boolean {
+  return tool.available === false;
+}
+
+/** The caller holds the grants AND the deployment has the tool on. */
+export function toolUsable(tool: ChatToolInfo): boolean {
+  return tool.allowed && !toolTurnedOff(tool);
+}
+
+/** True when every named tool is in the catalogue, allowed and on (fail closed). */
+export function toolsAllowed(context: ChatContextInfo | null | undefined, tools: readonly string[]): boolean {
+  if (!context) return false;
+  return tools.every((name) => context.tools.some((tool) => tool.name === name && toolUsable(tool)));
+}
+
+/**
+ * The grants the caller lacks for a tool, as "Needs <…>" copy, or null when allowed.
+ * A kind-gated tool (no base grant) is unlocked by ANY one of its per-kind grants, so
+ * they are joined with "or"; ordinary required grants are all needed ("and").
+ */
+export function missingGrant(tool: ChatToolInfo): string | null {
+  if (tool.allowed) return null;
+  const missing = tool.missing?.length ? tool.missing : tool.requires;
+  if (!missing.length) return null;
+  return missing.join(isKindGated(tool) ? ' or ' : ' and ');
+}
+
+export interface ScopeAccess {
+  scope: ChatScope;
+  label: string;
+  description: string;
+  /** At least one tool of this scope is allowed and on. */
+  allowed: boolean;
+  /** A grant that would unlock it, when known. */
+  missing: string | null;
+  /** Every tool of this scope the caller holds is switched off by the deployment. */
+  turnedOff: boolean;
+}
+
+/** Per-scope access derived from the catalogue (a scope is usable when any tool is). */
+export function scopeAccess(context: ChatContextInfo | null | undefined): ScopeAccess[] {
+  return CHAT_SCOPES.map((scope) => {
+    const tools = context?.tools.filter((tool) => tool.scope === scope) ?? [];
+    const allowed = tools.some(toolUsable);
+    let missing: string | null = null;
+    if (!allowed) {
+      for (const tool of tools) {
+        missing = missingGrant(tool);
+        if (missing) break;
+      }
+    }
+    // Held but switched off: say so instead of "Not available to you".
+    const turnedOff = !allowed && !missing && tools.some((tool) => tool.allowed && toolTurnedOff(tool));
+    return { scope, label: SCOPE_LABELS[scope], description: SCOPE_DESCRIPTIONS[scope], allowed, missing, turnedOff };
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Slash commands.                                                             */
+/* -------------------------------------------------------------------------- */
+
+export interface SlashArgument {
+  /** Shown in the menu and inserted (selected) when the analyst typed no value. */
+  placeholder: string;
+}
+
+export interface SlashCommand {
+  /** The word after `/`. */
+  id: string;
+  description: string;
+  /** Every tool the command's question needs. */
+  tools: readonly string[];
+  /** Absent: the command sends `template` at once. */
+  argument?: SlashArgument;
+  /** The question; `{arg}` marks where the argument goes. */
+  template: string;
+}
+
+/** `/compact` (Round 12 SPEC D4): the engine folds the earlier exchanges into a summary. */
+export const COMPACT_COMMAND_ID = 'compact';
+
+export const SLASH_COMMANDS: readonly SlashCommand[] = [
+  {
+    id: 'shift-brief',
+    description: 'Shift handoff: open work, key metrics and next steps',
+    tools: ['shift_report'],
+    template: 'Write a shift brief for the handoff: a summary, open work, key metrics and next steps.',
+  },
+  {
+    id: 'report',
+    description: 'Start a report from a template',
+    tools: [],
+    argument: { placeholder: '<template>' },
+    template: '',
+  },
+  {
+    id: 'posture',
+    description: 'How the SOC is doing right now',
+    tools: ['soc_metrics'],
+    template: 'How is our security posture right now? Show the key metrics and how they are trending.',
+  },
+  {
+    id: 'hunt',
+    description: 'Hunt an IP, domain, hash or URL',
+    tools: ['search_logs'],
+    argument: { placeholder: '<indicator>' },
+    template: 'Hunt for {arg} across logs, cases and threat intel. What do we know about it?',
+  },
+  {
+    id: 'case',
+    description: 'Investigate a case by its id',
+    tools: ['get_case'],
+    argument: { placeholder: '<case id>' },
+    template: 'Investigate case {arg}: what happened, the evidence and why it was decided that way.',
+  },
+  {
+    id: 'cost',
+    description: 'AI spend and tokens by role and model',
+    tools: ['cost_usage'],
+    template: 'What has AI spend been today and this week, by role and model?',
+  },
+  {
+    id: 'sources',
+    description: 'Silent or degraded sources and coverage',
+    tools: ['source_health'],
+    template: 'Which log sources are silent or degraded, and what is our coverage?',
+  },
+  {
+    id: 'help',
+    description: 'How this console works',
+    tools: ['app_help'],
+    argument: { placeholder: '<topic>' },
+    template: 'What is {arg} in this console, and how do I use it?',
+  },
+  {
+    id: COMPACT_COMMAND_ID,
+    description: 'Summarise earlier messages to make room',
+    tools: [],
+    template: '/compact',
+  },
+];
+
+export interface ReportTemplateSpec {
+  template: ReportTemplateName;
+  /** "a shift report" — the article is part of the copy. */
+  noun: string;
+  sections: readonly string[];
+  tools: readonly string[];
+  /** The report's subject, when the template needs one. */
+  argument?: SlashArgument;
+  /** The word before the subject: "on" (default) or "for" (a period). */
+  preposition?: 'on' | 'for';
+}
+
+/** `/report <template>`: the section request each template inserts. */
+export const REPORT_TEMPLATE_SPECS: readonly ReportTemplateSpec[] = [
+  {
+    template: 'shift',
+    noun: 'a shift report',
+    sections: ['Summary', 'Open work', 'Key metrics', 'Next steps'],
+    tools: ['shift_report'],
+  },
+  {
+    template: 'posture',
+    noun: 'a posture report',
+    sections: ['Summary', 'Key metrics', 'Trends', 'Noise reduction', 'Next steps'],
+    tools: ['soc_metrics'],
+  },
+  {
+    template: 'investigation',
+    noun: 'an investigation report',
+    sections: ['Summary', 'Evidence', 'Timeline', 'Decision', 'Next steps'],
+    tools: ['get_case'],
+    argument: { placeholder: '<case id>' },
+  },
+  {
+    template: 'hunt',
+    noun: 'a hunt report',
+    sections: ['Hypothesis', 'Findings', 'Affected entities', 'Related cases', 'Next steps'],
+    tools: ['search_logs'],
+    argument: { placeholder: '<indicator or behaviour>' },
+  },
+  {
+    template: 'ioc',
+    noun: 'an IOC report',
+    sections: ['Indicator', 'Reputation', 'Sightings', 'Related cases', 'Next steps'],
+    tools: ['lookup_indicator'],
+    argument: { placeholder: '<indicator>' },
+  },
+  {
+    template: 'executive',
+    noun: 'an executive summary report',
+    sections: ['Summary', 'Volume', 'Quality', 'Response times', 'Noise reduction', 'Next steps'],
+    tools: ['case_stats', 'soc_metrics'],
+    argument: { placeholder: '<period>' },
+    preposition: 'for',
+  },
+  {
+    template: 'monthly',
+    noun: 'a monthly SOC report',
+    sections: ['Summary', 'Volume by week', 'Quality', 'Response times', 'Noise reduction', 'Top cases', 'Next steps'],
+    tools: ['case_stats', 'soc_metrics'],
+    argument: { placeholder: '<month>' },
+    preposition: 'for',
+  },
+  {
+    template: 'infographic',
+    noun: 'an infographic report',
+    sections: ['Key figures', 'Volume', 'Quality', 'Response times', 'Noise reduction'],
+    tools: ['case_stats', 'soc_metrics'],
+    argument: { placeholder: '<period>' },
+    preposition: 'for',
+  },
+  {
+    template: 'investigation_brief',
+    noun: 'an investigation brief',
+    sections: ['Assessment', 'Key findings', 'Affected entities', 'ATT&CK', 'Next steps', 'What could not be checked'],
+    tools: ['get_case'],
+    argument: { placeholder: '<case id>' },
+  },
+  {
+    template: 'custom',
+    noun: 'a report',
+    sections: ['Summary', 'Findings', 'Next steps'],
+    tools: [],
+  },
+];
+
+/**
+ * The report request text, with `{arg}` where the subject goes (when it has one). It asks
+ * to CREATE the report, so the finished answer is also saved to the Reports library
+ * (Round 12 SPEC D11: the server saves it from the persisted answer).
+ */
+export function reportTemplateText(spec: ReportTemplateSpec): string {
+  const subject = spec.argument ? ` ${spec.preposition ?? 'on'} {arg}` : '';
+  return `Create ${spec.noun}${subject} with these sections: ${spec.sections.join(', ')}.`;
+}
+
+/** What `/` typed so far: the command word and its argument (single line only). */
+export interface SlashQuery {
+  command: string;
+  arg: string;
+  /** A space followed the command word (the argument phase). */
+  hasSpace: boolean;
+}
+
+const SLASH_RE = /^\/([a-z-]*)(?:([ \t]+)([^\n]*))?$/i;
+
+/** Parse a draft that IS a slash command (it starts with `/` and has one line). */
+export function parseSlashQuery(draft: string): SlashQuery | null {
+  const match = SLASH_RE.exec(draft);
+  if (!match) return null;
+  return { command: match[1].toLowerCase(), arg: (match[3] ?? '').trim(), hasSpace: Boolean(match[2]) };
+}
+
+export type ComposerMenuItem =
+  | {
+      kind: 'command';
+      value: string;
+      command: SlashCommand;
+      arg: string;
+      label: string;
+      hint: string;
+    }
+  | {
+      kind: 'report';
+      value: string;
+      spec: ReportTemplateSpec;
+      arg: string;
+      label: string;
+      hint: string;
+    }
+  | { kind: 'prompt'; value: string; prompt: LibraryPrompt; label: string; hint: string }
+  | { kind: 'library'; value: string; label: string; hint: string }
+  | { kind: 'scope'; value: string; access: ScopeAccess; label: string; hint: string; disabled: boolean };
+
+export interface ComposerMenuGroup {
+  heading: string;
+  items: ComposerMenuItem[];
+}
+
+/** Options the composer knows and the catalogue does not. */
+export interface SlashMenuOptions {
+  /**
+   * `/compact` can fold this conversation: it is a saved Workspace thread. Off by
+   * default (fail closed): in a new chat the command could only say it is not available
+   * and would still save a thread named "/compact".
+   */
+  canCompact?: boolean;
+}
+
+const MAX_PROMPT_ITEMS = 8;
+const MAX_STARTER_ITEMS = 5;
+/** Starter prompts join the `/` menu only once this much has been typed. */
+const STARTER_QUERY_MIN = 3;
+export const LIBRARY_ITEM_VALUE = 'library:open';
+export const LIBRARY_ITEM_LABEL = 'Prompt library';
+const LIBRARY_ITEM_HINT = 'Browse, search and run your prompts and starter prompts';
+
+function commandLabel(command: SlashCommand): string {
+  return command.argument ? `/${command.id} ${command.argument.placeholder}` : `/${command.id}`;
+}
+
+/**
+ * What a prompt's menu row shows after its title: the text, or a promptbook's steps in
+ * order ("3 steps: Open case… → Related cases… → Write next steps."), never the stored
+ * `---` separators. The analyst's own words, so the menu clamps it to two lines; the
+ * console's ready-made prompts use {@link starterHint} instead.
+ */
+export function promptHint(prompt: Pick<LibraryPrompt, 'id' | 'text'>): string {
+  if (!isPromptbook(prompt)) return prompt.text;
+  const steps = promptbookSteps(prompt.text);
+  return `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}: ${steps.join(' → ')}`;
+}
+
+/**
+ * A ready-made (starter) prompt's menu description, console copy of at most
+ * {@link MENU_HINT_MAX} characters (Round 13, SPEC-chat T22): the library row's meta
+ * ("Hunt · Asks for Indicator, Period", "Triage · 3 steps · Asks for Case id"), never
+ * the prompt's full text. The values it asks for are counted instead of named when the
+ * names would not fit.
+ */
+export function starterHint(prompt: LibraryPrompt): string {
+  const plan = planPrompt(prompt);
+  const head: string[] = [];
+  if (prompt.category) head.push(CATEGORY_LABEL[prompt.category]);
+  if (plan.book) head.push(`${plan.steps.length} ${plan.steps.length === 1 ? 'step' : 'steps'}`);
+  if (!plan.params.length) return head.length ? head.join(' · ') : 'Ready-made prompt';
+  const named = [...head, `Asks for ${plan.params.map(paramLabel).join(', ')}`].join(' · ');
+  if (named.length <= MENU_HINT_MAX) return named;
+  const n = plan.params.length;
+  return [...head, `Asks for ${n} ${n === 1 ? 'value' : 'values'}`].join(' · ');
+}
+
+const promptItem = (prompt: LibraryPrompt): ComposerMenuItem => ({
+  kind: 'prompt',
+  value: `prompt:${prompt.id}`,
+  prompt,
+  label: prompt.title,
+  hint: prompt.starter ? starterHint(prompt) : promptHint(prompt),
+});
+
+/** The analyst's prompts, starter prompts and the library entry matching `typed`. */
+function promptGroups(
+  typed: string,
+  context: ChatContextInfo | null | undefined,
+  prompts: readonly ChatPrompt[],
+): ComposerMenuGroup[] {
+  const groups: ComposerMenuGroup[] = [];
+  const needle = typed.replace(/-/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  const promptItems = orderPrompts(prompts)
+    .filter((prompt) => !needle || prompt.title.toLowerCase().includes(needle) || prompt.text.toLowerCase().includes(needle))
+    .slice(0, MAX_PROMPT_ITEMS)
+    .map(promptItem);
+  if (promptItems.length) groups.push({ heading: 'Your prompts', items: promptItems });
+
+  if (needle.length >= STARTER_QUERY_MIN) {
+    const starters = visibleStarters(context)
+      .filter((prompt) => {
+        const category = prompt.category ? CATEGORY_LABEL[prompt.category].toLowerCase() : '';
+        return prompt.title.toLowerCase().includes(needle) || category.startsWith(needle);
+      })
+      .slice(0, MAX_STARTER_ITEMS)
+      .map(promptItem);
+    if (starters.length) groups.push({ heading: 'Starter prompts', items: starters });
+  }
+
+  // The library entry on a bare "/" (or "/lib…", "/pro…"), never in place of a typed
+  // command that matched nothing (Enter must not open a dialog instead of sending).
+  if (context && (!needle || 'library'.startsWith(needle) || 'prompts'.startsWith(needle))) {
+    groups.push({
+      heading: 'Prompt library',
+      items: [{ kind: 'library', value: LIBRARY_ITEM_VALUE, label: LIBRARY_ITEM_LABEL, hint: LIBRARY_ITEM_HINT }],
+    });
+  }
+  return groups;
+}
+
+/** A menu description stays short (Round 13, SPEC-chat T22): at most this many characters. */
+export const MENU_HINT_MAX = 60;
+
+/**
+ * A report template's sections as one description of at most {@link MENU_HINT_MAX}
+ * characters: as many whole section names as fit, then "· n more".
+ */
+export function sectionsHint(sections: readonly string[]): string {
+  const all = sections.join(' · ');
+  if (all.length <= MENU_HINT_MAX) return all;
+  for (let shown = sections.length - 1; shown >= 1; shown -= 1) {
+    const text = `${sections.slice(0, shown).join(' · ')} · ${sections.length - shown} more`;
+    if (text.length <= MENU_HINT_MAX) return text;
+  }
+  return `${sections.length} sections`;
+}
+
+/** The hint for `/compact` with text after it: the text is not sent. */
+export const COMPACT_ARGUMENT_HINT = 'Summarises earlier messages. Text after it is not sent.';
+
+/**
+ * Commands, report templates, the analyst's prompts (favorites first), starter prompts
+ * (by title or category, once three letters are typed) and the prompt library entry for
+ * the `/` menu (allowed ones only).
+ */
+export function slashMenuGroups(
+  query: SlashQuery,
+  context: ChatContextInfo | null | undefined,
+  prompts: readonly ChatPrompt[],
+  options: SlashMenuOptions = {},
+): ComposerMenuGroup[] {
+  const groups: ComposerMenuGroup[] = [];
+  const allowedTemplates = REPORT_TEMPLATE_SPECS.filter((spec) => toolsAllowed(context, spec.tools));
+  const available = SLASH_COMMANDS.filter((command) => {
+    if (command.id === 'report') return Boolean(context) && allowedTemplates.length > 0;
+    if (command.id === COMPACT_COMMAND_ID) {
+      // Bounded chat keeps no conversation summary, and a new chat has none to keep:
+      // /compact would only say so.
+      if (!options.canCompact || context?.limits_mode === 'bounded') return false;
+    }
+    return toolsAllowed(context, command.tools);
+  });
+
+  const command = query.hasSpace ? available.find((c) => c.id === query.command) : undefined;
+  if (query.hasSpace && !command) {
+    // Not a command: the words search the prompts by their whole text.
+    return promptGroups(`${query.command} ${query.arg}`, context, prompts);
+  }
+  if (command) {
+    if (command.id === 'report') {
+      const [word, ...rest] = query.arg.split(/\s+/);
+      const needle = (word ?? '').toLowerCase();
+      const exact = allowedTemplates.find((spec) => spec.template === needle);
+      const specs = exact ? [exact] : allowedTemplates.filter((spec) => spec.template.startsWith(needle));
+      const subject = exact ? rest.join(' ').trim() : '';
+      const items = specs.map<ComposerMenuItem>((spec) => ({
+        kind: 'report',
+        value: `report:${spec.template}`,
+        spec,
+        arg: subject,
+        label: `/report ${spec.template}`,
+        hint: sectionsHint(spec.sections),
+      }));
+      if (items.length) groups.push({ heading: 'Report templates', items });
+      return groups;
+    }
+    const ignoresArg = command.id === COMPACT_COMMAND_ID;
+    groups.push({
+      heading: 'Commands',
+      items: [
+        {
+          kind: 'command',
+          value: `cmd:${command.id}`,
+          command,
+          arg: ignoresArg ? '' : query.arg,
+          label: commandLabel(command),
+          hint: ignoresArg && query.arg ? COMPACT_ARGUMENT_HINT : command.description,
+        },
+      ],
+    });
+    // A saved prompt titled like the command ("/hunt ip" → "Hunt IP") is listed too.
+    if (query.arg) {
+      const matches = promptGroups(`${query.command} ${query.arg}`, context, prompts).filter((g) => g.heading !== 'Prompt library');
+      groups.push(...matches);
+    }
+    return groups;
+  }
+
+  // Prefix matches first; a word found inside a command ("/brief") only when no
+  // command starts with what was typed, so "/po" is posture, not also report.
+  const byPrefix = available.filter((command) => command.id.startsWith(query.command));
+  const matched =
+    byPrefix.length || query.command.length < 2
+      ? byPrefix
+      : available.filter((command) => command.id.includes(query.command));
+  const commands = matched
+    .map<ComposerMenuItem>((command) => ({
+      kind: 'command',
+      value: `cmd:${command.id}`,
+      command,
+      arg: '',
+      label: commandLabel(command),
+      hint: command.description,
+    }));
+  if (commands.length) groups.push({ heading: 'Commands', items: commands });
+  groups.push(...promptGroups(query.command, context, prompts));
+  return groups;
+}
+
+/* -------------------------------------------------------------------------- */
+/* @ scopes.                                                                   */
+/* -------------------------------------------------------------------------- */
+
+export interface AtQuery {
+  /** Index of the `@`. */
+  start: number;
+  /** The caret (end of the token). */
+  end: number;
+  query: string;
+}
+
+/** An `@word` immediately before the caret, at the start or after whitespace. */
+export function parseAtQuery(draft: string, caret: number): AtQuery | null {
+  if (caret < 1 || caret > draft.length) return null;
+  const before = draft.slice(0, caret);
+  const match = /(^|\s)@([a-z]*)$/i.exec(before);
+  if (!match) return null;
+  const word = match[2];
+  return { start: caret - word.length - 1, end: caret, query: word.toLowerCase() };
+}
+
+/** Scopes matching the `@` query, minus the ones already chosen; denied ones disabled. */
+export function atMenuGroups(
+  query: AtQuery,
+  context: ChatContextInfo | null | undefined,
+  active: readonly ChatScope[],
+): ComposerMenuGroup[] {
+  const items = scopeAccess(context)
+    .filter((access) => !active.includes(access.scope))
+    .filter(
+      (access) =>
+        access.scope.startsWith(query.query) || access.label.toLowerCase().startsWith(query.query),
+    )
+    .map<ComposerMenuItem>((access) => ({
+      kind: 'scope',
+      value: `scope:${access.scope}`,
+      access,
+      label: `@${access.scope}`,
+      hint: access.allowed
+        ? access.description
+        : access.missing
+          ? permissionNeedText(access.missing)
+          : access.turnedOff
+            ? TURNED_OFF_COPY
+            : 'Not available to you',
+      disabled: !access.allowed,
+    }));
+  return items.length ? [{ heading: 'Limit the next answers to', items }] : [];
+}
+
+/** Remove the `@word` token the menu completed, collapsing the space it leaves. */
+export function removeAtToken(draft: string, query: AtQuery): { text: string; caret: number } {
+  const head = draft.slice(0, query.start);
+  let tail = draft.slice(query.end);
+  if ((head === '' || /\s$/.test(head)) && tail.startsWith(' ')) tail = tail.slice(1);
+  return { text: head + tail, caret: head.length };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Expansion.                                                                  */
+/* -------------------------------------------------------------------------- */
+
+export interface Expansion {
+  text: string;
+  /** Range to select (the placeholder), else the caret goes to the end. */
+  selection: [number, number] | null;
+}
+
+/** Fill `{arg}` with the typed value, or with the placeholder and select it. */
+export function expandTemplate(template: string, arg: string, placeholder: string | null): Expansion {
+  const at = template.indexOf('{arg}');
+  if (at < 0) {
+    const text = arg ? `${template} ${arg}` : template;
+    return { text, selection: null };
+  }
+  const value = arg || placeholder || '';
+  const text = template.slice(0, at) + value + template.slice(at + '{arg}'.length);
+  return { text, selection: arg || !placeholder ? null : [at, at + placeholder.length] };
+}
+
+/**
+ * What choosing a `/` item does: send a fixed question, fill the composer, or open the
+ * prompt library. (A prompt that asks for values, or a promptbook, is planned by the
+ * composer before it is inserted or run; see `PromptRunner`.)
+ */
+export type SlashAction =
+  | { type: 'send'; text: string }
+  | { type: 'insert'; expansion: Expansion }
+  | { type: 'library' };
+
+export function slashAction(item: ComposerMenuItem): SlashAction | null {
+  if (item.kind === 'command') {
+    const { command, arg } = item;
+    // `/report` opens its template list: the menu re-reads the draft "/report ".
+    if (command.id === 'report') return { type: 'insert', expansion: { text: '/report ', selection: null } };
+    // The engine recognises only the bare word: never insert (or send) it with text.
+    if (command.id === COMPACT_COMMAND_ID) return { type: 'send', text: command.template };
+    if (!command.argument && !arg) return { type: 'send', text: command.template };
+    return { type: 'insert', expansion: expandTemplate(command.template, arg, command.argument?.placeholder ?? null) };
+  }
+  if (item.kind === 'report') {
+    return {
+      type: 'insert',
+      expansion: expandTemplate(reportTemplateText(item.spec), item.arg, item.spec.argument?.placeholder ?? null),
+    };
+  }
+  if (item.kind === 'prompt') return { type: 'insert', expansion: { text: item.prompt.text, selection: null } };
+  if (item.kind === 'library') return { type: 'library' };
+  return null;
+}

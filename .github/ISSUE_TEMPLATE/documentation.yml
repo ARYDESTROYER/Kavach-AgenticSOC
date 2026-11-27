@@ -14,7 +14,7 @@ body:
     attributes:
       label: Page or file
       description: Link the public page or enter the repository path.
-      placeholder: "https://arydestroyer.github.io/Agentic-Kibana/stable/... or docs/..."
+      placeholder: "https://arydestroyer.github.io/Kavach-AgenticSOC/stable/... or docs/..."
     validations:
       required: true
 

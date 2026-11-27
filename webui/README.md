@@ -19,14 +19,18 @@ in-Kibana proxy in the loop.
      Add multiple sources; mark one pull source primary. Leaving an open editor
      requires discard confirmation.
   3. **AI runtime** — Anthropic / OpenAI / embedding API keys only. They are
-     write-only and auto-save when guarded navigation leaves the stage (at least
-     one is recommended; without one, live investigations use the mock runtime).
+     write-only and auto-save when guarded navigation leaves the stage. Without a
+     key the default router and investigator models can call (`ai_runtime_ready`
+     from `GET /api/setup/status`), the AI agent investigates nothing: new cases
+     wait for a person as Needs human review. The mock runtime is used only in
+     Demo Mode.
      Azure / Bedrock / Vertex / OpenAI-compatible (local) keys and per-role model
      selection (router / investigator / formatter / standup / chat / overview /
      embedding, `GET /api/models`) are configured later from **Settings → Models**.
   4. **Review & launch** — truthful Ready / Needs attention / Optional states,
      default automation-posture explanation, then **Launch Agentic SOC** →
-     `POST /api/setup/complete`.
+     `POST /api/setup/complete`. Its heading reads "Ready for live triage" only
+     when an enabled source exists and `ai_runtime_ready` is true.
   The wizard shows automatically when `GET /api/setup/status` reports
   `setup_complete: false`; setup-status failure is fail-closed and retryable. A
   non-destructive Settings re-run ends with **Apply changes**.
@@ -139,11 +143,13 @@ the Console rechecks the manifest, backend identity/readiness, and `/index.html`
 before reloading the current hash route. A compatibility fallback still activates a
 healthy coherent pair that an external deployment system already installed. See
 [`docs/operations/upgrades.md`](../docs/operations/upgrades.md) for the one-time
-pre-supervisor/source-built→v0.1.12 bootstrap, supported topology, lifecycle wrapper,
+pre-supervisor/source-built to v0.2.0 bootstrap, supported topology, lifecycle wrapper,
 and post-success image-only rollback boundary.
 
 The immutable `v0.1.10` and `v0.1.11` tags are superseded, non-installable
-failed-publication records and must never be used for bootstrap. Version 0.1.12 is actionable only after
+failed-publication records and must never be used for bootstrap. Version 0.1.12
+completed the signed/public release but is bootstrap-blocked by its asymmetric
+legacy installed-identity comparison and is also unsupported. Version 0.2.0 is actionable only after
 its complete signed/public release evidence and supervisor preflight verify.
 
 The supported single-container supervisor cannot retain the previous Web container's
@@ -184,7 +190,7 @@ The console shares one look end-to-end — reuse it rather than re-rolling style
   `PageHeader`, `KpiTile`/`StatCard`, `DataTable`, `EmptyState`, `RiskGauge`,
   `Can` (the RBAC guard), `ChatPanel`, and more.
 
-The catalog is a future MCP/tooling input only; version 0.1.12 does not claim or ship
+The catalog is a future MCP/tooling input only; version 0.2.0 does not claim or ship
 a design-system MCP server. See `docs/development/design-system.md` and `AGENTS.md`
 §8 for the full contract.
 

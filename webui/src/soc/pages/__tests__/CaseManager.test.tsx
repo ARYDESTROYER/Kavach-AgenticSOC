@@ -5,26 +5,129 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import type { Case } from '@/lib/types';
-import CaseManager from '../CaseManager';
+import type { BackgroundJob, BackgroundJobKind, Case } from '@/lib/types';
+import { CASE_TABS } from '@/soc/case-tabs';
+import CaseManager, {
+  NO_CASE_OPEN_TITLE,
+  canSelectCases,
+  caseManagerShortcuts,
+  paneShortcutLabel,
+  paneShortcuts,
+  responsiveQueueWidth,
+} from '../CaseManager';
+import { listPickableUsers } from '../CaseDetail.api';
 
 expect.extend(toHaveNoViolations);
 
+/** The case tab keys the shortcuts sheet lists: one per case tab (five today, six with WP03). */
+const TAB_KEYS = `Alt + 1 to ${CASE_TABS.length}`;
+
 const mocks = vi.hoisted(() => ({
   listCases: vi.fn(),
+  getCase: vi.fn(),
+  jobGet: vi.fn(),
   bulk: vi.fn(),
   caseAssign: vi.fn(),
   caseTags: vi.fn(),
   reinvestigateCase: vi.fn(),
+  submitJob: vi.fn(),
   navigate: vi.fn(),
-  routeOpts: undefined as { caseId?: string } | undefined,
+  routeOpts: undefined as { caseId?: string; closedBy?: string } | undefined,
   username: 'analyst.one' as string | null,
+  demoActive: false,
   permissions: new Set<string>(),
   toastLoading: vi.fn(() => 'case-manager-bulk'),
   toastSuccess: vi.fn(),
   toastWarning: vi.fn(),
   toastError: vi.fn(),
+  // The live `cases` topic: the queue's onEvent handler, captured from useEventStream.
+  streamOnEvent: null as null | ((event: { type: string; data: unknown }) => void),
+  // What the mocked detail's "Mock reopen" reports (an Undo/Reopen right after a close).
+  detailNext: null as Case | null,
+  resolveDialogFocus: null as null | ((opener: HTMLElement | null, andNext: boolean) => HTMLElement | null),
+  // Round 14: the runbook progress endpoint behind the queue chip and the bulk close note.
+  getRunbookProgress: vi.fn(),
+  // Round 15 (D6.12): the review summary behind the Review scope's count, the case ids
+  // each review queue holds (the stand-in ledger), and what the detail was handed.
+  reviewSummary: vi.fn(),
+  reviewSets: {} as Record<string, string[]>,
+  detailReview: { refreshKey: 0, onReviewChange: null as null | (() => void) },
+  // Round 16 (WP02): the WP01 mount points the queue fills. The AI runs by case id (the
+  // investigation store WP09 builds), the band notice, the case chat activity by case id,
+  // and the props the queue hands the risk explainer.
+  aiRuns: {} as Record<string, { run_id: string; state: string } | null>,
+  queueNotice: false,
+  chatActivity: {} as Record<string, { status: 'running' | 'needs_input' | 'unread' | 'failed'; text: string }>,
+  riskExplain: [] as Array<Record<string, unknown>>,
+  // Media queries the queue reads: the xl split and a coarse (touch) pointer.
+  media: { split: false, coarse: false },
 }));
+
+vi.mock('@/soc/investigations/useAiRun', () => ({
+  useAiRun: (caseId: string | null | undefined) => (caseId ? (mocks.aiRuns[caseId] ?? null) : null),
+}));
+vi.mock('@/soc/investigations/aiRunText', () => ({
+  aiRunAccessibleText: (view: { state: string } | null) =>
+    view ? (view.state === 'queued' ? 'AI investigation waiting' : 'AI investigation running') : null,
+}));
+vi.mock('@/soc/investigations/AiRunMark', () => ({
+  // The props the row passes reach the words, so a class meant to hide them would show.
+  AiRunMark: ({ caseId, ...rest }: { caseId: string } & Record<string, unknown>) =>
+    mocks.aiRuns[caseId] ? (
+      <span data-testid="ai-run-mark">
+        <span data-testid="ai-run-mark-words" className={typeof rest.wordsClassName === 'string' ? rest.wordsClassName : ''}>
+          AI working
+        </span>
+      </span>
+    ) : null,
+}));
+// The status-moving bulk dialogs' AI-run note (WP16): which cases and which action it covers.
+vi.mock('@/soc/investigations/AiRunCloseNotice', () => ({
+  AiRunCloseNotice: ({ caseIds, open, action }: { caseIds?: readonly string[]; open: boolean; action?: string }) =>
+    open && caseIds?.some((id) => mocks.aiRuns[id]) ? (
+      <p data-testid="ai-run-close-notice" data-action={action ?? 'close'}>
+        {caseIds.join(',')}
+      </p>
+    ) : null,
+}));
+vi.mock('@/soc/investigations/AiQueueNotice', () => ({
+  AiQueueNotice: () => (mocks.queueNotice ? <p data-testid="ai-queue-notice-text">2 new alerts under investigation</p> : null),
+}));
+vi.mock('@/soc/chat-activity/case-glyph', () => ({
+  useCaseChatActivity: (caseId: string) => mocks.chatActivity[caseId] ?? { status: null, text: '' },
+}));
+vi.mock('../casedetail/explain/RiskExplain', () => ({
+  RiskExplain: ({ children, ...props }: { children: React.ReactNode } & Record<string, unknown>) => {
+    mocks.riskExplain.push(props);
+    return <>{children}</>;
+  },
+}));
+vi.mock('@/soc/hooks/useMediaQuery', async () => {
+  const actual = await vi.importActual<typeof import('@/soc/hooks/useMediaQuery')>('@/soc/hooks/useMediaQuery');
+  return {
+    ...actual,
+    useMediaQuery: (query: string) =>
+      query === '(min-width: 1280px)' ? mocks.media.split : query === '(pointer: coarse)' ? mocks.media.coarse : false,
+  };
+});
+
+vi.mock('@/lib/api-reviews', () => ({ getAutoCloseReviewSummary: mocks.reviewSummary }));
+
+vi.mock('@/lib/api-runbooks', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api-runbooks')>('@/lib/api-runbooks');
+  return { ...actual, getRunbookProgress: mocks.getRunbookProgress };
+});
+
+vi.mock('@/lib/useEventStream', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/useEventStream')>('@/lib/useEventStream');
+  return {
+    ...actual,
+    useEventStream: (topics: string[], opts: { onEvent?: (event: { type: string; data: unknown }) => void } = {}) => {
+      if (topics.includes('cases')) mocks.streamOnEvent = opts.onEvent ?? null;
+      return { live: false };
+    },
+  };
+});
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -33,12 +136,18 @@ vi.mock('@/lib/api', async () => {
     api: {
       ...actual.api,
       listCases: mocks.listCases,
+      getCase: mocks.getCase,
       caseAssign: mocks.caseAssign,
       caseTags: mocks.caseTags,
       reinvestigateCase: mocks.reinvestigateCase,
       cases: {
         ...actual.api.cases,
         bulk: mocks.bulk,
+      },
+      jobs: {
+        ...actual.api.jobs,
+        submit: mocks.submitJob,
+        get: mocks.jobGet,
       },
     },
   };
@@ -61,8 +170,22 @@ vi.mock('@/soc/auth', () => ({
   }),
 }));
 
+vi.mock('@/soc/demo', async () => {
+  const actual = await vi.importActual<typeof import('@/soc/demo')>('@/soc/demo');
+  return {
+    ...actual,
+    useDemo: () => ({
+      status: { mode: mocks.demoActive ? 'live' : 'off', active: mocks.demoActive, run_id: null },
+      active: mocks.demoActive,
+      loading: false,
+      refresh: async () => ({ mode: 'off', active: false, run_id: null }),
+    }),
+  };
+});
+
 vi.mock('@/soc/router', () => ({
   useRoute: () => ({ page: 'case_manager', opts: mocks.routeOpts, navigate: mocks.navigate }),
+  useNavigateOptional: () => mocks.navigate,
 }));
 
 vi.mock('@/soc/components/Can', () => ({
@@ -78,22 +201,59 @@ vi.mock('@/soc/components/Can', () => ({
   }) => (mocks.permissions.has(`${resource}:${action}`) ? <>{children}</> : null),
 }));
 
+vi.mock('../CaseDetail.api', async () => {
+  const actual = await vi.importActual<typeof import('../CaseDetail.api')>('../CaseDetail.api');
+  return { ...actual, listPickableUsers: vi.fn(async () => []) };
+});
+
 vi.mock('../CaseDetail', () => ({
   CaseDetail: ({
     caseId,
     presentation,
     onClose,
     onCaseChange,
+    onAdvance,
+    resolveDialogFocus,
+    requestedTab,
+    reviewRefreshKey,
+    onReviewChange,
   }: {
     caseId: string;
     presentation: string;
     onClose: () => void;
     onCaseChange?: (c: Case) => void;
-  }) => (
-    <section data-testid="embedded-case-detail" data-case-id={caseId} data-presentation={presentation}>
+    onAdvance?: () => void;
+    resolveDialogFocus?: (opener: HTMLElement | null, andNext: boolean) => HTMLElement | null;
+    requestedTab?: string | null;
+    reviewRefreshKey?: number;
+    onReviewChange?: () => void;
+  }) => {
+    mocks.resolveDialogFocus = resolveDialogFocus ?? null;
+    mocks.detailReview = { refreshKey: reviewRefreshKey ?? 0, onReviewChange: onReviewChange ?? null };
+    return (
+    <section
+      data-testid="embedded-case-detail"
+      data-case-id={caseId}
+      data-presentation={presentation}
+      data-requested-tab={requestedTab ?? undefined}
+    >
+      <h2 data-case-title tabIndex={-1}>Mock title</h2>
+      <button
+        type="button"
+        onClick={() => {
+          if (mocks.detailNext) onCaseChange?.(mocks.detailNext);
+        }}
+      >
+        Mock reopen
+      </button>
+      <button type="button" onClick={() => onAdvance?.()}>
+        Mock advance
+      </button>
       <span>Overview</span><span>Timeline</span><span>Investigation</span>
       <span>Threat context</span><span>Collaboration</span><span>Chat</span>
       <button type="button" onClick={onClose}>Mock back</button>
+      {/* The header's own Back (WP03), the one back path below xl. */}
+      <button type="button" aria-label="Back to case queue" data-case-header-back="" onClick={onClose} />
       <button
         type="button"
         onClick={() => onCaseChange?.({ ...OPEN_CRITICAL, status: 'resolved' })}
@@ -101,7 +261,8 @@ vi.mock('../CaseDetail', () => ({
         Mock resolve
       </button>
     </section>
-  ),
+    );
+  },
 }));
 
 const OPEN_CRITICAL: Case = {
@@ -140,11 +301,79 @@ const RESOLVED_LOW: Case = {
 
 const CASES = [OPEN_HIGH, RESOLVED_LOW, OPEN_CRITICAL];
 
+const TERMINAL = new Set(['closed', 'resolved']);
+
+/** Who closed a case, as `case_aggregate.closed_by` reads it; null while it is open. */
+function closerOf(c: Case): string | null {
+  if (!TERMINAL.has(String(c.status))) return null;
+  if (c.analyst_policy || c.decision_by === 'analyst_policy') return 'analyst_policy';
+  if (c.decision_by === 'agent' || c.decision_by === 'analyst') return c.decision_by;
+  return 'system';
+}
+
+/**
+ * A faithful stand-in for `GET /api/cases` (Round 12): the queue is SERVER-backed, so the
+ * mock applies the same status-group / status / assignee / severity / q / sort / paging the
+ * backend does. A view the UI forgets to ask the server for therefore stays empty here.
+ */
+function serve(dataset: Case[]) {
+  return async (query: Record<string, unknown> = {}) => {
+    let rows = [...dataset];
+    if (query.status_group === 'active') rows = rows.filter((c) => !TERMINAL.has(String(c.status)));
+    if (query.status) rows = rows.filter((c) => c.status === query.status);
+    if (query.assignee) {
+      rows = rows.filter((c) => String(c.assignee || '').toLowerCase() === String(query.assignee).toLowerCase());
+    }
+    if (query.severity) rows = rows.filter((c) => c.severity_band === query.severity);
+    // Round 14 (SPEC §4.6.1): `closed_by` matches terminal cases by who closed them, the
+    // engine's vocabulary (`case_aggregate.closed_by`).
+    if (query.closed_by) rows = rows.filter((c) => closerOf(c) === query.closed_by);
+    // Round 15 (D6.12): the Review scope's cases are the ledger's.
+    if (query.review) rows = rows.filter((c) => (mocks.reviewSets[String(query.review)] ?? []).includes(c.case_id));
+    if (typeof query.q === 'string' && query.q.trim()) {
+      const terms = query.q.toLowerCase().split(/\s+/).filter(Boolean);
+      rows = rows.filter((c) => {
+        const hay = [c.case_id, c.case_number, c.title, c.status, c.entity?.value, c.source_name]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return terms.every((t) => hay.includes(t));
+      });
+    }
+    const field = String(query.sort_field || 'updated_at') as keyof Case;
+    const dir = query.sort_order === 'asc' ? 1 : -1;
+    rows.sort((a, b) => (String(a[field] ?? '') < String(b[field] ?? '') ? -dir : dir));
+    const offset = Number(query.offset || 0);
+    const limit = Number(query.limit || 50);
+    return { cases: rows.slice(offset, offset + limit), total: rows.length };
+  };
+}
+
 async function chooseBulkAction(name: string | RegExp) {
   const user = userEvent.setup();
-  await user.click(screen.getByRole('button', { name: /bulk actions for/i }));
+  await user.click(screen.getByRole('button', { name: /more bulk actions for/i }));
   const menu = await screen.findByRole('menu');
   await user.click(within(menu).getByRole('menuitem', { name }));
+}
+
+function acceptedJob(kind: BackgroundJobKind, params: Record<string, unknown>): BackgroundJob {
+  return {
+    job_id: `job-${kind}`,
+    kind,
+    actor: 'analyst.one',
+    created_at: '2026-08-13T10:00:00Z',
+    started_at: null,
+    finished_at: null,
+    status: 'queued',
+    progress: { done: 0, total: (params.case_ids as string[])?.length ?? 0, unit: 'cases' },
+    failures: [],
+    failure_count: 0,
+    failures_truncated: 0,
+    request_fingerprint: 'fp',
+    result: null,
+    params,
+    cancel_requested: false,
+  };
 }
 
 describe('CaseManager', () => {
@@ -152,14 +381,36 @@ describe('CaseManager', () => {
     window.localStorage.clear();
     mocks.navigate.mockReset();
     mocks.routeOpts = undefined;
+    // The review is off and nothing waits: the queue offers no Review scope.
+    mocks.reviewSummary
+      .mockReset()
+      .mockResolvedValue({ enabled: false, pending: 0, disagreed_open: 0, sampled_today: 0, daily_cap: 10 });
+    mocks.reviewSets = {};
+    mocks.detailReview = { refreshKey: 0, onReviewChange: null };
+    mocks.aiRuns = {};
+    mocks.queueNotice = false;
+    mocks.chatActivity = {};
+    mocks.riskExplain = [];
+    mocks.media = { split: false, coarse: false };
     mocks.username = 'analyst.one';
+    mocks.demoActive = false;
     mocks.permissions = new Set([
       'cases:write',
       'cases:assign',
       'cases:close',
       'cases:reinvestigate',
     ]);
-    mocks.listCases.mockReset().mockResolvedValue({ cases: CASES, total: CASES.length });
+    mocks.listCases.mockReset().mockImplementation(serve(CASES));
+    mocks.getCase.mockReset().mockImplementation(async (id: string) => {
+      const item = CASES.find((candidate) => candidate.case_id === id);
+      if (!item) throw new Error('Case not found');
+      return item;
+    });
+    mocks.jobGet.mockReset().mockImplementation(async (id: string) => ({
+      ...acceptedJob('case_lifecycle', { case_ids: [] }),
+      job_id: id,
+      status: 'running',
+    }));
     mocks.bulk.mockReset().mockImplementation(async (ids: string[]) => ({
       results: ids.map((id) => ({ id, ok: true })),
     }));
@@ -178,51 +429,80 @@ describe('CaseManager', () => {
       if (!item) throw new Error('Case not found');
       return { ...item, updated_at: '2026-07-20T10:30:00Z' };
     });
+    mocks.submitJob.mockReset().mockImplementation(async (input) =>
+      acceptedJob(input.kind, input.params),
+    );
     mocks.toastLoading.mockClear();
     mocks.toastSuccess.mockClear();
     mocks.toastWarning.mockClear();
     mocks.toastError.mockClear();
+    mocks.streamOnEvent = null;
+    mocks.detailNext = null;
+    mocks.resolveDialogFocus = null;
+    mocks.getRunbookProgress.mockReset().mockResolvedValue({});
   });
 
-  it('centers the shared loading state while the initial case queue is unavailable', () => {
+  it('centers the shared loading state while the initial case queue is unavailable', async () => {
     mocks.listCases.mockReturnValue(new Promise(() => {}));
     render(<CaseManager />);
+    // Let the mount-time owner list settle inside act (strict console gate).
+    await act(async () => {});
 
     const loading = screen.getByRole('status', { name: 'Loading cases' });
     expect(loading).toHaveAttribute('data-loading-layout', 'panel');
     expect(loading).toHaveClass('items-center', 'justify-center');
-    expect(within(loading).getByText('Preparing the active case queue.')).toBeInTheDocument();
+    expect(within(loading).getByText('Preparing the case queue.')).toBeInTheDocument();
     expect(within(loading).getByTestId('console-loading-glyph')).toBeInTheDocument();
   });
 
   it('opens on the newest active case and embeds the complete shared workspace', async () => {
     render(<CaseManager />);
 
-    expect(await screen.findByRole('heading', { name: 'Active Cases' })).toBeInTheDocument();
-    expect(screen.getByText('2 shown · 2 active / 3 loaded')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Active cases' })).toBeInTheDocument();
+    // Server-backed (CM-1): the whole active lifecycle group is asked for, one page at a time.
+    expect(mocks.listCases).toHaveBeenCalledWith(
+      expect.objectContaining({ status_group: 'active', offset: 0, limit: 50, sort_field: 'updated_at' }),
+    );
+    expect(await screen.findByText('1 of 2 active · 2 loaded')).toBeInTheDocument();
     expect(screen.queryByText('Benign health check')).not.toBeInTheDocument();
 
     const manager = screen.getByTestId('case-manager');
+    // Round 16 (WP02): the board takes 8px of the shell's 24px top and bottom inset back
+    // (`-my-2`) and fills the viewport under the 56px bar and two 16px insets.
     expect(manager).toHaveClass(
-      'h-[calc(100dvh-7rem)]',
+      'h-[calc(100dvh-5.5rem)]',
       'min-h-0',
       'w-auto',
+      '-my-2',
       'sm:-mx-2',
-      'lg:-mx-4',
       'xl:min-h-[600px]',
-      '2xl:-mx-8',
     );
+    expect(manager.className.split(/\s+/)).not.toContain('h-[calc(100dvh-7rem)]');
     expect(manager.className.split(/\s+/)).not.toContain('min-h-[600px]');
     expect(manager.className.split(/\s+/)).not.toContain('w-full');
+    // The bleed tracks the shell's now-FLAT gutter. The old ladder steps would over-bleed
+    // and push the board out of the shell's `overflow-x-hidden` main at >=1024px.
+    expect(manager.className.split(/\s+/)).not.toContain('lg:-mx-4');
+    expect(manager.className.split(/\s+/)).not.toContain('2xl:-mx-8');
 
-    const splitFrame = manager.firstElementChild as HTMLElement;
-    expect(splitFrame).toHaveClass(
-      'xl:grid-cols-[var(--case-manager-columns)]',
-      'border',
-      'border-border',
-    );
+    // Round 16 (WP02): no routed page header; the title is an sr-only h1 and the split is
+    // one borderless tinted panel (`.surface-panel`), the board itself, on a 16px inset.
+    const layout = manager.firstElementChild as HTMLElement;
+    expect(layout).toHaveAttribute('data-testid', 'case-manager-layout');
+    expect(layout.firstElementChild?.tagName).toBe('H1');
+    expect(layout.firstElementChild).toHaveClass('sr-only');
+    expect(manager.querySelector('[data-page-header]')).toBeNull();
+    const splitFrame = screen.getByTestId('case-manager-split-frame');
+    expect(layout.lastElementChild).toBe(splitFrame);
+    expect(layout.children).toHaveLength(2);
+    expect(splitFrame).toHaveClass('surface-panel', 'xl:grid-cols-[var(--case-manager-columns)]');
+    expect(splitFrame.className.split(/\s+/)).not.toContain('border');
+    expect(splitFrame.className.split(/\s+/)).not.toContain('border-border');
     expect(splitFrame.style.getPropertyValue('--case-manager-columns')).toContain('400px');
     expect(splitFrame.className).not.toMatch(/rounded|shadow/);
+    // The frame sits on the board's 16px inset: no margin of its own and no header gap.
+    expect(splitFrame.className.split(/\s+/)).not.toContain('sm:mx-2');
+    expect(layout.className.split(/\s+/)).not.toContain('gap-6');
 
     const detail = await screen.findByTestId('embedded-case-detail');
     expect(detail).toHaveAttribute('data-case-id', OPEN_CRITICAL.case_id);
@@ -240,10 +520,229 @@ describe('CaseManager', () => {
     expect(screen.queryByRole('button', { name: /^Critical$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^High$/i })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('combobox', { name: 'Severity filter' }));
+    // Round 15 (D8.1): Severity, Status and Closed by sit behind ONE Filters control.
+    await user.click(screen.getByRole('button', { name: /^Filters/ }));
+    await user.click(await screen.findByRole('combobox', { name: 'Severity filter' }));
     await user.click(await screen.findByRole('option', { name: 'High' }));
+    // The active filter becomes a removable chip under the search.
+    expect(await screen.findByRole('button', { name: 'Remove filter: Severity: High' })).toBeInTheDocument();
+    // The filter is applied by the SERVER across every case, not to a loaded page.
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ severity: 'high' })),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument(),
+    );
     expect(screen.getByText('Multiple failed logins')).toBeInTheDocument();
-    expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument();
+  });
+
+  it('titles the page "Case Manager" and the queue in sentence case, without an eyebrow', async () => {
+    render(<CaseManager />);
+    // Round 14 (SPEC §4.9.3): the page header names the page, as the navigation does; the
+    // queue's scope is the module title beneath it (one h1 per page).
+    const page = await screen.findByRole('heading', { level: 1, name: 'Case Manager' });
+    expect(page).not.toHaveClass('uppercase');
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    const queueTitle = screen.getByRole('heading', { level: 2, name: 'Active cases' });
+    expect(queueTitle).not.toHaveClass('uppercase');
+    const queue = screen.getByRole('complementary', { name: 'Case queue' });
+    expect(queue).toContainElement(queueTitle);
+    expect(queue.querySelectorAll('.uppercase')).toHaveLength(0);
+  });
+
+  it('renders each case as a divided two-line row that shows severity, risk, id and status', async () => {
+    // Round 15 (D8.1): two lines again. Line one the title and age; line two severity,
+    // risk, the case number, the status (or the outcome of an ended case) and the owner.
+    // The source fact left the row, but not its accessible name.
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+
+    // A divided list rather than boxed cards: hairlines between rows, no card chrome.
+    const list = screen.getByRole('list', { name: 'Cases' });
+    expect(list).toHaveClass('divide-y');
+    const rows = within(list).getAllByTestId('case-queue-row');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.className).not.toMatch(/\brounded|\bborder\b|\bshadow/);
+    }
+
+    const critical = rows.find((row) =>
+      within(row).queryByText('Suspicious S3 bucket exfiltration'),
+    ) as HTMLElement;
+    // Line 2: the severity WORD (never colour alone), the loaded risk score that the card
+    // never showed, the display id and the sentence-case status with its glyph.
+    expect(within(critical).getByTestId('case-queue-severity')).toHaveTextContent('Critical');
+    expect(within(critical).getByTestId('case-queue-severity')).toHaveClass('text-critical-text');
+    expect(within(critical).getByText('Risk 92')).toBeInTheDocument();
+    expect(within(critical).getByText('CASE-2026-0092')).toHaveClass('font-mono');
+    expect(within(critical).getByTestId('case-queue-status')).toHaveTextContent(/^Investigating$/);
+    expect(within(critical).getByTestId('case-queue-status').querySelector('svg')).not.toBeNull();
+    // The entity is not in this title: it stays in the row's accessible name, off the row.
+    expect(within(critical).queryByText('IP 198.51.100.45')).not.toBeInTheDocument();
+    expect(within(critical).getByRole('button', { name: /IP 198\.51\.100\.45/ })).toBeInTheDocument();
+    expect(within(critical).queryByTestId('case-queue-fact')).toBeNull();
+    // The severity rail reinforces the word: solid for critical.
+    expect(within(critical).getByTestId('case-queue-severity-rail')).toHaveClass('bg-critical');
+
+    const high = rows.find((row) => within(row).queryByText('Multiple failed logins')) as HTMLElement;
+    expect(within(high).getByTestId('case-queue-severity')).toHaveTextContent('High');
+    expect(within(high).getByText('Risk 68')).toBeInTheDocument();
+    expect(within(high).getByText('CASE-2026-0091')).toBeInTheDocument();
+    expect(within(high).getByTestId('case-queue-status')).toHaveTextContent(
+      /^Open · awaiting analyst$/,
+    );
+    expect(within(high).getByRole('button', { name: /User admin_svc/ })).toBeInTheDocument();
+
+    // No tracked capitals anywhere in a row.
+    for (const row of rows) expect(row.querySelectorAll('.uppercase')).toHaveLength(0);
+    // Line two is a fixed 20px line, so a row with an owner monogram or an outcome badge
+    // (20px) is as tall as one with only the status words (16px).
+    for (const row of rows) expect(within(row).getByTestId('case-queue-meta')).toHaveClass('h-5');
+  });
+
+  it('lets the queue search and "Filters 1" share a row in the 360px pane', async () => {
+    // At 360px the row has 308px: a 12rem (192px) search, the gap and "Filters 1" (109px)
+    // would need 309px, so the queue lowers the search minimum to 10rem (SPEC D8.1).
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+    const bar = screen.getByRole('group', { name: 'Case queue filters' });
+    const search = bar.querySelector('[data-filter-search]');
+    expect(search).toHaveClass('min-w-[10rem]');
+    expect(search).not.toHaveClass('min-w-[12rem]');
+  });
+
+  it('omits an entity the title already names, and falls back to the source name', async () => {
+    const REPEATED: Case = {
+      case_id: 'case-repeated',
+      case_number: 'CASE-2026-0100',
+      title: 'user:pnair impossible travel',
+      status: 'open',
+      severity_band: 'medium',
+      risk_score: 40,
+      updated_at: '2026-07-20T10:30:00Z',
+      entity: { type: 'user', value: 'pnair' },
+    };
+    mocks.listCases.mockResolvedValue({ cases: [REPEATED, RESOLVED_LOW], total: 2 });
+    render(<CaseManager />);
+    await screen.findByText('user:pnair impossible travel');
+    const row = screen.getAllByTestId('case-queue-row')[0];
+    expect(within(row).queryByText('User pnair')).not.toBeInTheDocument();
+    expect(within(row).getByText('CASE-2026-0100')).toBeInTheDocument();
+    // Medium is reinforced by a dashed (gradient) rail, not a solid one.
+    expect(within(row).getByTestId('case-queue-severity-rail').className).toMatch(
+      /repeating-linear-gradient/,
+    );
+
+    fireEvent.click(screen.getByRole('radio', { name: 'All' }));
+    // The All view is a new server query; wait for it so no update lands after the test.
+    expect(await screen.findByText('1 of 2 cases · 2 loaded')).toBeInTheDocument();
+    const resolved = screen
+      .getAllByTestId('case-queue-row')
+      .find((candidate) => within(candidate).queryByText('Benign health check')) as HTMLElement;
+    // No entity recorded: the source name is the secondary fact, in the row's name.
+    expect(within(resolved).getByRole('button', { name: /Wazuh Manager/ })).toBeInTheDocument();
+    expect(within(resolved).getByTestId('case-queue-status')).toHaveTextContent(/^Resolved$/);
+    // Low severity carries no rail colour: colour appears only where it flags something.
+    expect(within(resolved).getByTestId('case-queue-severity-rail').className).not.toMatch(
+      /\bbg-/,
+    );
+  });
+
+  it('falls through a redundant entity to the source name instead of dropping the fact', async () => {
+    const NAMED: Case = {
+      case_id: 'case-named',
+      case_number: 'CASE-2026-0101',
+      title: 'ip:203.0.113.77 AUTH-ANOMALY',
+      status: 'open',
+      severity_band: 'high',
+      risk_score: 70,
+      updated_at: '2026-07-20T10:30:00Z',
+      source_name: 'IBM QRadar SIEM',
+      entity: { type: 'ip', value: '203.0.113.77' },
+    };
+    mocks.listCases.mockResolvedValue({ cases: [NAMED], total: 1 });
+    render(<CaseManager />);
+    await screen.findByText('ip:203.0.113.77 AUTH-ANOMALY');
+    const row = screen.getAllByTestId('case-queue-row')[0];
+    expect(within(row).getByRole('button', { name: /IBM QRadar SIEM/ })).toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: /^(?!.*IP 203\.0\.113\.77)/ })).toBeInTheDocument();
+    // Round 15 (D8.1): the fact left the visible row; the open control's name carries it.
+    expect(within(row).queryByTestId('case-queue-fact')).toBeNull();
+    expect(within(row).queryByText('IBM QRadar SIEM')).not.toBeInTheDocument();
+  });
+
+  it('keeps open, selected, hovered and focused rows visually distinct', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+
+    const rowFor = (title: string) =>
+      screen
+        .getAllByTestId('case-queue-row')
+        .find((row) => within(row).queryByText(title)) as HTMLElement;
+    const openRow = rowFor('Suspicious S3 bucket exfiltration');
+    const otherRow = rowFor('Multiple failed logins');
+    const openButton = within(openRow).getByRole('button');
+    const otherButton = within(otherRow).getByRole('button');
+
+    // OPEN: aria-current, the stronger primary tint and a primary edge rail.
+    expect(openButton).toHaveAttribute('aria-current', 'true');
+    expect(openRow).toHaveAttribute('data-row-state', 'open');
+    expect(openRow).toHaveClass('bg-primary/[0.09]');
+    expect(within(openRow).getByTestId('case-queue-open-rail')).toHaveClass('bg-primary');
+
+    // IDLE: no aria-current, no rail, only a neutral hover wash.
+    expect(otherButton).not.toHaveAttribute('aria-current');
+    expect(otherRow).toHaveAttribute('data-row-state', 'idle');
+    expect(otherRow).toHaveClass('hover:bg-muted/70');
+    expect(within(otherRow).queryByTestId('case-queue-open-rail')).toBeNull();
+
+    // FOCUS: every row's open button draws an inset keyboard ring.
+    for (const button of [openButton, otherButton]) {
+      expect(button).toHaveClass('focus-visible:ring-2', 'focus-visible:ring-inset', 'focus-visible:ring-ring');
+    }
+
+    // Round 16 (WP02): the checkbox shares the leading slot with the severity glyph and
+    // shows on row hover or focus (never `opacity-0`, which would leave a dead click
+    // target), and stays out of the tab order: the queue is one roving tab stop; X /
+    // Space toggles selection.
+    const otherCheckbox = within(otherRow).getByRole('checkbox', { name: 'Select CASE-2026-0091' });
+    expect(otherCheckbox).not.toHaveClass('opacity-0');
+    expect(otherCheckbox).toHaveClass('hidden', 'group-hover/row:block', 'group-focus-within/row:block');
+    expect(otherCheckbox).toHaveAttribute('tabindex', '-1');
+    expect(openButton).toHaveAttribute('tabindex', '0');
+    expect(otherButton).toHaveAttribute('tabindex', '-1');
+
+    // SELECTED: checked box + a lighter tint than the open row, never the open treatment.
+    fireEvent.click(otherCheckbox);
+    expect(otherCheckbox).toHaveAttribute('aria-checked', 'true');
+    expect(otherRow).toHaveAttribute('data-row-state', 'selected');
+    expect(otherRow).toHaveClass('bg-primary/[0.04]');
+    expect(otherRow).not.toHaveClass('bg-primary/[0.09]');
+    expect(otherButton).not.toHaveAttribute('aria-current');
+    expect(within(otherRow).queryByTestId('case-queue-open-rail')).toBeNull();
+    expect(openRow.className).not.toBe(otherRow.className);
+
+    // Once anything is selected every row keeps its checkbox visible.
+    for (const checkbox of screen
+      .getAllByTestId('case-queue-row')
+      .map((row) => within(row).getByRole('checkbox'))) {
+      expect(checkbox).not.toHaveClass('opacity-0');
+      expect(checkbox).toHaveClass('block');
+      expect(checkbox).not.toHaveClass('hidden');
+    }
+  });
+
+  it('keeps each row checkbox a sibling of its open button, never nested inside it', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+
+    for (const row of screen.getAllByTestId('case-queue-row')) {
+      const checkbox = within(row).getByRole('checkbox');
+      const [openButton] = within(row).getAllByRole('button');
+      expect(openButton.contains(checkbox)).toBe(false);
+      expect(checkbox.parentElement).toBe(openButton.parentElement);
+      expect(checkbox.closest('button:not([role="checkbox"])')).toBeNull();
+    }
   });
 
   it('exposes a persisted keyboard and pointer adjustable split separator', async () => {
@@ -287,14 +786,20 @@ describe('CaseManager', () => {
     await screen.findByText('Suspicious S3 bucket exfiltration');
 
     fireEvent.click(screen.getByRole('radio', { name: 'All' }));
-    expect(screen.getByRole('heading', { name: 'All Cases' })).toBeInTheDocument();
-    expect(screen.getByText('3 shown · 3 loaded')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'All cases' })).toBeInTheDocument();
+    expect(await screen.findByText('1 of 3 cases · 3 loaded')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search case queue' }), {
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search case queue' }), {
       target: { value: 'health check' },
     });
+    // Instant pre-filter of the loaded rows while the server query is debounced (a
+    // filtered-out row leaves through a short exit animation)…
     expect(screen.getByText('Benign health check')).toBeInTheDocument();
-    expect(screen.queryByText('Multiple failed logins')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Multiple failed logins')).not.toBeInTheDocument());
+    // …then the search runs on the server over every case.
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'health check' })),
+    );
 
     fireEvent.click(screen.getByText('Benign health check'));
     expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute(
@@ -312,9 +817,10 @@ describe('CaseManager', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Mock resolve' }));
 
+    // The resolved case leaves the Active window AND its total, so loaded vs total stays exact.
     await waitFor(() => {
       expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument();
-      expect(screen.getByText('1 shown · 1 active / 3 loaded')).toBeInTheDocument();
+      expect(screen.getByText('1 active · 1 loaded')).toBeInTheDocument();
     });
   });
 
@@ -340,11 +846,13 @@ describe('CaseManager', () => {
     expect(selectVisible).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByText('2 selected')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search case queue' }), {
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search case queue' }), {
       target: { value: 'failed logins' },
     });
     expect(screen.getByText('Multiple failed logins')).toBeInTheDocument();
-    expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument(),
+    );
     expect(screen.getByText('2 selected')).toBeInTheDocument();
     expect(selectVisible).toHaveAttribute('aria-checked', 'true');
 
@@ -353,13 +861,7 @@ describe('CaseManager', () => {
     expect(screen.queryByRole('button', { name: /bulk actions for/i })).not.toBeInTheDocument();
   });
 
-  it('uses the server bulk lifecycle contract and retains only failed acknowledgements', async () => {
-    mocks.bulk.mockResolvedValue({
-      results: [
-        { id: OPEN_HIGH.case_id, ok: false, error: 'Illegal transition from NEEDS_HUMAN' },
-        { id: OPEN_CRITICAL.case_id, ok: true },
-      ],
-    });
+  it('snapshots selected case ids into one durable lifecycle job', async () => {
     render(<CaseManager />);
     await screen.findByText('Suspicious S3 bucket exfiltration');
 
@@ -368,29 +870,127 @@ describe('CaseManager', () => {
 
     const dialog = await screen.findByRole('alertdialog');
     expect(within(dialog).getByText('Acknowledge 2 cases?')).toBeInTheDocument();
-    expect(mocks.bulk).not.toHaveBeenCalled();
+    expect(mocks.submitJob).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Acknowledge cases' }));
 
-    await waitFor(() =>
-      expect(mocks.bulk).toHaveBeenCalledWith(
-        [OPEN_HIGH.case_id, OPEN_CRITICAL.case_id],
-        { action: 'acknowledge' },
-      ),
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob).toHaveBeenCalledWith({
+      kind: 'case_lifecycle',
+      idempotency_key: expect.stringMatching(/^case_lifecycle-/),
+      params: {
+        action: 'acknowledge',
+        case_ids: [OPEN_CRITICAL.case_id, OPEN_HIGH.case_id],
+      },
+    });
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    // The job is tracked in place (CM-7): progress shows here; the rows stay selected
+    // until it finishes (successes then leave the selection, failures stay with a reason).
+    expect(await screen.findByText('Acknowledgement: 0 of 2 done')).toBeInTheDocument();
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      expect.stringMatching(/acknowledgement queued for 2 cases/i),
+      expect.anything(),
     );
-    expect(
-      await screen.findByText(
-        '1 acknowledged, 1 failed. CASE-2026-0091: Illegal transition from NEEDS_HUMAN',
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByText('1 selected')).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
-    expect(mocks.listCases).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
   });
 
-  it('keeps assignment and tagging status-neutral on their dedicated endpoints', async () => {
+  it('keeps "AI working" on a row at every queue width; the status words give way below 30rem (XFCM)', async () => {
+    mocks.aiRuns = { [OPEN_HIGH.case_id]: { run_id: 'inv-1', state: 'running' } };
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    const row = document.querySelector(`[data-case-id="${OPEN_HIGH.case_id}"]`) as HTMLElement;
+    const status = within(row).getByTestId('case-queue-status');
+    // The run's words never hide: the ring alone is the case chat glyph (C32).
+    const runWords = within(status).getByTestId('ai-run-mark-words');
+    expect(runWords).toHaveTextContent('AI working');
+    expect(runWords.className).not.toMatch(/\bhidden\b/);
+    // The status words, and the dot before them, show from a 30rem queue only.
+    const words = within(status).getByTestId('case-queue-status-words');
+    expect(words).toHaveTextContent('Open · awaiting analyst');
+    expect(words).toHaveClass('truncate', 'hidden', '@[30rem]/queue:inline');
+    expect(within(status).getByText('·')).toHaveClass('hidden', '@[30rem]/queue:inline');
+    // The row's accessible name keeps both.
+    const open = within(row).getByRole('button', { name: /Multiple failed logins/ });
+    expect(open.getAttribute('aria-label')).toMatch(/open · awaiting analyst.*AI investigation running/i);
+
+    // Without a run the status words always show.
+    const other = document.querySelector(`[data-case-id="${OPEN_CRITICAL.case_id}"]`) as HTMLElement;
+    const otherWords = within(other).getByTestId('case-queue-status-words');
+    expect(otherWords).toHaveTextContent('Investigating');
+    expect(otherWords.className).not.toMatch(/\bhidden\b/);
+  });
+
+  it('lets the severity word and its dot give way below a 30rem queue while a run shows, so "AI working" fits beside the owner (XFCM review)', async () => {
+    // At the 340px default queue a row with an owner leaves the status node about 63px;
+    // the ring and "AI working" need 77px, so without this the words ran under the monogram.
+    mocks.aiRuns = { [OPEN_HIGH.case_id]: { run_id: 'inv-1', state: 'running' } };
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    const row = document.querySelector(`[data-case-id="${OPEN_HIGH.case_id}"]`) as HTMLElement;
+    const severity = within(row).getByTestId('case-queue-severity');
+    expect(severity).toHaveClass('hidden', '@[30rem]/queue:inline-flex');
+    // The dot right after the severity word goes with it.
+    expect(severity.nextElementSibling).toHaveTextContent('·');
+    expect(severity.nextElementSibling).toHaveClass('hidden', '@[30rem]/queue:inline');
+    // The row's accessible name keeps the severity.
+    expect(within(row).getByRole('button', { name: /Multiple failed logins/ }).getAttribute('aria-label')).toMatch(/high severity/i);
+
+    // Without a run the severity word and its dot always show.
+    const other = document.querySelector(`[data-case-id="${OPEN_CRITICAL.case_id}"]`) as HTMLElement;
+    const otherSeverity = within(other).getByTestId('case-queue-severity');
+    expect(otherSeverity.className).not.toMatch(/\bhidden\b/);
+    expect((otherSeverity.nextElementSibling as HTMLElement).className).not.toMatch(/\bhidden\b/);
+  });
+
+  it('lets the outcome badge of an ended case give way to a run mark below a 30rem queue (XFCM)', async () => {
+    const closed: Case = {
+      ...RESOLVED_LOW,
+      decision_by: 'analyst',
+      disposition: 'benign',
+      history: [{ event: 'analyst_action', action: 'resolve', analyst: 'aryan', ts: '2026-07-20T09:00:00Z', classified_disposition: 'benign' }],
+    } as Case;
+    mocks.listCases.mockImplementation(serve([closed]));
+    mocks.aiRuns = { [closed.case_id]: { run_id: 'inv-2', state: 'queued' } };
+    render(<CaseManager />);
+    // An ended case lists in the All scope.
+    fireEvent.click(await screen.findByRole('radio', { name: 'All' }));
+    await screen.findByText('Benign health check');
+    const row = document.querySelector(`[data-case-id="${closed.case_id}"]`) as HTMLElement;
+    const outcome = within(row).getByTestId('case-queue-outcome');
+    expect(within(outcome).getByTestId('ai-run-mark-words').className).not.toMatch(/\bhidden\b/);
+    expect(within(outcome).getByTestId('case-outcome')).toHaveClass('hidden', '@[30rem]/queue:inline-flex');
+  });
+
+  it('gives a cut status word its whole value on hover, in either density (XFCM)', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    const row = document.querySelector(`[data-case-id="${OPEN_HIGH.case_id}"]`) as HTMLElement;
+    const words = within(row).getByTestId('case-queue-status-words');
+    expect(words).toHaveAttribute('title', 'Open · awaiting analyst');
+    const critical = document.querySelector(`[data-case-id="${OPEN_CRITICAL.case_id}"]`) as HTMLElement;
+    expect(within(critical).getByTestId('case-queue-status-words')).toHaveAttribute('title', 'Investigating');
+  });
+
+  it('notes an AI run on a selected case in the bulk Acknowledge and Set status dialogs (WP16)', async () => {
+    mocks.aiRuns = { [OPEN_HIGH.case_id]: { run_id: 'inv-1', state: 'running' } };
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all visible cases' }));
+    await chooseBulkAction('Acknowledge');
+    const dialog = await screen.findByRole('alertdialog');
+    const note = within(dialog).getByTestId('ai-run-close-notice');
+    // A status change, for every selected case (the note counts those with a run).
+    expect(note).toHaveAttribute('data-action', 'status');
+    expect(note).toHaveTextContent([OPEN_CRITICAL.case_id, OPEN_HIGH.case_id].sort().join(','));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+
+    await chooseBulkAction(/^Set status/);
+    const form = await screen.findByRole('dialog', { name: /set status for 2 selected cases/i });
+    expect(within(form).getByTestId('ai-run-close-notice')).toHaveAttribute('data-action', 'status');
+  });
+
+  it('keeps assignment and tagging status-neutral with their dedicated job kinds', async () => {
     render(<CaseManager />);
     await screen.findByText('Multiple failed logins');
 
@@ -403,13 +1003,14 @@ describe('CaseManager', () => {
     fireEvent.change(assignee, { target: { value: 'tier-2' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Assign cases' }));
 
-    await waitFor(() =>
-      expect(mocks.caseAssign).toHaveBeenCalledWith(OPEN_HIGH.case_id, 'tier-2'),
-    );
-    expect(await screen.findByText('1 case assigned to tier-2.')).toBeInTheDocument();
-    expect(mocks.bulk).not.toHaveBeenCalled();
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_assign',
+      params: { case_ids: [OPEN_HIGH.case_id], assignee: 'tier-2' },
+    });
+    expect(mocks.caseAssign).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
+    // The selection is kept while the first job is tracked, so the next action reuses it.
     await chooseBulkAction('Add tag');
     dialog = await screen.findByRole('dialog');
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Tag to add' }), {
@@ -417,14 +1018,15 @@ describe('CaseManager', () => {
     });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add tag' }));
 
-    await waitFor(() =>
-      expect(mocks.caseTags).toHaveBeenCalledWith(OPEN_HIGH.case_id, ['needs-review']),
-    );
-    expect(await screen.findByText('1 case tagged needs-review.')).toBeInTheDocument();
-    expect(mocks.bulk).not.toHaveBeenCalled();
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(2));
+    expect(mocks.submitJob.mock.calls[1][0]).toMatchObject({
+      kind: 'case_tag',
+      params: { case_ids: [OPEN_HIGH.case_id], tag: 'needs-review' },
+    });
+    expect(mocks.caseTags).not.toHaveBeenCalled();
   });
 
-  it('collects status and disposition values before sending bulk lifecycle updates', async () => {
+  it('collects status and disposition values before submitting lifecycle jobs', async () => {
     render(<CaseManager />);
     await screen.findByText('Multiple failed logins');
 
@@ -434,26 +1036,108 @@ describe('CaseManager', () => {
     fireEvent.click(within(dialog).getByRole('combobox', { name: 'New status' }));
     fireEvent.click(await screen.findByRole('option', { name: 'On hold' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Set status' }));
-    await waitFor(() =>
-      expect(mocks.bulk).toHaveBeenCalledWith(
-        [OPEN_HIGH.case_id],
-        { action: 'set_status', status: 'on_hold' },
-      ),
-    );
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_lifecycle',
+      params: { case_ids: [OPEN_HIGH.case_id], action: 'set_status', status: 'on_hold' },
+    });
 
-    const checkbox = await screen.findByRole('checkbox', { name: 'Select CASE-2026-0091' });
-    fireEvent.click(checkbox);
     await chooseBulkAction('Set disposition');
     dialog = await screen.findByRole('dialog');
     fireEvent.click(within(dialog).getByRole('combobox', { name: 'Disposition' }));
     fireEvent.click(await screen.findByRole('option', { name: 'False positive' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Set disposition' }));
-    await waitFor(() =>
-      expect(mocks.bulk).toHaveBeenLastCalledWith(
-        [OPEN_HIGH.case_id],
-        { action: 'set_disposition', disposition: 'false_positive' },
-      ),
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(2));
+    expect(mocks.submitJob.mock.calls[1][0]).toMatchObject({
+      kind: 'case_lifecycle',
+      params: {
+        case_ids: [OPEN_HIGH.case_id],
+        action: 'set_disposition',
+        disposition: 'false_positive',
+        // A person picked it in the bulk form, so it counts as their classification (D15).
+        disposition_declared: true,
+      },
+    });
+  });
+
+  it('leaves the cases the AI agent closed out of bulk Set status and Set disposition (D4.7)', async () => {
+    // The first decision closed it automatically; a person reviews it instead.
+    const AUTO_CLOSED = {
+      case_id: 'case-auto-closed',
+      case_number: 'CASE-2026-0070',
+      title: 'Benign scanner sweep',
+      status: 'closed',
+      decision_by: 'agent',
+      verdict: 'FALSE_POSITIVE',
+      severity_band: 'low',
+      risk_score: 9,
+      updated_at: '2026-07-20T10:12:00Z',
+      history: [{ event: 'decision', ts: '2026-07-20T10:12:00Z', status: 'closed', decision_by: 'agent' }],
+    } as unknown as Case;
+    mocks.listCases.mockImplementation(serve([OPEN_HIGH, AUTO_CLOSED]));
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    fireEvent.click(await screen.findByRole('radio', { name: 'All' }));
+    await screen.findByText('Benign scanner sweep');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0070' }));
+    await chooseBulkAction('Set disposition');
+    let dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByTestId('case-bulk-agent-closed-note')).toHaveTextContent(
+      'Cases the AI agent closed are left out; review them instead. 1 of the selected cases is left out.',
     );
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'Disposition' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'False positive' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Set disposition' }));
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_lifecycle',
+      params: { case_ids: [OPEN_HIGH.case_id], action: 'set_disposition' },
+    });
+    await waitFor(() =>
+      expect(String(mocks.toastSuccess.mock.calls.at(-1)?.[0])).toMatch(/1 case the AI agent closed was left out/),
+    );
+
+    // Only agent-closed cases selected: nothing is sent, and the bar says why.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
+    await chooseBulkAction('Set status');
+    dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'New status' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'On hold' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Set status' }));
+    await waitFor(() =>
+      expect(String(mocks.toastError.mock.calls.at(-1)?.[0])).toMatch(/the AI agent closed every selected case/),
+    );
+    expect(mocks.submitJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the other bulk work for agent-closed cases (the exclusion is Set status and Set disposition only)', async () => {
+    const AUTO_CLOSED = {
+      case_id: 'case-auto-closed',
+      case_number: 'CASE-2026-0070',
+      title: 'Benign scanner sweep',
+      status: 'closed',
+      decision_by: 'agent',
+      updated_at: '2026-07-20T10:12:00Z',
+      history: [{ event: 'decision', ts: '2026-07-20T10:12:00Z', status: 'closed', decision_by: 'agent' }],
+    } as unknown as Case;
+    mocks.listCases.mockImplementation(serve([OPEN_HIGH, AUTO_CLOSED]));
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    fireEvent.click(await screen.findByRole('radio', { name: 'All' }));
+    await screen.findByText('Benign scanner sweep');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0070' }));
+    await chooseBulkAction('Add tag');
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByTestId('case-bulk-agent-closed-note')).toBeNull();
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Tag to add' }), { target: { value: 'reviewed' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add tag' }));
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_tag',
+      params: { case_ids: ['case-auto-closed'] },
+    });
   });
 
   it('confirmation-gates resolve and hides actions without their RBAC grants', async () => {
@@ -465,34 +1149,43 @@ describe('CaseManager', () => {
 
     const rowCheckbox = screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' });
     fireEvent.click(rowCheckbox);
-    await user.click(screen.getByRole('button', { name: /bulk actions for/i }));
+    await user.click(screen.getByRole('button', { name: /more bulk actions for/i }));
     const menu = await screen.findByRole('menu');
     expect(within(menu).queryByRole('menuitem', { name: 'Assign' })).not.toBeInTheDocument();
-    expect(within(menu).queryByRole('menuitem', { name: 'Resolve' })).not.toBeInTheDocument();
+    expect(within(menu).queryByRole('menuitem', { name: /^Resolve/ })).not.toBeInTheDocument();
+    expect(within(menu).queryByRole('menuitem', { name: /^Close/ })).not.toBeInTheDocument();
     expect(within(menu).getByRole('menuitem', { name: 'Acknowledge' })).toBeInTheDocument();
+    // The toolbar's direct Assign / Close buttons follow the same grants.
+    expect(screen.queryByRole('button', { name: 'Assign' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Close…' })).not.toBeInTheDocument();
 
     await user.keyboard('{Escape}');
     mocks.permissions.add('cases:close');
     fireEvent.click(rowCheckbox);
     fireEvent.click(rowCheckbox);
-    await chooseBulkAction('Resolve');
-    const dialog = await screen.findByRole('alertdialog');
-    expect(within(dialog).getByText('Resolve 1 case?')).toBeInTheDocument();
-    expect(mocks.bulk).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Resolve cases' }));
-    await waitFor(() =>
-      expect(mocks.bulk).toHaveBeenCalledWith(
-        [OPEN_HIGH.case_id],
-        { action: 'resolve', reason: 'Bulk-resolved by analyst' },
-      ),
-    );
+    await chooseBulkAction(/^Resolve/);
+    // Resolve is gated by the outcome dialog: a disposition is REQUIRED (D15).
+    const dialog = await screen.findByTestId('bulk-close-dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Resolve 1 case' })).toBeInTheDocument();
+    const submit = within(dialog).getByRole('button', { name: 'Resolve 1 case' });
+    expect(submit).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('radio', { name: /true positive/i }));
+    expect(mocks.submitJob).not.toHaveBeenCalled();
+    fireEvent.click(submit);
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_lifecycle',
+      params: {
+        case_ids: [OPEN_HIGH.case_id],
+        action: 'resolve',
+        disposition: 'true_positive',
+        disposition_declared: true,
+        reason: 'Bulk-resolved by analyst',
+      },
+    });
   });
 
-  it('confirms the token-spending action, updates successes, and leaves failures selected', async () => {
-    mocks.reinvestigateCase.mockImplementation(async (caseId: string) => {
-      if (caseId === OPEN_HIGH.case_id) throw new Error('Stored evidence is unavailable');
-      return { ...OPEN_CRITICAL, status: 'resolved', updated_at: '2026-07-20T10:40:00Z' };
-    });
+  it('confirms token-spending work and submits one background reinvestigation', async () => {
     render(<CaseManager />);
     await screen.findByText('Suspicious S3 bucket exfiltration');
 
@@ -507,78 +1200,46 @@ describe('CaseManager', () => {
     expect(mocks.reinvestigateCase).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Reinvestigate' }));
-    await waitFor(() => expect(mocks.reinvestigateCase).toHaveBeenCalledTimes(2));
-
-    expect(
-      await screen.findByText(
-        '1 reinvestigated, 1 failed. CASE-2026-0091: Stored evidence is unavailable',
-      ),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument();
-    expect(screen.getByText('1 shown · 1 active / 3 loaded')).toBeInTheDocument();
-    expect(screen.getByText('1 selected')).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
-    expect(mocks.listCases).toHaveBeenCalledTimes(1);
-    expect(mocks.toastWarning).toHaveBeenCalledWith('1 reinvestigated, 1 failed', {
-      id: 'case-manager-bulk',
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob).toHaveBeenCalledWith({
+      kind: 'case_reinvestigate',
+      idempotency_key: expect.stringMatching(/^case_reinvestigate-/),
+      params: { case_ids: [OPEN_CRITICAL.case_id, OPEN_HIGH.case_id] },
     });
+    expect(mocks.reinvestigateCase).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(mocks.toastSuccess).toHaveBeenCalledWith(
+        expect.stringMatching(/reinvestigation queued for 2 cases/i),
+        expect.anything(),
+      ),
+    );
+    expect(await screen.findByText('Reinvestigation: 0 of 2 done')).toBeInTheDocument();
   });
 
-  it('bounds reinvestigation to three concurrent requests and reports progress', async () => {
-    const batchCases: Case[] = Array.from({ length: 5 }, (_, index) => ({
-      ...OPEN_HIGH,
-      case_id: `case-batch-${index + 1}`,
-      case_number: `CASE-BATCH-${index + 1}`,
-      title: `Batch case ${index + 1}`,
-      updated_at: `2026-07-20T10:0${index}:00Z`,
-    }));
-    mocks.listCases.mockResolvedValue({ cases: batchCases, total: batchCases.length });
-
-    const pending = new Map<string, (value: Case) => void>();
-    mocks.reinvestigateCase.mockImplementation(
-      (caseId: string) =>
-        new Promise<Case>((resolve) => {
-          pending.set(caseId, resolve);
-        }),
-    );
-
+  it('reuses one idempotency key across an ambiguous retry and rotates after acceptance', async () => {
+    mocks.submitJob
+      .mockRejectedValueOnce(new Error('connection closed'))
+      .mockImplementationOnce(async (input) => acceptedJob(input.kind, input.params))
+      .mockImplementationOnce(async (input) => acceptedJob(input.kind, input.params));
     render(<CaseManager />);
-    await screen.findByText('Batch case 1');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all visible cases' }));
+    await screen.findByText('Multiple failed logins');
+    const checkbox = screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' });
+    fireEvent.click(checkbox);
     await chooseBulkAction('Reinvestigate');
-    const dialog = await screen.findByRole('alertdialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Reinvestigate' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reinvestigate' }));
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
 
-    await waitFor(() => expect(mocks.reinvestigateCase).toHaveBeenCalledTimes(3));
-    expect(screen.getByRole('checkbox', { name: 'Select all visible cases' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Clear case selection' })).toBeDisabled();
+    await chooseBulkAction('Reinvestigate');
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reinvestigate' }));
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(2));
+    const firstKey = mocks.submitJob.mock.calls[0][0].idempotency_key;
+    expect(mocks.submitJob.mock.calls[1][0].idempotency_key).toBe(firstKey);
 
-    // Chunk two cannot begin until the first bounded group has fully settled.
-    const firstBatchIds = Array.from(pending.keys());
-    await act(async () => {
-      for (const id of firstBatchIds) {
-        const item = batchCases.find((candidate) => candidate.case_id === id)!;
-        pending.get(id)?.({ ...item, updated_at: '2026-07-20T10:50:00Z' });
-      }
-    });
-    await waitFor(() => expect(mocks.reinvestigateCase).toHaveBeenCalledTimes(5));
-
-    const secondBatchIds = Array.from(pending.keys()).filter((id) => !firstBatchIds.includes(id));
-    await act(async () => {
-      for (const id of secondBatchIds) {
-        const item = batchCases.find((candidate) => candidate.case_id === id)!;
-        pending.get(id)?.({ ...item, updated_at: '2026-07-20T10:50:00Z' });
-      }
-    });
-
-    expect(await screen.findByText('5 cases reinvestigated.')).toBeInTheDocument();
-    expect(screen.getByText('5 visible')).toBeInTheDocument();
-    expect(mocks.toastSuccess).toHaveBeenCalledWith('5 cases reinvestigated.', {
-      id: 'case-manager-bulk',
-    });
+    // Still selected (the accepted job is tracked in place): submit the same ids again.
+    await chooseBulkAction('Reinvestigate');
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reinvestigate' }));
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(3));
+    expect(mocks.submitJob.mock.calls[2][0].idempotency_key).not.toBe(firstKey);
   });
 
   it('returns to the queue on narrow-layout back/dismiss without reopening a case', async () => {
@@ -588,7 +1249,7 @@ describe('CaseManager', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Back to case queue' })[0]);
 
     expect(screen.queryByTestId('embedded-case-detail')).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Active Cases' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Active cases' })).toBeInTheDocument();
     expect(mocks.navigate).toHaveBeenLastCalledWith('case_manager');
   });
 
@@ -604,15 +1265,1608 @@ describe('CaseManager', () => {
     );
   });
 
+  it('reaches an active case beyond the old newest-200 window by paging the server', async () => {
+    // 260 active cases: before Round 12 the queue loaded the newest 200 and filtered in
+    // the browser, so the oldest 60 were silently missing from "Active".
+    const many: Case[] = Array.from({ length: 260 }, (_, i) => ({
+      case_id: `case-${String(i).padStart(3, '0')}`,
+      case_number: `CASE-${String(1000 + i)}`,
+      title: `Active case ${i}`,
+      status: 'open',
+      severity_band: 'medium',
+      risk_score: 30,
+      updated_at: new Date(Date.UTC(2026, 9, 1, 0, 0, 0) + i * 60_000).toISOString(),
+    }));
+    mocks.listCases.mockImplementation(serve(many));
+    render(<CaseManager />);
+    expect(await screen.findByText('1 of 260 active · 50 loaded')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50, limit: 50 })),
+    );
+    expect(await screen.findByText('1 of 260 active · 100 loaded')).toBeInTheDocument();
+
+    // The oldest case is found by a server-side search, not a loaded-page filter.
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search case queue' }), {
+      target: { value: 'CASE-1000' },
+    });
+    expect(await screen.findByText('Active case 0')).toBeInTheDocument();
+    // Settle the search's own page before the test ends, so a slow run never leaves a
+    // queue update to land (outside act) in the next test.
+    expect(await screen.findByText(/^(?:1 of )?1 active · 1 loaded$/)).toBeInTheDocument();
+    await waitFor(() => expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'CASE-1000' })));
+    // Two pages of 50 full queue rows: ~2.3 s alone, and several times that on a loaded CI
+    // runner, so this test gets its own budget instead of Vitest's 5 s default.
+  }, 20_000);
+
+  it('Mine asks the server for the signed-in analyst’s active cases', async () => {
+    mocks.listCases.mockImplementation(
+      serve([{ ...OPEN_HIGH, assignee: 'analyst.one' }, OPEN_CRITICAL, RESOLVED_LOW]),
+    );
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+    fireEvent.click(screen.getByRole('radio', { name: 'Mine' }));
+    expect(screen.getByRole('heading', { name: 'My cases' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(
+        expect.objectContaining({ assignee: 'analyst.one', status_group: 'active' }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText('Multiple failed logins')).toBeInTheDocument();
+  });
+
+  it('moves through the queue with J/K and arrows, toggles selection with X, and opens shortcuts with ?', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    const list = screen.getByRole('list', { name: 'Cases' });
+    const rowButton = (title: string) =>
+      within(
+        screen.getAllByTestId('case-queue-row').find((row) => within(row).queryByText(title)) as HTMLElement,
+      ).getAllByRole('button')[0];
+
+    act(() => rowButton('Suspicious S3 bucket exfiltration').focus());
+    fireEvent.keyDown(list, { key: 'j' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id),
+    );
+    expect(rowButton('Multiple failed logins')).toHaveAttribute('tabindex', '0');
+
+    // The live region is mounted before the first selection, so that one is announced
+    // too (the bulk bar mounts WITH it, too late for a region inside it).
+    const selectionStatus = screen.getByTestId('case-selection-status');
+    expect(selectionStatus).toHaveAttribute('aria-live', 'polite');
+    expect(selectionStatus).toHaveTextContent(/^$/);
+    fireEvent.keyDown(list, { key: 'x' });
+    expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
+    expect(selectionStatus).toHaveTextContent('1 case selected.');
+
+    fireEvent.keyDown(list, { key: 'ArrowUp' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_CRITICAL.case_id),
+    );
+
+    await waitFor(() => expect(rowButton('Suspicious S3 bucket exfiltration')).toHaveFocus());
+
+    fireEvent.keyDown(document.body, { key: '?' });
+    expect(await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })).toBeInTheDocument();
+  });
+
+  it('focuses the queue search with /', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    // The field names its shortcut, as the shortcuts dialog does.
+    expect(screen.getByRole('searchbox', { name: 'Search case queue' })).toHaveAttribute('aria-keyshortcuts', '/');
+    fireEvent.keyDown(document.body, { key: '/' });
+    expect(screen.getByRole('searchbox', { name: 'Search case queue' })).toHaveFocus();
+  });
+
+  it('bulk Close requires a disposition and submits it as declared', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all visible cases' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close…' }));
+
+    const dialog = await screen.findByTestId('bulk-close-dialog');
+    const submit = within(dialog).getByRole('button', { name: 'Close 2 cases' });
+    expect(submit).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('radio', { name: /false positive/i }));
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_lifecycle',
+      params: {
+        action: 'close',
+        case_ids: [OPEN_CRITICAL.case_id, OPEN_HIGH.case_id],
+        disposition: 'false_positive',
+        disposition_declared: true,
+        resolution: 'Bulk-closed by analyst',
+      },
+    });
+  });
+
+  it('keeps the runbook chip out of the queue row: the Runbook tab and the rail carry it (Round 15, D8.1)', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    for (const row of screen.getAllByTestId('case-queue-row')) {
+      expect(row.querySelector('[data-runbook-progress]')).toBeNull();
+      expect(within(row).getAllByRole('button')[0].getAttribute('aria-label')).not.toMatch(/Runbook:/);
+      // The case number names the row and never gives way (closing QA qa3-03).
+      const id = within(row).getByTestId('case-queue-id');
+      expect(id).toHaveClass('shrink-0', 'whitespace-nowrap');
+      expect(id).not.toHaveClass('truncate');
+    }
+    // The queue no longer reads every row's runbook progress.
+    expect(mocks.getRunbookProgress).not.toHaveBeenCalled();
+  });
+
+  it('shows the status of an open case and the outcome of an ended one, never both (D8.1)', async () => {
+    const CLOSED_FP: Case = {
+      ...RESOLVED_LOW,
+      case_id: 'case-closed-fp',
+      case_number: 'CASE-2026-0200',
+      title: 'Closed false positive',
+      status: 'closed',
+      decision_by: 'analyst',
+      disposition: 'false_positive',
+      history: [{ event: 'analyst_action', action: 'close', analyst: 'aryan', ts: '2026-07-20T09:00:00Z', classified_disposition: 'false_positive' }],
+    } as Case;
+    mocks.listCases.mockImplementation(serve([OPEN_HIGH, CLOSED_FP]));
+    render(<CaseManager />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'All' }));
+    const closedRow = (await screen.findByText('Closed false positive')).closest('[data-queue-row]') as HTMLElement;
+    expect(within(closedRow).queryByTestId('case-queue-status')).toBeNull();
+    const outcome = within(closedRow).getByTestId('case-queue-outcome');
+    expect(outcome).toHaveAttribute('data-outcome-source', 'analyst');
+    expect(outcome).toHaveTextContent('False positive');
+    const openRow = screen.getByText('Multiple failed logins').closest('[data-queue-row]') as HTMLElement;
+    expect(within(openRow).getByTestId('case-queue-status')).toBeInTheDocument();
+    expect(within(openRow).queryByTestId('case-queue-outcome')).toBeNull();
+  });
+
+  it('keeps the row risk neutral, so a high row carries one coloured token (Round 16, WP02)', async () => {
+    render(<CaseManager />);
+    const row = (await screen.findByText('Multiple failed logins')).closest('[data-queue-row]') as HTMLElement;
+    // Risk 68 is in the high band, but the severity word is the row's one tinted token;
+    // risk keeps its colour in the case header and the facts rail.
+    const risk = within(row).getByText('Risk 68');
+    expect(risk).toHaveClass('text-foreground/80', 'tabular-nums');
+    expect(risk.className).not.toMatch(/text-(critical|high|medium|low)-text/);
+    expect(within(row).getByTestId('case-queue-severity')).toHaveClass('text-high-text');
+  });
+
+  it('bulk Close says how many selected cases have required runbook steps open and sends one reason', async () => {
+    mocks.getRunbookProgress.mockResolvedValue({
+      [OPEN_HIGH.case_id]: { done: 2, not_applicable: 0, total: 6, required_open: 3, blocked: 0, waiting: 0 },
+      [OPEN_CRITICAL.case_id]: { done: 0, not_applicable: 0, total: 0, required_open: 0, blocked: 0, waiting: 0 },
+    });
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all visible cases' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close…' }));
+    const dialog = await screen.findByTestId('bulk-close-dialog');
+    expect(await within(dialog).findByText('1 of the 2 selected cases have required runbook steps open.')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('radio', { name: /false positive/i }));
+    fireEvent.change(within(dialog).getByLabelText(/Why are you closing with required steps open\?/), {
+      target: { value: 'Handled by the identity team.' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close 2 cases' }));
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0].params).toMatchObject({
+      action: 'close',
+      open_steps_reason: 'Handled by the identity team.',
+    });
+    expect(mocks.submitJob.mock.calls[0][0].params).not.toHaveProperty('require_open_steps_reason');
+  });
+
+  it('keeps failed rows selected with their reason when a tracked bulk job finishes', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all visible cases' }));
+    await chooseBulkAction('Acknowledge');
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Acknowledge cases' }));
+    await screen.findByText('Acknowledgement: 0 of 2 done');
+
+    // No live stream in jsdom: the tracked job is polled until it is terminal.
+    mocks.jobGet.mockImplementation(async (id: string) => ({
+      ...acceptedJob('case_lifecycle', { case_ids: [OPEN_CRITICAL.case_id, OPEN_HIGH.case_id] }),
+      job_id: id,
+      status: 'partial',
+      progress: { done: 2, total: 2, unit: 'cases' },
+      failures: [{ item_ref: OPEN_HIGH.case_id, reason: 'Case is closed' }],
+      failure_count: 1,
+    }));
+    expect(
+      await screen.findByText(/1 of 2 done\. 1 failed and stays selected/i, undefined, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0092' })).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText('Case is closed')).toBeInTheDocument();
+  });
+
+  it('says up front that bulk changes are off in Demo Mode instead of failing after the dialog', async () => {
+    mocks.demoActive = true;
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0092' }));
+    expect(await screen.findByTestId('case-bulk-demo-note')).toHaveTextContent(
+      'Bulk changes run as background jobs, which are off in Demo Mode.',
+    );
+    expect(screen.getByRole('button', { name: /^close…$/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /more bulk actions for/i })).toBeDisabled();
+    expect(mocks.submitJob).not.toHaveBeenCalled();
+  });
+
+  // ---- live queue honesty (Round 12 review: F1/F2/F5) ------------------------------ //
+
+  /** 68 active cases, newest-updated first; the queue loads the newest 50. */
+  function activeDataset(count = 68): Case[] {
+    return Array.from({ length: count }, (_, i) => ({
+      case_id: `case-${String(i).padStart(4, '0')}`,
+      case_number: `CASE-${String(5000 + i)}`,
+      title: `Active case ${i}`,
+      status: 'open',
+      severity_band: 'medium',
+      risk_score: 30,
+      updated_at: new Date(Date.UTC(2026, 9, 1, 0, 0, 0) + i * 60_000).toISOString(),
+    }));
+  }
+
+  function liveChanged(caseId: string, created = false) {
+    act(() => {
+      mocks.streamOnEvent?.({ type: 'case.changed', data: { case_id: caseId, status: 'open', created } });
+    });
+  }
+
+  it('shows a case that a live change moves INTO the loaded window (unloaded id, not created)', async () => {
+    const dataset = activeDataset();
+    mocks.listCases.mockImplementation(serve(dataset));
+    mocks.getCase.mockImplementation(async (id: string) => dataset.find((c) => c.case_id === id));
+    render(<CaseManager />);
+    expect(await screen.findByText('1 of 68 active · 50 loaded')).toBeInTheDocument();
+    expect(screen.queryByText('Active case 5')).not.toBeInTheDocument();
+
+    // Another analyst puts an old, unloaded case on hold: it now lists first under Latest.
+    dataset[5] = { ...dataset[5], status: 'on_hold', updated_at: '2026-10-02T00:00:00Z' };
+    liveChanged(dataset[5].case_id);
+
+    expect(await screen.findByText('Active case 5', undefined, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('68 active');
+
+    // …and Load more still reaches every case (no offset drift, no stuck "67 of 68").
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+    await waitFor(() => expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('68 active · 68 loaded'));
+    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('case-queue-row')).toHaveLength(68);
+  });
+
+  it('re-reads the window when Load more pages over a live-shifted order instead of skipping a case', async () => {
+    const dataset = activeDataset();
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager />);
+    expect(await screen.findByText('1 of 68 active · 50 loaded')).toBeInTheDocument();
+
+    // A case beyond the window moves to the top with NO live event (the stream is down).
+    dataset[3] = { ...dataset[3], updated_at: '2026-10-02T00:00:00Z' };
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+
+    // The offset page repeats a loaded row; the queue re-reads instead of appending a gap.
+    await waitFor(() => expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('68 active · 68 loaded'));
+    expect(screen.getByText('Active case 3')).toBeInTheDocument();
+    const ids = screen.getAllByTestId('case-queue-row').map((row) => row.getAttribute('data-case-id'));
+    expect(new Set(ids).size).toBe(68);
+  });
+
+  it('brings a case reopened right after a close back into the Active queue and its total', async () => {
+    const dataset = [OPEN_HIGH, RESOLVED_LOW, OPEN_CRITICAL];
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager initialCaseId={OPEN_CRITICAL.case_id} />);
+    await screen.findByText('1 of 2 active · 2 loaded');
+
+    // Close: the row leaves the Active window and its total.
+    dataset[2] = { ...OPEN_CRITICAL, status: 'resolved' };
+    fireEvent.click(screen.getByRole('button', { name: 'Mock resolve' }));
+    await waitFor(() => expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('1 active · 1 loaded'));
+    await waitFor(() => expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument());
+
+    // Reopen (the close toast's action): the server lists it again, so must the queue.
+    const reopened = { ...OPEN_CRITICAL, status: 'open', updated_at: '2026-07-20T11:00:00Z' };
+    dataset[2] = reopened;
+    mocks.detailNext = reopened;
+    fireEvent.click(screen.getByRole('button', { name: 'Mock reopen' }));
+
+    expect(await screen.findByText('Suspicious S3 bucket exfiltration')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('2 active · 2 loaded'));
+  });
+
+  it('drops a row that no longer matches the status filter after a live change, and counts only matching new cases', async () => {
+    const dataset = [OPEN_HIGH, RESOLVED_LOW, OPEN_CRITICAL];
+    mocks.listCases.mockImplementation(serve(dataset));
+    mocks.getCase.mockImplementation(async (id: string) => dataset.find((c) => c.case_id === id));
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+
+    // Status filter: "Open · awaiting analyst" (needs_human), behind the Filters control.
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Status filter' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Open · awaiting analyst' }));
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'needs_human' })),
+    );
+    await waitFor(() => expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('1 active · 1 loaded'));
+
+    // Acknowledged elsewhere: no longer needs_human, so it leaves this filtered view.
+    dataset[0] = { ...OPEN_HIGH, status: 'investigating' };
+    liveChanged(OPEN_HIGH.case_id);
+    await waitFor(() => expect(screen.queryByText('Multiple failed logins')).not.toBeInTheDocument(), { timeout: 3000 });
+    expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('0 active · 0 loaded');
+
+    // A new case outside the filter is not "new" here; a matching one is.
+    const outside: Case = { ...OPEN_CRITICAL, case_id: 'case-new-1', title: 'New investigating case', status: 'investigating' };
+    const inside: Case = { ...OPEN_HIGH, case_id: 'case-new-2', title: 'New awaiting case', status: 'needs_human' };
+    dataset.push(outside);
+    liveChanged(outside.case_id, true);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    });
+    expect(screen.queryByRole('button', { name: /new case/i })).not.toBeInTheDocument();
+    dataset.push(inside);
+    liveChanged(inside.case_id, true);
+    expect(await screen.findByRole('button', { name: '1 new case · Show' }, { timeout: 3000 })).toBeInTheDocument();
+  });
+
+  it('re-reads the queue when the live stream overflowed (frames were dropped)', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    const before = mocks.listCases.mock.calls.length;
+    act(() => {
+      mocks.streamOnEvent?.({ type: 'overflow', data: {} });
+    });
+    await waitFor(() => expect(mocks.listCases.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  // ---- focus and keyboard (Round 12 review: F8/F15/F16/F17/F18) ------------------- //
+
+  it('Close & next focus: lands on the next case row, never <body> (SYNTHESIS-ux §3.4/§3.7)', async () => {
+    render(<CaseManager initialCaseId={OPEN_CRITICAL.case_id} />);
+    await screen.findByText('1 of 2 active · 2 loaded');
+    const rowButton = (id: string) =>
+      within(document.querySelector(`[data-queue-row][data-case-id="${id}"]`) as HTMLElement).getAllByRole('button')[0];
+    const opener = rowButton(OPEN_CRITICAL.case_id);
+    act(() => opener.focus());
+
+    // The dialog's submit: the case leaves Active, then the queue advances.
+    fireEvent.click(screen.getByRole('button', { name: 'Mock resolve' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mock advance' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id),
+    );
+    // The dialog asks where focus goes after "Close & next": the next case's row.
+    const target = mocks.resolveDialogFocus?.(opener, true) ?? null;
+    expect(target).toBe(rowButton(OPEN_HIGH.case_id));
+    await waitFor(() => expect(rowButton(OPEN_HIGH.case_id)).toHaveFocus());
+  });
+
+  it('Close & next below xl (queue hidden): lands on the next case title, never a hidden row', async () => {
+    render(<CaseManager initialCaseId={OPEN_CRITICAL.case_id} />);
+    await screen.findByText('1 of 2 active · 2 loaded');
+    // Below xl the detail replaces the queue (`hidden xl:flex`). jsdom applies no
+    // Tailwind, so hide the queue the way the browser does.
+    const queue = screen.getByRole('complementary', { name: 'Case queue' });
+    queue.style.display = 'none';
+    // Role queries skip display:none content, so read the hidden row's button directly.
+    const rowButton = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-queue-row][data-case-id="${id}"] button`) as HTMLElement;
+    const title = screen.getByRole('heading', { name: 'Mock title' });
+    const opener = screen.getByRole('button', { name: 'Mock back' });
+    act(() => opener.focus());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mock resolve' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mock advance' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id),
+    );
+    // The next case's row is mounted but not rendered, so it is never the target.
+    expect(rowButton(OPEN_HIGH.case_id).isConnected).toBe(true);
+    expect(mocks.resolveDialogFocus?.(opener, true)).toBe(title);
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('J below xl opens the next case and focuses its title, not the hidden queue', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    const first = within(
+      document.querySelector(`[data-queue-row][data-case-id="${OPEN_CRITICAL.case_id}"]`) as HTMLElement,
+    ).getAllByRole('button')[0];
+    act(() => first.focus());
+    // Opening a case from the queue hides the queue below xl.
+    const queue = screen.getByRole('complementary', { name: 'Case queue' });
+    queue.style.display = 'none';
+    fireEvent.keyDown(first, { key: 'j' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id),
+    );
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Mock title' })).toHaveFocus());
+  });
+
+  it('a plain Close from a queue row lands on the row that took its place', async () => {
+    render(<CaseManager initialCaseId={OPEN_CRITICAL.case_id} />);
+    await screen.findByText('1 of 2 active · 2 loaded');
+    const opener = within(
+      document.querySelector(`[data-queue-row][data-case-id="${OPEN_CRITICAL.case_id}"]`) as HTMLElement,
+    ).getAllByRole('button')[0];
+    fireEvent.click(screen.getByRole('button', { name: 'Mock resolve' }));
+    await waitFor(() => expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('1 active'));
+    const target = mocks.resolveDialogFocus?.(opener, false);
+    expect(target?.closest('[data-queue-row]')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id);
+    // An opener that stays (a detail control) keeps the dialog's own default.
+    expect(mocks.resolveDialogFocus?.(screen.getByRole('button', { name: 'Mock back' }), false)).toBeNull();
+  });
+
+  it('X on a focused checkbox toggles THAT row, and Space is left to the checkbox itself', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    const list = screen.getByRole('list', { name: 'Cases' });
+    const lowCheckbox = screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' });
+    const topCheckbox = screen.getByRole('checkbox', { name: 'Select CASE-2026-0092' });
+
+    act(() => lowCheckbox.focus());
+    fireEvent.keyDown(lowCheckbox, { key: ' ' });
+    // Space is the checkbox's native toggle: the queue handler does not toggle the roving row.
+    expect(topCheckbox).toHaveAttribute('aria-checked', 'false');
+
+    fireEvent.keyDown(lowCheckbox, { key: 'x' });
+    expect(lowCheckbox).toHaveAttribute('aria-checked', 'true');
+    expect(topCheckbox).toHaveAttribute('aria-checked', 'false');
+    expect(list).toBeInTheDocument();
+  });
+
+  it('keeps one live region: the scope line is not aria-live and opening announces only the position', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    expect(screen.getByTestId('case-queue-scope')).not.toHaveAttribute('aria-live');
+  });
+
+  it('keeps sort and density in the view menu, outside the filter count (D8.1)', async () => {
+    const user = userEvent.setup();
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    const view = screen.getByRole('button', { name: 'Latest, sort and view options' });
+    await user.click(view);
+    const menu = await screen.findByRole('menu');
+    const density = within(menu).getByRole('menuitemcheckbox', { name: 'Compact rows' });
+    expect(density).toHaveAttribute('aria-checked', 'false');
+    await user.click(within(menu).getByRole('menuitemradio', { name: 'Highest risk' }));
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ sort_field: 'risk_score' })),
+    );
+    expect(screen.getByRole('button', { name: 'Highest risk, sort and view options' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Highest risk, sort and view options' }));
+    await user.click(within(await screen.findByRole('menu')).getByRole('menuitemcheckbox', { name: 'Compact rows' }));
+    await user.click(screen.getByRole('button', { name: 'Highest risk, sort and view options' }));
+    expect(
+      within(await screen.findByRole('menu')).getByRole('menuitemcheckbox', { name: 'Compact rows' }),
+    ).toHaveAttribute('aria-checked', 'true');
+    await user.keyboard('{Escape}');
+    // Neither sort nor density is a filter: the Filters control counts none.
+    expect(screen.getByRole('button', { name: /^Filters/ })).toHaveAccessibleName('Filters');
+  });
+
+  it('returns focus from the shortcuts dialog to the control that opened it', async () => {
+    const user = userEvent.setup();
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    // The shortcuts open from the view menu (D8.1); focus returns to its trigger.
+    const button = screen.getByRole('button', { name: /sort and view options/ });
+    await user.click(button);
+    await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: /Keyboard shortcuts/ }));
+    await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).not.toBeInTheDocument());
+    expect(button).toHaveFocus();
+  });
+
+  it('"Back to case queue" lands on the case row, not <body>', async () => {
+    render(<CaseManager initialCaseId={OPEN_HIGH.case_id} />);
+    await screen.findByText('2 of 2 active · 2 loaded');
+    fireEvent.click(screen.getByRole('button', { name: 'Back to case queue' }));
+    await waitFor(() =>
+      expect(document.activeElement?.closest('[data-queue-row]')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id),
+    );
+  });
+
+  it('a letter typed on a queue filter never fires a page shortcut', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
+    const severity = await screen.findByRole('combobox', { name: 'Severity filter' });
+    severity.focus();
+    fireEvent.keyDown(severity, { key: '?' });
+    expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).not.toBeInTheDocument();
+  });
+
+  // ---- final review: the "new cases" pill and Close → J (Round 12 final fixer) ------- //
+
+  const queueRowButton = (id: string) =>
+    within(document.querySelector(`[data-queue-row][data-case-id="${id}"]`) as HTMLElement).getAllByRole('button')[0];
+
+  it('"N new cases · Show" keeps a window grown with Load more and adds the new case on top', async () => {
+    const dataset = activeDataset(70);
+    mocks.listCases.mockImplementation(serve(dataset));
+    mocks.getCase.mockImplementation(async (id: string) => dataset.find((c) => c.case_id === id));
+    render(<CaseManager />);
+    expect(await screen.findByText('1 of 70 active · 50 loaded')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+    await waitFor(() => expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('70 active · 70 loaded'));
+
+    // The analyst works a case deep in the grown window (the oldest loaded row).
+    fireEvent.click(queueRowButton('case-0000'));
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0000'),
+    );
+
+    // The poller creates a case: the prompt appears; Show must not shrink the window to 50.
+    const created: Case = {
+      ...dataset[0],
+      case_id: 'case-new',
+      case_number: 'CASE-9999',
+      title: 'Brand new case',
+      updated_at: '2026-10-05T00:00:00Z',
+    };
+    dataset.push(created);
+    liveChanged(created.case_id, true);
+    const show = await screen.findByRole('button', { name: '1 new case · Show' }, { timeout: 3000 });
+    const callsBeforeShow = mocks.listCases.mock.calls.length;
+    fireEvent.click(show);
+
+    await waitFor(() => expect(screen.getAllByTestId('case-queue-row')).toHaveLength(71));
+    expect(screen.getByText('Brand new case')).toBeInTheDocument();
+    expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('71 active · 71 loaded');
+    // The open case keeps its row, its place and the detail pane.
+    expect(document.querySelector('[data-queue-row][data-case-id="case-0000"]')).not.toBeNull();
+    expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0000');
+    expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('71 of 71 active');
+    expect(screen.queryByTestId('case-queue-show-new')).not.toBeInTheDocument();
+    // One window re-read sized to the grown window: never a first-page-only read.
+    const reads = mocks.listCases.mock.calls.slice(callsBeforeShow).map(([query]) => query as Record<string, unknown>);
+    expect(reads).toContainEqual(expect.objectContaining({ offset: 0, limit: 71 }));
+    expect(reads).not.toContainEqual(expect.objectContaining({ offset: 0, limit: 50 }));
+  });
+
+  /** Close the OPEN case (as the detail's plain Close does) and land where the dialog would. */
+  async function plainCloseOpenCase(dataset: Case[], id: string, neighbourId: string) {
+    const opener = queueRowButton(id);
+    const index = dataset.findIndex((c) => c.case_id === id);
+    dataset[index] = { ...dataset[index], status: 'closed' };
+    mocks.detailNext = dataset[index];
+    fireEvent.click(screen.getByRole('button', { name: 'Mock reopen' }));
+    await waitFor(() => expect(document.querySelector(`[data-queue-row][data-case-id="${id}"]`)).toBeNull());
+    const target = mocks.resolveDialogFocus?.(opener, false) ?? null;
+    expect(target?.closest('[data-queue-row]')).toHaveAttribute('data-case-id', neighbourId);
+    act(() => target?.focus());
+    // The closed case stays in the detail pane; the row that took its place is not open.
+    expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', id);
+    return target as HTMLElement;
+  }
+
+  it('plain Close, then J opens the row that took the closed row\'s place (never skips it)', async () => {
+    // Latest first: case-0003, case-0002, case-0001, case-0000.
+    const dataset = activeDataset(4);
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager initialCaseId="case-0002" />);
+    await screen.findByText('2 of 4 active · 4 loaded');
+
+    const stop = await plainCloseOpenCase(dataset, 'case-0002', 'case-0001');
+    fireEvent.keyDown(stop, { key: 'j' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0001'),
+    );
+    await waitFor(() => expect(queueRowButton('case-0001')).toHaveFocus());
+
+    // From there J moves on as usual.
+    fireEvent.keyDown(queueRowButton('case-0001'), { key: 'j' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0000'),
+    );
+  });
+
+  it('plain Close, then K still moves up past the gap to the case before the closed one', async () => {
+    const dataset = activeDataset(4);
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager initialCaseId="case-0002" />);
+    await screen.findByText('2 of 4 active · 4 loaded');
+
+    const stop = await plainCloseOpenCase(dataset, 'case-0002', 'case-0001');
+    fireEvent.keyDown(stop, { key: 'ArrowUp' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0003'),
+    );
+  });
+
+  it('closing the LAST row: K opens the row above it (the stop) instead of skipping it', async () => {
+    const dataset = activeDataset(4);
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager initialCaseId="case-0000" />);
+    await screen.findByText('4 of 4 active · 4 loaded');
+
+    const stop = await plainCloseOpenCase(dataset, 'case-0000', 'case-0001');
+    fireEvent.keyDown(stop, { key: 'k' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0001'),
+    );
+  });
+
+  it('Enter on the stop after a plain Close opens that row', async () => {
+    const dataset = activeDataset(4);
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager initialCaseId="case-0002" />);
+    await screen.findByText('2 of 4 active · 4 loaded');
+
+    const stop = await plainCloseOpenCase(dataset, 'case-0002', 'case-0001');
+    fireEvent.keyDown(stop, { key: 'Enter' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0001'),
+    );
+  });
+
+  // ---- Round 14: the page header and the "Closed by" filter (SPEC §4.9.4, D27) ------ //
+
+  const AGENT_CLOSED: Case = {
+    case_id: 'case-agent-closed',
+    case_number: 'CASE-2026-0080',
+    title: 'Routine scanner noise',
+    status: 'closed',
+    verdict: 'FALSE_POSITIVE',
+    decision_by: 'agent',
+    severity_band: 'low',
+    risk_score: 8,
+    updated_at: '2026-07-20T08:00:00Z',
+  };
+  const ANALYST_CLOSED: Case = {
+    case_id: 'case-analyst-closed',
+    case_number: 'CASE-2026-0079',
+    title: 'Confirmed phishing click',
+    status: 'resolved',
+    decision_by: 'analyst',
+    severity_band: 'high',
+    risk_score: 70,
+    updated_at: '2026-07-20T07:00:00Z',
+  };
+  const CLOSER_CASES = [...CASES, AGENT_CLOSED, ANALYST_CLOSED];
+
+  it('has no routed page header: Refresh and "About Case Manager" sit in band row 1 (Round 16, WP02)', async () => {
+    const user = userEvent.setup();
+    render(<CaseManager />);
+    // The title is for assistive technology only; the top bar's breadcrumb shows it.
+    const title = await screen.findByRole('heading', { level: 1, name: 'Case Manager' });
+    expect(title).toHaveClass('sr-only');
+    expect(title.closest('[data-page-header]')).toBeNull();
+    const row1 = screen.getByTestId('case-queue-band-row');
+    expect(screen.getByTestId('case-queue-controls')).toContainElement(row1);
+    // Row 1: the scope, then Refresh, the view menu and the help tip.
+    expect(within(row1).getByRole('radiogroup', { name: 'Case queue scope' })).toBeInTheDocument();
+    const help = within(row1).getByRole('button', { name: 'About Case Manager' });
+    await user.click(help);
+    expect(await screen.findByText(/Work the case queue and the open case side by side/)).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    // Not live in this test: no Live dot; Refresh is the shared icon button.
+    expect(within(row1).queryByTestId('case-manager-live')).not.toBeInTheDocument();
+    const refresh = within(row1).getByRole('button', { name: 'Refresh case queue' });
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+    const before = mocks.listCases.mock.calls.length;
+    await user.click(refresh);
+    await waitFor(() => expect(mocks.listCases.mock.calls.length).toBeGreaterThan(before));
+    expect(within(row1).getByRole('button', { name: /sort and view options/ })).toBeInTheDocument();
+  });
+
+  it('opens the linked case on the tab its link names, the trace for "Open case trace" (closing QA integ-06)', async () => {
+    mocks.routeOpts = { caseId: OPEN_HIGH.case_id, tab: 'investigation' };
+    const { unmount } = render(<CaseManager />);
+    const detail = await screen.findByTestId('embedded-case-detail');
+    expect(detail).toHaveAttribute('data-case-id', OPEN_HIGH.case_id);
+    expect(detail).toHaveAttribute('data-requested-tab', 'investigation');
+    unmount();
+    // A plain case link asks for no tab: the case detail keeps its own.
+    mocks.routeOpts = { caseId: OPEN_HIGH.case_id };
+    render(<CaseManager />);
+    expect(await screen.findByTestId('embedded-case-detail')).not.toHaveAttribute('data-requested-tab');
+  });
+
+  it('opens on the cases the AI agent closed from #/case_manager?closedBy=agent (the #/scans redirect)', async () => {
+    mocks.listCases.mockImplementation(serve(CLOSER_CASES));
+    mocks.routeOpts = { closedBy: 'agent' };
+    render(<CaseManager />);
+
+    // Only a closed case has a closer, so the queue opens on All, asking the server.
+    expect(await screen.findByRole('heading', { level: 2, name: 'All cases' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenCalledWith(expect.objectContaining({ closed_by: 'agent', offset: 0 })),
+    );
+    for (const [query] of mocks.listCases.mock.calls) {
+      expect(query).not.toHaveProperty('status_group');
+    }
+    expect(await screen.findByText('Routine scanner noise')).toBeInTheDocument();
+    expect(screen.getAllByTestId('case-queue-row')).toHaveLength(1);
+    expect(screen.queryByText('Confirmed phishing click')).not.toBeInTheDocument();
+
+    const filters = screen.getByRole('list', { name: 'Active filters' });
+    const chip = within(filters).getByRole('button', { name: 'Remove filter: Closed by the AI agent' });
+    expect(chip).toHaveTextContent('Closed by the AI agent');
+    expect(screen.getByRole('radio', { name: 'All' })).toBeChecked();
+  });
+
+  it.each([
+    ['analyst', 'Closed by an analyst', 'Confirmed phishing click'],
+    ['system', 'Closed by the system', 'Benign health check'],
+  ])('names the closer %s in plain words', async (closedBy, label, title) => {
+    mocks.listCases.mockImplementation(serve(CLOSER_CASES));
+    mocks.routeOpts = { closedBy };
+    render(<CaseManager />);
+    expect(await screen.findByText(title)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: `Remove filter: ${label}` })).toBeInTheDocument();
+  });
+
+  it('ignores an unknown closer and opens the ordinary Active queue', async () => {
+    mocks.routeOpts = { closedBy: 'human' };
+    render(<CaseManager />);
+    expect(await screen.findByRole('heading', { level: 2, name: 'Active cases' })).toBeInTheDocument();
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+    for (const [query] of mocks.listCases.mock.calls) {
+      expect(query).not.toHaveProperty('closed_by');
+    }
+    expect(screen.queryByRole('list', { name: 'Active filters' })).not.toBeInTheDocument();
+  });
+
+  it('carries the closer along when a case opens, and drops it (and its key) when the chip is removed', async () => {
+    const user = userEvent.setup();
+    mocks.listCases.mockImplementation(serve(CLOSER_CASES));
+    mocks.routeOpts = { closedBy: 'agent' };
+    render(<CaseManager />);
+    const row = await screen.findByText('Routine scanner noise');
+
+    await user.click(row);
+    expect(mocks.navigate).toHaveBeenCalledWith('case_manager', { caseId: AGENT_CLOSED.case_id, closedBy: 'agent' });
+
+    mocks.navigate.mockClear();
+    mocks.listCases.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Remove filter: Closed by the AI agent' }));
+    // The open case stays; the address loses the closer.
+    expect(mocks.navigate).toHaveBeenCalledWith('case_manager', { caseId: AGENT_CLOSED.case_id });
+    await waitFor(() => expect(mocks.listCases).toHaveBeenCalled());
+    for (const [query] of mocks.listCases.mock.calls) {
+      expect(query).not.toHaveProperty('closed_by');
+    }
+    expect(await screen.findByText('Confirmed phishing click')).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Active filters' })).not.toBeInTheDocument();
+    // The chip is gone, so focus lands on the queue search instead of <body>.
+    expect(screen.getByRole('searchbox', { name: 'Search case queue' })).toHaveFocus();
+  });
+
+  it('drops the closer when the scope moves to Active, where no closed case can appear', async () => {
+    const user = userEvent.setup();
+    mocks.listCases.mockImplementation(serve(CLOSER_CASES));
+    mocks.routeOpts = { closedBy: 'agent' };
+    render(<CaseManager />);
+    await screen.findByText('Routine scanner noise');
+
+    await user.click(screen.getByRole('radio', { name: 'Active' }));
+    expect(await screen.findByText('Suspicious S3 bucket exfiltration')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Remove filter: Closed by/ })).not.toBeInTheDocument();
+    const last = mocks.listCases.mock.calls.at(-1)?.[0];
+    expect(last).toEqual(expect.objectContaining({ status_group: 'active' }));
+    expect(last).not.toHaveProperty('closed_by');
+    // The address loses the closer too (the open case, if any, stays named).
+    const [page, opts] = mocks.navigate.mock.calls.at(-1) ?? [];
+    expect(page).toBe('case_manager');
+    expect(opts ?? {}).not.toHaveProperty('closedBy');
+  });
+
+  it('Clear filters on an empty filtered queue also drops the closer', async () => {
+    const user = userEvent.setup();
+    mocks.listCases.mockImplementation(serve(CASES));
+    mocks.routeOpts = { closedBy: 'agent' };
+    render(<CaseManager />);
+    expect(await screen.findByText('No matching cases')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(await screen.findByText('Benign health check')).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Active filters' })).not.toBeInTheDocument();
+  });
+
+  it('keeps a live change honest under the filter: a case that is still open never joins it', async () => {
+    const dataset = [...CLOSER_CASES];
+    mocks.listCases.mockImplementation(serve(dataset));
+    mocks.getCase.mockImplementation(async (id: string) => dataset.find((c) => c.case_id === id));
+    mocks.routeOpts = { closedBy: 'agent' };
+    render(<CaseManager />);
+    await screen.findByText('Routine scanner noise');
+
+    // An open case changes: it cannot belong to "Closed by the AI agent".
+    act(() => {
+      mocks.streamOnEvent?.({ type: 'case.changed', data: { case_id: OPEN_HIGH.case_id, status: 'open' } });
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(screen.queryByText('Multiple failed logins')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('case-queue-row')).toHaveLength(1);
+
+    // The agent closes it: now it belongs (the server is asked, never guessed).
+    const index = dataset.findIndex((c) => c.case_id === OPEN_HIGH.case_id);
+    dataset[index] = {
+      ...OPEN_HIGH,
+      status: 'closed',
+      decision_by: 'agent',
+      updated_at: '2026-07-20T11:00:00Z',
+    };
+    act(() => {
+      mocks.streamOnEvent?.({ type: 'case.changed', data: { case_id: OPEN_HIGH.case_id, status: 'closed' } });
+    });
+    expect(await screen.findByText('Multiple failed logins', undefined, { timeout: 3000 })).toBeInTheDocument();
+  });
+
   it('has no detectable accessibility violations in the split workspace', async () => {
     const user = userEvent.setup();
     const view = render(<CaseManager />);
     await screen.findByTestId('embedded-case-detail');
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
-    await user.click(screen.getByRole('button', { name: /bulk actions for/i }));
+    await user.click(screen.getByRole('button', { name: /more bulk actions for/i }));
     const menu = await screen.findByRole('menu');
 
     expect(await axe(view.container)).toHaveNoViolations();
     expect(await axe(menu)).toHaveNoViolations();
+  });
+
+  // GET /api/users needs `users:manage` (Round 14 roles-02): without it the owner list is
+  // never asked for, since every refusal writes an Access denied audit row.
+  it('does not read the owner list without users:manage', async () => {
+    vi.mocked(listPickableUsers).mockClear();
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    expect(listPickableUsers).not.toHaveBeenCalled();
+  });
+
+  it('reads the owner list once with users:manage', async () => {
+    vi.mocked(listPickableUsers).mockClear();
+    mocks.permissions.add('users:manage');
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    await waitFor(() => expect(listPickableUsers).toHaveBeenCalledTimes(1));
+  });
+
+  // Round 14 roles-07: selection exists only for bulk work, so a read-only role (the
+  // auditor) gets no checkboxes, no "Select visible" and no selection keys, and the
+  // shortcuts sheet promises only keys the role can use (as the Cases page does).
+  it('gives a read-only auditor no selection, no selection keys, and only usable shortcuts', async () => {
+    mocks.permissions = new Set(['cases:read']);
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    expect(screen.queryByRole('checkbox', { name: /^Select CASE-/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Select all visible cases' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Select visible')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Case selection and bulk actions' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('case-manager-selection-row')).not.toBeInTheDocument();
+    // The count stays, in the list footer (D8.1).
+    expect(screen.getByTestId('case-queue-scope')).toHaveTextContent(/\d+ active · \d+ loaded/);
+
+    const list = screen.getByRole('list', { name: 'Cases' });
+    const firstRow = within(screen.getAllByTestId('case-queue-row')[0]).getAllByRole('button')[0];
+    expect(firstRow).toHaveAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown J K Enter');
+    act(() => firstRow.focus());
+    fireEvent.keyDown(list, { key: 'x' });
+    fireEvent.keyDown(list, { key: 'J', shiftKey: true });
+    expect(screen.queryByText(/\d+ selected/)).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: '?' });
+    const sheet = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+    const listed = Array.from(sheet.querySelectorAll('dt')).map((el) => el.textContent);
+    for (const keys of ['X  or  Space', 'Shift + ↑ ↓  or  Shift + X', 'Esc', 'A  C  E  H', 'R', 'M  T']) {
+      expect(listed).not.toContain(keys);
+    }
+    expect(listed).toEqual(expect.arrayContaining(['↑ ↓  or  K J', TAB_KEYS]));
+  });
+
+  it('keeps selection and every case key for a role that holds all the case grants', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    expect(screen.getByRole('checkbox', { name: 'Select all visible cases' })).toBeInTheDocument();
+    expect(screen.getAllByRole('checkbox', { name: /^Select CASE-/ }).length).toBeGreaterThan(0);
+    fireEvent.keyDown(document.body, { key: '?' });
+    const sheet = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+    const listed = Array.from(sheet.querySelectorAll('dt')).map((el) => el.textContent);
+    expect(listed).toEqual(expect.arrayContaining(['X  or  Space', 'A  C  E  H', 'R', 'M  T']));
+  });
+
+  // ---- Round 15 (D8.1): the queue pane --------------------------------------------- //
+
+  it('has a two-row control band: scope and view menu, then Select visible, the search and Filters', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    const band = screen.getByTestId('case-queue-controls');
+    expect(within(band).getByRole('radiogroup', { name: 'Case queue scope' })).toBeInTheDocument();
+    expect(within(band).getByRole('button', { name: /sort and view options/ })).toBeInTheDocument();
+    const group = within(band).getByRole('group', { name: 'Case queue filters' });
+    expect(within(group).getByRole('searchbox', { name: 'Search case queue' })).toBeInTheDocument();
+    expect(within(group).getByRole('button', { name: /^Filters/ })).toBeInTheDocument();
+    // Severity, Status and Closed by are all behind the one Filters control.
+    expect(within(group).queryByRole('combobox')).toBeNull();
+    // "Select visible" is the checkbox at the start of row two; the queue has no
+    // standing selection row. Round 16 (WP02): Refresh moved into the band's row 1.
+    expect(within(band).getByRole('checkbox', { name: 'Select all visible cases' })).toBeInTheDocument();
+    expect(screen.queryByTestId('case-manager-selection-row')).not.toBeInTheDocument();
+    expect(within(band).getByRole('button', { name: 'Refresh case queue' })).toBeInTheDocument();
+    // Two 32px rows in 10px padding with an 8px gap (92px).
+    expect(band).toHaveClass('px-3', 'py-2.5');
+    expect(within(band).getByTestId('case-queue-band-row')).toHaveClass('h-8');
+  });
+
+  it('shows the bulk bar, with the selection count, only while something is selected', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    expect(screen.queryByRole('region', { name: 'Case selection and bulk actions' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
+    const bar = screen.getByRole('region', { name: 'Case selection and bulk actions' });
+    expect(within(bar).getByText('1 selected')).toBeInTheDocument();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear case selection' }));
+    expect(screen.queryByRole('region', { name: 'Case selection and bulk actions' })).not.toBeInTheDocument();
+  });
+
+  it('applies "Closed by" from the Filters control: All scope, a chip, and the key in the address', async () => {
+    const user = userEvent.setup();
+    mocks.listCases.mockImplementation(serve(CLOSER_CASES));
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+    mocks.navigate.mockClear();
+    await user.click(screen.getByRole('button', { name: /^Filters/ }));
+    await user.click(await screen.findByRole('combobox', { name: 'Closed by filter' }));
+    await user.click(await screen.findByRole('option', { name: 'Closed by the AI agent' }));
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ closed_by: 'agent' })),
+    );
+    expect(screen.getByRole('radio', { name: 'All' })).toBeChecked();
+    expect(mocks.navigate).toHaveBeenLastCalledWith(
+      'case_manager',
+      expect.objectContaining({ closedBy: 'agent' }),
+    );
+    expect(await screen.findByRole('button', { name: 'Remove filter: Closed by the AI agent' })).toBeInTheDocument();
+  });
+
+  it('puts the scope line in the list footer beside Load more', async () => {
+    const dataset = activeDataset(60);
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager />);
+    const scope = await screen.findByTestId('case-queue-scope');
+    await waitFor(() => expect(scope).toHaveTextContent('60 active · 50 loaded'));
+    const more = screen.getByRole('button', { name: /load more/i });
+    // One footer holds both, after the list (outside the scrolling rows).
+    expect(scope.parentElement).toContainElement(more);
+    expect(screen.getByRole('list', { name: 'Cases' })).not.toContainElement(scope);
+  });
+
+  // ---- Round 16 (SPEC §4.4 WP02): the leading slot, the mounts, focus mode, the pane ---- //
+
+  describe('Round 16 (WP02): the queue rows, focus mode and the empty pane', () => {
+    const rowOf = (title: string) =>
+      screen.getAllByTestId('case-queue-row').find((row) => within(row).queryByText(title)) as HTMLElement;
+    const openButtonOf = (title: string) => within(rowOf(title)).getAllByRole('button')[0];
+
+    it('X toggles a row whose checkbox is hidden, and one selection reveals every checkbox', async () => {
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      const list = screen.getByRole('list', { name: 'Cases' });
+      const row = rowOf('Multiple failed logins');
+      const checkbox = within(row).getByRole('checkbox', { name: 'Select CASE-2026-0091' });
+      // At rest the slot shows the severity glyph; the checkbox waits for hover or focus.
+      expect(checkbox).toHaveAttribute('data-reveal', 'hover');
+      expect(checkbox).toHaveClass('hidden', 'group-hover/row:block', 'group-focus-within/row:block');
+      const glyph = within(row).getByTestId('case-queue-severity-glyph');
+      expect(glyph).toHaveClass('group-hover/row:hidden', 'group-focus-within/row:hidden', 'text-high-text');
+      expect(glyph).toHaveAttribute('aria-hidden');
+      expect(list).not.toHaveAttribute('data-selection-active');
+
+      act(() => openButtonOf('Multiple failed logins').focus());
+      fireEvent.keyDown(list, { key: 'x' });
+      expect(checkbox).toHaveAttribute('aria-checked', 'true');
+      // Anything selected: every slot is its checkbox until the selection clears.
+      expect(list).toHaveAttribute('data-selection-active');
+      for (const item of screen.getAllByTestId('case-queue-row')) {
+        expect(within(item).getByRole('checkbox')).toHaveAttribute('data-reveal', 'always');
+        expect(within(item).getByRole('checkbox')).toHaveClass('block');
+        expect(within(item).getByTestId('case-queue-severity-glyph')).toHaveClass('hidden');
+      }
+      fireEvent.keyDown(list, { key: 'Escape' });
+      expect(list).not.toHaveAttribute('data-selection-active');
+      expect(checkbox).toHaveAttribute('data-reveal', 'hover');
+    });
+
+    it('keeps the checkbox in the slot on a touch screen, where no hover reveals it', async () => {
+      mocks.media.coarse = true;
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      for (const row of screen.getAllByTestId('case-queue-row')) {
+        expect(within(row).getByRole('checkbox')).toHaveAttribute('data-reveal', 'always');
+        expect(within(row).getByRole('checkbox')).not.toHaveClass('hidden');
+      }
+    });
+
+    it('gives a role with no bulk action the severity glyph only, in the same 40px slot', async () => {
+      mocks.permissions = new Set(['cases:read']);
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      const row = rowOf('Suspicious S3 bucket exfiltration');
+      expect(within(row).queryByRole('checkbox')).toBeNull();
+      const glyph = within(row).getByTestId('case-queue-severity-glyph');
+      expect(glyph.className).not.toMatch(/hidden/);
+      expect(glyph).toHaveClass('text-critical-text');
+      expect(openButtonOf('Suspicious S3 bucket exfiltration')).toHaveClass('pl-10');
+    });
+
+    it('puts the AI run mark in the status node and its words in the row name, beside the case chat glyph', async () => {
+      mocks.aiRuns[OPEN_HIGH.case_id] = { run_id: 'run-1', state: 'running' };
+      mocks.chatActivity[OPEN_HIGH.case_id] = { status: 'running', text: 'Case chat: 1 answer in progress' };
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      const row = rowOf('Multiple failed logins');
+      const status = within(row).getByTestId('case-queue-status');
+      // The mark takes the status glyph's place inside the status node, the words stay.
+      expect(within(status).getByTestId('ai-run-mark')).toHaveTextContent('AI working');
+      expect(status.querySelector('svg')).toBeNull();
+      expect(status).toHaveTextContent(/AI working.*Open · awaiting analyst/);
+      // The case chat glyph keeps its own slot before the age: a row shows both.
+      const chatGlyph = row.querySelector('[data-activity="running"]');
+      expect(chatGlyph).not.toBeNull();
+      expect(status.contains(chatGlyph)).toBe(false);
+      // The `aria-label` overrides descendant text, so the run's words are in the name.
+      const name = openButtonOf('Multiple failed logins').getAttribute('aria-label') ?? '';
+      expect(name).toMatch(/Case chat: 1 answer in progress, AI investigation running$/);
+
+      // A row with no run keeps its status glyph and says nothing about the AI.
+      const other = rowOf('Suspicious S3 bucket exfiltration');
+      expect(within(other).queryByTestId('ai-run-mark')).toBeNull();
+      expect(within(other).getByTestId('case-queue-status').querySelector('svg')).not.toBeNull();
+      expect(openButtonOf('Suspicious S3 bucket exfiltration').getAttribute('aria-label')).not.toMatch(/AI investigation/);
+    });
+
+    it('hands "Risk N" to the risk explainer as its mouse-only row variant', async () => {
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      expect(mocks.riskExplain).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ caseId: OPEN_HIGH.case_id, score: 68, variant: 'row' }),
+          expect.objectContaining({ caseId: OPEN_CRITICAL.case_id, score: 92, variant: 'row' }),
+        ]),
+      );
+      // The row button is the only interactive element around the number.
+      const risk = within(rowOf('Multiple failed logins')).getByTestId('case-queue-risk');
+      expect(risk.closest('button')).toBe(openButtonOf('Multiple failed logins'));
+    });
+
+    it('mounts the AI notice in the band, taking no room while it says nothing', async () => {
+      const { unmount } = render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      const slot = screen.getByTestId('case-queue-ai-notice');
+      expect(screen.getByTestId('case-queue-controls')).toContainElement(slot);
+      expect(slot).toBeEmptyDOMElement();
+      // The 4px gap belongs to a child with content, never to the wrapper, so a live
+      // region WP09 keeps in place while it is empty adds no height to the 92px band.
+      expect(slot).toHaveClass('empty:hidden', '[&>*:not(:empty)]:mt-1');
+      expect(slot.className.split(/\s+/)).not.toContain('mt-1');
+      unmount();
+      mocks.queueNotice = true;
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      expect(within(screen.getByTestId('case-queue-ai-notice')).getByText('2 new alerts under investigation')).toBeInTheDocument();
+    });
+
+    it('[ folds the queue to a strip where J, K, Previous and Next keep moving, and [ shows it again', async () => {
+      mocks.media.split = true;
+      render(<CaseManager />);
+      const detail = await screen.findByTestId('embedded-case-detail');
+      expect(detail).toHaveAttribute('data-case-id', OPEN_CRITICAL.case_id);
+      const frame = screen.getByTestId('case-manager-split-frame');
+
+      // Fold from a queue row: focus lands on the strip's Show queue, never <body>.
+      act(() => openButtonOf('Suspicious S3 bucket exfiltration').focus());
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: '[' });
+      const strip = await screen.findByTestId('case-queue-strip');
+      const show = within(strip).getByRole('button', { name: 'Show queue' });
+      await waitFor(() => expect(show).toHaveFocus());
+      expect(show).toHaveAttribute('aria-keyshortcuts', '[');
+      expect(screen.getByTestId('case-queue-content')).toHaveClass('hidden');
+      expect(frame.style.getPropertyValue('--case-manager-columns')).toBe('44px minmax(0, 1fr)');
+      expect(frame).toHaveAttribute('data-queue-collapsed');
+      expect(screen.getByRole('separator', { name: 'Resize case queue' })).toHaveClass('xl:hidden');
+      expect(window.localStorage.getItem('soc.caseManager.queueCollapsed')).toBe('1');
+      expect(within(strip).getByTestId('case-queue-strip-position')).toHaveTextContent('Case 1 of 2 loaded');
+      // At an end the step is dimmed but stays focusable (`aria-disabled`, see below).
+      expect(within(strip).getByRole('button', { name: 'Previous case' })).toHaveAttribute('aria-disabled', 'true');
+
+      // J and K work from anywhere on the page while the list cannot take focus.
+      fireEvent.keyDown(document.body, { key: 'j' });
+      await waitFor(() => expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id));
+      expect(within(strip).getByRole('button', { name: 'Next case' })).toHaveAttribute('aria-disabled', 'true');
+      fireEvent.keyDown(document.body, { key: 'k' });
+      await waitFor(() =>
+        expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_CRITICAL.case_id),
+      );
+      // The strip's own buttons and arrows do the same.
+      fireEvent.click(within(strip).getByRole('button', { name: 'Next case' }));
+      await waitFor(() => expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id));
+      fireEvent.keyDown(within(strip).getByRole('button', { name: 'Previous case' }), { key: 'ArrowUp' });
+      await waitFor(() =>
+        expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_CRITICAL.case_id),
+      );
+
+      // Show the queue again from the strip: focus returns to the open case's row.
+      act(() => show.focus());
+      fireEvent.keyDown(show, { key: '[' });
+      await waitFor(() => expect(screen.queryByTestId('case-queue-strip')).toBeNull());
+      expect(screen.getByTestId('case-queue-content')).not.toHaveClass('hidden');
+      expect(window.localStorage.getItem('soc.caseManager.queueCollapsed')).toBeNull();
+      await waitFor(() => expect(openButtonOf('Suspicious S3 bucket exfiltration')).toHaveFocus());
+    });
+
+    it('keeps focus on the strip step that reached an end (review: a disabled button drops focus)', async () => {
+      mocks.media.split = true;
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      fireEvent.keyDown(document.body, { key: '[' });
+      const strip = await screen.findByTestId('case-queue-strip');
+      const next = within(strip).getByRole('button', { name: 'Next case' });
+      act(() => next.focus());
+      fireEvent.click(next);
+      await waitFor(() => expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id));
+      // The last case: Next is dimmed with `aria-disabled` but never `disabled`, which
+      // would blur it and drop a keyboard user to <body>.
+      expect(next).toHaveAttribute('aria-disabled', 'true');
+      expect(next).not.toBeDisabled();
+      expect(next).toHaveFocus();
+      // Pressing it at the end does nothing.
+      fireEvent.click(next);
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id);
+      const previous = within(strip).getByRole('button', { name: 'Previous case' });
+      expect(previous).toHaveAttribute('aria-disabled', 'false');
+      expect(previous).not.toBeDisabled();
+    });
+
+    it('lands focus on Show queue when the case closes while the queue is folded (review)', async () => {
+      const user = userEvent.setup();
+      mocks.media.split = true;
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      fireEvent.keyDown(document.body, { key: '[' });
+      const strip = await screen.findByTestId('case-queue-strip');
+      // The folded queue's rows and search are hidden, so neither can take focus: the
+      // close path lands on the strip, never on a hidden row or <body>.
+      await user.click(screen.getByRole('button', { name: 'Mock back' }));
+      await screen.findByTestId('case-manager-empty-pane');
+      await waitFor(() => expect(within(strip).getByRole('button', { name: 'Show queue' })).toHaveFocus());
+      expect(screen.getByTestId('case-queue-content')).toHaveClass('hidden');
+    });
+
+    it('offers no pane shortcut while the queue first loads or cannot be read (review)', async () => {
+      mocks.media.split = true;
+      mocks.reviewSummary.mockResolvedValue({ enabled: true, pending: 2, disagreed_open: 0, sampled_today: 2, daily_cap: 10 });
+      // The queue's first read never answers: the pane is empty only until the first case
+      // opens on arrival, so it offers nothing to click meanwhile.
+      mocks.listCases.mockImplementation(() => new Promise(() => {}));
+      const { unmount } = render(<CaseManager />);
+      const pane = await screen.findByTestId('case-manager-empty-pane');
+      await waitFor(() => expect(mocks.reviewSummary).toHaveBeenCalled());
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(within(pane).queryByRole('button')).toBeNull();
+      expect(within(pane).queryByTestId('case-manager-pane-shortcuts')).toBeNull();
+      unmount();
+
+      // The queue read fails: the queue shows its error and the pane offers no shortcut.
+      mocks.listCases.mockRejectedValue(new Error('unavailable'));
+      render(<CaseManager />);
+      await screen.findByText('Could not load cases');
+      const failedPane = screen.getByTestId('case-manager-empty-pane');
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(within(failedPane).queryByRole('button', { name: /reviews? waiting/ })).toBeNull();
+    });
+
+    it('folds from "Hide queue" in the view menu and lands focus on the strip', async () => {
+      const user = userEvent.setup();
+      mocks.media.split = true;
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      await user.click(screen.getByRole('button', { name: /sort and view options/ }));
+      await user.click(await screen.findByRole('menuitem', { name: /Hide queue/ }));
+      const strip = await screen.findByTestId('case-queue-strip');
+      await waitFor(() => expect(within(strip).getByRole('button', { name: 'Show queue' })).toHaveFocus());
+    });
+
+    it('keeps a saved fold for the split only: below xl the queue shows in full and [ does nothing', async () => {
+      window.localStorage.setItem('soc.caseManager.queueCollapsed', '1');
+      const { unmount } = render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      expect(screen.queryByTestId('case-queue-strip')).toBeNull();
+      expect(screen.getByTestId('case-queue-content')).not.toHaveClass('hidden');
+      fireEvent.keyDown(document.body, { key: '[' });
+      expect(screen.queryByTestId('case-queue-strip')).toBeNull();
+      expect(window.localStorage.getItem('soc.caseManager.queueCollapsed')).toBe('1');
+      // The view menu offers no Hide queue, and the sheet does not promise [.
+      fireEvent.keyDown(document.body, { key: '?' });
+      const sheet = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+      expect(Array.from(sheet.querySelectorAll('dt')).map((el) => el.textContent)).not.toContain('[');
+      unmount();
+
+      // In the split the saved fold applies at once, and the sheet lists [.
+      mocks.media.split = true;
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      expect(screen.getByTestId('case-queue-strip')).toBeInTheDocument();
+      fireEvent.keyDown(document.body, { key: '?' });
+      const splitSheet = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+      expect(Array.from(splitSheet.querySelectorAll('dt')).map((el) => el.textContent)).toContain('[');
+    });
+
+    it('says "No case open" with counted shortcuts that apply their filters', async () => {
+      const user = userEvent.setup();
+      mocks.media.split = true;
+      mocks.reviewSummary.mockResolvedValue({ enabled: true, pending: 2, disagreed_open: 0, sampled_today: 2, daily_cap: 10 });
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      // Nothing is counted while a case is open.
+      expect(mocks.listCases).not.toHaveBeenCalledWith(expect.objectContaining({ limit: 1, severity: 'critical' }));
+      await user.click(screen.getByRole('button', { name: 'Mock back' }));
+
+      const pane = await screen.findByTestId('case-manager-empty-pane');
+      expect(within(pane).getByText(NO_CASE_OPEN_TITLE)).toBeInTheDocument();
+      expect(within(pane).getByText('Pick a case from the queue to work on it here.')).toBeInTheDocument();
+      // Each count is the server's exact total for the filter its button applies.
+      await waitFor(() =>
+        expect(mocks.listCases).toHaveBeenCalledWith(
+          expect.objectContaining({ status_group: 'active', severity: 'critical', limit: 1, offset: 0 }),
+        ),
+      );
+      expect(mocks.listCases).toHaveBeenCalledWith(expect.objectContaining({ status: 'needs_human', limit: 1, offset: 0 }));
+      const critical = await within(pane).findByRole('button', { name: '1 critical case' });
+      expect(within(pane).getByRole('button', { name: '1 case awaiting an analyst' })).toBeInTheDocument();
+      expect(within(pane).getByRole('button', { name: '2 reviews waiting' })).toBeInTheDocument();
+
+      const countCalls = mocks.listCases.mock.calls.filter(([query]) => query?.limit === 1).length;
+      await user.click(critical);
+      await waitFor(() =>
+        expect(mocks.listCases).toHaveBeenLastCalledWith(
+          expect.objectContaining({ status_group: 'active', severity: 'critical', offset: 0, limit: 50 }),
+        ),
+      );
+      // The queue's own re-read does not count the shortcuts again.
+      expect(mocks.listCases.mock.calls.filter(([query]) => query?.limit === 1)).toHaveLength(countCalls);
+      expect(await screen.findByRole('button', { name: 'Remove filter: Severity: Critical' })).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByText('Multiple failed logins')).not.toBeInTheDocument());
+
+      await user.click(within(pane).getByRole('button', { name: '1 case awaiting an analyst' }));
+      expect(await screen.findByRole('button', { name: 'Remove filter: Status: Open · awaiting analyst' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Remove filter: Severity/ })).not.toBeInTheDocument();
+      expect(await screen.findByText('Multiple failed logins')).toBeInTheDocument();
+
+      await user.click(within(pane).getByRole('button', { name: '2 reviews waiting' }));
+      await waitFor(() => expect(screen.getByRole('radio', { name: /Review/ })).toBeChecked());
+    });
+
+    it('offers no shortcut whose count is unknown or zero', async () => {
+      const user = userEvent.setup();
+      mocks.media.split = true;
+      const base = serve(CASES);
+      mocks.listCases.mockImplementation(async (query: Record<string, unknown> = {}) => {
+        // The critical count fails; the awaiting count is answered.
+        if (query.limit === 1 && query.severity === 'critical') throw new Error('unavailable');
+        return base(query);
+      });
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      await user.click(screen.getByRole('button', { name: 'Mock back' }));
+      const pane = await screen.findByTestId('case-manager-empty-pane');
+      expect(await within(pane).findByRole('button', { name: '1 case awaiting an analyst' })).toBeInTheDocument();
+      expect(within(pane).queryByRole('button', { name: /critical/ })).toBeNull();
+      // The review is off and nothing waits: no review shortcut.
+      expect(within(pane).queryByRole('button', { name: /reviews? waiting/ })).toBeNull();
+    });
+
+    it("keeps one Back below xl: the case header's, never a back bar of its own (WP16)", async () => {
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      // The case header's Back (marked `data-case-header-back`, WP03) is the one back path
+      // in every browser, so a phone shows one Back and the case starts 40px higher.
+      expect(screen.queryByTestId('case-manager-back-bar')).toBeNull();
+      const workspace = screen.getByRole('region', { name: 'Selected case workspace' });
+      const backs = within(workspace).getAllByRole('button', { name: 'Back to case queue' });
+      expect(backs).toHaveLength(1);
+      expect(backs[0]).toHaveAttribute('data-case-header-back');
+    });
+
+    it('moves Refresh and "About Case Manager" into the view menu when the queue is under 400px', async () => {
+      const user = userEvent.setup();
+      const original = HTMLElement.prototype.getBoundingClientRect;
+      const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        if (this.dataset.testid === 'case-manager-split-frame') {
+          return { width: 358, height: 760, top: 72, left: 16, right: 374, bottom: 832, x: 16, y: 72, toJSON: () => ({}) } as DOMRect;
+        }
+        return original.call(this);
+      });
+      try {
+        render(<CaseManager />);
+        await screen.findByTestId('embedded-case-detail');
+        const row1 = screen.getByTestId('case-queue-band-row');
+        await waitFor(() => expect(within(row1).queryByRole('button', { name: 'Refresh case queue' })).toBeNull());
+        expect(within(row1).queryByRole('button', { name: 'About Case Manager' })).toBeNull();
+        const viewMenu = within(row1).getByRole('button', { name: /sort and view options/ });
+        await user.click(viewMenu);
+        const menu = await screen.findByRole('menu');
+        const before = mocks.listCases.mock.calls.length;
+        await user.click(within(menu).getByRole('menuitem', { name: 'Refresh case queue' }));
+        await waitFor(() => expect(mocks.listCases.mock.calls.length).toBeGreaterThan(before));
+        await user.click(viewMenu);
+        await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'About Case Manager' }));
+        const about = await screen.findByRole('dialog', { name: 'About Case Manager' });
+        expect(within(about).getByText(/Work the case queue and the open case side by side/)).toBeInTheDocument();
+        await user.keyboard('{Escape}');
+        await waitFor(() => expect(viewMenu).toHaveFocus());
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  describe('the Review scope (Round 15, SPEC D6.12; WP7)', () => {
+    const PENDING_A: Case = {
+      case_id: 'case-review-a',
+      case_number: 'CASE-2026-0201',
+      title: 'Scanner sweep auto-closed',
+      status: 'closed',
+      decision_by: 'agent',
+      verdict: 'FALSE_POSITIVE',
+      severity_band: 'low',
+      risk_score: 10,
+      updated_at: '2026-07-20T08:00:00Z',
+      history: [{ event: 'decision', status: 'closed', decision_by: 'agent', ts: '2026-07-20T07:00:00Z' }],
+    } as unknown as Case;
+    const PENDING_B: Case = { ...PENDING_A, case_id: 'case-review-b', case_number: 'CASE-2026-0202', title: 'Health probe auto-closed' };
+    const DONE: Case = { ...PENDING_A, case_id: 'case-review-done', case_number: 'CASE-2026-0203', title: 'Reviewed backup job' };
+    const REVIEW_CASES = [...CASES, PENDING_A, PENDING_B, DONE];
+
+    beforeEach(() => {
+      mocks.listCases.mockImplementation(serve(REVIEW_CASES));
+      mocks.getCase.mockImplementation(async (id: string) => {
+        const item = REVIEW_CASES.find((candidate) => candidate.case_id === id);
+        if (!item) throw new Error('Case not found');
+        return item;
+      });
+      mocks.reviewSets = {
+        pending: [PENDING_A.case_id, PENDING_B.case_id],
+        completed: [DONE.case_id],
+        disagreed: [],
+        expired: [],
+      };
+      mocks.reviewSummary.mockResolvedValue({ enabled: true, pending: 2, disagreed_open: 0, sampled_today: 1, daily_cap: 10 });
+    });
+
+    it('is offered with its waiting count only while the review is on or cases wait', async () => {
+      render(<CaseManager />);
+      const scope = await screen.findByRole('radiogroup', { name: 'Case queue scope' });
+      const review = await within(scope).findByRole('radio', { name: /^Review\W+2 waiting$/ });
+      expect(review).toBeInTheDocument();
+      expect(within(scope).getAllByRole('radio').map((radio) => radio.textContent)).toEqual([
+        'Active',
+        'Mine',
+        'Review, 2 waiting',
+        'All',
+      ]);
+      // The count is a quiet badge beside the word, not part of it.
+      expect(within(review).getByText('2')).toHaveClass('tabular-nums');
+    });
+
+    it('is not offered while the review is off and nothing waits', async () => {
+      mocks.reviewSummary.mockResolvedValue({ enabled: false, pending: 0, disagreed_open: 0, sampled_today: 0, daily_cap: 10 });
+      render(<CaseManager />);
+      await screen.findByText('Suspicious S3 bucket exfiltration');
+      await waitFor(() => expect(mocks.reviewSummary).toHaveBeenCalled());
+      const scope = screen.getByRole('radiogroup', { name: 'Case queue scope' });
+      expect(within(scope).queryByRole('radio', { name: /Review/ })).toBeNull();
+    });
+
+    it('lists the waiting reviews from the server, carries the key, and switches to completed from the footer', async () => {
+      const user = userEvent.setup();
+      render(<CaseManager />);
+      await user.click(await screen.findByRole('radio', { name: /^Review\W+2 waiting$/ }));
+      expect(await screen.findByRole('heading', { level: 2, name: 'Auto-close reviews waiting' })).toBeInTheDocument();
+      expect(await screen.findByText('Scanner sweep auto-closed')).toBeInTheDocument();
+      expect(screen.getByText('Health probe auto-closed')).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByText('Suspicious S3 bucket exfiltration')).toBeNull());
+      const last = mocks.listCases.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      expect(last).toMatchObject({ review: 'pending' });
+      expect(last).not.toHaveProperty('status_group');
+      expect(mocks.navigate).toHaveBeenLastCalledWith('case_manager', expect.objectContaining({ review: 'pending' }));
+      expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('2 waiting · 2 loaded');
+
+      // Opening a case keeps the review key in the address.
+      await user.click(screen.getByText('Health probe auto-closed'));
+      expect(mocks.navigate).toHaveBeenLastCalledWith('case_manager', { caseId: PENDING_B.case_id, review: 'pending' });
+
+      await user.click(screen.getByRole('button', { name: 'Show completed reviews' }));
+      expect(await screen.findByText('Reviewed backup job')).toBeInTheDocument();
+      expect(mocks.listCases.mock.calls.at(-1)?.[0]).toMatchObject({ review: 'completed' });
+      expect(mocks.navigate).toHaveBeenLastCalledWith('case_manager', { caseId: PENDING_B.case_id, review: 'completed' });
+      expect(screen.getByRole('button', { name: 'Show waiting reviews' })).toBeInTheDocument();
+    });
+
+    it('opens on a review deep link, and offers the closed statuses there (Review behaves like All)', async () => {
+      const user = userEvent.setup();
+      mocks.routeOpts = { review: 'completed' } as never;
+      render(<CaseManager />);
+      expect(await screen.findByRole('heading', { level: 2, name: 'Completed auto-close reviews' })).toBeInTheDocument();
+      expect(await screen.findByText('Reviewed backup job')).toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: /^Review/ })).toBeChecked();
+      await user.click(screen.getByRole('button', { name: /Filters/ }));
+      await user.click(await screen.findByRole('combobox', { name: 'Status filter' }));
+      expect(await screen.findByRole('option', { name: 'Closed' })).toBeInTheDocument();
+    });
+
+    it('says what the queue is for when nothing waits, and that the review is off when it is', async () => {
+      const user = userEvent.setup();
+      mocks.reviewSets.pending = [];
+      mocks.reviewSummary.mockResolvedValue({ enabled: false, pending: 0, disagreed_open: 0, sampled_today: 0, daily_cap: 10 });
+      mocks.routeOpts = { review: 'pending' } as never;
+      render(<CaseManager />);
+      expect(await screen.findByText('No reviews waiting')).toBeInTheDocument();
+      expect(await screen.findByText('Auto-close review is off. Turn it on in Settings, under Detection.')).toBeInTheDocument();
+      // The footer still leads to the completed reviews.
+      await user.click(screen.getByRole('button', { name: 'Show completed reviews' }));
+      expect(await screen.findByText('Reviewed backup job')).toBeInTheDocument();
+    });
+
+    it('re-reads the count, the window and the open case on a case.review frame', async () => {
+      const user = userEvent.setup();
+      render(<CaseManager />);
+      await user.click(await screen.findByRole('radio', { name: /^Review\W+2 waiting$/ }));
+      await user.click(await screen.findByText('Scanner sweep auto-closed'));
+      await waitFor(() => expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', PENDING_A.case_id));
+      const summaries = mocks.reviewSummary.mock.calls.length;
+      const listed = mocks.listCases.mock.calls.length;
+      const before = mocks.detailReview.refreshKey;
+
+      // The first sample was reviewed elsewhere.
+      mocks.reviewSets.pending = [PENDING_B.case_id];
+      mocks.reviewSummary.mockResolvedValue({ enabled: true, pending: 1, disagreed_open: 0, sampled_today: 1, daily_cap: 10 });
+      act(() => {
+        mocks.streamOnEvent?.({ type: 'case.review', data: { case_id: PENDING_A.case_id, review_id: 'acr-1', state: 'completed' } });
+      });
+      await waitFor(() => expect(mocks.reviewSummary.mock.calls.length).toBeGreaterThan(summaries));
+      await waitFor(() => expect(mocks.listCases.mock.calls.length).toBeGreaterThan(listed));
+      expect(mocks.detailReview.refreshKey).toBe(before + 1);
+      expect(await screen.findByRole('radio', { name: /^Review\W+1 waiting$/ })).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByText('Scanner sweep auto-closed')).toBeNull());
+    });
+
+    it('ignores a case.changed frame for a case the Review scope has not loaded', async () => {
+      const user = userEvent.setup();
+      render(<CaseManager />);
+      await user.click(await screen.findByRole('radio', { name: /^Review\W+2 waiting$/ }));
+      await screen.findByText('Scanner sweep auto-closed');
+      mocks.getCase.mockClear();
+      const listed = mocks.listCases.mock.calls.length;
+      act(() => {
+        mocks.streamOnEvent?.({ type: 'case.changed', data: { case_id: OPEN_CRITICAL.case_id, created: true } });
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+      expect(mocks.getCase).not.toHaveBeenCalled();
+      expect(mocks.listCases.mock.calls.length).toBe(listed);
+      expect(screen.queryByTestId('case-queue-show-new')).toBeNull();
+    });
+
+    it('re-reads the count and the window when the open case records its review', async () => {
+      const user = userEvent.setup();
+      render(<CaseManager />);
+      await user.click(await screen.findByRole('radio', { name: /^Review\W+2 waiting$/ }));
+      await user.click(await screen.findByText('Health probe auto-closed'));
+      await waitFor(() => expect(mocks.detailReview.onReviewChange).not.toBeNull());
+      const summaries = mocks.reviewSummary.mock.calls.length;
+      const listed = mocks.listCases.mock.calls.length;
+      act(() => mocks.detailReview.onReviewChange?.());
+      await waitFor(() => expect(mocks.reviewSummary.mock.calls.length).toBeGreaterThan(summaries));
+      await waitFor(() => expect(mocks.listCases.mock.calls.length).toBeGreaterThan(listed));
+    });
+
+    it('drops the review key when another scope is chosen', async () => {
+      const user = userEvent.setup();
+      render(<CaseManager />);
+      await user.click(await screen.findByRole('radio', { name: /^Review\W+2 waiting$/ }));
+      await screen.findByText('Scanner sweep auto-closed');
+      mocks.navigate.mockClear();
+      await user.click(screen.getByRole('radio', { name: 'Active' }));
+      expect(mocks.navigate).toHaveBeenCalledTimes(1);
+      expect(mocks.navigate.mock.calls[0][1] ?? {}).not.toHaveProperty('review');
+      expect(await screen.findByText('Suspicious S3 bucket exfiltration')).toBeInTheDocument();
+      expect(mocks.listCases.mock.calls.at(-1)?.[0]).not.toHaveProperty('review');
+    });
+  });
+});
+
+describe('caseManagerShortcuts and canSelectCases', () => {
+  const grantsOf = (...held: string[]) => (resource: string, action: string) =>
+    held.includes(`${resource}:${action}`);
+  const keysFor = (...held: string[]) => caseManagerShortcuts(grantsOf(...held)).map((row) => row.keys);
+
+  it('lists the case keys each grant allows, and the selection keys with any bulk grant', () => {
+    expect(keysFor('cases:read')).toEqual(['↑ ↓  or  K J', ']', 'Home  End', 'Enter', '/', '?', 'W', TAB_KEYS]);
+    expect(keysFor('cases:write')).toEqual(
+      expect.arrayContaining(['X  or  Space', 'A  E  H', 'T']),
+    );
+    expect(keysFor('cases:write')).not.toContain('R');
+    expect(keysFor('cases:close')).toEqual(expect.arrayContaining(['C', 'X  or  Space']));
+    expect(keysFor('cases:assign')).toEqual(expect.arrayContaining(['M']));
+    expect(keysFor('cases:assign')).not.toContain('M  T');
+    expect(keysFor('cases:write', 'cases:close', 'cases:assign', 'cases:reinvestigate')).toEqual(
+      expect.arrayContaining(['A  C  E  H', 'R', 'M  T']),
+    );
+  });
+
+  it('allows selection only with a bulk grant', () => {
+    expect(canSelectCases(grantsOf('cases:read', 'cases:comment'))).toBe(false);
+    for (const grant of ['cases:write', 'cases:assign', 'cases:reinvestigate', 'cases:close']) {
+      expect(canSelectCases(grantsOf(grant))).toBe(true);
+    }
+  });
+
+  it('lists ] (the case details) and W (the live AI run), which the open case handles for every viewer', () => {
+    const rows = caseManagerShortcuts(grantsOf('cases:read'));
+    expect(rows.find((row) => row.keys === ']')?.action).toBe('Show or hide the case details');
+    expect(rows.find((row) => row.keys === 'W')?.action).toBe('Watch the AI run, while one is under way');
+  });
+
+  it('promises [ only where the queue and the case sit side by side (Round 16, WP02)', () => {
+    expect(keysFor('cases:read')).not.toContain('[');
+    const split = caseManagerShortcuts(grantsOf('cases:read'), { splitShown: true });
+    expect(split.map((row) => row.keys)).toContain('[');
+    expect(split.find((row) => row.keys === '[')?.action).toBe('Hide or show the queue');
+    // The tab keys count the case's own tabs.
+    expect(split.map((row) => row.keys)).toContain(`Alt + 1 to ${CASE_TABS.length}`);
+  });
+});
+
+describe('the Case Manager frame helpers (Round 16, WP02)', () => {
+  it('clamps the responsive queue width to 340 to 520px (28% of the board)', () => {
+    expect(responsiveQueueWidth(0)).toBe(400);
+    expect(responsiveQueueWidth(900)).toBe(340);
+    // 1440 with the navigation open: a 1,168px board, 28% is 327, so the floor holds.
+    expect(responsiveQueueWidth(1168)).toBe(340);
+    expect(responsiveQueueWidth(1344)).toBe(376);
+    expect(responsiveQueueWidth(1500)).toBe(420);
+    expect(responsiveQueueWidth(2400)).toBe(520);
+  });
+
+  it('offers only known, non-zero counts, in order, three at most', () => {
+    expect(paneShortcuts({})).toEqual([]);
+    expect(paneShortcuts({ critical: null, awaiting: 0, review: Number.NaN })).toEqual([]);
+    expect(paneShortcuts({ review: 2, critical: 4, awaiting: 3 })).toEqual([
+      { kind: 'critical', count: 4 },
+      { kind: 'awaiting', count: 3 },
+      { kind: 'review', count: 2 },
+    ]);
+    expect(paneShortcuts({ critical: 1, review: 5 }).map((s) => s.kind)).toEqual(['critical', 'review']);
+  });
+
+  it('words each shortcut with its count, singular or plural, with thousands separators', () => {
+    expect(paneShortcutLabel('critical', 1)).toBe('1 critical case');
+    expect(paneShortcutLabel('critical', 4)).toBe('4 critical cases');
+    expect(paneShortcutLabel('awaiting', 1)).toBe('1 case awaiting an analyst');
+    expect(paneShortcutLabel('awaiting', 1200)).toBe('1,200 cases awaiting an analyst');
+    expect(paneShortcutLabel('review', 1)).toBe('1 review waiting');
+    expect(paneShortcutLabel('review', 3)).toBe('3 reviews waiting');
   });
 });

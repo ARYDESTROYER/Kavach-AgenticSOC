@@ -6,19 +6,114 @@
 > source of truth for *where we are*, *how to run it*, *what's done*, and *what's next*.
 > Everything in here is verified against the repo as of the date below — not from memory.
 
-- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Working branch:** `Testing`  ·  **Date:** 2026-08-05
-- **Status:** Round 10 and the additive Security Command Center / Case Manager work are
+- **Repo:** `ARYDESTROYER/Kavach-AgenticSOC`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-11-26
+- **Round 16 (newest, 2026-11):** ten operator asks on `claude/round16` (from `3cfd5c0`),
+  heading to `Testing` through a pull request and then to the 0.2.0 release. It is built as
+  the SPEC's work packages, each in its own worktree and independently reviewed; the
+  integration, the cross-cutting review, an acceptance pass of every operator ask from the
+  operator view with its seven fix packages (SPEC §8.6), the screenshots and the frozen
+  release preparation follow. What it changes:
+  - **The AI agent's work is visible.** The server tracks queued and running AI runs in a
+    process-local registry (`GET /api/investigations/active`, `case.investigation` frames on
+    a new `investigations` topic). The case header shows "AI working · m:ss" or "AI queued"
+    with a popover of the five steps and who started the run; queue rows, the Case Manager
+    navigation item and the queue band show it too. Close and bulk dialogs warn that the
+    run's result will replace a close made now (the run's result stays authoritative), and
+    Inbox notices follow when a manual run ends or replaces a close. Reinvestigate no longer
+    waits (`wait=false` answers `202`), a second request answers `409
+    investigation_running`, and a closed case is reinvestigated in place (or `409
+    open_case_exists`). A per-case write lock keeps a person's change and an AI run from
+    erasing each other. One EventSource per page carries every live update.
+  - **A segregated Case Manager.** No page header; `[` folds the queue; a counted empty pane;
+    six case tabs, one lane each (Brief, Evidence, AI investigation, Response, Activity and
+    Chat on Alt+1 to Alt+6; Alt+2, Alt+4 and Alt+5 changed meaning); a 118 px header with one
+    meta strip; and the case facts inspector (`]`) in place of the facts rail.
+  - **A quiet sign-in page** on Console tokens, one short entrance, and "Remember me" with no
+    duration; the login accents gate was retired as subject removal.
+  - **Every number explainable.** The Explain kit (`@/design-system/explain`) gives every
+    score, verdict, SLA, cost and dashboard figure a hover line with the real numbers and a
+    click panel with inputs, steps, rounding, provenance and Copy calculation. New risk
+    scores record their inputs and the weights in force (`engine/risk_explain.py`,
+    `RiskBreakdown.inputs`), the decision records the gate it compared, the triage read
+    serves the case's SLA reading, and `GET /api/metrics/explain` returns the cases behind
+    the dashboard figures.
+  - **Every stored record reachable.** `GET /api/cases/{id}/events` re-reads a case's own raw
+    events on the read-only client and `GET /api/cases/{id}/usage` lists every model call with
+    its rates; View all fields, trace Details and history reasons fill the rest.
+  - **What's new and Communication.** The Notifications navigation group is Communication
+    (Inbox and What's new); a welcome shows once per update and new accounts start with it
+    marked seen; the notes live in `docs/releases/notes/` and `scripts/build_release_notes.py`
+    generates the Console, backend and Help Center outputs. Every update that reaches users
+    adds a What's new entry with screenshots, enforced by `scripts/check_version.py`.
+  - **The bug hunt.** 81 confirmed ids, 75 fixes and 6 merged duplicates
+    (`docs/research/2026-11-round16/review/bug-hunt.md`, Appendix A of the SPEC), among them
+    the read gates with a CI coverage rule for every `/api` GET, the server-enforced forced
+    password change, the MFA lock, Super-admin-only single sign-on, the SLA clock on
+    agent-closed cases and eleven accessibility fixes.
+  - **Release 0.2.0.** Version 0.2.0 and documentation line 0.2 (with `/docs/0.1/` redirect
+    stubs), the `ARYDESTROYER/Kavach-AgenticSOC` repository identity (set
+    `AGENTIC_SOC_UPDATE_REPOSITORY` in `.env` before bootstrapping), and the Apache-2.0
+    license.
+  `decide()` and `engine/risk.py` are byte-identical, there is no new model call, storage
+  stays KV only (the cases index joins audit and config as an additive Elasticsearch bootstrap
+  exception), and there is no new dependency. See `docs/research/2026-11-round16/SPEC.md`,
+  whose §8 "As built" records what shipped and the known limitations.
+- **Round 15 (2026-11):** six operator asks on `claude/round15`: a Console switch for
+  role-based access, honest setup-wizard copy, a Team activity page for managers, screenshots on
+  cases, a random review of automatically closed cases, and a cleaner Case Manager. Each package
+  and the integrated tree were independently reviewed (the cross-cutting review confirmed and
+  fixed 46 of 50 candidate findings); it merged into `Testing` as `3cfd5c0` (PR #143). See
+  `docs/research/2026-11-round15/SPEC.md`, whose §8 "As built" records what shipped and the known
+  limitations.
+- **Round 14 (2026-10 and 11):** nine operator asks on `claude/round14`. It is built,
+  two closing acceptance passes and their fixes are done, and every gate is green apart from five
+  sandbox-only environment tests (SPEC §11.4 "Final gates"); it heads to `Testing` by a pull
+  request. The automatic sign-out notice no longer states how long the session lasted. The
+  Audit log (`#/audit`) is server-paged with three scopes
+  (People and settings, Agent activity, All), search and filters in the URL, a record inspector
+  that shows what changed, and an audited CSV or JSON Lines export (new `audit:export`, fresh
+  sign-in, refused in Demo Mode); every new audit row records its outcome, actor type, action,
+  client, session, target, changes and request id, and new writes are audited before they are
+  visible. The **Overview** entry in the navigation opens the **Dashboards library**: the Cyber
+  Defence Center (marked Default, still the landing page at `#/overview`), three built-in boards
+  (SOC operations, Detection and data health, Executive summary) and the viewer's own boards.
+  The Overview's two band headers are gone. Chat's Timeouts and capacity defaults are tripled.
+  Every detection rule name opens one **rule sheet** (alerts over time, top sources and targets,
+  latest alerts and cases, "Open all N in Logs"), Logs and Cases take an exact rule filter, and
+  severity breakdowns use named levels with their top rules and Split by. The navigation is a
+  docked rail whose icons never move, every page uses the Overview's panels and header, and
+  Settings is grouped. Playbooks and runbooks are now **one Runbooks feature**: phased
+  procedures with five step kinds, deterministic matching with a reason, a per-case run with a
+  Next step card, governed versions (Draft, In review, Published, Retired) under the new
+  `runbooks:run` and `runbooks:publish`, 12 built-ins, and a one-shot audited migration of
+  stored playbooks and runbooks; only Published text reaches the investigator. `decide()` is
+  untouched. What shipped, every contract resolution and the known limitations are in §11
+  "As built" of [`docs/research/2026-10-round14/SPEC.md`](research/2026-10-round14/SPEC.md);
+  the upgrade notes are in `docs/operations/upgrades.md` and `DEPLOY.md`.
+- **Round 13, chat (2026-10):** dynamic $0 suggested questions, anchored follow-ups,
+  conversation titles from the first answer and a neater chat, merged into `Testing` through
+  PR #132. What was built, the accepted deviations and the known limitations are in §10 "As
+  built" of [`docs/research/2026-10-round13/SPEC-chat.md`](research/2026-10-round13/SPEC-chat.md).
+- **Round 12 (2026-10):** chat without limits, the chat working indicator, Remember me,
+  report downloads, and the Overview and Case Manager redesigns, merged into `Testing` as
+  `db8d935` (PR #131). What shipped, the decisions taken during implementation, and the
+  known limitations are in the **"As built"** section (§7) of
+  [`docs/research/2026-10-round12/SPEC.md`](research/2026-10-round12/SPEC.md).
+- **Status:** Round 10 and the additive Cyber Defence Center (the landing dashboard,
+  renamed from Security Command Center) / Case Manager work are
   integrated on `Testing`. A **backend deep-audit hardening pass
   (2026-07-14/15)** fixed **47 verified findings** (0 crit / 10 high / 24 med / 13 low)
   from a 24-auditor + adversarial-verify Workflow — **one atomic commit per finding, no
   co-author**, on `Testing` (`c5516e5`→`abd0385`).
-  The current source version is **`0.1.12`**. It is a Stable patch candidate on
-  `Testing` and a Stable release only when the exact accepted `main` commit has the
-  immutable `v0.1.12` tag and matching artifacts. `Testing` is the permanent integration and
-  acceptance branch; accepted changes are promoted through a pull request to the Stable
-  `main` branch and re-verified there. The remote now uses `main` as its default, retains
-  `Testing` for integration. The immutable `v0.1.12` tag is created only from the
-  fully verified promoted commit. The immutable `v0.1.4` attempt passed exact-tag CI,
+  The current source version is **`0.2.0`** (documentation line 0.2); the never-tagged
+  0.1.13 candidate folds into it. It is a Stable candidate on `Testing` and a Stable
+  release only when the exact accepted `main` commit has the immutable `v0.2.0` tag and
+  matching artifacts. `Testing` is the permanent integration and acceptance branch;
+  accepted changes are promoted through a pull request to the Stable `main` branch and
+  re-verified there. GitHub reports `Testing` as the default branch today; the maintainer
+  sets it back to `main` after the promotion merge and before the tag (SPEC §4.11 M1). The
+  immutable `v0.2.0` tag is created only from the fully verified promoted commit. The
+  history below describes the 0.1 line. The immutable `v0.1.4` attempt passed exact-tag CI,
   Help Center assembly, and Pages publication but stopped before every release
   artifact; it has no GitHub Release, signed plan, signature, digest, or GHCR release
   image and is not installable. The immutable `v0.1.5` attempt built and signed
@@ -46,27 +141,40 @@
   images and the canonical plan on the host and inside the constrained updater. Its
   post-verification cleanup trap failed before attestations, GitHub Release,
   canonical asset, Stable-tag, or Stable-documentation publication. It is immutable,
-  superseded, and non-installable. Version 0.1.12 retains the writable
+  superseded, and non-installable. Version 0.1.12 subsequently completed every
+  protected source, exact-tag, signed-publication, public-image, attestation, Release,
+  Stable-tag, and documentation gate. Canonical v0.1.1 acceptance then failed closed
+  before application mutation because both legacy images omit the state-schema label
+  and its supervisor compared one normalized absence with one raw absence. It is
+  immutable, bootstrap-blocked, and superseded. The 0.1.13 correction, carried into
+  0.2.0, retains the writable
   updater-state trust cache and least-privilege verification assets, and moves only
   the Python documentation and Node application builder stages to BuildKit's native
   build platform; the final nginx runtime remains target-platform-specific. Its
   cleanup restores the runner-owned verification fixture to private mode only after
-  the constrained verifier exits, then removes it. It changes
-  no schema, updater protocol 1, publisher identity, process privilege, trust predicate,
-  or frozen-base bytes. Version 0.1.12 is not installable until every signed-publication
-  and canonical runtime acceptance gate passes. See
+  the constrained verifier exits, then removes it. It symmetrically normalizes
+  matching absent legacy schema labels while mixed labels and unmanaged later
+  releases remain blocked. It changes
+  no schema, updater protocol 1, process privilege, trust predicate, or frozen-base
+  bytes. Version 0.2.0 moves the publisher identity to `ARYDESTROYER/Kavach-AgenticSOC`
+  (the bootstrap refuses an `.env` without `AGENTIC_SOC_UPDATE_REPOSITORY` naming it
+  exactly, and never edits `.env`; v0.1.12 and earlier artifacts stay valid under the
+  former identity) and is not installable until every signed-publication and canonical
+  runtime acceptance gate passes. See
   `docs/releases/channels.md`. Repository administrators remain responsible for enforcing
   the documented branch and environment protections.
-- **Current CI contract:** every candidate exposes eighteen independent quality lanes
+- **Current CI contract:** every candidate exposes twenty independent quality lanes
   plus the fail-closed **CI passed** aggregate. In addition to the complete backend,
-  Console, contract, design, package, and documentation checks, CI boots the supported
-  PostgreSQL+pgvector/Redis state path, runs fail-closed workflow/ShellCheck and fatal
+  Console, contract, design, package, and documentation checks, CI runs the verdict
+  stability gate in its own lane, boots the supported
+  PostgreSQL+pgvector/Redis state path, boots the previous release on the candidate's
+  PostgreSQL data (the N to N-1 rollback lane), runs fail-closed workflow/ShellCheck and fatal
   Python static checks separately from deploy/updater contracts, and builds the
   shipping backend, Console/Help Center, and updater images without publishing them.
   Require **CI passed** on `Testing` and
   `main`; do not merge, tag, publish, skip, or soften a red/pending/cancelled lane.
 - **Release identity and supervised updates:** the top-right badge always reads
-  `v0.1.12 · Testing|Stable`; its popover reconciles build-time Console and public backend
+  `v0.2.0 · Testing|Stable`; its popover reconciles build-time Console and public backend
   build-info. Any known version/channel/SHA mismatch downgrades to Testing. Local demo auto-
   derives Stable only on literal `main`; Docker release builds must stamp channel/SHA/date.
   The reference standalone PostgreSQL Compose deployment can install a compatible,
@@ -83,17 +191,17 @@
   fails closed. The browser and
   ordinary backend never receive the Docker socket, host commands, arbitrary artifact
   coordinates, or registry credentials. The supported canonical `v0.1.1` deployment
-  requires one manual updater bootstrap to install the strictly newer signed 0.1.12
+  requires one manual updater bootstrap to install the strictly newer signed 0.2.0
   release after its canonical Release, signature, and public images verify. A
   Testing/source-built 0.1.3 deployment, either non-installable 0.1.4/0.1.5
   publication attempt, or the published-but-
-  bootstrap-blocked 0.1.6/0.1.7/0.1.8 artifact records, or failed-publication
+  bootstrap-blocked 0.1.6/0.1.7/0.1.8/0.1.12 artifact records, or failed-publication
   0.1.9/0.1.10/0.1.11 records must instead be reconciled
   according to their actual installed state; none can be relabelled Stable. An
   earlier failed bootstrap that left an inspectable idle older supervisor on an unchanged
-  v0.1.1 application is repaired by the v0.1.12 bootstrap, which replaces the
+  v0.1.1 application is repaired by the v0.2.0 bootstrap, which replaces the
   version-mismatched supervisor before signature verification. An already-running
-  0.1.12 deployment cannot bootstrap itself from the same-version plan. Bootstrap
+  0.2.0 deployment cannot bootstrap itself from the same-version plan. Bootstrap
   safely reuses or replaces only inspectable idle supervisor state; an active/unreadable
   state fails closed. Bootstrap transfers
   lifecycle ownership before job submission and reuses a private per-release start key
@@ -114,13 +222,60 @@
   candidate uses the immutable commit from the exact annotated `vVERSION` tag. This
   observation suppresses downgrades,
   and cannot authorize installation or change the updater's host-pinned trust policy.
+- **Current durable-work contract:** long-running case bulk work, Data export,
+  precedent bootstrap, Runbook reindex, Knowledge import, tiered reset, and Storage
+  apply submit to one strict-CAS application-job registry. The in-process runner uses
+  renewable five-minute leases, rechecks authority, publishes actor-scoped Inbox/SSE
+  progress with polling fallback, and supports cooperative cancellation, restart
+  recovery, bounded failures, terminal compaction, and verified persistent ZIP
+  artifacts. The unified **Analytics → Jobs** surface always shows self-scoped
+  application work; `models:read` adds related LLM Batch rows and `automation:read`
+  adds list-only worker health for threshold tuning, campaign correlation, Batch, and
+  the event-driven `baseline_producer` (`cadence=on_ingest`; independent of the
+  cadence-loop runtime flag). Newly accepted local LLM Batch rows freeze a strict,
+  generation-bound audience of at most 200 active effective-`models:read` recipients and
+  reconcile one stable safe Inbox row per recipient. Strict audience-store outages stay
+  pending/retryable; permission or account-generation loss revokes/fail-closed filters
+  the note. Later grants/users and legacy rows without a snapshot remain list-only. The
+  audience/outbox path is regression-backed across strict-store outage, permission loss,
+  account deletion/recreation, stable retry, and factory-reset fencing. CAS job claims do not remove
+  the application-wide single-replica boundary: investigation/export concurrency,
+  receivers, schedulers, and realtime delivery retain process-local authorities.
+  Factory reset leaves only a privileged actorless sanitized system receipt in the
+  replaced registry. In the supported single-backend-process profile it closes and
+  drains HTTP mutation admission and SSE, quiesces tenant producers and detached writers,
+  strictly clears tenant KV/cases/cursors/RAG/usage/audit plus runtime overlays, and
+  releases its durable fences only after the new receipt lineage is audited. A factory
+  privacy-boundary failure keeps the application fenced/degraded, blocks ordinary work,
+  and admits only a new freshly authorized factory retry. Submission/retry and cancel
+  `202` responses, plus terminal Inbox/SSE projection, wait for their transition audit;
+  durable reconciliation repairs audit gaps before projection. The updater's
+  private supervisor jobs are separate and unchanged. See
+  `docs/operations/background-jobs.md`.
+- **Long-operation compatibility boundary:** Console/user workflows use
+  `POST /api/jobs`. Direct archive/segment export, precedent bootstrap, RAG import, and
+  full-catalog Runbook reindex remain executable, explicitly OpenAPI-deprecated,
+  request-bound compatibility primitives; targeted Runbook reindex remains direct.
+  Direct reset and Storage apply mutations are different: they return 410 and have no
+  synchronous bypass.
+- **Dashboard integrity contract:** Overview posture values are keyed to the selected
+  range/comparison, superseded requests abort, response windows are validated, and old
+  posture data is hidden during a range transition. The AI-verdict FP rate (called
+  False Positive Rate before Round 12), Resolved or closed and Auto-closed therefore
+  cannot repaint from an older request. Full Agent health now
+  lives on **Analytics → Agent effectiveness** (`#/effectiveness`) and follows its
+  24h/7d/30d range; Overview consumes the same reducer but renders only a degradation
+  warning, with a stable `#/effectiveness` drill-through (the older
+  `#/metrics?tab=effectiveness` link still redirects there). Healthy/unauthorized states cost no
+  Overview space, while unknown evidence stays distinct from healthy.
 - **Current Console contract:** the shared rail and route-loading states follow
   `docs/development/ui-standard.md`; `webui/src/design-system/` now exposes the one
   centered loading grammar, original source marks, and a serializable catalog for
-  future tooling (not a shipped MCP server). Automated Scans is a hidden compatibility route,
-  the targeted Workspace job is **Entity investigation**, Settings uses the flat
-  searchable command-center frame, and the bottom Documentation utility opens the
-  same-origin, version-matched Help Center at `/docs/<major.minor>/`. Installed docs
+  future tooling (not a shipped MCP server). The Automated scans page is retired
+  (`#/scans` redirects to Case Manager filtered to cases the AI agent closed), the targeted
+  Workspace job is **Entity investigation**, Settings is grouped panels (Account, General,
+  Integrations, Security & access, Organization) with search, and the bottom **Help Center**
+  utility opens the same-origin, version-matched Help Center at `/docs/<major.minor>/`. Installed docs
   are authoritative for that build; Latest Stable/GitHub are secondary upgrade or
   source views, and Development remains preview-only. First run uses the same flat
   Console grammar in a responsive four-stage setup workspace: **Workspace → Data
@@ -134,16 +289,15 @@
   an unsent draft per visited thread, refreshes history on focus, treats history access
   failures as failures rather than an empty account, and marks bounded history as
   incomplete when older material has been removed.
-- **Intelligence** now exposes five direct jobs: **Knowledge corpus**, **Reference
-  runbooks**, **Operator memory**, **Response playbooks**, and **Agent personas**.
-  Analysts can
-  search and open protected bundled references, while authorized managers can create,
-  edit, delete, and reindex durable operator Markdown. Full guidance is chunked into
-  stable per-runbook RAG documents, optimistic revisions reject stale writes, and
-  targeted reconciliation preserves imported knowledge, MITRE guidance, suppression
-  guidance, and resolved-case memory. Runbooks remain reference knowledge only;
-  Playbooks are the separate selected procedure layer and deterministic case policy is
-  still the sole close/escalate authority.
+- **Intelligence** exposes **Knowledge corpus**, **Runbooks**, **Operator memory** and
+  **Agent personas**. Since Round 14 Runbooks is the one procedure feature (it replaces the
+  Reference runbooks page at `#/runbooks`, and the retired Response playbooks links
+  `#/playbooks` and `#/catalog` redirect to it): 12 read-only built-ins
+  (`backend/app/runbooks/library/`) and governed operator runbooks in the `runbook_library`
+  KV store, edited in a structured outline with a Markdown source view, matched to cases by
+  code with a stated reason, run per case as a checklist (`runbook_runs`), and projected into
+  retrieval from Published versions only. A runbook can recommend; deterministic case policy
+  is still the sole close/escalate authority.
 - **Intelligence evidence contract:** the threshold tuner observes by default but
   learns only from independently analyst-confirmed outcomes and sends eligible writes
   to Approvals by default; confirmed-evidence auto-apply is an explicit opt-in and
@@ -151,27 +305,45 @@
   fenced until an authorized human approves it. Resolved-case RAG excludes inferred
   model-only/auto-close outcomes, RAG source toggles reconcile their managed projections,
   and embedding changes validate capability/dimension before replacing a vector space.
-  Operator Playbooks are durable strict-CAS StateStore records layered over immutable
-  bundled procedures, with deterministic dry-run and bounded coverage reporting.
+  Operator runbooks are strict-CAS KV records with Draft, In review, Published and Retired
+  versions over the immutable built-ins; edits create a Draft, and only Published text is
+  trusted by the AI.
   `/api/schedulers/health` reports process-local worker state. Telemetry-source advice
   accepts only versioned query/tool evidence—never merely an absent connector—and the
   current release reports capture unavailable until that controlled producer exists.
+- **Build and retrieval evidence contract:** newly created cases preserve immutable
+  creation-build `app_version`/`build_sha`, while each new append-only audit and usage
+  row preserves its first append-build. Legacy provenance values remain `null` with no
+  backfill.
+  `retrieval_history_status` is the authoritative Case lifetime marker and legacy cases
+  remain `unavailable`. `knowledge_used` keeps its array wire shape, while
+  `retrieval_observation_status` alone makes `[]` a measured empty result; skipped,
+  failed, partial, or historically unavailable retrieval is not converted to zero.
+  Fail-soft last-known-good/partial context may still be consulted without qualifying as
+  a measured observation. Base metrics expose case-level reference coverage only—not
+  quality or per-run hit rate—and keep incomplete-lifetime or truncated cohorts `null`.
+  This arrived with the never-tagged 0.1.13 candidate and ships additively in 0.2.0: no
+  SQL migration, and no auto-remap of existing Elasticsearch templates or indices beyond
+  the three additive bootstrap extensions (audit, config and, since 0.2.0, cases).
 - **Current feature integration:** Cases is still the table-oriented list, but an
   opened row hands the exact case to the canonical Case Manager detail workspace;
-  its desktop split is accessible and persisted. Case Manager Overview now
-  conditionally summarizes the latest investigation run's actual inputs—operator
-  memory consulted, RAG knowledge and runbook references retrieved, a playbook only
-  when injected/consulted, and an immutable deterministic platform threshold-tuning
-  snapshot—with details in Investigation. It never infers provenance from current
+  its desktop split is accessible and persisted. The case's AI investigation tab
+  conditionally summarizes the latest investigation run's actual inputs (operator
+  memory consulted, RAG knowledge and runbook references retrieved, the runbook that
+  guided the run, or a playbook on cases investigated before Round 14, and an immutable
+  deterministic platform threshold-tuning snapshot) under Investigation inputs, with
+  Review inputs for the detail. It never infers provenance from current
   feature settings, never calls threshold tuning model fine-tuning, and leaves final
   close/escalate routing to deterministic case policy. Overview defaults to
   visibility-aware LIVE refresh and has an expanded Noise Reduction view with a lazy,
   bounded redacted alert→cluster→case→outcome drill-down beneath the aggregate flow.
-  Threat Context exposes a redacted persisted cluster-formation explanation. Demo
+  The Threat context section of a case's Evidence tab exposes a redacted persisted
+  cluster-formation explanation. Demo
   Mode has five sources including Entra ID. The API also provides audited,
   permission-gated portable analysis export with actor/scope/snapshot-bound signed
-  continuations; its Intelligence scope carries exact catalog counts, sanitized
-  operator runbook/playbook source, and safe bundled references. It also provides
+  continuations; its Intelligence scope carries exact catalog counts, the runbook library
+  with every operator version, the read-only legacy procedure groups, and safe bundled
+  references (manifest schema 2). It also provides
   guarded default-preference OpenAI
   Flex for supported live case/alert work, with truthful standard fallback. Fresh
   workspaces now assign the bundled OpenAI model ID `gpt-5.6-luna` to router, investigator,
@@ -186,17 +358,27 @@
   & retention now records a deletion-free 180-day Hot + 90-day Warm desired policy;
   explicit preview/apply can enforce only append-only Elasticsearch audit/usage ILM,
   while Glacier stays unconfigured pending an independent verified archive path. Workspace
-  Chat conversations are now bounded, per-user partitions in the selected StateStore:
-  newest-first list/detail/rename/delete are additive to the existing chat route, and a
-  draft becomes saved only after its first response is durably committed. Stable
+  Chat conversations are per-user partitions in the selected StateStore (at most 50
+  conversations per user plus 10 pinned): newest-first list/detail/rename/delete are
+  additive to the existing chat route, and a draft becomes saved only after its first
+  response is durably committed. Since Round 12 no message is removed from a
+  conversation: every answer is also stored in full in its own exchange document, very
+  long conversations move older messages to archive pages, and the detail returns the
+  newest 100 messages with older ones paged by `GET /api/chat/conversations/{id}/messages`. Stable
   `idempotency_key` retries return the one committed turn without a duplicate model bill;
   explicit source selection fails closed, and every saved assistant turn records its
   effective source/model. Legacy shared history is lazily migrated through a
   backward-compatible read path, with no operator reset. Saved server history is
   authoritative on resume. Case Manager chat remains case-scoped and never enters
   personal Workspace history; browser-only chats from before this feature cannot be
-  recovered. **Analytics → Agent effectiveness** (also reachable at the stable
-  `#/effectiveness` deep link) renders the additive
+  recovered. Round 13 adds dynamic, $0 suggested questions: `GET /api/chat/starters`
+  (`surface=home|thread|case`; computed by `engine/chat_starters.py` from the suite's own
+  state under the caller's grants, no model call, no log read) and
+  `POST /api/chat/starters/events` (opaque keys into the per-user `chat_starters` KV
+  document), anchored follow-ups (`agents/chat_followups.py`) and conversation titles
+  from the first answer; see `docs/research/2026-10-round13/SPEC-chat.md` §10 for what was
+  built and what is deferred. **Analytics → Agent effectiveness** (reload-safe at
+  `#/effectiveness`; the older `#/metrics?tab=effectiveness` link redirects there) renders the additive
   `GET /api/metrics/agent-improvement` report. It compares the last seven complete UTC days with the
   preceding 28 using weighted analyst-reported agreement, material correction rate,
   and human review turnaround, while exposing two-sided cohort coverage, truncation,
@@ -208,8 +390,8 @@
   also requires the separate review-turnaround domain to improve. Auto-tuning reuses
   this contract in a dedicated **Outcomes** tab beside its default **Operations** and
   **Policy & history** workspaces; its separate `metrics:view` load cannot block
-  tuning controls, and **View full evidence** opens the canonical Analytics
-  effectiveness tab. The Outcomes view plots one selected metric at a time and keeps
+  tuning controls, and **View full evidence** opens **Analytics → Agent effectiveness**
+  (`#/effectiveness`). The Outcomes view plots one selected metric at a time and keeps
   tuning changes in a non-causal disclosure. The report now also carries a separate
   outcome layer: recorded case-linked AI processing cost; observed case-open-to-close
   elapsed-time difference between agent-terminal and human-terminal cohorts (not active
@@ -269,7 +451,7 @@ can never override.
 cd backend
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt        # greenlet is pinned, so a fresh install is green
-python -m pytest -q                         # latest recorded full run: 2,306 passed; see Journal.md
+python -m pytest -q                         # latest recorded full run: 12,450 passed, 6 skipped, 5 sandbox-only env failures; see Journal.md
 ```
 
 ### WebUI build + tests + lint
@@ -278,7 +460,7 @@ cd webui
 npm ci
 npm run check:types # hard-fail API drift in CI with TLSOC_REQUIRE_TYPEGEN=1
 npm run gates       # tokens, contrast, CVD, and raw-style regression guards
-npm run test:strict # latest recorded full run: 1,935/1,935 passed / 286 files; CI-parity quiet-output gate
+npm run test:strict # latest recorded full run: 8,576 passed, 1 skipped / 652 files; CI-parity quiet-output gate
 npm run lint -- --max-warnings=0
 npm run build      # version-matched MkDocs Help Center + tsc --noEmit + Vite
 npm run docs:check # verify the generated docs artifact matches VERSION
@@ -321,8 +503,8 @@ backend/app/
                    /account/me, /demo/*, /proposals, /settings/schema, `/chat`, and
                    per-user `/chat/conversations` list/detail/rename/delete).
                    api/deps.py =
-                   auth/RBAC gates (+ custom-role union). **27 `routes_*.py` feature
-                   routers total**, ALL auto-discovered at boot
+                   auth/RBAC gates (+ custom-role union). **46 feature routers total**,
+                   ALL auto-discovered at boot
                    (`main.py::discover_feature_routers()` walks `app.api.routes_*`, needs
                    only a top-level `router: APIRouter` — no manual registration):
                    Round 3 added 8: routes_metrics · routes_standup · routes_enrichment ·
@@ -339,43 +521,91 @@ backend/app/
                    **4 routers commonly missed in docs**: routes_notifications
                    (`/notifications/*`), routes_prefs (`/branding`, `/prefs/*`,
                    `/terminology`, `/views*`), routes_rag (`/rag/*`, `/memory*`),
-                   routes_search (`/search`, `/audit`). None of those paths remain in
-                   `routes.py`, and there is no `/branding/presets` endpoint. Current
+                   routes_search (`/search`; Round 14 moved `/audit` to routes_audit).
+                   None of those paths remain in `routes.py`, and there is no
+                   `/branding/presets` endpoint. Current
                    integration adds routes_export (legacy bounded `POST
-                   /api/admin/export` plus fresh-auth resumable
+                   /api/admin/export`, default fresh-auth server-assembled single ZIP at
+                   `/api/admin/export/archive`, plus advanced resumable
                    `/api/admin/export/segment` + `/cancel`, all under
-                   `data_export:export`) + routes_storage (desired own-state lifecycle,
-                   pure capability preview, and explicit fresh-auth Elasticsearch apply)
-                   + routes_runbooks (durable runbook catalog/reconciliation) +
+                   `data_export:export`) + routes_storage (desired own-state lifecycle
+                   and pure capability preview; direct apply returns 410 and canonical
+                   fresh-auth Elasticsearch apply is a Job)
+                   + routes_runbooks (Round 14: the governed runbook library, versions,
+                   publish, import, validation, match preview and metrics) +
                    routes_releases (public source discovery) + routes_schedulers
-                   (read-only worker health) + routes_telemetry (query-backed telemetry
-                   gaps; connector absence is never evidence).
+                   (read-only threshold/campaign/Batch cadence-loop health plus
+                   event-driven baseline-producer health) + routes_telemetry (query-backed telemetry
+                   gaps; connector absence is never evidence) + routes_diagnostics
+                   (read-only precedent/migration/auto-close health) + routes_jobs
+                   (self-scoped application job submit/list/detail/cancel/artifact plus
+                   permission-scoped LLM Batch and scheduler projections; bounded,
+                   generation-bound new-Batch Inbox outbox) + routes_analyst_policy
+                   (operator "declared benign" policies) + routes_replay (replay fixture
+                   catalogue metadata and purge) + routes_updates (supervised Stable
+                   update control plane) + routes_chat (streamed chat turns, rejoin and
+                   cancel) + routes_reports (owner-scoped reports). Round 12 added
+                   routes_chat_library (feedback, step inspector, message paging, mark
+                   read) and routes_chat_entity (Ask AI entity questions); Round 13 added
+                   routes_chat_starters (suggested questions and their events); Round 14
+                   added routes_audit (the audit log read API: paged list, count and one
+                   record), routes_rule_summary (one detection rule's picture for the
+                   rule sheet) and routes_case_runbooks (runbook runs on cases, progress
+                   and the editor's lookup test); Round 15 added routes_rbac (the
+                   role-based access switch), routes_team (Team activity),
+                   routes_case_files (case screenshots) and routes_auto_close_review
+                   (the auto-close review); Round 16 added routes_investigations (the AI
+                   runs in progress), routes_case_events (a case's member events) and
+                   routes_case_usage (a case's model usage rows). Direct reset mutation also returns 410;
+                   canonical tiered reset is a Job.
   auth/            passwords (PBKDF2) · tokens (stdlib HS256 JWT, sid/tv claims) · service ·
                    mfa (RFC-6238 TOTP) · oidc (SSO code-exchange)
   rbac/policy.py   the role->resource->action permission matrix + can()
   stores/          backend-agnostic KV-doc stores: users · sessions · user_prefs · memory
                    (strict-CAS; only approved active entries become trusted context) ·
-                   chat_conversations (bounded, idempotent, per-user-partitioned Workspace
-                   transcripts + lazy migration from the legacy shared document) ·
-                   cases/usage/config/cursor · proposals · runbooks · playbooks
-                   (strict-CAS durable operator catalogs) · sql/ (SQLite/Postgres) +
+                   chat_conversations (idempotent, per-user-partitioned Workspace
+                   transcripts + lazy migration from the legacy shared document; Round
+                   12: full-text per-exchange documents, archive pages, the running
+                   conversation summary, no message removal) · chat_feedback (Round 12:
+                   per-user answer ratings) ·
+                   cases/usage/config/cursor · proposals · runbook_library ·
+                   runbook_runs (Round 14: operator runbook versions and the migration
+                   marker; per-case runs and the monthly run ledger; KV only) ·
+                   legacy_procedures (read-only decoder of the retired `playbooks` and
+                   `runbooks` namespaces) · sql/ (SQLite/Postgres) +
                    Round-3: case_thread/case_activity/case_tasks · inbox · notif_prefs ·
                    custom_roles · price_overlay · shift_handoff +
                    Round-4: tuning · campaigns (full-set active reconciliation + durable
                    success anchor) · baseline · batch_jobs +
                    Round-5: dashboards (per-user custom-dashboard layouts) · rule_versions
-                   (detection-rule version ledger + rollback) — NO new index/table needed
+                   (detection-rule version ledger + rollback); NO new index/table needed +
+                   Round 15: case_files (case screenshots: per-case index, write-once
+                   image and thumbnail documents, usage total) · auto_close_review (the
+                   strict-CAS review ledger: a ring of 2,000 picks and 90 days of counts)
   notifications/   channel SPI · email (SMTP+SES) · resend · webhook/slack/teams · templates · dispatch ·
-                   InAppChannel (Round 3 — fan-out to InboxStore, no network)
+                   InAppChannel (Round 3 — fan-out to InboxStore, no network) · jobs
+                   (one strict-CAS bounded registry, renewable leases, intent
+                   idempotency, bounded failures, terminal compaction, sanitized
+                   factory receipt; no new index/table)
   enrichment/      Round 3 — EnrichmentProvider SPI: base/registry/dispatch/aggregate +
-                   providers/ (19 registered classes, +17 new in Round 3: abuseipdb/virustotal/
+                   providers/ (38 registered classes: +17 in Round 3 — abuseipdb/virustotal/
                    greynoise/shodan(+internetdb)/censys/binaryedge/ipinfo/otx/pulsedive/spur/
-                   xforce/urlscan/hibp/projecthoneypot/abusech[urlhaus+threatfox+malwarebazaar=3]/rdap)
+                   xforce/urlscan/hibp/projecthoneypot/abusech[urlhaus+threatfox+malwarebazaar=3]/rdap —
+                   +19 in Round 11: keyless circl_hashlookup/dshield/onionoo [default-on] +
+                   spamhaus/cymru_mhr/robtex/crt_sh [default-off]; keyed crowdsec/
+                   google_safebrowsing/ipqualityscore/ipdata/apivoid/maltiverse/securitytrails/
+                   criminalip/netlas/hybrid_analysis/metadefender/emailrep; manifests carry
+                   setup_steps + example rendered by the Settings provider cards)
   realtime.py      Round 3 — multiplexed SSE EventBus (GET /api/events, default ON, polling fallback)
   connectors/      SPI + registry · elastic/opensearch/wazuh · demo.py · receivers/
   engine/          correlation · risk · case_manager (decide()/apply() — #3) · case_id · poller ·
                    poller_manager (Round-4 — fans out over EVERY enabled PULL source) · ingest ·
-                   metrics (+ Round-3 posture) · mitre_coverage · shift_report · priority ·
+                   metrics (+ Round-3 posture + evidence-qualified case-level knowledge-reference
+                   coverage; unavailable lifetime history/truncation stay null,
+                   not-measured cases stay out of the denominator) · mitre_coverage ·
+                   shift_report · priority · Round 14 runbooks: runbook_model ·
+                   runbook_match · runbook_lookup (pure) · runbook_catalog ·
+                   runbook_runs · runbook_migration ·
                    budget (BudgetGate) · threshold_automation · threat_context · mitre · demo_generator/runtime +
                    Round-4: threshold_tuner (nightly deterministic observer, default ON;
                    analyst-confirmed evidence only and review-first writes) · campaigns
@@ -384,23 +614,45 @@ backend/app/
                    event_detection (EVENT-feed batched agent-driven detection funnel) ·
                    forwarding (explain_forwarding) · reset (tiered danger-zone reset) ·
                    storage_lifecycle (capability-aware append-only ledger ILM; no deletion) ·
+                   jobs (in-process durable runner, actor-scoped Inbox/SSE, cooperative
+                   cancellation, restart recovery, verified ZIP artifacts) ·
+                   investigation_gate (process-local ingest-priority concurrency) ·
                    agent_improvement (pure aggregate complete-day quality headline +
-                   additive cost/closure/outcome/volume trends; reporting only)
+                   additive cost/closure/outcome/volume trends; reporting only) +
+                   Round 15: team_activity (pure audit-row fold for Team activity) ·
+                   case_images (stdlib image structure check and metadata strip, no
+                   pixel decode) · auto_close_review (seeded, capped sampler of automatic
+                   closes, run after `apply()`; summary and metrics folds) · review_origin
+                   (`is_review_grade`, the rollback-safe review-grade marker)
+  llm/             gateway (the one cost-ledger choke point) · providers · pricing · batch ·
+                   readiness (Round 15: whether the router and investigator models can be
+                   called with the credentials held; the wizard's `ai_runtime_ready`)
   agents/          router · investigator · formatter · chat · standup · overview · personas · pipeline
   threat/          bundled compact MITRE ATT&CK technique map (+ refresh script)
 webui/src/
   soc/pages/       Login, Cases (Round-9c: 6-tile summary strip + monogram Assignee column),
-                   CaseManager (additive Active/All split-pane queue using the shared
-                   CaseDetail orchestrator in embedded mode; reference-matched top-right
-                   Share/Take Action/close controls; selection + permission-gated bulk work;
+                   CaseManager (additive Active/Mine/Review/All split-pane queue using the
+                   shared CaseDetail orchestrator in embedded mode; one primary action,
+                   Take action, More options and close controls in the header (Round 15);
+                   selection + permission-gated bulk work;
                    Acknowledge/Assign/Add tag/Set status/Set disposition/Reinvestigate/Resolve;
                    successes deselect, failures remain selected; accessible persisted
                    desktop queue resize; the Cases table hands opened rows to this
                    canonical detail workspace; operator contract in
                    `docs/analyst/case-manager.md`),
                    CaseDetail (Round-5 split from a 4210-line god-file into ~1529 LOC +
-                   sub-components; **6 tabs**: overview | timeline | investigation | threat |
-                   collab | chat — Round 9/9b split the old Investigation tab into a
+                   sub-components; **6 tabs since Round 16**, one lane each: overview
+                   (Brief) | evidence (Evidence) | investigation (AI investigation) |
+                   runbook (Response) | collab (Activity) | chat (Chat) on Alt+1 to
+                   Alt+6, where Evidence holds What happened, Threat context and related
+                   cases, and `tab=timeline` and `tab=threat` links open those sections;
+                   the case facts inspector (`]`, six sections) replaces the facts rail;
+                   casedetail/explain/** and casedetail/records/** hold the Round 16
+                   explainers and record views, casedetail/files/** the screenshot kit
+                   and casedetail/review/ReviewCard.tsx the auto-close review card. Round
+                   15 had 5 tabs (overview | runbook | investigation | collab | chat).
+                   Before that: 6 tabs, overview | timeline | investigation
+                   | threat | collab | chat; Round 9/9b split the old Investigation tab into a
                    "Timeline" [ONLY the what-happened narrative: input → correlate → Risk
                    Assigned → triage → investigate → Decision; current-weight reconstruction
                    from persisted factors with mismatch warning; Case Manager terminal marker
@@ -413,12 +665,17 @@ webui/src/
                    Security promoted to top-level), Account, Sessions, Users, Security, Audit,
                    Workspace(Chat with searchable desktop history rail/mobile Sheet,
                    durable per-user transcripts, and one docked composer + Entity
-                   investigation), Analytics(Operational+Performance+Posture+
-                   Effectiveness+Cost),
-                   Home(Overview+Standup), Intelligence(Knowledge corpus+Reference
-                   runbooks+Operator memory+Response playbooks+Agent personas),
-                   Docs + a hidden legacy Scans compatibility route + Round-3 Models,
-                   Roles, Inbox, ...
+                   investigation), Analytics(Metrics: Operational+Performance+Posture;
+                   Agent effectiveness and Cost pages), Jobs (personal application jobs +
+                   permission-scoped related LLM Batch and scheduler projections),
+                   Overview group (Cyber Defence Center + the Round 14 Dashboards library
+                   and boards + Standup), Intelligence(Knowledge corpus+Runbooks+Operator
+                   memory+Agent personas; runbooks/** holds the editor, the run and the
+                   shared pieces), Audit (Round 14: scopes, inspector, export), Help
+                   Center + Round-3 Models, Roles, Inbox, ... (the Scans page is gone) +
+                   Round 15: TeamActivity (+ team/**: range control, per-day chart, person
+                   sheet), RbacSwitchPanel (the Role-based access group on Roles &
+                   permissions), effectiveness/AutoCloseReviewModule (Agent effectiveness)
   soc/pages/settings/  Round-5 — one file per Settings section (general/security/models/detection/
                    cases/automation/enrichment/knowledge/keys/standup/storage/advanced/...) driven by
                    settings-sections.ts (the registry) — replaces the old god-file
@@ -433,9 +690,11 @@ webui/src/
   soc/hooks/       Round-5 — useAsync · useDirtyDraft · usePosture · useLiveAnnouncer (a11y) ·
                    usePrefersReducedMotion · useMediaQuery
   soc/components/  RiskGauge, QRCode, CommandPalette, SavedViewsBar, DataTable, NotificationsEditor,
-                   SourceEditor (feeds), DemoBanner, badges, charts, HelpTip + Round-3 NavSidebar,
+                   SourceEditor (feeds), DemoIndicator, badges, charts, HelpTip + Round-3 NavSidebar,
                    NotificationBell, GlassSurface, SettingsGrid/Card, theme-tokens resolver,
-                   MitreHeatmap/BurnDownChart, CaseThread, EnrichmentProvidersEditor, BrandingEditor +
+                   MitreHeatmap, CaseThread, EnrichmentProvidersEditor, BrandingEditor +
+                   Round 14 RuleLink/RuleSheet, KpiStrip, Panel/SectionTitle/ListRow/RowActions/
+                   StatusDot/Callout (`@/design-system`) +
                    Round-5 ~15 shared primitives (Field, SegmentedControl, ConfirmDialog, NumberField,
                    LabeledSlider, SecretField, TagInput, IconButton, PageContainer, TimeRangePicker,
                    DashboardGroup, collapsible, typography) + shared ComparisonMetric/
@@ -450,7 +709,7 @@ webui/src/
 
 Full text in `AGENTS.md` §5. The ones that bite hardest:
 - **#3 — the deterministic decision.** `engine/case_manager.py` `decide()`/`apply()` decision logic
-  is **byte-identical** and is the ONLY producer of CLOSED/auto-close. No LLM, playbook, automation,
+  is **byte-identical** and is the ONLY producer of CLOSED/auto-close. No LLM, runbook, automation,
   bulk action, or demo path may set a case's status/disposition outside `apply()` or the
   human analyst action path. There is a guard test (`test_wave6_decide_guard` / the bulk + automation
   tests) that fails if `decide()` changes or is bypassed. **Keep it byte-identical.**
@@ -561,8 +820,8 @@ what-shipped: `docs/research/2026-07-round4/`.
 - **Unified logs** — `GET /api/logs` scatter-gather across browse-capable sources + a
   webui `UnifiedLogsSheet`.
 - **Reset + OOBE** — `engine/reset.py` (tiered cases / sources / factory reset that **never**
-  wipes env secrets) + `routes_reset.py`; `routes_setup.py` OOBE first-admin (strong-pw,
-  self-locking).
+  wipes env secrets) + `routes_reset.py` (deprecated direct mutation returns 410;
+  canonical reset is a Job); `routes_setup.py` OOBE first-admin (strong-pw, self-locking).
 - **Login white-label** — `BrandingConfig.login_*` bounded plain-text hero/illustration.
 - **Terminology cleanup** (UI/docs only; wire keys + aliases kept): event / detection / alert
   / case / campaign; "correlate" → Auto-investigate / clustering / campaign-correlation;
@@ -775,11 +1034,15 @@ hunting/query builder, case linking/merge, and an integrations marketplace.
 | Round-4 design + what-shipped (extend a feature) | `docs/research/2026-07-round4/PROPOSAL.md` · `IMPLEMENTATION.md` |
 | Round-5 design + what-shipped (UI/UX + rules + dashboards + coupling) | `docs/research/2026-07-round5/PROPOSAL.md` · `DESIGN_STANDARD.md` · `IMPLEMENTATION.md` |
 | The current Console UI contract — READ before touching webui | `docs/development/ui-standard.md` |
+| Durable background jobs, cancellation, recovery, and artifacts | `docs/operations/background-jobs.md` |
 | Round-5 design history (color/token/primitives rationale) | `docs/research/2026-07-round5/DESIGN_STANDARD.md` |
 | Round-6 what-shipped (fleet glitch-hunt, 464 findings) | `docs/research/2026-07-round6/IMPLEMENTATION.md` |
 | Round-7 design + what-shipped (Security Command Center + Noise-Reduction funnel) | `docs/research/2026-07-round7/` |
 | Round-8 what-shipped (UI cleanup + glitch fixes) | `docs/research/2026-07-round8/` |
 | Round-9 / 9b / 9c what-shipped | **no `docs/research/` folder** (done efficiency-first) — see `Journal.md`'s 2026-07-05/2026-07-06 entries + §5 above |
+| Round 12 design + as built (chat without limits, Overview, Case Manager) | `docs/research/2026-10-round12/SPEC.md` §7 |
+| Round 13 chat design + as built (starters, follow-ups, titles) | `docs/research/2026-10-round13/SPEC-chat.md` §10 |
+| Round 14 design + as built (dashboards library, audit log, rule sheet, Runbooks, console grammar) | `docs/research/2026-10-round14/SPEC.md` §11 |
 | Audit findings + dispositions | `docs/research/2026-06-round2/ROUND2_AUDIT.md` · `docs/research/2026-07-round5/AUDIT_FINDINGS.md` |
 | What's next | `ROADMAP.md` · `ROUND2_BEST_OF_BEST.md` |
 

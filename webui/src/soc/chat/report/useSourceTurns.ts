@@ -1,0 +1,242 @@
+/**
+ * The recorded facts behind a report's items (chat revamp SPEC §9.3): for the
+ * "Methodology & limitations" section a report needs the source turns' steps and usage,
+ * which live on the persisted conversation, not on the snapshot. This module reads the
+ * (few) source conversations, best effort:
+ *
+ *   - a conversation that answers 404 is UNAVAILABLE (deleted, or evicted by the
+ *     50-conversation limit): the item's link back reads "Conversation no longer
+ *     available" and the methodology says so;
+ *   - any other failure leaves the facts absent and is reported as "could not be loaded";
+ *   - conversations beyond the first {@link MAX_SOURCE_CONVERSATIONS} are not read, and
+ *     the methodology says that instead of claiming the facts were never recorded.
+ *
+ * Reads are cached per conversation for a minute and shared by the panel and the library.
+ * A cached conversation that lacks a message an item names (the item was added from a
+ * newer turn) is read again once, and a report change for a conversation drops its entry,
+ * so an export never reports a fresh item as "not recorded".
+ *
+ * Exports also keep the assembled context per REPORT VERSION (`id@version`, Round 12
+ * WP-REP R3): a second export of the same version reads no conversation at all, and the
+ * library's document view seeds it with what it already loaded. A context with a failed
+ * read is never kept (the next export tries again).
+ */
+import * as React from 'react';
+
+import { ApiError } from '@/lib/api';
+import type { ChatConversation, Report } from '@/lib/types';
+
+import { getConversation, getConversationCovering } from '../chat-api';
+import { MAX_SOURCE_CONVERSATIONS, sourceTurnsFromConversation, type ConversationReadStatus, type SourceTurnFacts } from './model';
+import { onReportChanged } from './report-sync';
+
+export { MAX_SOURCE_CONVERSATIONS };
+
+const TTL_MS = 60_000;
+
+type Entry = { at: number; promise: Promise<ChatConversation | 'gone' | null> };
+const cache = new Map<string, Entry>();
+
+/** Assembled export contexts by `id@version` (bounded; oldest dropped first). */
+const MAX_VERSION_ENTRIES = 20;
+const byVersion = new Map<string, Promise<SourceTurnsState>>();
+
+const versionKey = (report: Report): string => `${report.id}@${report.version}`;
+
+/** Drop cached conversations (tests; a conversation known to have changed). */
+export function clearSourceTurnCache(conversationId?: string): void {
+  if (conversationId) cache.delete(conversationId);
+  else {
+    cache.clear();
+    byVersion.clear();
+  }
+}
+
+function keepVersion(key: string, promise: Promise<SourceTurnsState>): void {
+  byVersion.delete(key);
+  byVersion.set(key, promise);
+  while (byVersion.size > MAX_VERSION_ENTRIES) {
+    const oldest = byVersion.keys().next().value;
+    if (oldest === undefined) break;
+    byVersion.delete(oldest);
+  }
+}
+
+const complete = (state: SourceTurnsState): boolean => !Array.from(state.status.values()).includes('failed');
+
+/**
+ * The export context of one report version, read once and reused (R3). Concurrent
+ * callers share one read; a context with a failed conversation read is not kept.
+ */
+export function cachedReportSourceContext(report: Report): Promise<SourceTurnsState> {
+  const key = versionKey(report);
+  const hit = byVersion.get(key);
+  if (hit) return hit;
+  const promise = loadReportSourceContext(report).then((state) => {
+    if (!complete(state) && byVersion.get(key) === promise) byVersion.delete(key);
+    return state;
+  });
+  keepVersion(key, promise);
+  promise.catch(() => {
+    if (byVersion.get(key) === promise) byVersion.delete(key);
+  });
+  return promise;
+}
+
+/** Seed the per-version cache with a context a view already loaded (complete ones only). */
+export function primeReportSourceContext(report: Report, state: SourceTurnsState): void {
+  if (state.loading || state.turns === null || !complete(state)) return;
+  keepVersion(versionKey(report), Promise.resolve(state));
+}
+
+// An add to (or edit of) a report means its conversation has a newer turn: forget it.
+let watching = false;
+function watchReportChanges(): void {
+  if (watching) return;
+  watching = true;
+  onReportChanged((detail) => {
+    if (detail.conversationId) cache.delete(detail.conversationId);
+  });
+}
+
+/**
+ * Read one source conversation. `wanted` (given when a read lacked an answer and the
+ * conversation has older messages) names the answers a report needs: a long
+ * conversation opens on its newest messages (Round 12), so its older pages are read
+ * until they hold every one of them, never leaving an older answer "not recorded".
+ */
+function load(conversationId: string, wanted?: ReadonlySet<string>): Promise<ChatConversation | 'gone' | null> {
+  watchReportChanges();
+  const hit = cache.get(conversationId);
+  if (hit && Date.now() - hit.at < TTL_MS) return hit.promise;
+  const promise = (wanted?.size ? getConversationCovering(conversationId, wanted) : getConversation(conversationId))
+    .then((c) => c as ChatConversation | 'gone' | null)
+    .catch((err: unknown) => {
+      if (err instanceof ApiError && err.status === 404) return 'gone' as const;
+      cache.delete(conversationId);
+      return null;
+    });
+  cache.set(conversationId, { at: Date.now(), promise });
+  return promise;
+}
+
+export interface SourceTurnsState {
+  /** Facts keyed by assistant message id; `null` until the reads settle. */
+  turns: Map<string, SourceTurnFacts> | null;
+  titles: Map<string, string>;
+  unavailable: Set<string>;
+  /** Per source conversation: read, gone, failed or skipped (over the read limit). */
+  status: Map<string, ConversationReadStatus>;
+  loading: boolean;
+}
+
+const EMPTY: SourceTurnsState = { turns: null, titles: new Map(), unavailable: new Set(), status: new Map(), loading: false };
+
+/** Every distinct source conversation id a report names, report's own first (unbounded). */
+function allConversationIds(report: Report | null): string[] {
+  if (!report) return [];
+  const out: string[] = [];
+  for (const id of [report.conversation_id, ...report.items.map((i) => i.source.conversation_id)]) {
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** The distinct source conversation ids a report names (bounded to the read limit). */
+export function sourceConversationIds(report: Report | null): string[] {
+  return allConversationIds(report).slice(0, MAX_SOURCE_CONVERSATIONS);
+}
+
+/**
+ * Read the given source conversations (cached) into turn facts, titles and statuses.
+ * `wanted` names, per conversation, the message ids the caller needs: a cached copy that
+ * lacks one is read again once (the conversation gained a turn since it was cached).
+ */
+export async function loadSourceContext(
+  ids: readonly string[],
+  wanted?: ReadonlyMap<string, ReadonlySet<string>>,
+): Promise<SourceTurnsState> {
+  const readOne = async (id: string) => {
+    const first = await load(id);
+    const need = wanted?.get(id);
+    if (first && first !== 'gone' && need?.size) {
+      const have = new Set(first.messages.map((m) => m.id));
+      if (Array.from(need).some((m) => !have.has(m))) {
+        clearSourceTurnCache(id);
+        // A newer turn since the cached copy, or (a long conversation, Round 12) an
+        // answer older than the newest messages the read returns: read back to it.
+        return load(id, first.earlier_message_count ? need : undefined);
+      }
+    }
+    return first;
+  };
+  const results = await Promise.all(ids.map(readOne));
+  const turns = new Map<string, SourceTurnFacts>();
+  const titles = new Map<string, string>();
+  const unavailable = new Set<string>();
+  const status = new Map<string, ConversationReadStatus>();
+  results.forEach((result, i) => {
+    if (result === 'gone') {
+      unavailable.add(ids[i]);
+      status.set(ids[i], 'gone');
+    } else if (result) {
+      status.set(ids[i], 'read');
+      if (result.title) titles.set(result.id, result.title);
+      for (const [messageId, facts] of sourceTurnsFromConversation(result)) turns.set(messageId, facts);
+    } else {
+      status.set(ids[i], 'failed');
+    }
+  });
+  return { turns, titles, unavailable, status, loading: false };
+}
+
+/**
+ * The source context of a whole report: the first {@link MAX_SOURCE_CONVERSATIONS}
+ * conversations read (a stale cached copy refreshed when an item's message is missing),
+ * the rest marked `skipped`.
+ */
+export async function loadReportSourceContext(report: Report): Promise<SourceTurnsState> {
+  const all = allConversationIds(report);
+  const wanted = new Map<string, Set<string>>();
+  for (const item of report.items) {
+    const { conversation_id: cid, message_id: mid } = item.source;
+    if (!cid || !mid) continue;
+    const set = wanted.get(cid) ?? new Set<string>();
+    set.add(mid);
+    wanted.set(cid, set);
+  }
+  const state = await loadSourceContext(all.slice(0, MAX_SOURCE_CONVERSATIONS), wanted);
+  for (const id of all.slice(MAX_SOURCE_CONVERSATIONS)) state.status.set(id, 'skipped');
+  return state;
+}
+
+/** The source conversations of `report` (by the ids and messages its items name). */
+export function useSourceTurns(report: Report | null, enabled = true): SourceTurnsState {
+  const key = React.useMemo(
+    () => (report ? `${report.conversation_id ?? ''}|${report.items.map((i) => `${i.source.conversation_id}:${i.source.message_id}`).join('|')}` : ''),
+    [report],
+  );
+  const reportRef = React.useRef(report);
+  reportRef.current = report;
+  const [state, setState] = React.useState<SourceTurnsState>(EMPTY);
+
+  React.useEffect(() => {
+    const current = reportRef.current;
+    if (!enabled || !current || !allConversationIds(current).length) {
+      setState(EMPTY);
+      return undefined;
+    }
+    let alive = true;
+    setState((s) => ({ ...s, loading: true }));
+    void loadReportSourceContext(current).then((next) => {
+      // An export of this same version reuses what the view just read.
+      primeReportSourceContext(current, next);
+      if (alive) setState(next);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [key, enabled]);
+
+  return state;
+}

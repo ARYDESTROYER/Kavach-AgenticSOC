@@ -73,7 +73,7 @@ describe('Inbox stale-while-revalidate (findings #35/#36)', () => {
       () => new Promise((res) => { resolveSecond = res; }),
     );
 
-    const refreshButton = screen.getByRole('button', { name: /^refresh$/i });
+    const refreshButton = screen.getByRole('button', { name: /^refresh inbox$/i });
     fireEvent.click(refreshButton);
 
     // The existing item is STILL on screen (stale-while-revalidate), not torn down to
@@ -100,8 +100,8 @@ describe('Inbox stale-while-revalidate (findings #35/#36)', () => {
     );
     listMock.mockResolvedValueOnce({ items: [ITEM('n2', 'Newest')], total: 1 });
 
-    fireEvent.click(screen.getByRole('button', { name: /^all$/i })); // → unread (seq N, slow)
-    fireEvent.click(screen.getByRole('button', { name: /unread only/i })); // → all (seq N+1, fast)
+    fireEvent.click(screen.getByRole('radio', { name: /^unread$/i })); // → unread (seq N, slow)
+    fireEvent.click(screen.getByRole('radio', { name: /^all$/i })); // → all (seq N+1, fast)
 
     await screen.findByText('Newest');
 

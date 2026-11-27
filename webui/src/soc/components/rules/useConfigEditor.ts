@@ -49,14 +49,21 @@ export interface ConfigEditorState<C> {
 export function useConfigEditor<C extends object>(
   client: ConfigClient<C>,
   defaults: C,
+  options?: { enabled?: boolean },
 ): ConfigEditorState<C> {
+  const enabled = options?.enabled ?? true;
   const [saved, setSaved] = React.useState<C>(defaults);
   const [draft, setDraftState] = React.useState<C>(defaults);
-  const [loading, setLoading] = React.useState(true);
+  const [loading, setLoading] = React.useState(enabled);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<unknown>(null);
 
   const reload = React.useCallback(async () => {
+    if (!enabled) {
+      setLoading(false);
+      setError(null);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -72,7 +79,7 @@ export function useConfigEditor<C extends object>(
     // `defaults`/`client` are stable per feature; intentionally not deps to avoid a
     // reload loop from a fresh object literal each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [enabled]);
 
   React.useEffect(() => {
     void reload();
@@ -95,6 +102,7 @@ export function useConfigEditor<C extends object>(
   const discard = React.useCallback(() => setDraftState(saved), [saved]);
 
   const save = React.useCallback(async () => {
+    if (!enabled) throw new Error('This configuration is not available to the current user.');
     setSaving(true);
     try {
       const res = await client.putConfig(draft);
@@ -106,7 +114,7 @@ export function useConfigEditor<C extends object>(
       setSaving(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft]);
+  }, [draft, enabled]);
 
   return {
     draft,

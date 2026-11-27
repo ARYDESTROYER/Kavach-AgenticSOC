@@ -1,13 +1,18 @@
 /**
- * grading.tsx — the DERIVED AI-decision grading module (Round-7 #10, W0.12).
+ * grading.tsx: the DERIVED AI-decision grading module (Round-7 #10, W0.12; Round 15 D4.4).
  *
  * Covers:
- *   1. the FULL 3×6 verdict×disposition derive map (deriveAgreement).
- *   2. the rendered agree/override badge text (GradingFields, from props).
- *   3. gradingToFeedbackInput shape-parity with the existing CaseFeedbackInput.
+ *   1. the FULL 3×6 verdict×disposition derive map (deriveAgreement) and the D4.3 note rule.
+ *   2. the agreement shown as text (AgreementLine) and the rating body (GradingFields,
+ *      RateTheAi: stars, and "What did the AI miss?" on an override only).
+ *   3. gradingToFeedbackInput shape-parity with the existing CaseFeedbackInput, which
+ *      never carries `actual_outcome` (D4.4).
  */
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type { CaseFeedbackInput } from '@/lib/api';
 import {
@@ -17,15 +22,20 @@ import {
   gradingToFeedbackInput,
   isGradingDirty,
   starsToScore,
+  requiresDisagreementNote,
+  AgreementLine,
   GradingFields,
   GradingHistory,
+  OUTCOME_OPTIONS,
+  RateTheAi,
+  outcomeWords,
   type GradingDraft,
 } from '../grading';
 
 /* --------------------------------------------------------- 1. derive map --- */
 
 // Explicit oracle (NOT computed from the same map the SUT uses).
-const EXPECT: Record<string, Record<string, 'match' | 'override' | 'none'>> = {
+const EXPECT: Record<string, Record<string, 'match' | 'override' | 'resolved' | 'none'>> = {
   TRUE_POSITIVE: {
     true_positive: 'match',
     false_positive: 'override',
@@ -42,17 +52,19 @@ const EXPECT: Record<string, Record<string, 'match' | 'override' | 'none'>> = {
     duplicate: 'none',
     undetermined: 'override',
   },
+  // Round 12 (D15): a concrete outcome RESOLVES the NEEDS_HUMAN hand-off; it is never
+  // an override (agent-effectiveness must not count it as a disagreement).
   NEEDS_HUMAN: {
-    true_positive: 'override',
-    false_positive: 'override',
-    benign: 'override',
+    true_positive: 'resolved',
+    false_positive: 'resolved',
+    benign: 'resolved',
     suspicious: 'match',
     duplicate: 'none',
     undetermined: 'match',
   },
 };
 
-describe('deriveAgreement — the full 3×6 map', () => {
+describe('deriveAgreement: the full 3×6 map', () => {
   for (const verdict of Object.keys(EXPECT)) {
     for (const disposition of Object.keys(EXPECT[verdict])) {
       const want = EXPECT[verdict][disposition];
@@ -73,6 +85,13 @@ describe('deriveAgreement — the full 3×6 map', () => {
     });
   });
 
+  it('settles a NEEDS_HUMAN hand-off with NO assessment: neither disagree nor an unstated agree', () => {
+    const a = deriveAgreement('NEEDS_HUMAN', 'false_positive');
+    expect(a).toEqual({ kind: 'resolved', toLabel: 'False positive' });
+    expect(a).not.toHaveProperty('assessment');
+    expect(agreementText(a)).toBe("Your classification settles the AI's hand-off (Needs human review → False positive)");
+  });
+
   it('is none when verdict OR disposition is missing (hide badge)', () => {
     expect(deriveAgreement(undefined, 'true_positive').kind).toBe('none');
     expect(deriveAgreement('TRUE_POSITIVE', undefined).kind).toBe('none');
@@ -91,75 +110,87 @@ describe('deriveAgreement — the full 3×6 map', () => {
 
   it('builds the override text with humanized from → to labels', () => {
     const a = deriveAgreement('FALSE_POSITIVE', 'true_positive');
-    expect(agreementText(a)).toBe('Overrides AI verdict (False positive → True positive)');
-    expect(agreementText(deriveAgreement('TRUE_POSITIVE', 'true_positive'))).toBe('Matches AI verdict');
+    expect(agreementText(a)).toBe('Your classification overrides the AI (False positive → True positive)');
+    expect(agreementText(deriveAgreement('TRUE_POSITIVE', 'true_positive'))).toBe('Your classification agrees with the AI');
     expect(agreementText(deriveAgreement('TRUE_POSITIVE', 'duplicate'))).toBeNull();
   });
 });
 
-/* ----------------------------------------------------- 2. badge from props --- */
+/* ------------------------------------- 2. agreement text and the rating body --- */
 
-describe('GradingFields — derived badge from read-only props', () => {
-  it('renders "Overrides AI verdict (X → Y)" on a mismatch + reveals the miss line', () => {
-    render(
-      <GradingFields
-        verdict="FALSE_POSITIVE"
-        disposition="true_positive"
-        draft={emptyGradingDraft()}
-        onChange={() => {}}
-      />,
-    );
-    expect(
-      screen.getByText('Overrides AI verdict (False positive → True positive)'),
-    ).toBeInTheDocument();
-    // The "What did the AI miss?" line is revealed only on a mismatch.
-    expect(screen.getByLabelText(/what did the ai miss/i)).toBeInTheDocument();
+describe('AgreementLine: the derived agreement as text (D4.4)', () => {
+  it('renders "Your classification overrides the AI (X → Y)" on a mismatch', () => {
+    render(<AgreementLine verdict="FALSE_POSITIVE" disposition="true_positive" />);
+    expect(screen.getByText('Your classification overrides the AI (False positive → True positive)')).toBeInTheDocument();
   });
 
-  it('renders "Matches AI verdict" on a match + hides the miss line', () => {
-    render(
-      <GradingFields
-        verdict="TRUE_POSITIVE"
-        disposition="true_positive"
-        draft={emptyGradingDraft()}
-        onChange={() => {}}
-      />,
+  it('renders "Your classification agrees with the AI" on a match, with the AI line beside it', () => {
+    render(<AgreementLine verdict="TRUE_POSITIVE" disposition="true_positive" aiLine="AI verdict: True positive (80%)" />);
+    expect(screen.getByText('Your classification agrees with the AI')).toBeInTheDocument();
+    expect(screen.getByText('AI verdict: True positive (80%)')).toBeInTheDocument();
+  });
+
+  it('says nothing about agreement before a disposition is chosen', () => {
+    const { container } = render(<AgreementLine verdict="TRUE_POSITIVE" />);
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe('the note rule (D4.3)', () => {
+  it('asks for a note on an override only', () => {
+    expect(requiresDisagreementNote('TRUE_POSITIVE', 'false_positive')).toBe(true);
+    expect(requiresDisagreementNote('FALSE_POSITIVE', 'suspicious')).toBe(true);
+    expect(requiresDisagreementNote('TRUE_POSITIVE', 'true_positive')).toBe(false);
+    // A Needs human review resolution, a duplicate and a case with no verdict never do.
+    expect(requiresDisagreementNote('NEEDS_HUMAN', 'true_positive')).toBe(false);
+    expect(requiresDisagreementNote('TRUE_POSITIVE', 'duplicate')).toBe(false);
+    expect(requiresDisagreementNote(undefined, 'false_positive')).toBe(false);
+  });
+});
+
+describe('GradingFields and RateTheAi: the rating body', () => {
+  it('reveals "What did the AI miss?" on a mismatch only', () => {
+    const { rerender } = render(
+      <GradingFields verdict="FALSE_POSITIVE" disposition="true_positive" draft={emptyGradingDraft()} onChange={() => {}} />,
     );
-    expect(screen.getByText('Matches AI verdict')).toBeInTheDocument();
+    expect(screen.getByLabelText(/what did the ai miss/i)).toBeInTheDocument();
+    rerender(
+      <GradingFields verdict="TRUE_POSITIVE" disposition="true_positive" draft={emptyGradingDraft()} onChange={() => {}} />,
+    );
     expect(screen.queryByLabelText(/what did the ai miss/i)).not.toBeInTheDocument();
   });
 
-  it('hides the derived badge when there is no disposition', () => {
-    render(<GradingFields verdict="TRUE_POSITIVE" draft={emptyGradingDraft()} onChange={() => {}} />);
-    expect(screen.queryByText(/matches ai verdict/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/overrides ai verdict/i)).not.toBeInTheDocument();
+  it('never asks what actually happened (the disposition is the classification)', () => {
+    render(<GradingFields verdict="TRUE_POSITIVE" disposition="true_positive" draft={emptyGradingDraft()} onChange={() => {}} />);
+    expect(screen.queryByLabelText(/what actually happened/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
   });
 
-  it('keeps the 3 quality stars behind the "Rate in detail" disclosure', () => {
-    render(
-      <GradingFields
-        verdict="TRUE_POSITIVE"
-        disposition="true_positive"
-        draft={emptyGradingDraft()}
-        onChange={() => {}}
-      />,
-    );
-    // Collapsed by default — the disclosure trigger is present, the star rows are not.
-    expect(screen.getByRole('button', { name: /rate in detail/i })).toBeInTheDocument();
+  it('writes a star rating into the draft', () => {
+    const onChange = vi.fn();
+    render(<GradingFields verdict="TRUE_POSITIVE" disposition="true_positive" draft={emptyGradingDraft()} onChange={onChange} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Reasoning quality: 4 of 5' }));
+    expect(onChange).toHaveBeenCalledWith({ reasoning_quality: 4 });
+  });
+
+  it('keeps the 3 quality stars behind the collapsed "Rate the AI (optional)" disclosure', () => {
+    render(<RateTheAi verdict="TRUE_POSITIVE" disposition="true_positive" draft={emptyGradingDraft()} onChange={() => {}} />);
+    expect(screen.getByRole('button', { name: /rate the ai \(optional\)/i })).toBeInTheDocument();
     expect(screen.queryByLabelText(/accuracy: 1 of 5/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /rate the ai \(optional\)/i }));
+    expect(screen.getByRole('button', { name: 'Accuracy: 1 of 5' })).toBeInTheDocument();
   });
 });
 
 /* --------------------------------------------------- 3. shape-parity + libs --- */
 
-describe('gradingToFeedbackInput — shape-parity with CaseFeedbackInput', () => {
+describe('gradingToFeedbackInput: shape-parity with CaseFeedbackInput', () => {
   it('maps stars→0..1, keeps only-present fields, passes analyst through', () => {
     const draft: GradingDraft = {
       assessment: 'disagree',
       accuracy: 5,
       reasoning_quality: 4,
       action_appropriateness: 3,
-      actual_outcome: 'true_positive',
       time_saved_minutes: 30,
       comment: '  missed lateral movement  ',
     };
@@ -169,17 +200,20 @@ describe('gradingToFeedbackInput — shape-parity with CaseFeedbackInput', () =>
       accuracy: 1,
       reasoning_quality: 0.8,
       action_appropriateness: 0.6,
-      actual_outcome: 'true_positive',
       time_saved_minutes: 30,
       comment: 'missed lateral movement',
       analyst: 'jdoe',
     });
+    // D4.4: the Console never sets `actual_outcome` from a close.
+    expect(body).not.toHaveProperty('actual_outcome');
   });
 
-  it('defaults assessment to "agree" and omits unset fields on an empty draft', () => {
+  it('never defaults assessment to "agree": an empty draft posts no fields at all', () => {
+    // A defaulted "agree" made every settled Needs-human close count toward Agreement.
     const body = gradingToFeedbackInput(emptyGradingDraft());
-    expect(body).toEqual({ assessment: 'agree' });
-    expect(Object.keys(body)).toEqual(['assessment']);
+    expect(body).toEqual({});
+    expect(gradingToFeedbackInput({ assessment: 'agree' })).toEqual({ assessment: 'agree' });
+    expect(gradingToFeedbackInput({ assessment: 'disagree' })).toEqual({ assessment: 'disagree' });
   });
 
   it('drops zero-star / zero-time / whitespace-only / absent-analyst fields', () => {
@@ -190,7 +224,7 @@ describe('gradingToFeedbackInput — shape-parity with CaseFeedbackInput', () =>
       time_saved_minutes: 0,
       comment: '   ',
     });
-    expect(body).toEqual({ assessment: 'agree' });
+    expect(body).toEqual({});
   });
 
   it('starsToScore maps the 1-5 ladder (0/undefined → undefined)', () => {
@@ -239,5 +273,43 @@ describe('grading helpers', () => {
   it('GradingHistory renders nothing without prior feedback', () => {
     const { container } = render(<GradingHistory feedback={[]} />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+
+/* ----------------------------------------------- 4. ground-truth intake (G1) --- */
+
+const OPENAPI = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../../openapi.json',
+);
+
+describe('a stored outcome is read back, never asked (D4.1, D4.4)', () => {
+  it('words EXACTLY the vocabulary the backend enum declares', () => {
+    // The compile-time guard (`FeedbackOutcomeCoverage`) proves coverage against the
+    // GENERATED type. This proves the list matches the committed SPEC, so a hand-written
+    // list can never quietly drift from `constants.FeedbackOutcome`.
+    const spec = JSON.parse(readFileSync(OPENAPI, 'utf8'));
+    const declared: string[] = spec.components.schemas.FeedbackOutcome.enum;
+    expect(OUTCOME_OPTIONS.map((o) => o.value).slice().sort()).toEqual([...declared].sort());
+  });
+
+  it('reads a stored outcome in short words', () => {
+    expect(outcomeWords('true_positive')).toBe('True positive');
+    expect(outcomeWords('false_negative')).toBe('False negative');
+    expect(outcomeWords('')).toBe('');
+  });
+
+  it('shows a stored outcome in the grading history, not an unstated one', () => {
+    render(
+      <GradingHistory
+        feedback={[
+          { ts: '2026-07-01T00:00:00Z', analyst: 'a1', assessment: 'agree', actual_outcome: 'false_positive' },
+          { ts: '2026-07-02T00:00:00Z', analyst: 'a2', assessment: 'agree', actual_outcome: 'unknown' },
+        ]}
+      />,
+    );
+    expect(screen.getByText('False positive')).toBeInTheDocument();
+    expect(screen.queryByText('Not stated')).toBeNull();
   });
 });

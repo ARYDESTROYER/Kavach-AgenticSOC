@@ -10,14 +10,15 @@
  * We mount <Login/> inside the Theme + Tooltip providers, mock branding, the setup
  * status, and the SSO providers, and assert each mode renders WITHOUT crashing:
  *   1. signin: identity-first Username → Continue → Password / Back / Sign in,
- *      plus the SSO buttons (google/microsoft icons).
+ *      plus the labelled SSO buttons (Round 16 WP04: one quiet column on Console
+ *      tokens, Continue always shown, a three-button appearance group).
  *   2. setup:  the create-admin title + a password-strength meter once typing.
  *   3. mfa:    driving the password form (requires_mfa) reveals the 6-cell OTP.
  *   4. change: driving the password form (must_change_password) reveals the form.
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 // ---- Mock the typed api client BEFORE importing the component ------------- //
 const loginMock = vi.fn();
@@ -27,6 +28,9 @@ const brandingMock = vi.fn();
 // The low-level api.post — the OOBE setup client (login.api.ts) posts /setup/account
 // and MfaSetupCard posts /auth/mfa/*; capture the calls per-path here.
 const postMock = vi.fn();
+// Mandated login-phase enrollment (Round 11): the pending-token-gated endpoints.
+const enrollSetupMock = vi.fn();
+const enrollConfirmMock = vi.fn();
 
 vi.mock('@/lib/api', () => {
   class ApiError extends Error {
@@ -61,6 +65,8 @@ vi.mock('@/lib/api', () => {
           confirm: vi.fn().mockResolvedValue({ ok: true }),
           verify: vi.fn().mockResolvedValue({ user: {} }),
           disable: vi.fn().mockResolvedValue({ ok: true }),
+          enrollSetup: (t: string) => enrollSetupMock(t),
+          enrollConfirm: (t: string, c: string) => enrollConfirmMock(t, c),
         },
         sso: {
           providers: () => ssoProvidersMock(),
@@ -88,6 +94,15 @@ const BASE_BRANDING = {
 import { ThemeProvider } from '../theme';
 import { TooltipProvider } from '@/ui/tooltip';
 import Login from '../pages/Login';
+// The MOCKED ApiError (status, message) — for driving 401 expired-pending paths.
+import { ApiError as ApiErrorFromMock } from '@/lib/api';
+
+/** Every accessible name on the sign-in screen, the appearance buttons included. */
+function loginAriaLabels(): string[] {
+  return Array.from(document.body.querySelectorAll('[aria-label]')).map(
+    (el) => el.getAttribute('aria-label') ?? '',
+  );
+}
 
 function renderLogin() {
   return render(
@@ -103,16 +118,19 @@ async function advanceSigninToPassword(username = 'alice') {
   const usernameInput = await screen.findByLabelText('Username');
   expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument();
+  // Continue is there from the first paint (no pop-in on the first keystroke).
+  expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
 
   fireEvent.change(usernameInput, { target: { value: username } });
-  const continueButton = await screen.findByRole('button', { name: 'Continue' });
-  expect(continueButton).toBeEnabled();
+  const continueButton = screen.getByRole('button', { name: 'Continue' });
   fireEvent.click(continueButton);
 
   const passwordInput = await screen.findByLabelText('Password');
   expect(passwordInput).toHaveAttribute('placeholder', 'Enter your password');
   expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled();
+  // Round 14 (LI2): Sign in keeps its primary look and stays enabled with an empty
+  // password; an empty submit names the field instead (see the test below).
+  expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
   expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
   return { usernameInput, passwordInput };
 }
@@ -145,106 +163,128 @@ describe('Login — four-mode render', () => {
     const username = await screen.findByLabelText('Username');
     expect(username).toHaveAttribute('placeholder', 'Enter your username');
     expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument();
-    // The identity surface is one quiet, centred slab with no hero, border,
-    // elevation, or workspace chrome around the credential controls.
-    const panel = container.querySelector('[data-login-panel]');
-    const slab = container.querySelector('[data-login-slab]');
-    const slabFrame = slab?.parentElement;
-    const content = slab?.firstElementChild;
+    // One quiet column on the Console's own canvas: no slab, card, hero, ambient
+    // tiles or gradient controls (Round 16 WP04).
     const canvas = container.querySelector('[data-login-shell="minimal"]');
-    const ambient = container.querySelector('[data-login-ambient-grid]');
-    expect(canvas).toHaveClass('login-auth-canvas', 'overflow-x-hidden');
-    // Live Mistral geometry: the normal identity state resolves to 480 × 492,
-    // with 48 px top/side padding, 96 px bottom padding, and a 384 px control
-    // measure. It remains a minimum—not a fixed height—so MFA/setup can grow;
-    // narrow screens retain the full-viewport sheet.
-    expect(slabFrame).toHaveClass('sm:w-[30rem]', 'sm:max-w-[30rem]');
-    expect(slab).toHaveClass(
-      'min-h-[100dvh]',
-      'max-h-[100dvh]',
-      'flex-col',
-      'overflow-y-auto',
-      'sm:min-h-[30.75rem]',
-      'sm:w-[30rem]',
-      'sm:px-12',
-      'sm:pb-24',
-      'sm:pt-12',
-    );
-    expect(slab).not.toHaveClass('sm:h-[30.75rem]');
-    expect(content).toHaveClass('w-full', 'max-w-sm', 'my-auto', 'sm:my-0');
-    expect(slab).toHaveClass('login-auth-slab');
-    expect(slab).not.toHaveClass('sm:border-x', 'rounded', 'shadow-elev2');
-    expect(ambient).toHaveAttribute('aria-hidden', 'true');
-    expect(ambient).toHaveAttribute('data-login-ambient-cadence', 'mistral');
-    expect(ambient).toHaveClass('pointer-events-none', 'hidden', 'sm:block');
-    expect(
-      Array.from(ambient?.querySelectorAll<HTMLElement>('[data-login-guide]') ?? []).map(
-        (guide) => guide.dataset.loginGuide,
-      ).sort(),
-    ).toEqual(['bottom', 'left', 'right', 'top']);
-    const ambientTiles = Array.from(
-      ambient?.querySelectorAll<HTMLElement>('[data-login-ambient-tile]') ?? [],
-    );
-    expect(ambientTiles).toHaveLength(4);
-    expect(ambientTiles.map((tile) => tile.dataset.loginAmbientTile).sort()).toEqual([
-      '0',
-      '1',
-      '2',
-      '3',
-    ]);
-    expect(panel).toHaveAttribute('data-login-surface', 'minimal');
-    expect(panel).toHaveClass('rounded-none', 'border-0', 'shadow-none');
-    expect(panel).not.toHaveClass('shadow-elev2');
-    expect(screen.queryByText('Protected operator access')).not.toBeInTheDocument();
-    expect(screen.queryByText('Identity & access')).not.toBeInTheDocument();
+    expect(canvas).toHaveClass('login-canvas', 'bg-canvas', 'min-h-dvh', 'overflow-x-hidden');
+    expect(canvas).not.toHaveClass('login-auth-canvas');
+    const column = container.querySelector('[data-login-identity-pane]');
+    expect(column).toHaveClass('login-enter', 'w-full', 'sm:w-[25rem]');
+    expect(container.querySelector('[data-login-ambient-grid]')).toBeNull();
+    expect(container.querySelector('[data-login-slab]')).toBeNull();
+    expect(container.querySelector('.login-shine-button, .login-theme-pill')).toBeNull();
     expect(screen.queryByText('Trust path')).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { level: 1, name: 'Welcome back' })).toBeInTheDocument();
+    // The heading names the organization; there is one h1.
+    expect(screen.getByRole('heading', { level: 1, name: 'Sign in to Acme SOC' })).toBeInTheDocument();
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
-    expect(username).toHaveClass('h-12', 'px-3.5');
+    expect(username).toHaveClass('h-11', 'px-3.5', 'border-input');
     expect(username).toHaveClass('text-lg', 'sm:text-base');
     expect(username).toBeRequired();
-    expect(screen.getByRole('group', { name: 'Appearance' })).toBeInTheDocument();
-    expect(screen.getByRole('group', { name: 'Appearance' })).not.toHaveClass('border');
-    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Use dark theme' }));
+    // Continue is always rendered, on the ordinary primary Button.
+    const continueButton = screen.getByRole('button', { name: 'Continue' });
+    expect(continueButton).toHaveClass('h-11', 'w-full', 'bg-primary', 'text-primary-foreground');
+
+    // The appearance group: three named buttons, the stored mode pressed.
+    const group = screen.getByRole('group', { name: 'Appearance' });
+    const buttons = within(group).getAllByRole('button');
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Use system theme',
+      'Light theme',
+      'Dark theme',
+    ]);
+    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Dark theme' }));
     expect(window.localStorage.getItem('soc.theme')).toBe('dark');
-    expect(screen.getByRole('button', { name: 'Use dark theme' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    expect(document.querySelector('[data-login-shell]')).toHaveAttribute(
-      'data-login-theme-palette-settling',
-      'true',
-    );
-    // SSO buttons appear once the providers resolve.
+    expect(screen.getByRole('button', { name: 'Dark theme' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByRole('button', { name: 'Light theme' }));
+    expect(window.localStorage.getItem('soc.theme')).toBe('light');
+    await waitFor(() => expect(document.documentElement).not.toHaveClass('dark'));
+    fireEvent.click(screen.getByRole('button', { name: 'Use system theme' }));
+    expect(window.localStorage.getItem('soc.theme')).toBe('system');
+    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute('aria-pressed', 'true');
+
+    // Labelled, full-width SSO buttons under an "or" divider; the visible text is the name.
     const googleSso = await screen.findByRole('button', { name: 'Sign in with Google' });
     const microsoftSso = screen.getByRole('button', { name: 'Sign in with Microsoft' });
-    expect(googleSso).toHaveClass('h-10');
-    expect(microsoftSso).toHaveClass('h-10');
+    for (const sso of [googleSso, microsoftSso]) {
+      // At least 44px: a long provider name wraps onto a taller button (FXC).
+      expect(sso).toHaveClass('min-h-11', 'w-full');
+      expect(sso).not.toHaveAttribute('aria-label');
+    }
+    expect(googleSso).toHaveTextContent('Sign in with Google');
+    expect(screen.getByRole('group', { name: 'Single sign-on' })).toContainElement(googleSso);
     expect(screen.queryByText('Session activity is audited')).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Help & support/ })).toHaveAttribute(
       'href',
       'https://example.com/help',
     );
 
-    // Mistral-style staged disclosure: Continue appears only after identity input.
     fireEvent.change(username, { target: { value: 'alice' } });
-    const continueButton = await screen.findByRole('button', { name: 'Continue' });
-    expect(continueButton).toHaveClass('h-10');
     fireEvent.click(continueButton);
 
     const password = await screen.findByLabelText('Password');
-    expect(password).toHaveClass('h-12', 'pl-3.5', 'pr-11');
+    expect(password).toHaveClass('h-11', 'pl-3.5', 'pr-11');
     expect(password).toHaveClass('text-lg', 'sm:text-base');
     expect(password).toBeRequired();
+    // The incoming step plays the forward transition; the heading keeps its place.
+    expect(container.querySelector('[data-login-step="signin:password"]')).toHaveClass('login-step-forward');
+    expect(screen.getByRole('heading', { level: 1, name: 'Sign in to Acme SOC' })).toBeInTheDocument();
+    // The identity row already names the account, so no description repeats it.
+    expect(screen.queryByText('Enter the password for alice.')).not.toBeInTheDocument();
+    expect(document.getElementById('login-mode-description')).toBeNull();
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
     expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+  });
+
+  it('names the first appearance button for the organization default theme when Branding sets one', async () => {
+    // The factory default: Branding sets dark. On `system` the page follows it, as the
+    // Console does, so the pressed button must say so (a light-mode browser stays dark).
+    brandingMock.mockResolvedValue({ ...BASE_BRANDING, default_theme: 'dark' });
+    renderLogin();
+    await screen.findByLabelText('Username');
+    const group = screen.getByRole('group', { name: 'Appearance' });
+    const first = await within(group).findByRole('button', { name: 'Use the organization default theme' });
+    expect(first).toHaveAttribute('title', 'Use the organization default theme');
+    expect(first).toHaveAttribute('aria-pressed', 'true');
+    expect(within(group).queryByRole('button', { name: 'Use system theme' })).toBeNull();
+    await waitFor(() => expect(document.documentElement).toHaveClass('dark'));
+    // An explicit choice still wins, and the default stays one press away.
+    fireEvent.click(within(group).getByRole('button', { name: 'Light theme' }));
+    await waitFor(() => expect(document.documentElement).not.toHaveClass('dark'));
+    expect(first).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(first);
+    expect(window.localStorage.getItem('soc.theme')).toBe('system');
+    await waitFor(() => expect(document.documentElement).toHaveClass('dark'));
+    expect(first).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('names the legacy dark default the same way', async () => {
+    brandingMock.mockResolvedValue({ ...BASE_BRANDING, dark_mode_default: true });
+    renderLogin();
+    await screen.findByLabelText('Username');
+    expect(
+      await screen.findByRole('button', { name: 'Use the organization default theme' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it.each([
+    ['system', { default_theme: 'system' }],
+    ['unset', {}],
+  ])('keeps "Use system theme" when the organization default is %s', async (_label, extra) => {
+    brandingMock.mockResolvedValue({ ...BASE_BRANDING, ...extra });
+    renderLogin();
+    // The organization name arrives with the branding, so the name below is read after
+    // the organization default is known, not before it.
+    await screen.findByRole('heading', { level: 1, name: 'Sign in to Acme SOC' });
+    const group = screen.getByRole('group', { name: 'Appearance' });
+    expect(within(group).getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(within(group).queryByRole('button', { name: 'Use the organization default theme' })).toBeNull();
   });
 
   it('returns from password to identity with the username preserved and focused', async () => {
@@ -291,6 +331,10 @@ describe('Login — four-mode render', () => {
     expect(group).toBeInTheDocument();
     const cells = screen.getAllByLabelText(/Authentication code digit/);
     expect(cells).toHaveLength(6);
+    // One vocabulary with the two-factor setup cards ("Verify and sign in", "Verify and
+    // turn on"): the submit says "and", never an ampersand (Round 14).
+    expect(screen.getByRole('button', { name: 'Verify and continue' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Verify &/ })).toBeNull();
   });
 
   it('transitions to CHANGE-PASSWORD mode after a must_change login', async () => {
@@ -323,6 +367,53 @@ describe('Login — four-mode render', () => {
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
   });
 
+  it('names an empty password on submit and focuses it, without calling the server (LI2)', async () => {
+    renderLogin();
+    const { passwordInput: password } = await advanceSigninToPassword('analyst');
+
+    const signIn = screen.getByRole('button', { name: 'Sign in' });
+    // Never the flat inert face: the button is enabled and not busy.
+    expect(signIn).toBeEnabled();
+    expect(signIn).not.toHaveAttribute('data-busy');
+    fireEvent.click(signIn);
+
+    expect(await screen.findByText('Enter your password.')).toBeInTheDocument();
+    await waitFor(() => expect(password).toHaveFocus());
+    expect(password).toHaveAttribute('aria-invalid', 'true');
+    expect(password).toHaveAttribute('aria-describedby', 'login-error');
+    expect(loginMock).not.toHaveBeenCalled();
+
+    // Typing a password and submitting again clears the message and signs in.
+    loginMock.mockResolvedValue({ user: {} });
+    fireEvent.change(password, { target: { value: 'correct horse' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('analyst', 'correct horse'));
+    expect(screen.queryByText('Enter your password.')).not.toBeInTheDocument();
+  });
+
+  it('shows no em dash in the sign-in copy or any accessible name', async () => {
+    renderLogin();
+    await screen.findByLabelText('Username');
+    expect(document.body.textContent ?? '').not.toMatch(/[\u2013\u2014\u00a0]/);
+    // The appearance buttons are checked like every other name on the screen.
+    expect(loginAriaLabels()).toEqual(
+      expect.arrayContaining(['Use system theme', 'Light theme', 'Dark theme']),
+    );
+    loginAriaLabels().forEach((label) => expect(label).not.toMatch(/[\u2013\u2014]/));
+  });
+
+  it('keeps the focus-only mode heading free of an always-on outline (forced colours)', async () => {
+    renderLogin();
+    const heading = await screen.findByRole('heading', { level: 1 });
+    // Tailwind 3 `outline-none` is a permanent 2px transparent outline, which
+    // forced-colours mode paints as a box over the subtitle. `outline-0` only sets the
+    // width, so Chromium still drew its `auto` focus box when the heading took focus
+    // (FXC). `[outline:none]` sets the style: no box when focused, none at rest.
+    expect(heading).toHaveAttribute('tabindex', '-1');
+    expect(heading.className).not.toMatch(/\boutline-none\b|\boutline-0\b/);
+    expect(heading).toHaveClass('[outline:none]');
+  });
+
   it('keeps the username and returns focus to an announced invalid password after failure', async () => {
     loginMock.mockRejectedValue(new Error('offline'));
     renderLogin();
@@ -331,7 +422,7 @@ describe('Login — four-mode render', () => {
     fireEvent.change(password, { target: { value: 'incorrect' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
 
-    expect(await screen.findByText('Could not reach the backend. Please try again.')).toBeInTheDocument();
+    expect(await screen.findByText('Could not reach the server. Try again.')).toBeInTheDocument();
     await waitFor(() => {
       expect(password).toHaveValue('');
       expect(password).toHaveAttribute('aria-invalid', 'true');
@@ -365,6 +456,23 @@ describe('Login — OOBE account-setup (setup/account)', () => {
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: pw } });
     fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: confirmPw } });
   }
+
+  it('shows no em dash in the setup copy or any accessible name, before and after a policy message', async () => {
+    renderLogin();
+    await screen.findByText('Create your admin account');
+    const noEmDash = () => {
+      expect(document.body.textContent ?? '').not.toContain('\u2014');
+      loginAriaLabels().forEach((label) => expect(label).not.toContain('\u2014'));
+    };
+    expect(
+      screen.getByText('No accounts exist yet. Create the first administrator to get started. Choose a strong, unique password.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Use at least 12 characters, not your username or a common password.')).toBeInTheDocument();
+    noEmDash();
+    await fillSetup('admin12345678');
+    expect(screen.getByText('That password is too common. Choose a less predictable one.')).toBeInTheDocument();
+    noEmDash();
+  });
 
   it('keeps the create button DISABLED for a weak/short password (client policy gate)', async () => {
     renderLogin();
@@ -451,7 +559,7 @@ describe('Login — white-label copy + layouts', () => {
     await screen.findByLabelText('Username');
     expect(await screen.findByRole('heading', { level: 1, name: 'Welcome to Contoso SOC' })).toBeInTheDocument();
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
-    expect(screen.queryByRole('heading', { level: 1, name: 'Welcome back' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 1, name: 'Sign in to Acme SOC' })).not.toBeInTheDocument();
     expect(screen.getByText('Investigate faster.')).toBeInTheDocument();
     expect(screen.getByText('Fast')).toBeInTheDocument();
     expect(screen.getByText('Audited')).toBeInTheDocument();
@@ -483,8 +591,161 @@ describe('Login — white-label copy + layouts', () => {
       expect(container.querySelector('#login-password')).toBeNull();
 
       fireEvent.change(username, { target: { value: 'analyst' } });
-      fireEvent.click(await screen.findByRole('button', { name: 'Continue' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
       expect(await screen.findByLabelText('Password')).toBeInTheDocument();
     },
   );
+});
+
+// --------------------------------------------------------------------------- //
+// Round 11: MANDATED MFA enrollment DURING login. When the login response carries
+// `mfa_enrollment_required` (required-but-unenrolled), the user completes TOTP
+// enrollment inside the login itself — pending-token-gated enroll-setup/confirm —
+// and confirm success IS the completed login. There is NO skip affordance.
+// --------------------------------------------------------------------------- //
+describe('Login — mandated MFA enrollment during login', () => {
+  beforeEach(() => {
+    loginMock.mockReset();
+    setupStatusMock.mockReset();
+    ssoProvidersMock.mockReset();
+    brandingMock.mockReset();
+    postMock.mockReset();
+    enrollSetupMock.mockReset();
+    enrollConfirmMock.mockReset();
+    brandingMock.mockResolvedValue({ ...BASE_BRANDING });
+    ssoProvidersMock.mockResolvedValue({ providers: [] });
+    setupStatusMock.mockResolvedValue({ setup_complete: true, seeded_default: false });
+    loginMock.mockResolvedValue({
+      requires_mfa: true,
+      mfa_enrollment_required: true,
+      pending_token: 'pend-enroll-1',
+    });
+    enrollSetupMock.mockResolvedValue({
+      secret: 'ENROLLSECRET234567',
+      otpauth_uri: 'otpauth://totp/Acme%20SOC:alice?secret=ENROLLSECRET234567',
+      recovery_codes: ['1111-2222', '3333-4444'],
+    });
+    enrollConfirmMock.mockResolvedValue({
+      token: 't',
+      user: { username: 'alice', role: 'analyst_tier1', must_change_password: false, mfa_enabled: true },
+    });
+  });
+
+  async function driveToEnroll() {
+    const { passwordInput } = await advanceSigninToPassword('alice');
+    fireEvent.change(passwordInput, { target: { value: 'pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(
+      await screen.findByText('Set up two-factor authentication'),
+    ).toBeInTheDocument();
+  }
+
+  it('renders the auto-started setup step with recovery codes and NO skip affordance', async () => {
+    const onAuth = vi.fn();
+    render(
+      <ThemeProvider>
+        <TooltipProvider>
+          <Login onAuthenticated={onAuth} />
+        </TooltipProvider>
+      </ThemeProvider>,
+    );
+    await driveToEnroll();
+
+    // The plain explanation of WHY this step is mandatory.
+    expect(
+      screen.getByText(/administrator requires multi-factor authentication/i),
+    ).toBeInTheDocument();
+    // Entering the mode unmounts the sign-in form — focus moves to the mode
+    // HEADING (tabIndex=-1 + programmatic focus) so SR/keyboard users land on
+    // "Set up two-factor authentication" instead of dropping to <body>, and the
+    // heading's describedby hands them the requirement explanation.
+    const heading = screen.getByRole('heading', {
+      level: 1,
+      name: 'Set up two-factor authentication',
+    });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading).toHaveAttribute('aria-describedby', 'login-mode-description');
+    expect(document.getElementById('login-mode-description')?.textContent).toMatch(
+      /administrator requires multi-factor authentication/i,
+    );
+    // The setup call was rerouted to the pending-token-gated enroll endpoint.
+    await waitFor(() => expect(enrollSetupMock).toHaveBeenCalledWith('pend-enroll-1'));
+    // QR-fallback secret + otpauth URI + recovery codes all render at the setup step.
+    expect(await screen.findByText('ENROLLSECRET234567')).toBeInTheDocument();
+    expect(screen.getByText(/otpauth:\/\/totp\/Acme%20SOC:alice/)).toBeInTheDocument();
+    expect(screen.getByText('1111-2222')).toBeInTheDocument();
+    expect(screen.getByText('3333-4444')).toBeInTheDocument();
+    // NO way to skip into the console; the only exits are enrollment or sign-in.
+    expect(screen.queryByRole('button', { name: /skip/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back to sign in' })).toBeInTheDocument();
+    expect(onAuth).not.toHaveBeenCalled();
+  });
+
+  it('confirm success is a COMPLETED login (session minted server-side)', async () => {
+    const onAuth = vi.fn();
+    render(
+      <ThemeProvider>
+        <TooltipProvider>
+          <Login onAuthenticated={onAuth} />
+        </TooltipProvider>
+      </ThemeProvider>,
+    );
+    await driveToEnroll();
+    await screen.findByText('ENROLLSECRET234567');
+
+    fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
+      target: { value: '123456' },
+    });
+    // Confirm success destroys the one-time recovery codes → the explicit
+    // saved-codes acknowledgment gates the submit.
+    fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and sign in' }));
+
+    await waitFor(() =>
+      expect(enrollConfirmMock).toHaveBeenCalledWith('pend-enroll-1', '123456'),
+    );
+    await waitFor(() => expect(onAuth).toHaveBeenCalled());
+  });
+
+  it('routes into the forced password change when the fresh session still must change it', async () => {
+    enrollConfirmMock.mockResolvedValue({
+      token: 't',
+      user: { username: 'alice', role: 'analyst_tier1', must_change_password: true, mfa_enabled: true },
+    });
+    const onAuth = vi.fn();
+    render(
+      <ThemeProvider>
+        <TooltipProvider>
+          <Login onAuthenticated={onAuth} />
+        </TooltipProvider>
+      </ThemeProvider>,
+    );
+    await driveToEnroll();
+    await screen.findByText('ENROLLSECRET234567');
+
+    fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and sign in' }));
+
+    expect(await screen.findByText('Set a new password')).toBeInTheDocument();
+    expect(onAuth).not.toHaveBeenCalled();
+  });
+
+  it('returns to sign-in with a clear message when the pending token has expired', async () => {
+    enrollSetupMock.mockRejectedValue(
+      new ApiErrorFromMock(401, 'invalid or expired pending session'),
+    );
+    renderLogin();
+    const { passwordInput } = await advanceSigninToPassword('alice');
+    fireEvent.change(passwordInput, { target: { value: 'pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    // The expired pending is handled gracefully: a plain explanation + the password
+    // step again (identity preserved) — never a dead-end or a silent failure.
+    expect(await screen.findByText(/setup session expired/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText('Password')).toBeInTheDocument();
+    expect(enrollSetupMock).toHaveBeenCalledWith('pend-enroll-1');
+  });
 });

@@ -1,0 +1,190 @@
+/**
+ * The phase tabs of a run (Round 14, SPEC §4.10.11, C10 B): one tab per phase the
+ * runbook uses ("Triage 3/3", "Investigate 1/4", "Contain 0/2" with a 6px amber dot when a
+ * step waits for approval), one tab stop with arrow keys (Radix Tabs), and below them only
+ * the selected phase's steps.
+ *
+ * The dot's fact is in the tab's accessible name ("Contain, 0 of 2 done, 1 waiting"). The
+ * selected tab is a neutral `bg-accent` fill with a neutral border, so only the Next step
+ * card carries the primary rail; in forced colours (where fills and border colours go) it
+ * keeps a 2px outline, so the selection never rests on colour alone. A bar fills with Done steps only; waiting is never drawn
+ * as progress. On a narrow pane the tabs scroll sideways with a fade at the edge.
+ *
+ * The list scrolls sideways, so it clips whatever lies outside it, the tabs' focus ring
+ * included: 2px of ring 2px off the tab. It reaches 4px past the tabs on every side
+ * (`PHASE_LIST_ROOM`), padding with a matching negative margin, so the ring is drawn whole
+ * while the tabs stay where they were; the fade sits on the list's own edge (XFUI3).
+ */
+import * as React from 'react';
+import { Check } from 'lucide-react';
+
+import { cn } from '@/lib/cn';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/tabs';
+import type { PhaseId } from '@/lib/types-runbooks';
+import { PHASE_LABEL, phaseFrameworkLine, WaitingDot } from '@/soc/runbooks/shared';
+
+import { useRunbookRun } from './context';
+import { nextStep, numberedSteps, phaseCounts, phaseTabName, phaseWords } from './model';
+import { focusHeading } from './NextStepCard';
+import { StepRow } from './StepRow';
+
+/**
+ * The ink of a phase tab's caption ("3/3 · Complete"): muted at rest, the foreground on
+ * the selected tab. The selected fill is `--accent`, which a grouped panel re-points to
+ * `--panel-accent`, and muted text on that wash is 4.2:1 in light, below 4.5:1 for 12px
+ * text, so the selected tab raises it (the pressed KPI tile does the same). The contrast
+ * gate measures the foreground on both selected fills in both themes.
+ */
+export const PHASE_CAPTION_INK = 'text-muted-foreground group-data-[state=active]:text-foreground';
+
+/**
+ * The room the phase list keeps around its tabs for their focus ring (`ring-2` drawn
+ * `ring-offset-2` off the tab, 4px in all): 4px of padding on every side, the same negative
+ * margin so the tabs do not move, and 0.5rem more width so the right edge stays put. The
+ * same 4px of scroll padding, so a tab the arrow keys scroll into view (the tab does it on
+ * focus: the browser leaves a half-hidden tab as it is) keeps its ring inside the clip. On
+ * a narrow pane the list keeps 2rem at its end for the fade (`narrow`) and scrolls a
+ * focused tab clear of it; the fade sits on the list's edge (`fade`), over its whole height.
+ */
+export const PHASE_LIST_ROOM = {
+  list: '-m-1 w-[calc(100%+0.5rem)] p-1 scroll-px-1',
+  narrow: 'pr-8 scroll-pr-9',
+  fade: '-inset-y-1 -right-1',
+} as const;
+
+export interface PhaseTabsProps {
+  /** The selected phase (controlled by the panel, defaulting to the Next step's). */
+  phase: PhaseId;
+  onPhaseChange: (phase: PhaseId) => void;
+  narrow: boolean;
+}
+
+export function PhaseTabs({ phase, onPhaseChange, narrow }: PhaseTabsProps) {
+  const ctx = useRunbookRun();
+  const run = ctx.run;
+  const counts = phaseCounts(run);
+  const steps = numberedSteps(run);
+  const next = nextStep(run);
+  const [expanded, setExpanded] = React.useState<string | null>(null);
+  const listRef = React.useRef<HTMLDivElement | null>(null);
+
+  // A request to open one step (from the Overview card or the "steps left" list).
+  const reveal = ctx.revealRequest;
+  React.useEffect(() => {
+    if (!reveal) return;
+    const target = steps.find((s) => s.step.id === reveal.stepId);
+    if (!target) return;
+    if (target.step.phase !== phase) onPhaseChange(target.step.phase);
+    if (next?.step.id !== target.step.id) setExpanded(target.step.id);
+    requestAnimationFrame(() => {
+      const button =
+        Array.from(document.querySelectorAll<HTMLElement>('[data-step-button]')).find(
+          (el) => el.dataset.stepButton === target.step.id,
+        ) ?? null;
+      if (button) focusHeading(button);
+      else focusHeading(document.querySelector<HTMLElement>('[data-next-step-heading]'));
+    });
+    // Only a new request moves anything.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal?.tick]);
+
+  const showCard = () => focusHeading(document.querySelector<HTMLElement>('[data-next-step-heading]'));
+
+  return (
+    <Tabs value={phase} onValueChange={(v) => onPhaseChange(v as PhaseId)} data-runbook-phases="">
+      <div className="relative">
+        <TabsList
+          ref={listRef}
+          aria-label="Phases"
+          className={cn(
+            'flex h-auto justify-start gap-2 overflow-x-auto rounded-none border-0 bg-transparent',
+            // Room for the tabs' focus ring inside the list's scroll clip.
+            PHASE_LIST_ROOM.list,
+            narrow && PHASE_LIST_ROOM.narrow,
+          )}
+        >
+          {counts.map((c) => {
+            const complete = c.open === 0;
+            const pct = c.total ? Math.round((c.done / c.total) * 100) : 0;
+            return (
+              <TabsTrigger
+                key={c.phase}
+                value={c.phase}
+                aria-label={phaseTabName(c)}
+                data-phase={c.phase}
+                // The browser leaves a tab the arrow keys reach half out of view (or under
+                // the fade): bring the whole tab in, with its ring (the scroll padding).
+                onFocus={(event) => event.currentTarget.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })}
+                className={cn(
+                  'group block h-auto min-w-[8.5rem] flex-1 whitespace-normal rounded-lg border border-border px-3 py-2 text-left font-normal',
+                  'hover:bg-muted/60 data-[state=active]:border-border-strong data-[state=active]:bg-accent data-[state=active]:text-foreground',
+                  'forced-colors:data-[state=active]:outline forced-colors:data-[state=active]:outline-2 forced-colors:data-[state=active]:-outline-offset-2',
+                )}
+              >
+                <span className="flex items-center gap-1.5" aria-hidden>
+                  {complete ? (
+                    <span className="inline-flex size-4 items-center justify-center rounded-full bg-success text-success-foreground">
+                      <Check className="size-2.5" strokeWidth={3} />
+                    </span>
+                  ) : null}
+                  <span className="text-sm font-medium text-foreground">{PHASE_LABEL[c.phase]}</span>
+                </span>
+                <span className="relative mt-1.5 block h-1 overflow-hidden rounded-full bg-muted" aria-hidden>
+                  <span
+                    className={cn('absolute inset-y-0 left-0 rounded-full', complete ? 'bg-success' : 'bg-primary')}
+                    style={{ width: `${pct}%` }}
+                  />
+                </span>
+                {/* The selected tab raises its caption to the foreground ink: muted text on
+                    the selected fill is below 4.5:1 inside a panel in light
+                    (`PHASE_CAPTION_INK`). */}
+                <span className={cn('mt-1 flex items-center gap-1.5 text-xs tabular-nums', PHASE_CAPTION_INK)} aria-hidden>
+                  <span className="min-w-0">
+                    {c.done.toLocaleString()}/{c.total.toLocaleString()} · {phaseWords(c)}
+                  </span>
+                  {c.waiting ? <WaitingDot /> : null}
+                </span>
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
+        {narrow ? (
+          <span
+            aria-hidden
+            className={cn(
+              'pointer-events-none absolute w-8 bg-gradient-to-l from-background to-transparent',
+              PHASE_LIST_ROOM.fade,
+            )}
+          />
+        ) : null}
+      </div>
+      {counts.map((c) => {
+        const inPhase = steps.filter((s) => s.step.phase === c.phase);
+        return (
+          <TabsContent key={c.phase} value={c.phase} animate={false} className="mt-4 space-y-2" data-phase-panel={c.phase}>
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-1">
+              <h3 className="text-sm font-semibold text-foreground">{PHASE_LABEL[c.phase]}</h3>
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {c.done.toLocaleString()} of {c.total.toLocaleString()} done
+                {c.na ? ` · ${c.na.toLocaleString()} not applicable` : ''}
+              </span>
+              {narrow ? null : <span className="ml-auto text-xs text-muted-foreground">{phaseFrameworkLine(c.phase)}</span>}
+            </div>
+            <ol className="rounded-lg border border-border bg-card" aria-label={`${PHASE_LABEL[c.phase]} steps`}>
+              {inPhase.map((item) => (
+                <StepRow
+                  key={item.step.id}
+                  item={item}
+                  expanded={expanded === item.step.id}
+                  onToggle={() => setExpanded((cur) => (cur === item.step.id ? null : item.step.id))}
+                  shownAbove={next?.step.id === item.step.id}
+                  onShowAbove={showCard}
+                />
+              ))}
+            </ol>
+          </TabsContent>
+        );
+      })}
+    </Tabs>
+  );
+}

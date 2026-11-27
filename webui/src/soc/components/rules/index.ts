@@ -21,6 +21,8 @@ export type { PriorityMatrixEditorProps } from './PriorityMatrixEditor';
 
 export { SuppressionRuleBuilder } from './SuppressionRuleBuilder';
 export type { SuppressionRuleBuilderProps } from './SuppressionRuleBuilder';
+export { AnalystPolicyBuilder, isLiveDeclaration } from './AnalystPolicyBuilder';
+export type { AnalystPolicyBuilderProps } from './AnalystPolicyBuilder';
 
 export { useConfigEditor } from './useConfigEditor';
 export type { ConfigClient, ConfigEditorState } from './useConfigEditor';

@@ -1,11 +1,11 @@
 ---
 title: Deterministic decisions
-description: Learn why model verdicts are advisory and how Agentic SOC 0.1 code owns close, escalation, and human review.
+description: Learn why model verdicts are advisory and how Agentic SOC 0.2 code owns close, escalation, and human review.
 ---
 
 # Deterministic decisions
 
-This page applies to **Agentic SOC 0.1**. It explains the central safety contract for
+This page applies to **Agentic SOC 0.2**. It explains the central safety contract for
 analysts, administrators, and integrators: **the model supplies a verdict; code owns
 the consequential case decision**.
 
@@ -24,12 +24,16 @@ verdict + confidence + deterministic risk score + operator auto-close policy
 ```
 
 The policy result sets the case state and records a plain-language rationale. Model
-text, a playbook, a notification, and a case-automation rule cannot directly set the
-result.
+text, a runbook, a notification, and a case-automation rule cannot directly set the
+result. Runbooks never decide: a runbook guides the investigator and the analyst, and
+recording a runbook decision step never changes the verdict or the case state.
 
 ## Auto-close policy
 
-True-positive and false-positive verdict classes have independent settings:
+Auto-close means that code closes a case without a person, because the verdict, the
+confidence and the risk score met the auto-close policy for that verdict. The model
+never closes a case itself. True-positive and false-positive verdict classes have
+independent settings:
 
 - enabled or disabled;
 - minimum confidence;
@@ -42,6 +46,76 @@ disabled or its confidence/risk bar is not cleared, the case routes to a human.
 
 `NEEDS_HUMAN`, a missing verdict, and an unknown verdict are never auto-closable.
 That rule is enforced in code and is not exposed as a setting.
+
+## What is recorded beside each decision
+
+Since version 0.2, the code records what each decision compared, after the decision and
+outside it, so that nothing it records can change the result:
+
+- **The decision gate.** The audit row of each decision holds the verdict, the
+  confidence and the risk score it compared, whether auto-close was on for the verdict,
+  the minimum confidence, the maximum risk, the objection window, the escalation
+  thresholds and the outcome. The case's **AI verdict** chip and the Decision stage read
+  this record, and say when today's policy would read the same numbers differently.
+- **The risk inputs.** Beside the risk score, the case keeps the inputs it was computed
+  from: the event count and time span of the scoring cluster, the events per minute, the
+  rule types, the reputation and asset inputs with where each came from, and the weights
+  in force. Anyone can recompute the score from them by hand; see
+  [Explainable numbers](../analyst/explainable-numbers.md#the-risk-score).
+
+Cases decided or scored before 0.2 have neither record. Their explanations use today's
+policy and weights and say so. The scoring function and the decision function did not
+change; only what is recorded beside them is new.
+
+## Analyst rule policies
+
+The auto-close policy applies to a verdict. Some detections never produce one worth
+applying it to: if a rule's alerts carry no request, payload, or execution context, an
+investigation cannot verify that a given instance is benign, so it routes to a human
+however many prior cases of that rule an analyst has confirmed benign. Confirming more
+cases cannot change that, because the judgement is about missing evidence rather than
+about precedent.
+
+An analyst rule policy is the operator's own statement about their environment: this
+detection is benign here. A cluster whose detections are all declared is closed with the
+`false_positive` disposition and the `analyst_policy` decision owner, without any model
+call. The declaration is recorded with its author, reason, optional source scope, and
+optional expiry, and is revoked by disabling, expiring, or deleting it.
+
+A declaration closes matching alerts with no model call and no human, so a genuine attack
+matching a declared rule closes silently. It carries an optional risk ceiling, an optional
+source scope and an optional expiry to bound that, and an explicit reinvestigation of a
+single case always overrides it.
+
+Four properties keep it honest:
+
+- the case stays visible, audited, and reopenable: nothing is dropped before a case
+  exists, which is what a suppression rule does instead;
+- every detection on the cluster must be declared, so a cluster that also fired an
+  undeclared detection is still investigated normally; and
+- the close is excluded from agent-performance measurement and is never read as an
+  analyst-confirmed outcome, so it can neither flatter the agent nor become training
+  evidence for the automation it replaces; and
+- it never overrides a person. A case an analyst has acted on, or one the agent has
+  already investigated, is left alone; a statement about a detection does not overrule a
+  decision about a case.
+
+This path runs before a verdict exists. It does not change, read, or extend the
+auto-close policy above.
+
+## Analyst-confirmed precedent
+
+Retrieval already surfaces resolved cases as context. When enabled, precedent promotion
+additionally tells the investigator, as a computed count rather than retrieved prose, how
+many analyst-confirmed benign and malicious outcomes exist for the **exact** detection
+rule set under investigation.
+
+It is evidence, not authority. The verdict still comes from the model and the policy
+above still decides the outcome. It requires the rule identity to match (a
+high-similarity match from a different rule never qualifies), an unanimous confirmed
+history, a minimum confirmed count, and at least one matching precedent actually
+retrieved for the case. The agent's own unreviewed auto-closes are never promotable. What
+was promoted, or why it was not, is recorded on the case.
 
 ## Escalation and analyst action
 
@@ -60,10 +134,20 @@ After the deterministic decision and case save, approved automation can:
 - record recommendations;
 - send notifications;
 - request human approval; or
-- queue an allowed playbook run.
+- attach a Published runbook to the case.
 
-It cannot change the close/escalate truth table. A playbook is investigation context,
-not policy.
+It cannot change the close/escalate truth table. A runbook is guidance and a checklist,
+not policy. Automatic closes never read runbook steps, and closing a case by hand with
+required steps open asks for a reason but is never blocked.
+
+## Auto-close review never decides
+
+A small random sample of automatic closes is sent to a person for review (see
+[Auto-close review](../automation/auto-close-review.md)). The sample is picked after the
+decision is applied, saved and followed by every other post-decision step, and only reads
+the decided case. Recording a review adds one grade to the case and never changes its
+status, who decided it or its disposition; the review settings are never read by the
+decision. Only a person can reopen a reviewed case, with the ordinary reopen action.
 
 ## Failure behavior
 
@@ -74,18 +158,21 @@ not modify canonical risk or close a case.
 
 ## Verify the contract
 
-On a case's **Investigation** tab, compare:
+On a case, compare:
 
-1. the model verdict and confidence;
-2. the deterministic risk score;
-3. the pinned decision card and its policy rationale; and
-4. the status-history and audit entries.
+1. the model verdict and confidence (in the case header and the case facts' Outcome);
+2. the deterministic risk score (in the header and the case facts' Signal);
+3. the Brief's **Decision** lane: its decision line, and the decision card with its
+   policy rationale, folded under **Policy inputs**, and the AI verdict chip's
+   explanation with the thresholds recorded at decision time; and
+4. the History on the **Activity** tab and the audit entries.
 
 The four should tell one traceable story without implying that model prose executed
 the action.
 
 ## Related pages
 
+- [Auto-close review](../automation/auto-close-review.md)
 - [Architecture](architecture.md)
 - [State, audit, and cost](state-audit-cost.md)
 - [Create your first case](../getting-started/first-case.md)

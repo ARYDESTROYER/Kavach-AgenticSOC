@@ -5,7 +5,7 @@ description: Send or select a synthetic signal and verify its path from source p
 
 # Create your first case
 
-This guide applies to **Agentic SOC 0.1**. It is for operators and analysts validating one
+This guide applies to **Agentic SOC 0.2**. It is for operators and analysts validating one
 source end to end before broadening collection.
 
 ## Prerequisites
@@ -71,9 +71,12 @@ between:
 - what the model assessed, if the candidate was admitted to investigation; and
 - what deterministic policy decided.
 
-In Case Manager, Overview separates the signal profile and provenance, Timeline
-expands **Risk Assigned** into the stored score factors and ends at **Decision**,
-and Investigation carries the model evidence plus the pinned deterministic result.
+In Case Manager, the Brief keeps the four apart in lanes: Evidence (tagged SIEM), the
+AI's summary (tagged AI), the deterministic Decision (tagged Code, with its policy
+inputs) and People. Its folded **How this case was built** expands **Risk Assigned**
+into the stored score factors and ends at **Decision**. The Evidence tab carries **What
+happened** and, in its **Threat context** section, the intelligence; the AI
+investigation tab carries the AI assessment and the trace.
 
 An event-feed candidate can remain visible without a model call when it does not
 cross the investigation gate. That is expected and costs `$0`. An alert feed is
@@ -91,7 +94,7 @@ You can trace one synthetic source record through normalization, correlation, ri
 optional investigation, deterministic decision, case history, cost, and audit. Only
 after this trace is correct should you widen the source pattern or event rate.
 
-!!! note "Push evidence in 0.1"
+!!! note "Push evidence in 0.2"
 
     The push-source live-tail buffer is process-local and clears on restart. A case
     retains selected evidence references, but the original source or broker remains

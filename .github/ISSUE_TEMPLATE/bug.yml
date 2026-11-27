@@ -9,7 +9,7 @@ body:
       value: |
         Thank you for helping improve Agentic SOC. Search existing issues first and remove secrets, credentials, customer data, and raw security events from every field and attachment.
 
-        **Do not report vulnerabilities here.** Follow the private process in [SECURITY.md](https://github.com/ARYDESTROYER/Agentic-Kibana/blob/main/SECURITY.md#8-responsible-disclosure).
+        **Do not report vulnerabilities here.** Follow the private process in [SECURITY.md](https://github.com/ARYDESTROYER/Kavach-AgenticSOC/blob/main/SECURITY.md#8-responsible-disclosure).
 
   - type: checkboxes
     id: preflight

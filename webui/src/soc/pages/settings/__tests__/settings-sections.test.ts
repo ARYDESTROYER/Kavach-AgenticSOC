@@ -7,7 +7,7 @@
  *   - the grouped rail (`SECTION_GROUPS`) preserves order,
  *   - the per-section dirty map (`SECTION_KEYS`) is derived from `ownedKeys`,
  *   - `settings-dirty` re-exports the SAME derived `SECTION_KEYS` (no drift),
- *   - `GRID_SECTIONS` reflects the Automation double-wrap fix,
+ *   - `FULL_WIDTH_SECTIONS` names the table and editor sections (Round 14, C9 A),
  *   - every section has a Component + the lookup covers every id.
  *
  * Pure data assertions — no rendering, no DOM.
@@ -19,11 +19,12 @@ import {
   SECTION_GROUPS,
   SECTION_BY_ID,
   SECTION_KEYS,
-  GRID_SECTIONS,
+  FULL_WIDTH_SECTIONS,
   ALL_SECTIONS,
   isSectionId,
 } from '../settings-sections';
 import { SECTION_KEYS as DIRTY_SECTION_KEYS } from '../../settings-dirty';
+import { SETTINGS_SECTIONS_META, searchJumpTargets } from '../settings-sections-meta';
 
 /** The exact set of section ids the page must keep routable (deep-link back-compat). */
 const EXPECTED_IDS = [
@@ -33,6 +34,8 @@ const EXPECTED_IDS = [
   'customization',
   'general',
   'models',
+  'discounted-inference', // NEW (Round 14 D30: moved here from the Jobs page)
+  'chat_agent', // NEW (chat revamp: the curated Chat assistant editor)
   'keys',
   'detection',
   'detection_rules', // NEW (Round-5 G6 R2: unified "Detection & rules" home)
@@ -43,6 +46,7 @@ const EXPECTED_IDS = [
   'notifications',
   'enrichment',
   'knowledge',
+  'runbooks', // NEW (Round 14: every Preferences.runbooks key)
   'admin_users',
   'roles', // NEW (Round-5 Sett-B: split out of Users into Security & access)
   'security',
@@ -109,12 +113,22 @@ describe('grouped rail derivation (Round-5 Sett-B: 5 groups, Security promoted)'
     expect(general.sections.map((s) => s.id)).toEqual([
       'general',
       'models',
+      'discounted-inference',
+      'chat_agent',
       'detection',
       'detection_rules',
       'cases',
       'case_policy',
       'automation',
       'standup',
+    ]);
+    // Integrations: Runbooks sits right after Knowledge (the Intelligence settings).
+    const integrations = SECTION_GROUPS.find((g) => g.id === 'integrations')!;
+    expect(integrations.sections.map((s) => s.id)).toEqual([
+      'notifications',
+      'enrichment',
+      'knowledge',
+      'runbooks',
     ]);
     // Security & access group: Users → Roles → SSO → Active sessions → Secret keys.
     const sec = SECTION_GROUPS.find((g) => g.id === 'security_access')!;
@@ -172,6 +186,10 @@ describe('SECTION_KEYS is derived from ownedKeys (kills the 3-file hand-sync)', 
     expect(SECTION_KEYS.advanced).toContain('rag');
     expect(SECTION_KEYS.storage).toEqual(['storage_lifecycle']);
     expect(SECTION_KEYS.release_updates).toEqual(['release_updates']);
+    expect(SECTION_KEYS.chat_agent).toEqual(['chat_agent']);
+    // Round 14: the two new sections save through the page like every preference.
+    expect(SECTION_KEYS.runbooks).toEqual(['runbooks']);
+    expect(SECTION_KEYS['discounted-inference']).toEqual(['batch']);
   });
 
   it('leaves the embedded / self-saving sections out of the dirty map', () => {
@@ -199,8 +217,16 @@ describe('Round-6 de-dup — automation links to the single rule editor (deep-li
     expect(SECTION_BY_ID.detection_rules).toBeTruthy();
   });
 
-  it('the case_policy section owns exactly the three orphaned G6 editor keys', () => {
-    expect(SECTION_KEYS.case_policy).toEqual(['sla', 'priority_matrix', 'suppression_rules']);
+  it('the case_policy section owns the orphaned G6 editor keys plus analyst policies', () => {
+    // `analyst_rule_policies` is the operator's rule-level "declared benign" list. It
+    // belongs beside `suppression_rules` (the event-drop list) because an operator
+    // reaching for one is choosing between the two.
+    expect(SECTION_KEYS.case_policy).toEqual([
+      'sla',
+      'priority_matrix',
+      'suppression_rules',
+      'analyst_rule_policies',
+    ]);
   });
 
   it('detection owns the asset-criticality keys (its new Asset criticality card)', () => {
@@ -209,20 +235,98 @@ describe('Round-6 de-dup — automation links to the single rule editor (deep-li
   });
 });
 
-describe('GRID_SECTIONS (full-width, no outer Card)', () => {
-  it('includes the multi-card grid sections (general/detection/knowledge/advanced/case_policy)', () => {
-    // These render their own SettingsGrid full-width (no card-in-a-card). Round-6 adds
-    // case_policy (SLA / priority / suppression editor cards).
-    for (const id of ['general', 'detection', 'knowledge', 'advanced', 'case_policy', 'storage', 'release_updates']) {
-      expect(GRID_SECTIONS.has(id)).toBe(true);
+describe('FULL_WIDTH_SECTIONS (Round 14, C9 A: tables and wide editors)', () => {
+  it('lets the table sections and the wide editors take the full content width', () => {
+    // SPEC §4.9.6: Users, Roles, Sessions, Admin sessions and Enrichment providers take
+    // the full content width; so do the editors that lay out their own wide grids.
+    for (const id of [
+      'sessions',
+      'admin_users',
+      'roles',
+      'admin_sessions',
+      'enrichment',
+      'customization',
+      'detection_rules',
+      'notifications',
+      'appearance',
+      'demo',
+    ]) {
+      expect(FULL_WIDTH_SECTIONS.has(id)).toBe(true);
     }
   });
 
-  it('excludes the single-card sections (incl. automation after Round-6 de-dup)', () => {
-    // Round-6: with the embedded rule cards gone, automation is a simple single-card
-    // section again (master toggle + link card) — no longer a grid section.
-    for (const id of ['models', 'keys', 'cases', 'standup', 'enrichment', 'security', 'automation']) {
-      expect(GRID_SECTIONS.has(id)).toBe(false);
+  it('keeps every form section on the 44rem form measure', () => {
+    for (const id of [
+      'general',
+      'models',
+      'discounted-inference',
+      'chat_agent',
+      'detection',
+      'cases',
+      'case_policy',
+      'automation',
+      'standup',
+      'knowledge',
+      'runbooks',
+      'security',
+      'keys',
+      'release_updates',
+      'advanced',
+      'advanced_all',
+      'storage',
+      'data_export',
+      'profile',
+      'account_security',
+      // DangerZone renders itself at form width so each tier's button stays near its
+      // name; the registry says the same, so the save bar and footer follow it.
+      'danger',
+    ]) {
+      expect(FULL_WIDTH_SECTIONS.has(id)).toBe(false);
     }
   });
+
+  it('derives the set from the registry width, nothing else', () => {
+    const declared = SETTINGS_SECTIONS.filter((s) => s.width === 'full').map((s) => s.id).sort();
+    expect([...FULL_WIDTH_SECTIONS].sort()).toEqual(declared);
+  });
+});
+
+describe('section copy (Round 14, C9 A)', () => {
+  it('gives every section a help tip and keeps the copy plain', () => {
+    for (const meta of SETTINGS_SECTIONS_META) {
+      expect(meta.help, meta.id).toBeTruthy();
+      const text = [meta.title, meta.blurb, meta.help ?? ''].join(' ');
+      expect(text, meta.id).not.toMatch(/\u2014/);
+      expect(text.toLowerCase(), meta.id).not.toContain('playbook');
+    }
+  });
+
+  it('renames Appearance & customization to Appearance', () => {
+    expect(SECTION_BY_ID.customization.title).toBe('Appearance');
+  });
+});
+
+describe('Chat assistant is findable (Settings search + command palette)', () => {
+  const allowAll = () => true;
+  // The words an operator types for the chat_agent knobs: the section title, its blurb
+  // and its keywords form the haystack (the console map indexes the same text).
+  for (const query of ['chat', 'assistant', 'token', 'tokens', 'email', 'e-mail', 'enrichment', 'per-question', 'internal domains', 'type out answers']) {
+    it(`"${query}" finds the Chat assistant section`, () => {
+      const hits = searchJumpTargets(query, allowAll).filter((t) => !t.anchor);
+      expect(hits.map((t) => t.section)).toContain('chat_agent');
+    });
+  }
+});
+
+describe('Runbooks settings search finds step approvals', () => {
+  const allowAll = () => true;
+  // The command palette ranks a page whose name is the query (Approvals) above every
+  // Settings target (command-palette tests), so the setting's own words can be keywords.
+  for (const query of ['step approvals', 'step approval', 'Step approvals']) {
+    it(`"${query}" finds the Runbooks section and its Publishing and review card`, () => {
+      const hits = searchJumpTargets(query, allowAll);
+      expect(hits.some((t) => t.section === 'runbooks' && !t.anchor)).toBe(true);
+      expect(hits.some((t) => t.section === 'runbooks' && t.anchor === 'runbooks-publishing')).toBe(true);
+    });
+  }
 });
