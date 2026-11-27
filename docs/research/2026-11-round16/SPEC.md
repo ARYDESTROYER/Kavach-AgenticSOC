@@ -3283,8 +3283,10 @@ reverting.
   `documentation-versions.md` and `INSTALL.md` carry the measured widening, the v0.1.1 rollback
   result and the default branch still being Testing; the corpus was regenerated (1,132
   chunks). The tag date rule: if the tag is not created on 2026-11-27, a follow-up change
-  re-dates the CHANGELOG heading, the notes and their newest update before the tag, because
-  `check_version.py` requires the dates to match. B4: the `audit.id` widening measured on
+  re-dates the CHANGELOG heading, the notes and their newest update and the release page's
+  intended tag date before the tag, and regenerates the release notes and the knowledge
+  corpus. `check_version.py` only requires the heading and the notes to carry the same date;
+  no gate compares them with the tag date, so checklist step 4 keeps them true. B4: the `audit.id` widening measured on
   PostgreSQL 16.15 at 1, 5 and 10 million rows (4.9 and 4.1 s, 25.0 s, 44.3 s; 7 to 8 s per
   GB), so the plan keeps its 300 s backend timeout and `release.yml` is unchanged. B5: the
   v0.1.1 rollback rehearsed from source in field order, twice (37 of 38 and 32 of 33 checks):
@@ -3315,6 +3317,24 @@ reverting.
   `f6a1fe5` and recorded a 19-check review pass in the browser receipt (identity, the What's
   new welcome by keyboard, the What's new page in both themes at both widths, the corrected
   Help Center pages, and the first-run setup on an empty backend).
+- **RPR, the review of the release preparation pull request** (#148 at `ac9c698`, fixed in
+  the commit after it). Four lenses (the release gates, factual claims, repository rules and
+  operator instructions) read the whole diff, and two refuters checked each finding; 12 of 16
+  findings held, 7 distinct defects, all in records. Fixed: the Operator bootstrap cloned
+  into a new directory with no `.env`, so the bootstrap refused at its first check; it now
+  runs in the deployment's own checkout, as 0.1.12's did, and warns never to create a new
+  `.env` from `.env.example`. The M5 image-level rollback named the source lane command,
+  which cannot pass against v0.1.1; the page now gives the image-level steps (the update
+  panel's post-success **Roll back**) and says what the lane is. The v0.1.1 settings reset
+  also drops `sources[].severity_scale_max` and `suppression_rules[].approval_proposal_id`,
+  found by comparing the two settings models field by field. "Maintainer actions before the
+  tag" listed M2, M4 and M5, which come at or after the tag; the section now orders them. The
+  tag-slip rule now names every date and both generators. The PostgreSQL receipt's
+  byte-identity line now excepts the regenerated corpus. `AGENTS.md` and `CONTRIBUTING.md` no
+  longer say `main` is the default branch. Also: the release page's large-table pre-step says
+  to start the backend again. Regression: `test_round16_wp19_records.py` gained tests for the
+  bootstrap's `.env`, the M5 steps, the two settings keys and the maintainer-action order, and
+  its default-branch scan now covers `AGENTS.md` and `CONTRIBUTING.md`.
 
 ### 8.3 Known limitations
 

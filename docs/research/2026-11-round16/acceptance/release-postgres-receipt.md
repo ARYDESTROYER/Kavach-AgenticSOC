@@ -13,7 +13,9 @@ deleted. No database file is committed.
   `max_wal_size` 1 GB), on the same host as the client.
 - **Host.** 4 vCPU (Intel Xeon, 2.10 GHz), 16 GB RAM, one virtio disk. No other load.
 - **Code.** The 0.2.0 backend of this checkout (its `backend/app` is byte-identical to
-  `4e32d29`; WP19 changes records only), on Python 3.11.18 with `backend/.venv`. The
+  `4e32d29` apart from the regenerated knowledge corpus, `backend/app/knowledge/app_docs.json`
+  and `manifest.json`, which neither the widening nor the rollback reads; WP19 changes
+  records and generated artifacts only), on Python 3.11.18 with `backend/.venv`. The
   v0.1.1 backend is `ba179651a7b63d6352ad346fd633e1460f3a4d39` from `git archive`, in its
   own virtual environment from its own pinned `requirements.txt`.
 
@@ -133,7 +135,13 @@ failing check is the same in both.
     `investigator_guidance`, `rag_corpus`, `require_distinct_approver`,
     `review_every_days_default`, `runbooks_config_version`, `step_approvals`;
   - `session_policy.remember_me`;
-  - `threshold_tuning.auto_apply_confirmed`.
+  - `threshold_tuning.auto_apply_confirmed`;
+
+  and, inside list entries, `sources[].severity_scale_max` (a source's declared severity
+  ceiling; back on 0.2.0 a Wazuh source reads its seeded 16 again and any other source the
+  0 to 100 identity) and `suppression_rules[].approval_proposal_id`. These two were added
+  after the rehearsal, when the review of the release preparation compared the settings
+  models of v0.1.1 and 0.2.0 field by field.
 
   This is v0.1.1's behaviour, not a 0.2.0 defect, and nothing 0.2.0 ships can change it.
   It is documented as "Rolling back to v0.1.1 resets the settings it does not model" in
@@ -151,7 +159,7 @@ reset is the documented exception.
 ### Not covered
 
 - The published v0.1.1 images through the updater on a Docker host (the image-level
-  rollback), and the canonical bootstrap. Both stay maintainer action M5, with the command
-  in the release page.
+  rollback), and the canonical bootstrap. Both stay maintainer action M5, with their steps
+  in the release page's Rollback and Operator bootstrap sections.
 - Elasticsearch and SQLite state backends; this receipt is PostgreSQL only.
 - A rollback under load, or with Redis and a live log source attached.

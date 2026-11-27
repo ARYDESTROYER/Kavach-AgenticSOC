@@ -29,8 +29,8 @@ not a public issue or pull request.
   `main` commit. Do not develop directly on `main`, and
   do not maintain a parallel prerelease branch under another name. See
   [`docs/releases/channels.md`](docs/releases/channels.md). Commit focused changes;
-  push only when asked. The remote uses `main` as its default and retains `Testing`
-  as the integration branch. Repository administrators must keep the required
+  push only when asked. The remote uses `Testing` as the integration branch and `main`
+  for accepted Stable source (the default branch once maintainer action M1 resets it). Repository administrators must keep the required
   checks and pull-request protections enforced on those canonical branches.
 - **Release notes:** keep one active top-level `[Unreleased]` section. Dated,
   unpublished work is a Development snapshot, not another pseudo-release. The final

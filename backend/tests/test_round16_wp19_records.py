@@ -197,9 +197,10 @@ DEFAULT_MAIN_CLAIM = re.compile(r"default `main`|`main` as (?:the|its) default|\
 
 def test_no_help_center_page_says_main_is_already_the_default_branch() -> None:
     """The default branch is a repository setting (M1); one note records its real state."""
+    pages = [*HELP_CENTER_PAGES, REPO_ROOT / "AGENTS.md", REPO_ROOT / "CONTRIBUTING.md"]
     claims = [
         str(page.relative_to(REPO_ROOT))
-        for page in HELP_CENTER_PAGES
+        for page in pages
         if DEFAULT_MAIN_CLAIM.search(_flat(_read(page)))
     ]
     assert claims == []
@@ -256,3 +257,65 @@ def test_the_review_pass_names_the_build_it_ran_on() -> None:
     assert "reviewed in `f6a1fe5`" in line and "its review follows" not in line
     record = spec[spec.index("### 8.4 Verification record"):spec.index("### 8.5 Cross-cutting review")]
     assert "The WP19 review (`f6a1fe5`" in record
+
+
+def _page_section(page: str, heading: str) -> str:
+    start = page.index(heading)
+    end = page.find("\n## ", start + len(heading))
+    return page[start:] if end < 0 else page[start:end]
+
+
+def test_the_operator_bootstrap_runs_where_the_deployment_env_is() -> None:
+    """The bootstrap reads ``.env`` from its own checkout, so a fresh clone has none."""
+    section = _page_section(_read(RELEASE_PAGE), "## Operator bootstrap")
+    flat = _flat(section)
+    assert "git clone" not in section
+    assert "git switch --detach v0.2.0" in section
+    assert "./scripts/bootstrap-updater.sh" in section
+    assert "Never create a new `.env` from `.env.example` for an upgrade" in flat
+    assert "AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC" in flat
+    # The script it describes really reads the .env of its own checkout.
+    script = _read(REPO_ROOT / "scripts" / "bootstrap-updater.sh")
+    assert 'env_file="${repo_root}/.env"' in script
+
+
+def test_the_image_level_rollback_is_not_the_source_lane() -> None:
+    """M5 rolls the update back through the updater; the source lane cannot pass on v0.1.1."""
+    rollback = _page_section(_read(RELEASE_PAGE), "## Rollback")
+    flat = _flat(rollback)
+    assert "**Roll back**" in flat and "`system_updates:rollback`" in flat
+    assert "The source rollback lane is not that rehearsal." in flat
+    assert "```bash\nbackend/.venv/bin/python scripts/rollback_lane.py" not in rollback
+    receipt = _flat(_read(ACCEPTANCE / "release-postgres-receipt.md"))
+    assert "with the command in the release page" not in receipt
+
+
+def test_the_settings_reset_names_the_nested_keys_too() -> None:
+    """A field-by-field model comparison found two list-entry keys v0.1.1 also drops."""
+    page = _flat(_page_section(_read(RELEASE_PAGE), "## Rollback"))
+    limitations = _read(LIMITATIONS)
+    section = limitations[limitations.index("### Rolling back to v0.1.1 resets the settings it does not model"):]
+    section = _flat(section[: section.index("\n### ", 10)])
+    receipt = _flat(_read(ACCEPTANCE / "release-postgres-receipt.md"))
+    for text in (page, section, receipt):
+        assert "severity_scale_max" in text
+        assert "approval_proposal_id" in text
+
+
+def test_the_maintainer_actions_are_ordered_around_the_tag() -> None:
+    """M2, M4 and M5's bootstrap come at or after the tag, so the heading cannot say before."""
+    page = _read(RELEASE_PAGE)
+    assert "### Maintainer actions before the tag" not in page
+    section = _flat(page[page.index("### Maintainer actions"):])
+    assert "M4 is the promotion and the tag itself" in section
+    assert "M2 happens during the first release run" in section
+
+
+def test_the_tag_slip_rule_names_every_date_and_both_generators() -> None:
+    """Re-dating only the heading and the notes would leave two CI lanes red."""
+    page = _flat(_read(RELEASE_PAGE))
+    top = page[page.index("The intended tag date is"):page.index("A candidate is not an installable")]
+    for fact in ("the notes `date` and the newest update's `date`", "the intended tag date in this paragraph",
+                 "python3 scripts/build_release_notes.py", "python3 scripts/build_app_knowledge.py",
+                 "no gate compares them with the day the tag is cut"):
+        assert fact in top, fact

@@ -1176,8 +1176,9 @@ Round 9b via PR #26. Round 10 ("Autopilot & Comprehensive Ingestion + motion.dev
 flips the suite from "opt-in automation" to **comprehensive ingestion + smart-
 autopilot defaults ON out of the box** — see the Round-10 bullet below.
 
-**Release topology:** the remote now exposes canonical `Testing` and `main`, uses
-`main` as its default, and has `v0.1.1` as the last verified installable Stable tag.
+**Release topology:** the remote now exposes canonical `Testing` and `main` (`main`
+becomes the default branch once maintainer action M1 resets it; on 2026-11-27 it was
+still `Testing`), and has `v0.1.1` as the last verified installable Stable tag.
 The immutable `v0.1.4` and `v0.1.5` tags are failed, non-installable publication
 records. The immutable `v0.1.6` and `v0.1.7` tags are fully published and signed
 artifact records, but their canonical bootstrap acceptance failed before a usable

@@ -369,14 +369,17 @@ the builds before Round 14 does not apply to it. It loses:
   the sections `analyst_rule_policies`, `auto_close_review`, `chat_agent`,
   `evidence_fields`, `evidence_max_chars_per_event`, `precedent`, `replay_capture`,
   `resilience` and `team_activity`, and the newer keys inside `caps`, `enrichment`,
-  `rag`, `rbac`, `runbooks`, `session_policy` and `threshold_tuning`.
+  `rag`, `rbac`, `runbooks`, `session_policy` and `threshold_tuning`. In each log source
+  the declared severity ceiling `severity_scale_max` is reset too (a Wazuh source reads
+  its seeded 16 again, any other source the 0 to 100 identity, which can change its
+  severity bands), and in each suppression rule `approval_proposal_id`.
 - **Recorded risk inputs** on a case it saves, and the **second-factor lock counter** on
   an account it saves.
 
 Ledger rates, the What's new marker, the auto-close review grade and case screenshots
 survive. The rehearsal ran the release's source, not the published v0.1.1 images through
-the updater; that rehearsal on a Docker host is still to run (maintainer action M5 in
-the [0.2.0 release record](0.2.0.md#rollback)).
+the updater; that rehearsal on a Docker host is still to run (maintainer action M5, with
+its steps in the [0.2.0 release record](0.2.0.md#rollback)).
 
 **Required control:** before rolling back to v0.1.1, note every setting you changed in
 0.2.0, and set those settings again after the return.
