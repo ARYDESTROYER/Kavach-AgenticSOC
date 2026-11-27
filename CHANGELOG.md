@@ -132,9 +132,11 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   payload says when its cases were read (`generated_at`, `case_population`).
 - **Every case record is one click away.**
   - The Evidence tab lists the raw events behind a case, read again from their own source a
-    page at a time (`GET /api/cases/{id}/events`, needs `cases:read` and `sources:read`). It
-    says plainly when events aged out, when a push source kept no copy, or when the source
-    could not be read. One event opens in a side sheet with Table and JSON views, Copy, an
+    page at a time (`GET /api/cases/{id}/events`, needs `cases:read` and `sources:read`). On
+    Elasticsearch, OpenSearch and Wazuh it reads each event by its index and id together, so
+    copies of the same id in other indices of the data view never hide it. It says plainly
+    when events aged out, when a push source kept no copy, or when the source could not be
+    read. One event opens in a side sheet with Table and JSON views, Copy, an
     NDJSON download and Open in Logs. Reading events writes one "Case events viewed" audit
     row per person and case every ten minutes.
   - The investigation cost in the case facts opens every AI call behind it
@@ -350,7 +352,10 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     [B10].
   - The deferred drain asks the store for deferred candidates directly: it no longer reads
     every open case each tick or stops after the first 10,000, and candidates a person owns
-    never hold it up [B11].
+    never hold it up [B11]. Candidates that cannot be rebuilt, for example while their source
+    is down, no longer hold up the ones behind them either: the drain reads past them, up to
+    four pages a tick, and the next tick carries on where it stopped. It still takes the oldest
+    healthy candidates first and never runs more than the tick allows.
   - A failed investigation keeps the case's AI cost and adds the failed run's recorded spend
     [B12]; a bulk reinvestigation reports an item as failed when its investigation failed
     [B14].

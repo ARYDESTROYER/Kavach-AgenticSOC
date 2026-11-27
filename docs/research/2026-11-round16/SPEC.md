@@ -542,7 +542,8 @@ defaulted, each a fixed key set:
 
 ### 3.5 Non-negotiables cross-check
 
-- #1: the events route reads through `fetch_by_ids` on the read-only client only.
+- #1: the events route reads through `fetch_by_keys` (index-qualified members) or `fetch_by_ids`
+  (legacy bare ids and sources without the keyed read), on the read-only client only (CDX2, §8.2).
 - #2: every new writer audits: `case.close_replaced`, `case.events_viewed` (coalesced),
   `auth.mfa_locked`, the What's new acknowledgement; the security fixes add denied rows where a
   request is refused.
@@ -1914,7 +1915,8 @@ configuration. Contracts and tests are in §4.5 WP15E.
   `backend/app/llm/gateway.py` and `llm/pricing.py` (expose the rates `cost_for` used without
   changing results); `backend/app/engine/threat_context.py` and the IP path of the enrichment
   dispatch; tests.
-- **Contracts.** The events route reads through `fetch_by_ids` on the read-only client and keeps
+- **Contracts.** The events route reads through `fetch_by_keys` or `fetch_by_ids` (CDX2, §8.2) on
+  the read-only client and keeps
   only `member_event_keys`; the envelope is `{available, reason: aged_out |
   push_source_not_retrievable | source_unavailable | null, returned, expected, truncated}`; limit
   1 to 200; one coalesced `case.events_viewed` row per viewer per case per 10 minutes. Usage stays
@@ -2809,7 +2811,8 @@ reverting.
   mapping (`risk_breakdown.inputs` stored and never indexed, `awaiting_reason`) and
   `extend_cases_mapping`. Review fixes: the B05 guard on scan runs only (§8.1), the deferred
   query leaves out candidates a person acted on, and the mapping warning names the template.
-  Residual risk: the drain reads one page of `max(50, 2 x limit)` candidates (§8.3).
+  Residual risk: the drain read one page of `max(50, 2 x limit)` candidates; CDX1 (§8.2) removed
+  it.
 - **WP15C, metrics and SLA** (`a21b584`, review `805257f`). B02, B03, B26 with B58, B39, B59, B60
   and B68, and the pure `metrics.sla_case_reading` that WP10 builds on. Review fixes: two 500s
   the package introduced (a due time past the datetime range and an instant overflow), both
@@ -3242,6 +3245,32 @@ reverting.
   the muted fill; and the review's one-line fixes in `Metrics.tsx` (WP12's) and
   `MitreHeatmap.tsx`. Receipt: `acceptance/a11y-closing-sweep.md`.
 
+- **CDX1, the deferred drain past a source outage** (PR #144 review, Codex P2; `bac2a0b` on
+  `f2d5524`, review `d86e2b5`). `list_deferred_candidates` takes an additive `after` marker and
+  returns a `DeferredCandidates` page (a list) carrying `next_after`: a search_after keyset on
+  created_at and case_id on Elasticsearch, the same keyset in SQL, and the OPEN-listing offset in
+  the base default. `PollerManager._drain_deferred` reads up to `DRAIN_PAGES_PER_TICK` = 4 pages a
+  tick, each max(50, 2 x limit) rows and at most `DRAIN_PAGE_MAX` = 1,000. A tick that reads all
+  four without filling its allowance keeps `_drain_resume_after` in process memory for the next
+  tick; a tick that fills it, or reaches the end of the queue, sends the next tick back to the
+  head, so healthy candidates still drain oldest first. A store whose answer carries no marker
+  keeps the old single page; a failed continuation clears the marker; a seen set stops a
+  candidate being drained twice in a tick. Regression: `test_round16_cdx1_deferred_drain.py` (11
+  tests, 4 failing before the fix); the review added 4 coverage tests (SQL resume across ticks,
+  oldest-first drain while drained rows leave the queue, the base default, the 1,000-row cap).
+  Left: a long outage costs more per tick (§8.3); the in-memory fake Elasticsearch cannot break
+  created_at ties on case_id, so the tests use distinct creation times.
+- **CDX2, case events behind copies of an id** (PR #144 review, Codex P2; `46587c6` on
+  `f2d5524`, review `08ec2ac`). `ElasticConnector.fetch_by_keys`, an optional connector read that
+  OpenSearch and Wazuh inherit, matches each index-qualified key on `_index` and `_id` together
+  over the source's data view, on the read-only client (#1). `routes_case_events` uses it for
+  qualified members and keeps `fetch_by_ids` for bare legacy members and for sources without it,
+  in a separate read; the size bound, timeout, reason codes, paging, cursor, audit row and
+  response model are unchanged. Regression: `test_round16_cdx2_case_events_copies.py` (a member
+  in the third index with the same id read `aged_out` before the fix); the review added a guard
+  that a member key naming an index outside the data view reads nothing. Left: reinvestigation
+  still reads member events by bare id (§8.3).
+
 WP19 is recorded with the release preparation.
 
 ### 8.3 Known limitations
@@ -3268,9 +3297,17 @@ WP19 is recorded with the release preparation.
 - **Chat is the sixth case tab** until it moves into the inspector (§7 rank 9).
 - **Single sign-on.** A provider saved before 0.2.0 with a custom role value stays stored; the
   guard checks only providers that are added or changed.
-- **The deferred drain** reads one page of `max(50, 2 x limit)` candidates; when more than that
-  many at the front fail to rebuild on every tick (a pull source that keeps erroring), the ones
-  behind them wait. Candidates a person owns never count toward it.
+- **The deferred drain during a source outage.** Since CDX1 the drain reads past candidates that
+  cannot be rebuilt, up to four pages a tick, and the next tick resumes after them; candidates a
+  person owns never count toward it. Each failed rebuild still costs that source's connect
+  timeout while the poll lock is held, so a long outage slows each tick (up to 200 failing
+  attempts at the default cap, against 50 before). The resume point is kept in process memory
+  and starts again at the head after a restart.
+- **A copied event id in a reinvestigation.** The Evidence tab reads each event by index and id
+  (CDX2), but rebuilding a case's evidence for a reinvestigation (`cluster_for_case`) and the
+  investigate route still read member events by bare id, with a size of the member count. Where
+  the same id exists in other indices of the data view, a copy can stand in for the case's own
+  event in that run's evidence.
 - **Demo Mode.** Without a Demo asset map, honest seeded risk tops out near 50 for IP cases and
   near 30 for user and host cases, and severity comes from each case's own events, so the queue
   shows pairs such as "Critical, Risk 17". Bulk actions are off in Demo, so the bulk-close AI

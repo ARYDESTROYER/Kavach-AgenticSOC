@@ -671,8 +671,9 @@ backend/app/
                      requester's name only for `users:manage`, the Demo registry while
                      Demo is on] · routes_case_events [Round 16: `GET
                      /api/cases/{id}/events` under `cases:read` and `sources:read`, the
-                     case's own raw events re-read through `fetch_by_ids` on the
-                     read-only client (#1), paged, with `aged_out`,
+                     case's own raw events re-read through `fetch_by_keys` (index
+                     and id together) or `fetch_by_ids` on the read-only client
+                     (#1), paged, with `aged_out`,
                      `push_source_not_retrievable` or `source_unavailable`; coalesced
                      `case.events_viewed` rows] · routes_case_usage [Round 16: `GET
                      /api/cases/{id}/usage` under `cases:read` and `cost:view`, the case's

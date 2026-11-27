@@ -10071,6 +10071,14 @@
    "console": []
   },
   {
+   "id": "releases/known-limitations#a-copied-event-id-can-stand-in-during-a-reinvestigation:0",
+   "page": "releases/known-limitations.md",
+   "anchor": "a-copied-event-id-can-stand-in-during-a-reinvestigation",
+   "heading": "A copied event id can stand in during a reinvestigation",
+   "text": "The Evidence tab reads each of a case's events by its index and id. A reinvestigation still\nrebuilds the case's evidence by event id alone, so where the same id exists in other indices\nof the source's data view, a copy from another index can stand in for the case's own event in\nthat run's evidence.",
+   "console": []
+  },
+  {
    "id": "releases/known-limitations#three-accessibility-findings-remain:0",
    "page": "releases/known-limitations.md",
    "anchor": "three-accessibility-findings-remain",

@@ -649,6 +649,13 @@ not affected.
   facts column needs, so the facts open as a side sheet. Collapse the navigation or fold the
   queue with `[` to show them beside the tabs.
 
+### A copied event id can stand in during a reinvestigation
+
+The Evidence tab reads each of a case's events by its index and id. A reinvestigation still
+rebuilds the case's evidence by event id alone, so where the same id exists in other indices
+of the source's data view, a copy from another index can stand in for the case's own event in
+that run's evidence.
+
 ### Three accessibility findings remain
 
 The closing accessibility check of 0.2.0 left three findings that are not serious:
