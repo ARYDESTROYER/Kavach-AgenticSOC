@@ -31,7 +31,7 @@ from ..config import IndexPattern, Preferences
 from ..constants import DEFAULT_SEVERITY_SCALE_MAX, IndexRole, IngestMode, SourceType
 from ..es.base import BaseESClient
 from ..es.querybuilder import ids_query, late_arrival_query, poll_query
-from ..models import Cursor, RawEvent, make_cursor_event_key
+from ..models import Cursor, RawEvent, make_cursor_event_key, split_cursor_event_key
 from ..ocsf import OCSFEvent, ecs_to_ocsf, score_to_severity_id
 from ..utils import dotted_get, parse_es_timestamp, relative_to_millis, to_millis
 from .base import (
@@ -1360,6 +1360,61 @@ class ElasticConnector(PullConnector):
         prefs = self._effective_prefs(prefs)
         body = ids_query(list(ids), size=size)
         kql = "_id in (%s)" % ", ".join(f'"{i}"' for i in ids)
+        resp = await self._es.search_logs(prefs.data_view_pattern, body)
+        return self._to_result(resp, prefs, kql, None, None)
+
+    async def fetch_by_keys(
+        self, prefs: Preferences, keys: list[str], size: int
+    ) -> SearchResult:
+        """Fetch specific events by source-index-qualified key (``RawEvent.event_key``).
+
+        OPTIONAL capability beside :meth:`fetch_by_ids`; a caller checks for it and
+        falls back to ``fetch_by_ids`` on a source without it. An ``_id`` is unique
+        only within one index and a data view spans many, so an ``ids`` query over
+        the pattern also answers copies of the id in other indices, and three or
+        more copies can fill ``size`` before the wanted index answers. Here a
+        qualified key matches its own index and id together (a ``term`` on
+        ``_index`` beside an ``ids`` filter, one clause per index), so a copy
+        elsewhere never takes a place. A bare key (a legacy entry with no index)
+        matches its id in any index, as ``fetch_by_ids`` does; its copies can still
+        fill ``size``, so a caller that must find every qualified key reads bare keys
+        apart (``GET /api/cases/{id}/events`` does).
+
+        Read-only like ``fetch_by_ids``: the same read-only log client and the same
+        data view, with no time bounds. The ``_index`` term only narrows that data
+        view and never reaches an index outside it. No key asks nothing.
+        """
+        prefs = self._effective_prefs(prefs)
+        by_index: dict[str, list[str]] = {}
+        bare: list[str] = []
+        for key in dict.fromkeys(str(k) for k in keys if k):
+            index, event_id = split_cursor_event_key(key)
+            if not event_id:
+                continue
+            if index:
+                by_index.setdefault(index, []).append(event_id)
+            else:
+                bare.append(event_id)
+
+        def _ids(values: list[str]) -> str:
+            return "_id in (%s)" % ", ".join(f'"{i}"' for i in values)
+
+        should: list[dict[str, Any]] = [
+            {"bool": {"filter": [{"term": {"_index": index}}, {"ids": {"values": event_ids}}]}}
+            for index, event_ids in by_index.items()
+        ]
+        rendered = [f'(_index : "{index}" and {_ids(event_ids)})' for index, event_ids in by_index.items()]
+        if bare:
+            should.append({"ids": {"values": bare}})
+            rendered.append(_ids(bare))
+        kql = " or ".join(rendered) or _ids([])
+        if not should:
+            return self._to_result({"hits": {"hits": [], "total": {"value": 0}}}, prefs, kql, None, None)
+        count = sum(len(v) for v in by_index.values()) + len(bare)
+        body = {
+            "size": size or max(1, count),
+            "query": {"bool": {"should": should, "minimum_should_match": 1}},
+        }
         resp = await self._es.search_logs(prefs.data_view_pattern, body)
         return self._to_result(resp, prefs, kql, None, None)
 

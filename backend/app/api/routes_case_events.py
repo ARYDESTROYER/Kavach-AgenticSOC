@@ -13,6 +13,10 @@ events again, on demand, from the case's own source:
   Elasticsearch ``_id`` is unique only within one index, so an ``ids`` query can also
   answer an unrelated event of another index. A legacy member entry that is a bare id
   (written before keys existed) keeps the event with that id;
+* a source with the optional ``fetch_by_keys`` capability (the Elasticsearch connector,
+  which OpenSearch and Wazuh inherit) reads each qualified member by its index and id
+  together, on the same read-only client and data view, so copies of the id in other
+  indices never fill the read before the member's own index answers;
 * pages walk the case's member list in its stored order, ``limit`` 1 to 200 members a
   page, ``cursor`` the opaque offset the previous page returned as ``next_cursor``.
 
@@ -205,6 +209,41 @@ def _row(ev: RawEvent, case: Case, cited: Mapping[str, list[int]]) -> dict[str, 
     return row
 
 
+def _read_size(members: int) -> int:
+    """Room for twice the members read: an id may name an event in more than one
+    index (or twice in one index under custom routing)."""
+    return min(2 * members, 2 * CASE_EVENTS_MAX_LIMIT)
+
+
+def _events(result: Any) -> list[RawEvent]:
+    return [ev for ev in (getattr(result, "events", None) or []) if isinstance(ev, RawEvent)]
+
+
+async def _read(source: Any, prefs: Any, page: list[str]) -> list[RawEvent]:
+    """Read the page's members from the source, read-only (#1).
+
+    A source with the optional ``fetch_by_keys`` capability (the Elasticsearch
+    connector, which OpenSearch and Wazuh inherit) reads each index-qualified member
+    by its index and id together, so copies of the id in other indices of the data
+    view never fill the read before the member's own index answers. Bare legacy
+    members, and every member of a source without the capability, are read by id
+    through ``fetch_by_ids``, as before; they are read apart from the qualified ones so
+    their copies cannot crowd a qualified member out."""
+    keyed = getattr(source, "fetch_by_keys", None)
+    if callable(keyed):
+        qualified = [m for m in page if split_cursor_event_key(m)[0] is not None]
+        by_id = [m for m in page if split_cursor_event_key(m)[0] is None]
+    else:
+        qualified, by_id = [], page
+    events: list[RawEvent] = []
+    if qualified:
+        events.extend(_events(await keyed(prefs, qualified, size=_read_size(len(qualified)))))
+    if by_id:
+        ids = list(dict.fromkeys(split_cursor_event_key(m)[1] for m in by_id))
+        events.extend(_events(await source.fetch_by_ids(prefs, ids, size=_read_size(len(by_id)))))
+    return events
+
+
 def _match(page: list[str], events: list[RawEvent]) -> list[RawEvent]:
     """The page's member events, in member order, each at most once. A qualified key
     matches its index and id exactly; a bare legacy id matches the first event with
@@ -257,15 +296,10 @@ async def case_events(
     if source is None:
         return CaseEventsPage(**envelope, available=False, reason=reason)
 
-    ids = list(dict.fromkeys(split_cursor_event_key(m)[1] for m in page))
-    # An id may name an event in more than one index: leave room for the other copies
-    # so a foreign copy never pushes a member out of the read.
-    size = min(2 * len(page), 2 * CASE_EVENTS_MAX_LIMIT)
     try:
-        result = await asyncio.wait_for(
-            source.fetch_by_ids(state.execution_prefs, ids, size=size), timeout=READ_TIMEOUT_S,
+        events = await asyncio.wait_for(
+            _read(source, state.execution_prefs, page), timeout=READ_TIMEOUT_S,
         )
-        events = [ev for ev in (getattr(result, "events", None) or []) if isinstance(ev, RawEvent)]
     except Exception as exc:  # noqa: BLE001 (a failed or slow source is reported, not raised)
         logger.warning("case events read failed for %s: %s", case_id, exc)
         return CaseEventsPage(**envelope, available=False, reason="source_unavailable")
