@@ -19,8 +19,7 @@ documentation line is `0.2`.
 
 !!! note "Canonical topology and administrative controls"
 
-    The remote now uses `Testing` for integration and default `main` for accepted
-    Stable source. Version 0.2.0 is Stable only when the exact verified `main`
+    The remote uses `Testing` for integration and `main` for accepted Stable source. Version 0.2.0 is Stable only when the exact verified `main`
     commit has the immutable `v0.2.0` tag, matching signed/public artifacts, and
     completed canonical runtime acceptance.
     Pull-request protections,
@@ -553,11 +552,27 @@ integer, while the strict
 audit path writes a larger key. On its first start on an existing PostgreSQL database,
 this build widens the column and its sequence to `bigint` in place. PostgreSQL rewrites
 the table to do it and holds an exclusive lock on it meanwhile, so the first start takes
-longer on a large audit table, and audit writes wait until it is done. The time per
-million rows is measured at release preparation and recorded in the release notes.
+longer on a large audit table, and audit writes wait until it is done.
 
-On a very large audit table, run the widening yourself in a maintenance window before
-the upgrade:
+Measured at release preparation with the backend's own migration code on PostgreSQL
+16.15 with its default settings, on a 4 vCPU virtual machine with 16 GB of memory, on an
+audit table built like v0.1.1's and filled with rows shaped like its poll row:
+
+| Audit rows | Table and indexes | Widening |
+| --- | --- | --- |
+| 1,000,000 | 0.61 GB | 4.9 s and 4.1 s (two runs) |
+| 5,000,000 | 3.06 GB | 25.0 s |
+| 10,000,000 | 6.12 GB | 44.3 s |
+
+The time follows the table's size on disk, 7 to 8 seconds per GB there; other disks and
+larger rows change it. Read the size of yours with
+`SELECT pg_size_pretty(pg_total_relation_size('audit'));`. The rewrite needs free disk
+about the size of the table. Ten million rows stay well inside the signed plan's
+300-second backend rollout timeout, so 0.2.0 keeps that timeout.
+
+On a very large audit table, stop the backend and run the widening yourself in a
+maintenance window before the upgrade, then start the backend again. A backend that
+stays up while the column changes fails each pooled connection's next query once.
 
 ```sql
 ALTER TABLE audit ALTER COLUMN id TYPE bigint;
@@ -590,8 +605,13 @@ keeps. After an image-only rollback and the return:
 - **The `audit.id` column** stays `bigint`. It is never narrowed again.
 - **The in-memory investigation list** is lost, as on any restart.
 
-The result of the image-only rollback rehearsal to v0.1.1 on PostgreSQL is recorded at
-release preparation, in [Known limitations](../releases/known-limitations.md).
+The rollback to v0.1.1 was rehearsed at release preparation from source on PostgreSQL:
+v0.1.1 boots healthy on the data 0.2.0 wrote and reads and writes cases and audit rows,
+but its graceful stop, and any settings save it makes, reset every setting it does not
+model. Before rolling back to v0.1.1, note the settings you changed in 0.2.0 and set them
+again after the return. The full result is in
+[Known limitations](../releases/known-limitations.md#rolling-back-to-v011-resets-the-settings-it-does-not-model)
+and the [0.2.0 release record](../releases/0.2.0.md#rollback).
 
 ### Round 15 changes
 

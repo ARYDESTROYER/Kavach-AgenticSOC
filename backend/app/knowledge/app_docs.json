@@ -677,7 +677,7 @@
   },
   "releases/0.2.0.md": {
    "title": "Agentic SOC 0.2.0",
-   "description": "Testing candidate for the 0.2 release line, with the new repository identity, the Apache-2.0 license, and operator verification steps.",
+   "description": "Release notes, compatibility changes, upgrade and rollback evidence, signed artifacts and operator verification for Agentic SOC 0.2.0.",
    "nav": [
     "Releases and versions",
     "Agentic SOC 0.2.0"
@@ -800,7 +800,7 @@
    "page": "index.md",
    "anchor": "release-status",
    "heading": "Release status",
-   "text": "The repository uses default `main` for accepted source and retains `Testing` for\nintegration. Version 0.2.0 is Stable only when the exact accepted `main` commit has\nthe immutable `v0.2.0` tag and matching signed/public artifacts and every canonical\nruntime acceptance gate passes. Repository\nprotections and the native Pages deployment remain\nadministrator-controlled and must be verified independently before treating a\nbranch, workflow run, or public URL as accepted. The immutable `v0.1.4` and\n`v0.1.5` tags are failed, non-installable publication records. Version `v0.1.9`\nis also non-installable: its constrained signed-plan check failed before Release\npublication. Version `v0.1.10` is immutable and non-installable: its signed-release\nworkflow timed out during the emulated Web Console builder before the complete\nartifact set or GitHub Release existed. Version 0.1.11 completed image and plan\nverification but failed during post-verification cleanup before its GitHub Release\nor canonical assets were published. Version 0.1.12 completed the entire public,\nsigned publication, but canonical v0.1.1 bootstrap failed closed before application\nmutation because matching absent legacy state-schema labels were normalized\nasymmetrically. It is bootstrap-blocked and not an installation source. The 0.1.13\ncandidate was never tagged; its correction is folded into 0.2.0, which remains a\ncandidate until its full signed-publication and canonical acceptance evidence exists.\nRead Agentic SOC 0.2.0,\nthe unpublished 0.1.13 candidate,\nthe 0.1.12 bootstrap-blocked publication record,\nthe 0.1.11 failed-publication record,\nthe 0.1.10 failed-publication record,\nthe 0.1.9 failed-publication record,\nthe 0.1.8 bootstrap-blocked publication record,\nthe 0.1.7 bootstrap-blocked publication record,\nthe 0.1.6 bootstrap-blocked publication record,\nthe 0.1.5 failed-publication record,\nthe 0.1.4 failed-publication record,\nrelease channels and versioning, and\nknown limitations before deployment.",
+   "text": "The repository uses `main` for accepted source and retains `Testing` for\nintegration. Version 0.2.0 is Stable only when the exact accepted `main` commit has\nthe immutable `v0.2.0` tag and matching signed/public artifacts and every canonical\nruntime acceptance gate passes. Repository\nprotections and the native Pages deployment remain\nadministrator-controlled and must be verified independently before treating a\nbranch, workflow run, or public URL as accepted. The immutable `v0.1.4` and\n`v0.1.5` tags are failed, non-installable publication records. Version `v0.1.9`\nis also non-installable: its constrained signed-plan check failed before Release\npublication. Version `v0.1.10` is immutable and non-installable: its signed-release\nworkflow timed out during the emulated Web Console builder before the complete\nartifact set or GitHub Release existed. Version 0.1.11 completed image and plan\nverification but failed during post-verification cleanup before its GitHub Release\nor canonical assets were published. Version 0.1.12 completed the entire public,\nsigned publication, but canonical v0.1.1 bootstrap failed closed before application\nmutation because matching absent legacy state-schema labels were normalized\nasymmetrically. It is bootstrap-blocked and not an installation source. The 0.1.13\ncandidate was never tagged; its correction is folded into 0.2.0, which remains a\ncandidate until its full signed-publication and canonical acceptance evidence exists.\nRead Agentic SOC 0.2.0,\nthe unpublished 0.1.13 candidate,\nthe 0.1.12 bootstrap-blocked publication record,\nthe 0.1.11 failed-publication record,\nthe 0.1.10 failed-publication record,\nthe 0.1.9 failed-publication record,\nthe 0.1.8 bootstrap-blocked publication record,\nthe 0.1.7 bootstrap-blocked publication record,\nthe 0.1.6 bootstrap-blocked publication record,\nthe 0.1.5 failed-publication record,\nthe 0.1.4 failed-publication record,\nrelease channels and versioning, and\nknown limitations before deployment.",
    "console": []
   },
   {
@@ -6441,7 +6441,7 @@
    "page": "getting-started/install.md",
    "anchor": "1-check-out-version-02",
    "heading": "1. Check out version 0.2",
-   "text": "After its complete signed publication and canonical runtime acceptance succeed, use\nthe immutable `v0.2.0` Stable tag. Use `Testing` only for an explicitly unreleased\nevaluation.\n\n[Stable 0.2.0 (after acceptance)]\n\n```bash\ngit clone https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git\ncd Kavach-AgenticSOC\ngit checkout v0.2.0\n```\n\n[Testing (unreleased preview)]\n\n```bash\ngit clone --branch Testing https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git\ncd Kavach-AgenticSOC\n```\n\nKeep a full clone (no `--depth 1`). The one-time updater bootstrap\n(`scripts/bootstrap-updater.sh`) checks that the release tag's commit is contained in\n`origin/main`, which a shallow single-branch clone does not have.\n\nThe remote uses default `main` for accepted Stable source. Pulling `main` gives you the\ncurrent accepted Stable source, not the next Testing candidate. Repository protections\nand required checks must still be verified independently. Do not create or move a\nrelease tag locally.\n\nUse `v0.2.0` only when its canonical GitHub Release, plan signature, public image\ndigests, and canonical PostgreSQL Compose runtime acceptance all verify. Otherwise use a\npreviously verified Stable release, or Testing only for an explicitly unreleased\nevaluation.\n\nNote: Tags that are not installation sources (v0.1.4 to v0.1.12)",
+   "text": "After its complete signed publication and canonical runtime acceptance succeed, use\nthe immutable `v0.2.0` Stable tag. Use `Testing` only for an explicitly unreleased\nevaluation.\n\n[Stable 0.2.0 (after acceptance)]\n\n```bash\ngit clone https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git\ncd Kavach-AgenticSOC\ngit checkout v0.2.0\n```\n\n[Testing (unreleased preview)]\n\n```bash\ngit clone --branch Testing https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git\ncd Kavach-AgenticSOC\n```\n\nKeep a full clone (no `--depth 1`). The one-time updater bootstrap\n(`scripts/bootstrap-updater.sh`) checks that the release tag's commit is contained in\n`origin/main`, which a shallow single-branch clone does not have.\n\nAccepted Stable source is on `main`. Pulling `main` gives you the current accepted\nStable source, not the next Testing candidate. A plain clone lands on the repository's\ndefault branch, so check out `main` or the release tag explicitly (see\nRelease channels). Repository protections\nand required checks must still be verified independently. Do not create or move a\nrelease tag locally.\n\nUse `v0.2.0` only when its canonical GitHub Release, plan signature, public image\ndigests, and canonical PostgreSQL Compose runtime acceptance all verify. Otherwise use a\npreviously verified Stable release, or Testing only for an explicitly unreleased\nevaluation.",
    "console": []
   },
   {
@@ -6449,7 +6449,7 @@
    "page": "getting-started/install.md",
    "anchor": "1-check-out-version-02",
    "heading": "1. Check out version 0.2",
-   "text": "These immutable tags are publication records. They must never be used as\ninstallation sources.\n\n- `v0.1.4` and `v0.1.5`: their publication attempts stopped before a canonical\n  signed plan and public GitHub Release existed.\n- `v0.1.6`, `v0.1.7`, and `v0.1.8`: these publications have signed, public\n  artifacts but failed canonical bootstrap acceptance at different portability\n  boundaries.\n- `v0.1.9`: the publication built, signed, and anonymously proved all three images,\n  but its constrained supervisor could not traverse the runner-owned verification\n  directory, and no GitHub Release or installable plan was published.\n- `v0.1.10`: the workflow timed out while its Web Console builder ran under target\n  emulation. It has no installable GitHub Release or canonical signed plan.\n- `v0.1.11`: the workflow built, signed, anonymously proved, and verified all three\n  images and the plan, but failed during post-verification cleanup before its\n  canonical Release or assets were published.\n- `v0.1.12`: the release completed the entire signed, public publication, but\n  canonical v0.1.1 bootstrap failed closed before application mutation because\n  matching absent legacy state-schema labels were normalized asymmetrically.\n\nNote: What the 0.2.0 build carries",
+   "text": "Note: Tags that are not installation sources (v0.1.4 to v0.1.12)\n\nThese immutable tags are publication records. They must never be used as\ninstallation sources.\n\n- `v0.1.4` and `v0.1.5`: their publication attempts stopped before a canonical\n  signed plan and public GitHub Release existed.\n- `v0.1.6`, `v0.1.7`, and `v0.1.8`: these publications have signed, public\n  artifacts but failed canonical bootstrap acceptance at different portability\n  boundaries.\n- `v0.1.9`: the publication built, signed, and anonymously proved all three images,\n  but its constrained supervisor could not traverse the runner-owned verification\n  directory, and no GitHub Release or installable plan was published.\n- `v0.1.10`: the workflow timed out while its Web Console builder ran under target\n  emulation. It has no installable GitHub Release or canonical signed plan.\n- `v0.1.11`: the workflow built, signed, anonymously proved, and verified all three\n  images and the plan, but failed during post-verification cleanup before its\n  canonical Release or assets were published.\n- `v0.1.12`: the release completed the entire signed, public publication, but\n  canonical v0.1.1 bootstrap failed closed before application mutation because\n  matching absent legacy state-schema labels were normalized asymmetrically.\n\nNote: What the 0.2.0 build carries",
    "console": []
   },
   {
@@ -6607,7 +6607,7 @@
    "page": "operations/deployment.md",
    "anchor": "standalone-stack",
    "heading": "Standalone stack",
-   "text": "The updater is a privileged host boundary: it alone receives the Docker socket. The\nordinary backend sees only its bounded private Unix control socket; the Web container\nand browser see neither. Docker-socket access is effectively root-equivalent on the\nhost, so deploy only the reviewed supervisor image, restrict access to the host and\nCompose project, protect `.env` and updater volumes, and never expose the control\nsocket over TCP.\n\nThe remote uses `Testing` for integration and default `main` for accepted Stable\nsource. Version 0.2.0 is Stable only when the exact verified `main` commit has the\nimmutable `v0.2.0` tag, matching signed/public artifacts, and completed canonical\nruntime acceptance. A pull of `main` receives the current accepted Stable tree while\nintegration work continues on `Testing`. Branch\nprotections, required checks, and release-environment policy remain repository\nsettings that administrators must verify independently.",
+   "text": "The updater is a privileged host boundary: it alone receives the Docker socket. The\nordinary backend sees only its bounded private Unix control socket; the Web container\nand browser see neither. Docker-socket access is effectively root-equivalent on the\nhost, so deploy only the reviewed supervisor image, restrict access to the host and\nCompose project, protect `.env` and updater volumes, and never expose the control\nsocket over TCP.\n\nThe remote uses `Testing` for integration and `main` for accepted Stable\nsource. Version 0.2.0 is Stable only when the exact verified `main` commit has the\nimmutable `v0.2.0` tag, matching signed/public artifacts, and completed canonical\nruntime acceptance. A pull of `main` receives the current accepted Stable tree while\nintegration work continues on `Testing`. Branch\nprotections, required checks, and release-environment policy remain repository\nsettings that administrators must verify independently.",
    "console": []
   },
   {
@@ -7218,7 +7218,7 @@
    "page": "operations/upgrades.md",
    "anchor": "",
    "heading": "",
-   "text": "Agentic SOC's intended release contract uses two permanent branches:\n\n```text\nfeature branches → Testing → main (Stable)\n```\n\n`Testing` is the integration and acceptance branch. `main` is the supported Stable\nbranch. The current source candidate is represented as `0.2.0` in packages/images\nand becomes Stable only if the immutable `v0.2.0` tag and its complete signed/public\nartifact set pass every publication and canonical runtime acceptance gate; its\ndocumentation line is `0.2`.\n\nNote: Canonical topology and administrative controls\n\nThe remote now uses `Testing` for integration and default `main` for accepted\nStable source. Version 0.2.0 is Stable only when the exact verified `main`\ncommit has the immutable `v0.2.0` tag, matching signed/public artifacts, and\ncompleted canonical runtime acceptance.\nPull-request protections,\nrequired checks, and release-environment policy are repository settings rather\nthan source-code guarantees. Administrators must verify them independently;\nbranch and tag names alone do not prove acceptance.\n\nThe immutable `v0.1.4` and `v0.1.5` tags are failed, non-installable publication\nattempts. Neither has the canonical signed plan and public GitHub Release needed\nfor installation. Never use them as deployment, bootstrap, or update sources.",
+   "text": "Agentic SOC's intended release contract uses two permanent branches:\n\n```text\nfeature branches → Testing → main (Stable)\n```\n\n`Testing` is the integration and acceptance branch. `main` is the supported Stable\nbranch. The current source candidate is represented as `0.2.0` in packages/images\nand becomes Stable only if the immutable `v0.2.0` tag and its complete signed/public\nartifact set pass every publication and canonical runtime acceptance gate; its\ndocumentation line is `0.2`.\n\nNote: Canonical topology and administrative controls\n\nThe remote uses `Testing` for integration and `main` for accepted Stable source. Version 0.2.0 is Stable only when the exact verified `main`\ncommit has the immutable `v0.2.0` tag, matching signed/public artifacts, and\ncompleted canonical runtime acceptance.\nPull-request protections,\nrequired checks, and release-environment policy are repository settings rather\nthan source-code guarantees. Administrators must verify them independently;\nbranch and tag names alone do not prove acceptance.\n\nThe immutable `v0.1.4` and `v0.1.5` tags are failed, non-installable publication\nattempts. Neither has the canonical signed plan and public GitHub Release needed\nfor installation. Never use them as deployment, bootstrap, or update sources.",
    "console": []
   },
   {
@@ -7480,7 +7480,15 @@
    "page": "operations/upgrades.md",
    "anchor": "the-audit-id-column",
    "heading": "The audit id column",
-   "text": "In every published release up to v0.1.12, the PostgreSQL `audit.id` column is a 32-bit\ninteger, while the strict\naudit path writes a larger key. On its first start on an existing PostgreSQL database,\nthis build widens the column and its sequence to `bigint` in place. PostgreSQL rewrites\nthe table to do it and holds an exclusive lock on it meanwhile, so the first start takes\nlonger on a large audit table, and audit writes wait until it is done. The time per\nmillion rows is measured at release preparation and recorded in the release notes.\n\nOn a very large audit table, run the widening yourself in a maintenance window before\nthe upgrade:\n\n```sql\nALTER TABLE audit ALTER COLUMN id TYPE bigint;\nALTER SEQUENCE audit_id_seq AS bigint;\n```\n\nThe backend then finds the column already widened and does nothing. If the widening\nfails at startup, the backend still starts, logs the error with these statements, and\n`GET /api/diagnostics/health` reports the schema migration as failed: strict audit\nwrites, such as approving or rejecting a proposal, fail until you apply it. SQLite and a\nfresh PostgreSQL database need nothing.",
+   "text": "In every published release up to v0.1.12, the PostgreSQL `audit.id` column is a 32-bit\ninteger, while the strict\naudit path writes a larger key. On its first start on an existing PostgreSQL database,\nthis build widens the column and its sequence to `bigint` in place. PostgreSQL rewrites\nthe table to do it and holds an exclusive lock on it meanwhile, so the first start takes\nlonger on a large audit table, and audit writes wait until it is done.\n\nMeasured at release preparation with the backend's own migration code on PostgreSQL\n16.15 with its default settings, on a 4 vCPU virtual machine with 16 GB of memory, on an\naudit table built like v0.1.1's and filled with rows shaped like its poll row:\n\n| Audit rows | Table and indexes | Widening |\n| --- | --- | --- |\n| 1,000,000 | 0.61 GB | 4.9 s and 4.1 s (two runs) |\n| 5,000,000 | 3.06 GB | 25.0 s |\n| 10,000,000 | 6.12 GB | 44.3 s |\n\nThe time follows the table's size on disk, 7 to 8 seconds per GB there; other disks and\nlarger rows change it. Read the size of yours with\n`SELECT pg_size_pretty(pg_total_relation_size('audit'));`. The rewrite needs free disk\nabout the size of the table. Ten million rows stay well inside the signed plan's\n300-second backend rollout timeout, so 0.2.0 keeps that timeout.",
+   "console": []
+  },
+  {
+   "id": "operations/upgrades#the-audit-id-column:1",
+   "page": "operations/upgrades.md",
+   "anchor": "the-audit-id-column",
+   "heading": "The audit id column",
+   "text": "On a very large audit table, stop the backend and run the widening yourself in a\nmaintenance window before the upgrade, then start the backend again. A backend that\nstays up while the column changes fails each pooled connection's next query once.\n\n```sql\nALTER TABLE audit ALTER COLUMN id TYPE bigint;\nALTER SEQUENCE audit_id_seq AS bigint;\n```\n\nThe backend then finds the column already widened and does nothing. If the widening\nfails at startup, the backend still starts, logs the error with these statements, and\n`GET /api/diagnostics/health` reports the schema migration as failed: strict audit\nwrites, such as approving or rejecting a proposal, fail until you apply it. SQLite and a\nfresh PostgreSQL database need nothing.",
    "console": []
   },
   {
@@ -7488,7 +7496,15 @@
    "page": "operations/upgrades.md",
    "anchor": "rolling-back-from-020",
    "heading": "Rolling back from 0.2.0",
-   "text": "Every field 0.2.0 stores is additive, and the earlier builds ignore fields they do not\nknow. The rollback lane boots the previous release pinned in\n`scripts/rollback_previous_release.json` on data this build wrote, and checks what it\nkeeps. After an image-only rollback and the return:\n\n- **Recorded risk inputs** are lost on every case the earlier build saves again. Back on\n  this build, such a case reads \"not recorded\" and its explanation uses today's weights.\n- **Second-factor lock counters** reset.\n- **Usage-ledger rows** are append-only and keep their rate fields.\n- **What's new markers** survive, because the earlier build keeps unknown personal\n  preference keys.\n- **The read grants and the server-side forced password change** revert while the\n  earlier build runs: a custom role without a read grant can read again, and an account\n  flagged to change its password is not held to it. The lane runs with sign-in off, so it\n  does not prove these two; they follow from the earlier build's code.\n- **The `audit.id` column** stays `bigint`. It is never narrowed again.\n- **The in-memory investigation list** is lost, as on any restart.\n\nThe result of the image-only rollback rehearsal to v0.1.1 on PostgreSQL is recorded at\nrelease preparation, in Known limitations.",
+   "text": "Every field 0.2.0 stores is additive, and the earlier builds ignore fields they do not\nknow. The rollback lane boots the previous release pinned in\n`scripts/rollback_previous_release.json` on data this build wrote, and checks what it\nkeeps. After an image-only rollback and the return:\n\n- **Recorded risk inputs** are lost on every case the earlier build saves again. Back on\n  this build, such a case reads \"not recorded\" and its explanation uses today's weights.\n- **Second-factor lock counters** reset.\n- **Usage-ledger rows** are append-only and keep their rate fields.\n- **What's new markers** survive, because the earlier build keeps unknown personal\n  preference keys.\n- **The read grants and the server-side forced password change** revert while the\n  earlier build runs: a custom role without a read grant can read again, and an account\n  flagged to change its password is not held to it. The lane runs with sign-in off, so it\n  does not prove these two; they follow from the earlier build's code.\n- **The `audit.id` column** stays `bigint`. It is never narrowed again.\n- **The in-memory investigation list** is lost, as on any restart.",
+   "console": []
+  },
+  {
+   "id": "operations/upgrades#rolling-back-from-020:1",
+   "page": "operations/upgrades.md",
+   "anchor": "rolling-back-from-020",
+   "heading": "Rolling back from 0.2.0",
+   "text": "The rollback to v0.1.1 was rehearsed at release preparation from source on PostgreSQL:\nv0.1.1 boots healthy on the data 0.2.0 wrote and reads and writes cases and audit rows,\nbut its graceful stop, and any settings save it makes, reset every setting it does not\nmodel. Before rolling back to v0.1.1, note the settings you changed in 0.2.0 and set them\nagain after the return. The full result is in\nKnown limitations\nand the 0.2.0 release record.",
    "console": []
   },
   {
@@ -9161,46 +9177,46 @@
    "page": "releases/whats-new.md",
    "anchor": "agentic-soc-020",
    "heading": "Agentic SOC 0.2.0",
-   "text": "Testing candidate, not yet released. Visible AI work, explainable numbers and a clearer Case Manager. Everything since 0.1.1 in one release, under a new repository identity and the Apache-2.0 license.\n\nRead the Agentic SOC 0.2.0 release record.\n\nWhat changed in this version, newest first.",
+   "text": "Released 27 November 2026. Visible AI work, explainable numbers and a clearer Case Manager. Everything since 0.1.1 in one release, under a new repository identity and the Apache-2.0 license.\n\nRead the Agentic SOC 0.2.0 release record.\n\nWhat changed in this version, newest first.",
    "console": []
   },
   {
-   "id": "releases/whats-new#not-yet-released:0",
+   "id": "releases/whats-new#27-november-2026:0",
    "page": "releases/whats-new.md",
-   "anchor": "not-yet-released",
-   "heading": "Not yet released",
+   "anchor": "27-november-2026",
+   "heading": "27 November 2026",
    "text": "Visible AI work, explainable numbers and a clearer Case Manager.\n\n- **See when the AI is working on a case** (New, Cases). The queue, the case header, the navigation and the close dialogs show when an AI investigation is running or waiting. Read more.\n    - The case header shows **AI working** with the time so far, or **AI queued**. Its popover says who started the run.\n    - The Case Manager item in the navigation counts the cases the AI is working on.\n    - The run's result stays authoritative. A close made while it runs is replaced by its result, and the close dialogs say so before you act.\n    - When a run you started finishes, or a run replaces your close, your Inbox tells you.\n\nThe AI working chip and its popover.\n\n- **A clearer Case Manager** (Improved, Cases). Each part of a case has one place. The header takes two lines, the case facts sit in their own column, and the queue folds away when you need the width. Read more.\n    - The header's second line keeps the case number, severity, status, risk, AI verdict, owner and SLA on one line.\n    - Press **]** to show or hide the case facts. In a narrow pane they open in a side sheet.\n    - Press **[** to fold the queue into a narrow strip. J and K still move through the cases.\n    - The Brief opens with the case's next step and four lanes: Evidence, AI, Decision and People.\n\nThe Case Manager in this update.",
    "console": []
   },
   {
-   "id": "releases/whats-new#not-yet-released:1",
+   "id": "releases/whats-new#27-november-2026:1",
    "page": "releases/whats-new.md",
-   "anchor": "not-yet-released",
-   "heading": "Not yet released",
+   "anchor": "27-november-2026",
+   "heading": "27 November 2026",
    "text": "- **A new repository identity for updates** (Improved, Administration). Signed updates now come from ARYDESTROYER/Kavach-AgenticSOC. Set it in .env before you bootstrap the updater. Read more.\n    - Add `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to .env, with that exact letter case.\n    - The bootstrap refuses a missing line or the former name, prints the line to add, and never edits .env.\n    - Releases 0.1.12 and earlier stay valid under the former name. The public Help Center moved to the new Pages address.\n\nThe new repository identity in Settings.\n\n- **Case tabs in a new order** (Improved, Cases). Six tabs: Brief, Evidence, AI investigation, Response, Activity and Chat. Alt+2, Alt+4 and Alt+5 now open Evidence, Response and Activity, and Chat moves to Alt+6. Read more.\n    - Alt+1 to Alt+6 open the tabs in that order.\n    - Before, Alt+2 opened Runbook, Alt+4 opened Collaboration and Alt+5 opened Chat.\n    - A link to the retired Timeline or Threat context tab opens Evidence at the matching section.\n\nThe six case tabs, with the Brief open.",
    "console": []
   },
   {
-   "id": "releases/whats-new#not-yet-released:2",
+   "id": "releases/whats-new#27-november-2026:2",
    "page": "releases/whats-new.md",
-   "anchor": "not-yet-released",
-   "heading": "Not yet released",
+   "anchor": "27-november-2026",
+   "heading": "27 November 2026",
    "text": "- **Every number shows its math** (New, Cases). Hover a risk score, a decision or a dashboard figure for its formula with the real numbers. Press it for the inputs, the steps and the rounding. Read more.\n    - On a case: the risk score, the close or escalate decision, the priority, the SLA and the AI cost.\n    - On dashboards and Metrics: the KPI figures, with the cases behind them.\n    - **Copy calculation** copies the whole arithmetic.\n    - A case scored before this version keeps its stored factors. Where its inputs were not kept, the panel says they were not recorded.\n\nThe risk score with its math.\n\n- **What's new and Communication** (New, Help). This welcome appears once after each update. The Communication group holds Inbox and What's new, the release tracker.\n    - Open **Communication**, then **What's new**, to read every release with its highlights and screenshots.\n    - Turn the welcome off with **Show What's new after updates** in Settings, Account, Appearance.\n\nThe release tracker in Communication.",
    "console": []
   },
   {
-   "id": "releases/whats-new#not-yet-released:3",
+   "id": "releases/whats-new#27-november-2026:3",
    "page": "releases/whats-new.md",
-   "anchor": "not-yet-released",
-   "heading": "Not yet released",
+   "anchor": "27-november-2026",
+   "heading": "27 November 2026",
    "text": "- **A quieter sign-in page** (Improved, Security). The sign-in page uses the Console's own colours and moves once as it opens. The Remember me row shows only its name. Read more.\n    - Checking **Remember me** opens a warning first. It says how long this device stays signed in.\n    - When an administrator turned Remember me off, or the connection is not secure, the row stays visible and disabled, with the reason.\n    - A single sign-on error shows a fixed sentence, never text from the address bar.\n\nThe sign-in page.\n\n- **Every case record within reach** (New, Cases). The Evidence tab lists the raw events behind a case. The case facts open every stored field and each AI call with its cost. Read more.\n    - Open an event for every field as a table or as JSON, then copy or download it.\n    - **View all fields** in the case facts shows every stored field of the case.\n    - The cost in the case facts lists each AI call with its tokens and its cost formula.\n    - Raw events need the `sources:read` permission. AI costs need `cost:view`.",
    "console": []
   },
   {
-   "id": "releases/whats-new#not-yet-released:4",
+   "id": "releases/whats-new#27-november-2026:4",
    "page": "releases/whats-new.md",
-   "anchor": "not-yet-released",
-   "heading": "Not yet released",
+   "anchor": "27-november-2026",
+   "heading": "27 November 2026",
    "text": "- **Access and account security fixes** (Security). Case reads, the settings read and Standup now check permissions, and account security is stricter. Read more.\n    - A role without the permission now gets an Access denied answer from these reads.\n    - An account an administrator creates or resets must change its temporary password before anything else.\n    - Ten wrong second-factor codes in a row pause second-factor checks for 5 minutes, doubling up to an hour.\n    - Changing your own password signs out your other sessions. An administrator's reset signs the account out everywhere.\n    - Only a Super admin with a fresh sign-in can change single sign-on settings.\n    - Single sign-on no longer links an account created through another provider because the email matches.\n- **Fixes across the application** (Fixed, Platform). Fixes from a full review of the application, in the AI pipeline, SLA timers, metrics, settings, Demo Mode and accessibility.\n    - A case a person closed before an automatic AI run started stays closed.\n    - The SLA response clock stops for a case the AI agent closed.\n    - Settings refuses values that cannot work together, such as a response target longer than the resolution target.\n    - In Demo Mode, a seeded case's cost has usage rows behind it, and its risk score matches its factors.\n    - Focus, names and reflow work better with a keyboard, a screen reader and a phone.\n- **Apache-2.0 license** (New, Platform). Agentic SOC is free software under the Apache License 2.0. Read more.\n    - The license text is in the repository and in each image.",
    "console": []
   },
@@ -9361,15 +9377,183 @@
    "page": "releases/0.2.0.md",
    "anchor": "",
    "heading": "",
-   "text": "Agentic SOC **0.2.0** opens documentation line **0.2**. It is a **Testing candidate**.\nIt is not tagged and it is not an installable Stable release yet. The frozen release\npreparation writes the full release notes on this page before the tag.\n\nVersion 0.2.0 carries everything built on `Testing` since 0.1.12. It also folds in\nthe 0.1.13 candidate, which was never tagged: the legacy bootstrap correction that\ntreats a missing state-schema label the same way on both installed components. See\nAgentic SOC 0.1.13.\n\nWarning: A candidate is not an installable Stable release\n\nBranch content, a version string, an image tag or a signature alone is not\nupdate authority. Version 0.2.0 is installable only after the exact accepted\n`main` commit has the immutable annotated tag `v0.2.0`, the tag and release\nworkflows pass, all three public pinned images and signatures verify, the\ncanonical plan and bundle publish, and canonical v0.1.1 supervised-update plus\nbrowser acceptance succeeds. Never move or reuse the tag.",
+   "text": "Agentic SOC **0.2.0** opens documentation line **0.2**. It is the first release since\nv0.1.1 to carry what was built on `Testing` after 0.1.12, and it folds in the 0.1.13\ncandidate, which was never tagged (see Agentic SOC 0.1.13). This page is\nthe release record: what is new, what changes for scripts and operators, the measured\nmigration and rollback evidence, the signed artifacts, and how to verify them.\n\nThe intended tag date is **2026-11-27**, the date of the `[0.2.0]` heading in\n`CHANGELOG.md` and of the What's new notes. `scripts/check_version.py` requires the two\ndates to match each other on `main` and on the tag, but no gate compares them with the\nday the tag is cut. So if the tag slips past that day, a follow-up change through\n`Testing` re-dates the CHANGELOG heading and the notes before the tag is created: the\n`[0.2.0]` heading, the notes `date` and the newest update's `date`, and the intended tag\ndate in this paragraph. The same change runs `python3 scripts/build_release_notes.py`\nand `python3 scripts/build_app_knowledge.py` and commits what they regenerate, because\nCI checks both outputs.\n\nWarning: A candidate is not an installable Stable release",
    "console": []
   },
   {
-   "id": "releases/0.2.0#before-you-upgrade-set-the-update-repository:0",
+   "id": "releases/0.2.0#:1",
    "page": "releases/0.2.0.md",
-   "anchor": "before-you-upgrade-set-the-update-repository",
-   "heading": "Before you upgrade: set the update repository",
-   "text": "The repository is now `ARYDESTROYER/Kavach-AgenticSOC`. That name is the update\ntrust root. It names the signing identity of every release plan, the GHCR image\nnamespace, the OCI source label, the release discovery default and the public\ndocumentation address.\n\nAdd this line to `.env` on the deployment host before you run the bootstrap:\n\n```text\nAGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC\n```\n\nThe bootstrap script refuses to run when the line is missing, when it still names\n`ARYDESTROYER/Agentic-Kibana` in any letter case, or when it names the new\nrepository in the wrong letter case. The signing identity is case-sensitive. The\nscript prints the exact line to add and never edits `.env` itself.\n\nWhat else changes with the name:\n\n- The publisher identity, the GHCR namespace and the OCI source label all use the\n  new name.\n- Artifacts of v0.1.12 and earlier stay valid under the former identity. They are\n  not re-signed.\n- GitHub does not redirect project Pages after a rename. Old\n  `arydestroyer.github.io/Agentic-Kibana/` links answer 404. The public Stable\n  Help Center is now `https://arydestroyer.github.io/Kavach-AgenticSOC/stable/`.\n- A saved **Updates & releases** preference that names the former repository, in any\n  letter case and with or without `.git`, now reads as the new repository. A fork\n  or any other repository you saved is kept.",
+   "anchor": "",
+   "heading": "",
+   "text": "Branch content, a version string, an image tag or a signature alone is not\nupdate authority. Version 0.2.0 is installable only after the exact accepted\n`main` commit has the immutable annotated tag `v0.2.0`, the tag and release\nworkflows pass, all three public pinned images and signatures verify, the\ncanonical plan and bundle publish, and canonical v0.1.1 supervised-update plus\nbrowser acceptance succeeds. Until then the last verified installable Stable\nrelease is v0.1.1. Never move or reuse the tag.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#see-the-ai-agent-on-a-case:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "see-the-ai-agent-on-a-case",
+   "heading": "See the AI agent on a case",
+   "text": "While the AI investigates a case, the queue row, the case header, the Case Manager\nnavigation count and the close and bulk dialogs show it. The header chip reads \"AI\nworking · m:ss\", or \"AI queued\" while the run waits for a slot, and opens the five steps\nand who started the run. The run's result stays authoritative: the close dialogs warn\nthat a close made now will be replaced by the run's result, and the Inbox says so when\nit happens or when a run you started ends. Reinvestigate no longer waits for the run to\nfinish. See Case Manager.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#a-segregated-case-manager:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "a-segregated-case-manager",
+   "heading": "A segregated Case Manager",
+   "text": "The case page has six tabs with one lane each: Brief, Evidence, AI investigation,\nResponse, Activity and Chat, on Alt+1 to Alt+6. Alt+2, Alt+4 and Alt+5 changed meaning,\nand Chat moved to Alt+6. A compact header with one meta strip, the case facts inspector\non `]` and the queue fold on `[` give the content its space back. Old `#/case_manager`\nlinks with a `tab` still open the right tab. See Case Manager.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#every-number-explains-itself:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "every-number-explains-itself",
+   "heading": "Every number explains itself",
+   "text": "Hover a score, verdict, SLA, cost or dashboard figure for a one-line formula with the\nreal values; click it for the inputs, the steps, the rounding and where each value came\nfrom, with Copy calculation. New risk scores record their inputs and the weights in\nforce, and each decision records the thresholds it compared. A case scored or decided\nbefore 0.2.0 says so instead of inventing a record. See\nExplainable numbers.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#every-case-record-is-reachable:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "every-case-record-is-reachable",
+   "heading": "Every case record is reachable",
+   "text": "The Evidence tab re-reads the case's own raw events on the read-only log client, the\nusage sheet lists every model call with the rates behind its cost, and View all fields,\nthe trace step details and the history reasons show the rest. See\nEvery record of a case.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#a-quiet-sign-in-page:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "a-quiet-sign-in-page",
+   "heading": "A quiet sign-in page",
+   "text": "The sign-in page uses the Console's own colours, has one short entrance and nothing\nmoving afterwards, and offers \"Remember me\" without a duration. See\nAuthentication.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#a-release-tracker-under-communication:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "a-release-tracker-under-communication",
+   "heading": "A release tracker under Communication",
+   "text": "When a newer release is installed, each person sees a short welcome once after signing\nin. The **Notifications** navigation group is now **Communication**, with **Inbox** and\n**What's new**, a release tracker with notes and screenshots for every release. Accounts\ncreated after the release is installed start with the welcome marked seen. See\nWhat's new.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#security-and-access:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "security-and-access",
+   "heading": "Security and access",
+   "text": "With role-based access on, every read asks for the grant of the data it returns. An\naccount an administrator created or reset must change its password before any other\nrequest. Ten wrong second-factor codes lock second-factor checks for the account. A\npassword change signs out the other sessions. Only a stored Super admin with a fresh\nsign-in can change single sign-on. The application-wide bug hunt confirmed 81 issues and\nfixed 75; the other 6 were duplicates. See Authentication\nand Permissions.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#also-in-this-release:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "also-in-this-release",
+   "heading": "Also in this release",
+   "text": "- **Workspace Chat** is a read-only analyst assistant with no per-question limits, exact\n  counts over any window, charts and tables built only from lookup results, reports with\n  Word and Excel downloads, suggested questions computed at no AI cost, follow-ups that\n  name what the answer shows, and Ask AI chips on entity values. See\n  Chat.\n- **Dashboards library.** The Overview item opens four built-in boards and your own; the\n  Cyber Defence Center stays the landing page. See Dashboards.\n- **Audit log** with three scopes, search, an inspector with what changed, and an\n  audited CSV or JSON Lines export. See Audit log.\n- **Rule sheets.** Every rule name opens one sheet with its picture, and Logs and Cases\n  take an exact rule filter. See Cases.\n- **One Runbooks feature** in place of playbooks: phased procedures, deterministic\n  matching with a reason, a per-case run with a Next step card, and governed versions.\n  See Runbooks.\n- **A switch for role-based access**, **Team activity**, **screenshots on cases**, a\n  stronger close, and a **random review of automatic closes**. See\n  Users and RBAC,\n  Team activity,\n  Case collaboration and\n  Auto-close review.\n- **The setup wizard tells the truth** about the AI runtime. See\n  First-run setup.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#compatibility-and-api-changes:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "compatibility-and-api-changes",
+   "heading": "Compatibility and API changes",
+   "text": "Scripts and integrations that call the API should check these before upgrading.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#compatibility-and-api-changes:1",
+   "page": "releases/0.2.0.md",
+   "anchor": "compatibility-and-api-changes",
+   "heading": "Compatibility and API changes",
+   "text": "- **Runbooks.** Writes under `/api/playbooks*` and `POST /api/cases/{id}/run-playbook`\n  answer `410 runbooks_moved`. The `GET /api/playbooks*` reads stay as aliases for this\n  release only. The grants `playbooks:read`, `playbooks:run` and `playbooks:manage` map\n  onto `runbooks:*` in every grant and deny layer.\n- **Role-based access switch.** `PUT /api/settings` answers `409 rbac_switch_moved` when\n  a body would change `rbac.enabled`; the switch is `PUT /api/rbac` (stored Super admin,\n  fresh sign-in).\n- **Read grants.** With role-based access on, a custom role without the grant of a read\n  gets `403` and an Access denied audit row. The built-in roles hold every such grant.\n- **Accounts.** `403 password_change_required` on every route except a short\n  self-service list until a flagged account changes its password. Second-factor lockout\n  answers `429`. `POST /api/auth/refresh` is deprecated and answers\n  `401 session_invalid`; no sign-in issues a refresh token. `AUTH_TOKEN_HOURS` is capped\n  at 144.\n- **Single sign-on.** A provider's default role or group mapping must be a built-in\n  role (`422` otherwise).\n- **Reinvestigate.** `POST /api/cases/{case_id}/reinvestigate` with `wait: false`\n  answers `202` at once; a second request answers `409 investigation_running`; a closed\n  case is reinvestigated in place or answers `409 open_case_exists`.\n- **Audit before visible.** Settings, account, source, runbook and dashboard changes\n  write their audit row first and answer `503 audit_unavailable` when the audit log\n  cannot be written. Audit client addresses come from `X-Forwarded-For` only through a\n  proxy listed in `TRUSTED_PROXIES` (default `tlsoc-webui`).\n- **Chat** sits outside the daily and monthly AI budget. Its only spending bound is the\n  optional `chat_agent.chat_daily_cap_usd`. Chat limits version 2 triples the \"Timeouts\n  and capacity\" defaults.\n- **New routes:** `GET /api/investigations/active`, `GET /api/cases/{id}/events`,\n  `GET /api/cases/{id}/usage` and `GET /api/metrics/explain`. Every new response field is\n  additive.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#compatibility-and-api-changes:2",
+   "page": "releases/0.2.0.md",
+   "anchor": "compatibility-and-api-changes",
+   "heading": "Compatibility and API changes",
+   "text": "The API reference lists every route and status.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#upgrade-steps:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "upgrade-steps",
+   "heading": "Upgrade steps",
+   "text": "Read Upgrade operations\nfirst. In order:\n\n1. **Set the update repository.** Add this line to `.env` on the deployment host:\n\n    ```text\n    AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC\n    ```\n\n    The bootstrap refuses to run when the line is missing, when it still names\n    `ARYDESTROYER/Agentic-Kibana` in any letter case, or when it names the new\n    repository in the wrong letter case, because the signing identity is\n    case-sensitive. It prints the exact line and never edits `.env` itself.\n\n2. **Back up** the state store and the deployment secrets, as for any upgrade, to a\n   place outside the deployment checkout: the bootstrap refuses a checkout with files Git\n   does not ignore.\n\n3. **PostgreSQL: the audit id column.** Every published release up to v0.1.12 created\n   `audit.id` as a 32-bit integer. On its first start, 0.2.0 widens the column and its\n   sequence to `bigint` in place. PostgreSQL rewrites the table and its indexes under an\n   exclusive lock, so audit writes wait until it is done. Measured at release\n   preparation with the backend's own migration code\n   (`ensure_schema_migrations`) on PostgreSQL 16.15 with default settings, on a 4 vCPU\n   virtual machine with 16 GB of memory, on an audit table built like v0.1.1's and\n   filled with rows shaped like its poll row (a 365-byte document each):",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#upgrade-steps:1",
+   "page": "releases/0.2.0.md",
+   "anchor": "upgrade-steps",
+   "heading": "Upgrade steps",
+   "text": "    | Audit rows | Table and indexes | Widening |\n    | --- | --- | --- |\n    | 1,000,000 | 0.61 GB | 4.9 s and 4.1 s (two runs) |\n    | 5,000,000 | 3.06 GB | 25.0 s |\n    | 10,000,000 | 6.12 GB | 44.3 s |\n\n    The time follows the table's size on disk, 7 to 8 seconds per GB here; other disks\n    and larger rows change it. Read yours with\n    `SELECT pg_size_pretty(pg_total_relation_size('audit'));`. The rewrite needs free\n    disk about the size of the table. A second start finds `bigint` and does nothing.\n    The signed plan keeps its 300-second backend rollout timeout, because 10 million\n    rows took 44 seconds. On a very large audit table, run the two statements yourself\n    in a maintenance window before the upgrade, with the backend stopped:\n\n    ```sql\n    ALTER TABLE audit ALTER COLUMN id TYPE bigint;\n    ALTER SEQUENCE audit_id_seq AS bigint;\n    ```\n\n    Then start the v0.1.1 backend again. At its first start, 0.2.0 finds the column\n    already `bigint` and does nothing.\n    v0.1.1 reads and writes the widened column unchanged (see Rollback),\n    which is why the plan's migration strategy stays `none`.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#upgrade-steps:2",
+   "page": "releases/0.2.0.md",
+   "anchor": "upgrade-steps",
+   "heading": "Upgrade steps",
+   "text": "4. **Elasticsearch state.** At startup the backend adds the audit mapping upgrade and\n   two cases mappings (`risk_breakdown.inputs`, stored and never indexed, and\n   `awaiting_reason`) to the templates and to every live index that lacks them. It only\n   adds. The manual audit template step is needed only when the backend logs that it\n   could not read or change a template; see\n   Applying the Round 14 audit template.\n\n5. **Runbooks.** On the first start every stored procedure and reference runbook is\n   converted once into a runbook by the system actor `runbook_migration`, audited, before\n   the library is used. See Upgrade operations.\n\n6. **Tell people what they will notice:** the six case tabs and the changed Alt keys,\n   the forced password change, the MFA lock, sign-out of other sessions after a password\n   change, the Communication group, and that Reinvestigate updates a closed case in\n   place.\n\nDemo Mode never reads a tenant source, and its spend is simulated and marked so\n(`price_basis: demo_simulated`).",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#rollback:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "rollback",
+   "heading": "Rollback",
+   "text": "An image-only rollback is the documented recovery path, and the updater performs it\nautomatically when an upgrade fails readiness. Every field 0.2.0 stores is additive.\n\n**The v0.1.1 rehearsal.** The canonical rollback target in the field is v0.1.1, the only\ninstallable Stable release before 0.2.0. At release preparation it was rehearsed from\nsource (`ba179651a7b63d6352ad346fd633e1460f3a4d39` with its pinned requirements, against\nthis checkout) on PostgreSQL 16.15 with pgvector 0.6.0, in the order of a real upgrade:\nv0.1.1 first on a fresh database, then 0.2.0 on that database with the rollback lane's\nrelease-N writes, then v0.1.1 again, then 0.2.0 again. Twice, once with v0.1.1 only\nreading and once with it saving cases, an account, the preferences and the settings.\nThe result:",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#rollback:1",
+   "page": "releases/0.2.0.md",
+   "anchor": "rollback",
+   "heading": "Rollback",
+   "text": "- v0.1.1 boots on the data 0.2.0 wrote, answers `/api/health/ready` with 200 and\n  `/api/health` with `ok`, lists and opens the cases 0.2.0 wrote, saves them, reads the\n  audit log and appends to it, and reads the case spend from the ledger row 0.2.0\n  wrote. Its log holds no error and no traceback. 0.2.0 then starts healthy again.\n- The widened `audit.id` stays `bigint`, and v0.1.1 writes its audit rows into it.\n- **Settings v0.1.1 does not model are reset.** Its graceful stop, and any settings save\n  it makes, rewrites the settings document without them. Back on 0.2.0 they read as\n  their defaults: the sections `analyst_rule_policies`, `auto_close_review`,\n  `chat_agent`, `evidence_fields`, `evidence_max_chars_per_event`, `precedent`,\n  `replay_capture`, `resilience` and `team_activity`, and the newer keys inside `caps`,\n  `enrichment`, `rag`, `rbac`, `runbooks`, `session_policy` and `threshold_tuning` (for\n  example `runbooks.auto_attach`, `session_policy.remember_me` and\n  `threshold_tuning.auto_apply_confirmed`). In each log source the declared severity\n  ceiling `severity_scale_max` is reset too, so a Wazuh source reads its seeded 16 again\n  and any other source the 0 to 100 identity, which can change its severity bands; in\n  each suppression rule `approval_proposal_id` is reset. Note the values you changed and\n  set them again after the return.\n- **Per document,** a case v0.1.1 saves loses its recorded risk inputs (it then reads\n  \"not recorded\", with its score and factors unchanged), and an account it saves loses\n  its second-factor lock counter. Ledger rows keep their rates. The What's new marker,\n  the auto-close review grade and the case screenshots survive.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#rollback:2",
+   "page": "releases/0.2.0.md",
+   "anchor": "rollback",
+   "heading": "Rollback",
+   "text": "This rehearsal ran the release's source, not a v0.1.1 Compose deployment through the\nupdater. The image-level rehearsal on a Docker host stays maintainer action M5. It needs\na published, signed 0.2.0 release, so it runs on the release of the M7 dress rehearsal\nbefore the tag, or on 0.2.0 itself after publication:\n\n1. Build a disposable PostgreSQL Compose deployment from the `v0.1.1` tag, as its own\n   DEPLOY.md installs it (v0.1.1 published no images):\n   `docker compose -f deploy/docker-compose.agnostic.yml up -d --build`. Let v0.1.1\n   write its own state: cases, an account, the preferences and the settings.\n2. Update it to 0.2.0 as in Operator bootstrap, and write data\n   on 0.2.0. On the dress rehearsal's release, name the test repository instead of\n   `ARYDESTROYER/Kavach-AgenticSOC`, in the remote URL and in\n   `AGENTIC_SOC_UPDATE_REPOSITORY`.\n3. Roll that update job back with **Roll back** in the Console's update panel, as the\n   built-in Super admin after signing in again (the route also needs\n   `system_updates:rollback`). A post-success rollback restores the v0.1.1 images and\n   leaves PostgreSQL as 0.2.0 wrote it.\n4. Check the narrower pass condition above on v0.1.1, then update to 0.2.0 again and\n   check that it starts healthy.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#rollback:3",
+   "page": "releases/0.2.0.md",
+   "anchor": "rollback",
+   "heading": "Rollback",
+   "text": "The source rollback lane is not that rehearsal. Run as\n`scripts/rollback_lane.py --previous-release ba179651a7b63d6352ad346fd633e1460f3a4d39`,\nit builds v0.1.1 from source with `git archive`, boots 0.2.0 first on a fresh database,\nand checks features of the earlier build that v0.1.1 does not have (the jobs route and\nthe `runbooks.*` choices it expects back). It stops at the first of those checks, so it\ncannot pass against v0.1.1, and the pass condition for v0.1.1 is the narrower one above. The receipt of this\nrehearsal and of the widening timings is kept with the release preparation's acceptance\nrecords in the source repository.\n\nThe rollback to the previous release the lane pins, and the Round 14 and Round 15\nrollback notes, are in Upgrade operations\nand Known limitations.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#immutable-release-artifacts:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "immutable-release-artifacts",
+   "heading": "Immutable release artifacts",
+   "text": "The canonical repository is `ARYDESTROYER/Kavach-AgenticSOC`. The repository was renamed\nfrom `ARYDESTROYER/Agentic-Kibana`, so the publisher identity, the GHCR namespace and the\nOCI source label all change with 0.2.0. Artifacts of v0.1.12 and earlier stay valid\nunder the former identity and are not re-signed. GitHub does not redirect project Pages\nafter a rename: the public Stable Help Center is now\n`https://arydestroyer.github.io/Kavach-AgenticSOC/stable/`.\n\nAfter successful publication, convenience tags are:\n\n```text\nghcr.io/arydestroyer/kavach-agenticsoc/backend:v0.2.0\nghcr.io/arydestroyer/kavach-agenticsoc/webui:v0.2.0\nghcr.io/arydestroyer/kavach-agenticsoc/updater:v0.2.0\n```\n\nConvenience tags are not authority. The signed plan carries only exact digests:\n\n```text\nghcr.io/arydestroyer/kavach-agenticsoc/backend@sha256:<digest>\nghcr.io/arydestroyer/kavach-agenticsoc/webui@sha256:<digest>\nghcr.io/arydestroyer/kavach-agenticsoc/updater@sha256:<digest>\n```\n\nThe public GitHub Release must expose exactly:\n\n```text\nupgrade-plan.json\nupgrade-plan.sigstore.json\n```\n\nCanonical asset URLs are:\n\n```text\nhttps://github.com/ARYDESTROYER/Kavach-AgenticSOC/releases/download/v0.2.0/upgrade-plan.json\nhttps://github.com/ARYDESTROYER/Kavach-AgenticSOC/releases/download/v0.2.0/upgrade-plan.sigstore.json\n```\n\nThe keyless verification predicate is exact:",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#immutable-release-artifacts:1",
+   "page": "releases/0.2.0.md",
+   "anchor": "immutable-release-artifacts",
+   "heading": "Immutable release artifacts",
+   "text": "```text\ncertificate identity: https://github.com/ARYDESTROYER/Kavach-AgenticSOC/.github/workflows/release.yml@refs/tags/v0.2.0\nOIDC issuer:          https://token.actions.githubusercontent.com\n```",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#signed-plan-and-compatibility:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "signed-plan-and-compatibility",
+   "heading": "Signed plan and compatibility",
+   "text": "Plan schema remains **1**, updater protocol remains **1** and state schema remains\n**1**. The release record must bind:\n\n- product `agentic-soc`, version `0.2.0`, tag `v0.2.0`, channel `stable`, and the\n  exact 40-character lowercase tag commit;\n- supported source versions `>=0.1.1,<0.3.0`, so the v0.1.1 baseline is admitted\n  and a later 0.2 patch can follow;\n- PostgreSQL-owned state only, a verified backup and migration strategy `none`;\n- rollout timeouts of 300 seconds for the backend, 180 for the Web UI and 30 seconds of\n  observation, the plan builder's defaults;\n- the exact frozen Compose SHA-256\n  `e3f7ecbb0f749cc9d88f4392c58c9a63ddbd064e80ecde9f21fe9de199086fd4`;\n- the three immutable component references and matching OCI labels.\n\n`deploy/docker-compose.agnostic.yml` stays byte-identical. It still defaults the\nupdate repository to the former name, which is why the bootstrap requires the\n`.env` line above.",
    "console": []
   },
   {
@@ -9385,23 +9569,7 @@
    "page": "releases/0.2.0.md",
    "anchor": "help-center-line-02",
    "heading": "Help Center line 0.2",
-   "text": "The installed Help Center moves from `/docs/0.1/` to `/docs/0.2/`. Every page of the\n0.1 line now has a redirect page at its old address that keeps the part after `#`,\nso saved chat citations, report links and bookmarks still open the right page.",
-   "console": []
-  },
-  {
-   "id": "releases/0.2.0#immutable-release-artifacts:0",
-   "page": "releases/0.2.0.md",
-   "anchor": "immutable-release-artifacts",
-   "heading": "Immutable release artifacts",
-   "text": "The canonical repository is `ARYDESTROYER/Kavach-AgenticSOC`. After successful\npublication, convenience tags are:\n\n```text\nghcr.io/arydestroyer/kavach-agenticsoc/backend:v0.2.0\nghcr.io/arydestroyer/kavach-agenticsoc/webui:v0.2.0\nghcr.io/arydestroyer/kavach-agenticsoc/updater:v0.2.0\n```\n\nConvenience tags are not authority. The signed plan carries only exact digests:\n\n```text\nghcr.io/arydestroyer/kavach-agenticsoc/backend@sha256:<digest>\nghcr.io/arydestroyer/kavach-agenticsoc/webui@sha256:<digest>\nghcr.io/arydestroyer/kavach-agenticsoc/updater@sha256:<digest>\n```\n\nThe public GitHub Release must expose exactly:\n\n```text\nupgrade-plan.json\nupgrade-plan.sigstore.json\n```\n\nCanonical asset URLs are:\n\n```text\nhttps://github.com/ARYDESTROYER/Kavach-AgenticSOC/releases/download/v0.2.0/upgrade-plan.json\nhttps://github.com/ARYDESTROYER/Kavach-AgenticSOC/releases/download/v0.2.0/upgrade-plan.sigstore.json\n```\n\nThe keyless verification predicate is exact:\n\n```text\ncertificate identity: https://github.com/ARYDESTROYER/Kavach-AgenticSOC/.github/workflows/release.yml@refs/tags/v0.2.0\nOIDC issuer:          https://token.actions.githubusercontent.com\n```",
-   "console": []
-  },
-  {
-   "id": "releases/0.2.0#signed-plan-and-compatibility:0",
-   "page": "releases/0.2.0.md",
-   "anchor": "signed-plan-and-compatibility",
-   "heading": "Signed plan and compatibility",
-   "text": "Plan schema remains **1**, updater protocol remains **1** and state schema remains\n**1**. The release record must bind:\n\n- product `agentic-soc`, version `0.2.0`, tag `v0.2.0`, channel `stable`, and the\n  exact 40-character lowercase tag commit;\n- supported source versions `>=0.1.1,<0.3.0`, so the v0.1.1 baseline is admitted\n  and a later 0.2 patch can follow;\n- PostgreSQL-owned state only, a verified backup and migration strategy `none`;\n- the exact frozen Compose SHA-256\n  `e3f7ecbb0f749cc9d88f4392c58c9a63ddbd064e80ecde9f21fe9de199086fd4`;\n- the three immutable component references and matching OCI labels.\n\n`deploy/docker-compose.agnostic.yml` stays byte-identical. It still defaults the\nupdate repository to the former name, which is why the bootstrap requires the\n`.env` line above.",
+   "text": "The installed Help Center moves from `/docs/0.1/` to `/docs/0.2/`. Every page of the\n0.1 line has a redirect page at its old address that keeps the part after `#`, so saved\nchat citations, report links and bookmarks still open the right page.",
    "console": []
   },
   {
@@ -9417,7 +9585,15 @@
    "page": "releases/0.2.0.md",
    "anchor": "immutable-annotated-tag-checklist",
    "heading": "Immutable annotated-tag checklist",
-   "text": "1. Merge the exact candidate through protected `Testing` after its fail-closed\n   `CI passed` aggregate succeeds.\n2. Verify the resulting Testing push aggregate, then promote the content to\n   protected `main` through a pull request without release-content drift.\n3. Verify the exact `main` push aggregate.\n4. Create the annotated tag once from that accepted main commit:\n\n   ```bash\n   git tag -a v0.2.0 -m \"Agentic SOC v0.2.0\"\n   git show --no-patch --format=fuller v0.2.0\n   git push origin refs/tags/v0.2.0\n   ```\n\n5. Require exact-tag CI and the signed-release workflow to pass completely. Do not\n   use `continue-on-error`, move the tag, or republish altered artifacts.\n6. Verify public assets, anonymous digest reads, keyless signatures, canonical\n   bootstrap, supervisor receipt, application health and browser controls before\n   declaring the release installable.",
+   "text": "1. Merge the exact candidate through protected `Testing` after its fail-closed\n   `CI passed` aggregate succeeds.\n2. Verify the resulting Testing push aggregate, then promote the content to\n   protected `main` through a pull request without release-content drift (a tree\n   replacement whose tree equals the accepted Testing tree).\n3. Verify the exact `main` push aggregate, and repeat the browser matrix on a Stable\n   build of that commit.\n4. Check that the `[0.2.0]` CHANGELOG heading and the What's new notes carry the tag\n   date. If the tag slips past the intended tag date at the top of this page, re-date\n   them through `Testing` first, as\n   described at the top of this page: the heading, the notes `date` and the newest\n   update's `date`, and this page's intended tag date, then regenerate with\n   `python3 scripts/build_release_notes.py` and `python3 scripts/build_app_knowledge.py`.\n5. Create the annotated tag once from that accepted main commit:\n\n   ```bash\n   git tag -a v0.2.0 -m \"Agentic SOC v0.2.0\"\n   git show --no-patch --format=fuller v0.2.0\n   git push origin refs/tags/v0.2.0\n   ```",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#immutable-annotated-tag-checklist:1",
+   "page": "releases/0.2.0.md",
+   "anchor": "immutable-annotated-tag-checklist",
+   "heading": "Immutable annotated-tag checklist",
+   "text": "6. Require exact-tag CI and the signed-release workflow to pass completely. Do not\n   use `continue-on-error`, move the tag, or republish altered artifacts.\n7. Verify public assets, anonymous digest reads, keyless signatures, canonical\n   bootstrap, supervisor receipt, application health and browser controls before\n   declaring the release installable.",
    "console": []
   },
   {
@@ -9429,11 +9605,27 @@
    "console": []
   },
   {
+   "id": "releases/0.2.0#maintainer-actions:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "maintainer-actions",
+   "heading": "Maintainer actions",
+   "text": "They do not all come before the tag. M1, M3, M6 and M7 come before it. M4 is the\npromotion and the tag itself, and M2 happens during the first release run. M5's\nrollback rehearsal and canonical bootstrap need a published, signed release: the\nrehearsal can run on the release of the M7 dress rehearsal before the tag, and the\ncanonical bootstrap from v0.1.1 runs after publication, as the last step before 0.2.0\nis installable.\n\n- **M1** Set the GitHub default branch back to `main` after the promotion merge and\n  before the tag. On 2026-11-27 it was still `Testing`.\n- **M2** Make the three packages Public when the first release run pauses, as above.\n- **M3** Verify the `stable-release` and `github-pages` environment policies and the\n  required `CI passed` check on `main` and `Testing`.\n- **M4** Authorize the promotion and push the tag.\n- **M5** On a Docker host: the image-level v0.1.1 rollback rehearsal above, the\n  PostgreSQL widening on your own hardware if your audit table is large, and the\n  canonical bootstrap from v0.1.1.\n- **M6** Check on an iOS device that focusing a text input does not zoom.\n- **M7** Run the tag, release and documentation workflows and a v0.1.1 bootstrap in a\n  disposable test repository first, and see them pass before M4.",
+   "console": []
+  },
+  {
    "id": "releases/0.2.0#operator-bootstrap:0",
    "page": "releases/0.2.0.md",
    "anchor": "operator-bootstrap",
    "heading": "Operator bootstrap",
-   "text": "Use a clean checkout of the accepted tag on the host that owns the canonical\ndeployment, with `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC`\nalready in `.env`:\n\n```bash\ngit clone --branch v0.2.0 --depth 1 \\\n  https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git agentic-soc-0.2.0\ncd agentic-soc-0.2.0\ntest \"$(shasum -a 256 deploy/docker-compose.agnostic.yml | awk '{print $1}')\" = \\\n  \"$(tr -d '[:space:]' < deploy/update-base-v1.sha256)\"\ntest \"$(git cat-file -t v0.2.0)\" = \"tag\"\ntest \"$(git describe --tags --exact-match)\" = \"v0.2.0\"\ntest \"$(git rev-parse HEAD)\" = \"$(git rev-parse 'v0.2.0^{}')\"\ntest -z \"$(git status --porcelain --untracked-files=all)\"\n./scripts/bootstrap-updater.sh\n```\n\nThe Console must then report `v0.2.0 · Stable`, and its release manifest and the\nhealthy backend must agree on the exact commit.",
+   "text": "Run the bootstrap in the checkout that runs the canonical deployment, on its host. The\nbootstrap reads `.env` from the checkout it runs in, and that file must be the\ndeployment's own `.env`, with `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC`\nadded. Never create a new `.env` from `.env.example` for an upgrade: new\n`TLSOC_PG_PASSWORD` and `TLSOC_AUTH_JWT_SECRET` values would not match the existing\ndatabase and sessions. `.env` is ignored by Git, so it stays in place when the checkout\nmoves to the tag. Any other file Git does not ignore, such as a database dump or a copy\nof `.env`, leaves the checkout unclean and the bootstrap refuses it, so keep backups\noutside the checkout.\n\nThe bootstrap also checks that the tag is contained in `origin/main`. v0.1.1's install\nguide made a shallow clone of one tag (`git clone --branch v0.1.1 --depth 1`), which\nhas no `origin/main`; the `set-branches` line and the unshallow fetch below give it one:",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#operator-bootstrap:1",
+   "page": "releases/0.2.0.md",
+   "anchor": "operator-bootstrap",
+   "heading": "Operator bootstrap",
+   "text": "```bash\ncd /path/to/the/deployment/checkout\ngit remote set-url origin https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git\ngit remote set-branches origin '*'\nif [ \"$(git rev-parse --is-shallow-repository)\" = true ]; then\n  git fetch --tags --unshallow origin\nelse\n  git fetch --tags origin\nfi\ngit switch --detach v0.2.0\ntest \"$(shasum -a 256 deploy/docker-compose.agnostic.yml | awk '{print $1}')\" = \\\n  \"$(tr -d '[:space:]' < deploy/update-base-v1.sha256)\"\ntest \"$(git cat-file -t v0.2.0)\" = \"tag\"\ntest \"$(git describe --tags --exact-match)\" = \"v0.2.0\"\ntest \"$(git rev-parse HEAD)\" = \"$(git rev-parse 'v0.2.0^{}')\"\ntest -z \"$(git status --porcelain --untracked-files=all)\"\n./scripts/bootstrap-updater.sh\n```\n\nFrom then on, run `./scripts/agentic-soc-compose.sh` from this checkout. The Console must then report `v0.2.0 · Stable`, and its\nrelease manifest and the healthy backend must agree on the exact commit.",
    "console": []
   },
   {
@@ -9441,7 +9633,31 @@
    "page": "releases/0.2.0.md",
    "anchor": "independent-artifact-verification",
    "heading": "Independent artifact verification",
-   "text": "```bash\ngit ls-remote --tags \\\n  https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git \\\n  refs/tags/v0.2.0 'refs/tags/v0.2.0^{}'\n\ncosign verify-blob \\\n  --bundle upgrade-plan.sigstore.json \\\n  --certificate-identity \\\n  'https://github.com/ARYDESTROYER/Kavach-AgenticSOC/.github/workflows/release.yml@refs/tags/v0.2.0' \\\n  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\\n  upgrade-plan.json\n```\n\nRepeat image verification and an anonymous pull for backend, Web and updater. Match\nevery observed digest and OCI label to the signed plan.\n\nSee Agentic SOC 0.2, Known limitations,\nUpgrade operations and Release channels.",
+   "text": "```bash\ngit ls-remote --tags \\\n  https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git \\\n  refs/tags/v0.2.0 'refs/tags/v0.2.0^{}'\n\ncosign verify-blob \\\n  --bundle upgrade-plan.sigstore.json \\\n  --certificate-identity \\\n  'https://github.com/ARYDESTROYER/Kavach-AgenticSOC/.github/workflows/release.yml@refs/tags/v0.2.0' \\\n  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\\n  upgrade-plan.json\n```\n\nRepeat image verification and an anonymous pull for backend, Web and updater. Match\nevery observed digest and OCI label to the signed plan.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#verification-evidence:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "verification-evidence",
+   "heading": "Verification evidence",
+   "text": "Recorded at release preparation. The evidence that only the maintainer's steps can\nproduce is listed as pending, never estimated.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#verification-evidence:1",
+   "page": "releases/0.2.0.md",
+   "anchor": "verification-evidence",
+   "heading": "Verification evidence",
+   "text": "- **Pull request CI.** The Round 16 pull request into `Testing` (#144) passed CI on its\n  head `4e32d29184ac2ac9044139c8d42770325952a743` (run 45917468134), every lane and the\n  fail-closed `CI passed` aggregate included, among them the PostgreSQL and Redis\n  acceptance, the rollback lane and the three shipping image builds.\n- **Tests on the integrated tree.** Backend `pytest -q`: 14,072 tests, 14,043 passed and\n  29 skipped: 27 PostgreSQL-only tests, which run in the PostgreSQL lane, and the SQL-store\n  run of 2 audit tests that need Elasticsearch point-in-time snapshots.\n  Console `npm run test:strict`: 9,955 passed and 19 skipped in 786 files, with no stderr.\n  Lint, type checks, the design gates, the docs and version checks and the CI contract\n  pass. The entry chunk is 318,008 B built as CI builds it, inside its budget.\n- **`decide()` and `engine/risk.py`** are byte-identical to the Round 15 merge\n  `3cfd5c0`.\n- **Release preparation.** The PostgreSQL widening timings and the v0.1.1 rehearsal\n  above, and a browser receipt on a Console stamped as Stable (`v0.2.0 · Stable`),\n  served by `vite preview` against the seeded Demo, kept with the same acceptance\n  records.\n- **Pending, maintainer steps:** the frozen preparation's own pull request CI, the\n  shipping-image acceptance of the accepted Testing commit, the dress rehearsal in a\n  disposable repository, the `main` push run and the Stable browser matrix on the\n  promoted commit, tag CI, the signed-release and Documentation runs, the image-level\n  v0.1.1 rollback rehearsal (which can run on the dress rehearsal's release before the\n  tag), and the canonical v0.1.1 bootstrap. They are recorded in the development records\n  as they run.",
+   "console": []
+  },
+  {
+   "id": "releases/0.2.0#known-limitations:0",
+   "page": "releases/0.2.0.md",
+   "anchor": "known-limitations",
+   "heading": "Known limitations",
+   "text": "The full list is Known limitations. New in 0.2.0:\n\n- The investigation registry, the investigation gate and the realtime bus are process\n  local; one backend replica only.\n- Push sources correlate over the last 500 events in memory, and a push case's events\n  cannot be re-read.\n- Recorded risk inputs and decision gates start with 0.2.0; older cases read \"not\n  recorded\" or use today's settings.\n- An image-only rollback to v0.1.1 resets the settings v0.1.1 does not model, and drops\n  recorded risk inputs and lock counters on the documents it saves (see Rollback).\n- The PostgreSQL audit id column is widened in place at the first start.\n- The repository rename changes the update trust root; the `.env` line is required.\n- Chat is the sixth case tab until it moves into the case facts inspector.\n- Single sign-on maps only built-in roles.\n- Three accessibility findings remain (a minor empty table header, a moderate heading\n  order and a moderate region), each needing a change across several pages.\n\nSee Agentic SOC 0.2, Upgrade operations,\nRelease channels and What's new.",
    "console": []
   },
   {
@@ -9449,7 +9665,7 @@
    "page": "releases/channels.md",
    "anchor": "",
    "heading": "",
-   "text": "Agentic SOC's release contract has two channels and two long-lived branches. Work\nintegrates on **Testing**. The accepted source tree is then promoted through a\nprotected pull request to **Stable** on `main`, and the resulting `main` commit is\nverified. There is no third prerelease branch and no separate release-branch\nvocabulary.\n\nNote: Current repository topology\n\nThe remote now exposes both canonical branches and uses `main` as the default.\nRepository administrators must still keep the required pull-request gates and\nthe `CI passed` aggregate enforced; a branch name alone never proves that a\nparticular build passed acceptance.",
+   "text": "Agentic SOC's release contract has two channels and two long-lived branches. Work\nintegrates on **Testing**. The accepted source tree is then promoted through a\nprotected pull request to **Stable** on `main`, and the resulting `main` commit is\nverified. There is no third prerelease branch and no separate release-branch\nvocabulary.\n\nNote: Current repository topology\n\nThe remote exposes both canonical branches, and `main` must be its default\nbranch. On 2026-11-27 the default was still `Testing`, so a plain `git clone`\nlanded on the integration branch; the maintainer sets the default back to `main`\nbefore the 0.2.0 tag. Check out `main` explicitly until then. Repository\nadministrators must also keep the required pull-request gates and the\n`CI passed` aggregate enforced; a branch name alone never proves that a\nparticular build passed acceptance.",
    "console": []
   },
   {
@@ -9681,7 +9897,7 @@
    "page": "releases/known-limitations.md",
    "anchor": "repository-protections-require-administrator-verification",
    "heading": "Repository protections require administrator verification",
-   "text": "The canonical `Testing` and default `main` branches now exist, but branch protection,\nrequired checks, Pages source, and environment rules are GitHub repository settings;\nthe application source cannot enforce or attest to them.\n\n**Required control:** require the fail-closed `CI passed` aggregate and reviewed\npromotion into `main`, set Pages source to **GitHub Actions**, and protect the\n`github-pages` environment as appropriate. Verify those settings before treating a\nnew commit or documentation deployment as accepted merely because its workflow ran.",
+   "text": "The canonical `Testing` and `main` branches exist, but the default branch, branch\nprotection, required checks, Pages source, and environment rules are GitHub repository\nsettings; the application source cannot enforce or attest to them. `main` must be the\ndefault branch; on 2026-11-27 it was still `Testing`, so a plain clone lands on the\nintegration branch until the maintainer sets it back before the 0.2.0 tag.\n\n**Required control:** require the fail-closed `CI passed` aggregate and reviewed\npromotion into `main`, set Pages source to **GitHub Actions**, and protect the\n`github-pages` environment as appropriate. Verify those settings before treating a\nnew commit or documentation deployment as accepted merely because its workflow ran.",
    "console": []
   },
   {
@@ -9865,7 +10081,23 @@
    "page": "releases/known-limitations.md",
    "anchor": "rolling-back-from-020-loses-what-the-earlier-build-cannot-keep",
    "heading": "Rolling back from 0.2.0 loses what the earlier build cannot keep",
-   "text": "Every field 0.2.0 stores is additive, and the earlier builds load documents with fields\nthey do not know. They drop those fields when they save a document again. After an\nimage-only rollback and the return:\n\n- **Recorded risk inputs** are lost on every case the earlier build saves again. Back on\n  0.2.0, such a case reads \"not recorded\", and its explanation uses today's weights.\n- **Second-factor lock counters** reset, so a locked account can try again at once.\n- **The read grants and the server-side forced password change revert** while the\n  earlier build runs: a custom role without a read grant can read again, and an account\n  that must change its password is not held to it. The rollback lane runs with sign-in\n  off, so it does not prove these two losses; they follow from the earlier build's code.\n- **The in-memory list of AI investigations** is lost, as on any restart.\n\nUsage-ledger rows are append-only and keep their rate fields. What's new markers\nsurvive, because the earlier build keeps personal preference entries it does not know.\nThe steps are in Upgrades.\n\nThe image-only rollback rehearsal to v0.1.1 on PostgreSQL: Recorded at release\npreparation.\n\n**Required change:** none for later releases; the earlier builds cannot be changed.",
+   "text": "Every field 0.2.0 stores is additive, and the earlier builds load documents with fields\nthey do not know. They drop those fields when they save a document again. After an\nimage-only rollback and the return:\n\n- **Recorded risk inputs** are lost on every case the earlier build saves again. Back on\n  0.2.0, such a case reads \"not recorded\", and its explanation uses today's weights.\n- **Second-factor lock counters** reset, so a locked account can try again at once.\n- **The read grants and the server-side forced password change revert** while the\n  earlier build runs: a custom role without a read grant can read again, and an account\n  that must change its password is not held to it. The rollback lane runs with sign-in\n  off, so it does not prove these two losses; they follow from the earlier build's code.\n- **The in-memory list of AI investigations** is lost, as on any restart.\n\nUsage-ledger rows are append-only and keep their rate fields. What's new markers\nsurvive, because the earlier build keeps personal preference entries it does not know.\nThe steps are in Upgrades.\n\nThe rollback to v0.1.1, the only installable Stable release before 0.2.0, was rehearsed\nat release preparation; its result is the next section.\n\n**Required change:** none for later releases; the earlier builds cannot be changed.",
+   "console": []
+  },
+  {
+   "id": "releases/known-limitations#rolling-back-to-v011-resets-the-settings-it-does-not-model:0",
+   "page": "releases/known-limitations.md",
+   "anchor": "rolling-back-to-v011-resets-the-settings-it-does-not-model",
+   "heading": "Rolling back to v0.1.1 resets the settings it does not model",
+   "text": "At release preparation the rollback to v0.1.1 was rehearsed from source on PostgreSQL\n16.15 in the order of a real upgrade: v0.1.1 on a fresh database, 0.2.0 on it, v0.1.1\nagain, then 0.2.0 again. v0.1.1 booted healthy on the data 0.2.0 wrote, listed, opened\nand saved its cases, read the audit log and appended to it in the widened `audit.id`,\nand read the case spend from the ledger. It has no job registry, so the safe-stop of\nthe builds before Round 14 does not apply to it. It loses:\n\n- **Settings it does not model.** Its graceful stop, and any settings save it makes,\n  rewrite the settings document without them, so back on 0.2.0 they read as defaults:\n  the sections `analyst_rule_policies`, `auto_close_review`, `chat_agent`,\n  `evidence_fields`, `evidence_max_chars_per_event`, `precedent`, `replay_capture`,\n  `resilience` and `team_activity`, and the newer keys inside `caps`, `enrichment`,\n  `rag`, `rbac`, `runbooks`, `session_policy` and `threshold_tuning`. In each log source\n  the declared severity ceiling `severity_scale_max` is reset too (a Wazuh source reads\n  its seeded 16 again, any other source the 0 to 100 identity, which can change its\n  severity bands), and in each suppression rule `approval_proposal_id`.\n- **Recorded risk inputs** on a case it saves, and the **second-factor lock counter** on\n  an account it saves.",
+   "console": []
+  },
+  {
+   "id": "releases/known-limitations#rolling-back-to-v011-resets-the-settings-it-does-not-model:1",
+   "page": "releases/known-limitations.md",
+   "anchor": "rolling-back-to-v011-resets-the-settings-it-does-not-model",
+   "heading": "Rolling back to v0.1.1 resets the settings it does not model",
+   "text": "Ledger rates, the What's new marker, the auto-close review grade and case screenshots\nsurvive. The rehearsal ran the release's source, not a v0.1.1 Compose deployment through\nthe updater; that rehearsal on a Docker host is still to run (maintainer action M5, with\nits steps in the 0.2.0 release record).\n\n**Required control:** before rolling back to v0.1.1, note every setting you changed in\n0.2.0, and set those settings again after the return.",
    "console": []
   },
   {
@@ -9873,7 +10105,7 @@
    "page": "releases/known-limitations.md",
    "anchor": "the-audit-id-column-is-widened-in-place-on-postgresql",
    "heading": "The audit id column is widened in place on PostgreSQL",
-   "text": "Every published release up to v0.1.12 created the PostgreSQL `audit.id` column as a\n32-bit integer. On its first start on such a database, 0.2.0 widens the column and its\nsequence to `bigint` in place. PostgreSQL rewrites the audit table to do it and holds an\nexclusive lock on it, so a large audit table makes the first start slower and audit\nwrites wait until it finishes. A rollback never narrows the column again. The time per\nmillion rows is measured at release preparation.\n\n**Required control:** on a very large audit table, run the two `ALTER` statements in\nUpgrades in a maintenance window before\nupgrading. If the widening fails, the backend still starts, and\n`GET /api/diagnostics/health` reports the failed schema migration with the statements\nto run; strict audit writes, such as approving a proposal, fail until then.",
+   "text": "Every published release up to v0.1.12 created the PostgreSQL `audit.id` column as a\n32-bit integer. On its first start on such a database, 0.2.0 widens the column and its\nsequence to `bigint` in place. PostgreSQL rewrites the audit table to do it and holds an\nexclusive lock on it, so a large audit table makes the first start slower and audit\nwrites wait until it finishes. A rollback never narrows the column again. Measured at\nrelease preparation on PostgreSQL 16.15 with default settings and a 4 vCPU virtual\nmachine, with rows shaped like v0.1.1's poll row: 1 million rows (0.61 GB with indexes)\ntook 4 to 5 seconds, 5 million (3.06 GB) 25 seconds and 10 million (6.12 GB) 44 seconds,\ninside the plan's 300-second backend timeout. The time follows the table's size on\ndisk, and the rewrite needs free disk about the size of the table.\n\n**Required control:** on a very large audit table, run the two `ALTER` statements in\nUpgrades in a maintenance window before\nupgrading. If the widening fails, the backend still starts, and\n`GET /api/diagnostics/health` reports the failed schema migration with the statements\nto run; strict audit writes, such as approving a proposal, fail until then.",
    "console": []
   },
   {

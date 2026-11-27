@@ -19,13 +19,13 @@ Each release record holds the full notes and the known limits of that release.
 
 ## Agentic SOC 0.2.0
 
-Testing candidate, not yet released. Visible AI work, explainable numbers and a clearer Case Manager. Everything since 0.1.1 in one release, under a new repository identity and the Apache-2.0 license.
+Released 27 November 2026. Visible AI work, explainable numbers and a clearer Case Manager. Everything since 0.1.1 in one release, under a new repository identity and the Apache-2.0 license.
 
 Read the [Agentic SOC 0.2.0 release record](0.2.0.md).
 
 What changed in this version, newest first.
 
-### Not yet released
+### 27 November 2026
 
 Visible AI work, explainable numbers and a clearer Case Manager.
 

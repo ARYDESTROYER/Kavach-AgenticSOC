@@ -3270,8 +3270,80 @@ reverting.
   in the third index with the same id read `aged_out` before the fix); the review added a guard
   that a member key naming an index outside the data view reads nothing. Left: reinvestigation
   still reads member events by bare id (§8.3).
-
-WP19 is recorded with the release preparation.
+- **WP19, the frozen release preparation** (`963cec4` on `4e32d29`, with its receipts and these
+  lines in the commit after it; reviewed in `f6a1fe5`, whose receipt and record follow it). CHANGELOG: the `[Unreleased]` notes move
+  under `## [0.2.0] - 2026-11-27` with a summary paragraph (compatibility, upgrade steps, the
+  rollback boundary, protocol, plan and state schema 1 with the frozen Compose base unchanged);
+  the 0.1.13 snapshot body becomes "Legacy bootstrap correction", its boundary rewritten for
+  what 0.2.0 changes, and the snapshot heading keeps the one pointer line; a fresh
+  `[Unreleased]` reads "No changes yet.". The What's new notes are released and dated
+  2026-11-27, update ids unchanged, and the generated notes regenerated.
+  `docs/releases/0.2.0.md` is the release body (about 26,400 characters, the seven markers, no
+  images). `upgrades.md`, `known-limitations.md`, `channels.md`,
+  `documentation-versions.md` and `INSTALL.md` carry the measured widening, the v0.1.1 rollback
+  result and the default branch still being Testing; the corpus was regenerated (1,132
+  chunks). The tag date rule: if the tag is not created on 2026-11-27, a follow-up change
+  re-dates the CHANGELOG heading, the notes and their newest update and the release page's
+  intended tag date before the tag, and regenerates the release notes and the knowledge
+  corpus. `check_version.py` only requires the heading and the notes to carry the same date;
+  no gate compares them with the tag date, so checklist step 4 keeps them true. B4: the `audit.id` widening measured on
+  PostgreSQL 16.15 at 1, 5 and 10 million rows (4.9 and 4.1 s, 25.0 s, 44.3 s; 7 to 8 s per
+  GB), so the plan keeps its 300 s backend timeout and `release.yml` is unchanged. B5: the
+  v0.1.1 rollback rehearsed from source in field order, twice (37 of 38 and 32 of 33 checks):
+  v0.1.1 runs healthy on 0.2.0 data, reads and writes cases, audit and accounts, and 0.2.0
+  returns healthy; v0.1.1's graceful stop and settings save drop the settings it does not
+  model, now a documented limitation. Browser receipt: the stamped Stable build on `vite
+  preview` against the seeded Demo reads "v0.2.0 · Stable" with the Console and backend builds
+  in agreement; 568 loads (71 routes, two viewports, four themes) found no unexplained error,
+  failed request, overflow, blank page or serious axe finding, and 19 interaction checks
+  passed. Regression:
+  `test_round16_wp19_records.py` (7 tests); `test_round16_xfrec_records.py` now expects this
+  line instead of its placeholder. Left: maintainer actions M1 to M7, among them M5
+  (the image-level v0.1.1 rollback and the canonical bootstrap on a Docker host); the nginx
+  proxy, the Release update supervisor paths, first-run setup on an empty backend, SSO and
+  browsers other than Chromium were not exercised. Deviations: B5 rehearsed from source rather
+  than only recorded as M5; `--depth 1` left the bootstrap clone (INSTALL.md's full-clone rule);
+  the default-branch sentences of four pages; the release page worded so the Help Center's
+  golden questions keep their pages. Receipts: `acceptance/release-postgres-receipt.md` and
+  `acceptance/release-browser-receipt.md`. The review checked the timings and the rehearsal
+  against their raw results, PR #144's CI run and lanes, the default branch through the
+  GitHub API, and `check_version.py` as the branch, `main`, the tag and a pull request into
+  `main`, then corrected four records, each with a regression test in
+  `test_round16_wp19_records.py` that failed before it: the CHANGELOG summary's rollback
+  boundary now names the v0.1.1 settings reset; the release page says the 2 audit skips are
+  the SQL-store run of Elasticsearch-only tests, which no CI lane runs; the large-table
+  pre-step in `upgrades.md` stops the backend first; and seven Help Center pages no longer say
+  `main` is already the default branch. It rebuilt the Console stamped Stable with
+  `f6a1fe5` and recorded a 19-check review pass in the browser receipt (identity, the What's
+  new welcome by keyboard, the What's new page in both themes at both widths, the corrected
+  Help Center pages, and the first-run setup on an empty backend).
+- **RPR, the review of the release preparation pull request** (#148 at `ac9c698`, fixed in
+  the commit after it). Four lenses (the release gates, factual claims, repository rules and
+  operator instructions) read the whole diff, and two refuters checked each finding; 12 of 16
+  findings held, 7 distinct defects, all in records. Fixed: the Operator bootstrap cloned
+  into a new directory with no `.env`, so the bootstrap refused at its first check; it now
+  runs in the deployment's own checkout, as 0.1.12's did, and warns never to create a new
+  `.env` from `.env.example`. The M5 image-level rollback named the source lane command,
+  which cannot pass against v0.1.1; the page now gives the image-level steps (the update
+  panel's post-success **Roll back**) and says what the lane is. The v0.1.1 settings reset
+  also drops `sources[].severity_scale_max` and `suppression_rules[].approval_proposal_id`,
+  found by comparing the two settings models field by field. "Maintainer actions before the
+  tag" listed M2, M4 and M5, which come at or after the tag; the section now orders them. The
+  tag-slip rule now names every date and both generators. The PostgreSQL receipt's
+  byte-identity line now excepts the regenerated corpus. `AGENTS.md` and `CONTRIBUTING.md` no
+  longer say `main` is the default branch. Also: the release page's large-table pre-step says
+  to start the backend again. A second review of the fix (two lenses, two refuters each; 9 of
+  17 findings held) found that the in-place bootstrap still failed for the checkout v0.1.1's
+  install guide made (`git clone --branch v0.1.1 --depth 1`, which has no `origin/main`), so
+  the block now runs `git remote set-branches origin '*'` and an unshallow fetch, simulated
+  on a shallow and a full checkout; that v0.1.1 published no images, so M5 builds it from its
+  tag; that untracked backups make the bootstrap refuse, so backups go outside the checkout;
+  that the dress rehearsal names its own repository; and that checklist step 4 repeated the
+  intended date. Regression: `test_round16_wp19_records.py` gained five tests (the
+  bootstrap's `.env` and `origin/main`, the M5 steps, the two settings keys, the
+  maintainer-action order, and the tag-slip rule's dates and generators), and its
+  default-branch scan now covers `AGENTS.md` and `CONTRIBUTING.md`; the receipt's identity
+  line and the large-table pre-step have no test.
 
 ### 8.3 Known limitations
 
@@ -3423,6 +3495,35 @@ in §8.2.
   unset, 14,072 tests, 14,043 passed, 29 skipped and 0 failed; fatal ruff 0.12.5 clean;
   `check:types` no drift; `check_version` and `build_app_knowledge --check` (1,107 chunks) pass.
   No Console file changed, so the Console gates above stand.
+- The release preparation WP19 (`963cec4`, records and generated artifacts only; its receipts
+  and §8.2 line in the commit after it) ran the [rel] §5.4 gates: `check_version.py` on the
+  branch, with `TLSOC_SOURCE_REF=refs/tags/v0.2.0 TLSOC_RELEASE_CHANNEL=stable`, as `main`
+  Stable and as a pull request into `main`; `check_ci_contract.py` (3 workflows, 3 shipping
+  Dockerfiles) and its 75 unit tests; `check_docs.py` (90 public pages);
+  `build_app_knowledge.py --check` (1,132 chunks); `build_release_notes.py --check`; 26 records,
+  docs, knowledge and version modules, every `test_round16_*records*.py` among them, 865
+  passed on the final tree; fatal ruff clean; `typecheck`, `lint` (0 warnings), `gates` and `check:types` (no
+  drift); `npm run build` stamped Stable with the commit's SHA, 3,622 modules, entry 318,012 B
+  inside the 318,986 B budget; `docs:check` with the same stamps; `bundle-first-paint.test.ts`
+  with `REQUIRE_DIST_BUILD=1`, 30 passed; `npm run test:strict` with the stamped `dist/` in
+  place (the regenerated notes are Console data), 786 files, 9,972 passed, 1 skipped, zero
+  stderr; the updater unit tests (104);
+  `bash -n` on `bootstrap-updater.sh`, `run-demo.sh` and `agentic-soc-compose.sh`; the rollback
+  lane tests (31); and the frozen Compose base hash. The full backend suite was not run again:
+  no backend code changed, only the knowledge corpus, which its modules cover.
+- The WP19 review (`f6a1fe5` and the receipt commit after it) ran the package gates on its
+  tree: the whole backend suite with the proxy and AWS variables unset, 14,054 passed, 29
+  skipped, 0 failed, with the one test that reads this line deselected and then run with the
+  records modules once the line existed; 22 records, docs, knowledge and version modules, 760
+  passed on the final tree; fatal ruff 0.16.9 clean; `check_version.py` as the branch, the tag
+  (`TLSOC_SOURCE_REF=refs/tags/v0.2.0 TLSOC_RELEASE_CHANNEL=stable`), `main` and a pull request
+  into `main`; `check_ci_contract.py` and its 75 unit tests; `check_docs.py` (90 public pages);
+  `build_app_knowledge.py --check` (1,132 chunks); `build_release_notes.py --check`;
+  `typecheck`, `lint`, `gates` and `check:types` (no drift); `npm run build` stamped Stable
+  with `f6a1fe5`, 3,622 modules, entry 318,012 B; `docs:check` with the same stamps; `npm run
+  test:strict` with that `dist/` in place, 786 files, 9,972 passed, 1 skipped; the updater
+  unit tests (104); `bash -n` on the three shell entry points; the rollback lane tests (31);
+  and the frozen Compose base hash.
 
 ### 8.5 Cross-cutting review
 

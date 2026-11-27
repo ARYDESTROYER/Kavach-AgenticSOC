@@ -12,6 +12,37 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.2.0] - 2026-11-27
+
+The first release of the 0.2 line, and the first since v0.1.1 to carry the work built on
+`Testing` after 0.1.12, the never-tagged 0.1.13 candidate included. It brings Workspace Chat
+without per-question limits, with dynamic suggestions and reports; a Dashboards library; an
+Audit log you can search and export; rule sheets; one Runbooks feature in place of playbooks;
+a switch for role-based access; Team activity; screenshots on cases and a random review of
+automatic closes; and, new in this release, the AI agent's work shown live on a case, a
+segregated Case Manager with six tabs and a case facts inspector, a quiet sign-in page,
+numbers that explain themselves on hover or click, every stored case record reachable, What's
+new and a Communication page, 75 bug fixes and the Apache-2.0 license. Compatibility changes:
+writes to `/api/playbooks*` answer `410 runbooks_moved` while its reads stay for one release;
+`PUT /api/settings` answers `409 rbac_switch_moved` when it would change `rbac.enabled`;
+`playbooks:*` grants map onto `runbooks:*`; `AUTH_TOKEN_HOURS` is capped at 144; with
+role-based access on, every read needs its read grant; an account flagged to change its
+password must do so before any other request; `POST /api/auth/refresh` is deprecated; and chat
+sits outside the AI budget. Upgrade steps: set
+`AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env` before the bootstrap,
+which refuses to run without it; on PostgreSQL the first start widens `audit.id` to `bigint`
+in place, and a very large audit table can be widened beforehand in a maintenance window; on
+Elasticsearch the backend now adds the audit and cases mappings itself, and the manual audit
+template step is needed only when it logs that it could not. Rollback boundary: an image-only
+rollback keeps the data, but the earlier build drops the fields it does not know when it
+rewrites a document (recorded risk inputs and second-factor lock counters), the read grants
+and the server-side forced password change revert while it runs, and the widened column
+stays. A rollback to v0.1.1 also resets every setting it does not model at its graceful stop,
+so note the settings you changed first. Updater protocol 1, signed-plan schema 1, state schema
+1 and the frozen Compose base are unchanged.
+
 ### Round 16
 
 Ten operator asks: show when the AI agent is working on a case, give the Case Manager its
@@ -3103,12 +3134,10 @@ and, just as importantly, makes each of these conditions a state an operator can
   a stale pending proposal may briefly show both the old row and its honest re-draft; the
   old one lapses at its own expiry and is then swept.
 
-## [0.2.0] - 2026-11-25
+### Legacy bootstrap correction
 
-Testing candidate for the 0.2 line, not yet tagged. The frozen release preparation moves the
-`[Unreleased]` notes here and sets the tag date.
-
-## Development snapshot - 2026-08-05 - 0.1.13 Testing candidate (never tagged; folded into 0.2.0)
+This correction was built as the 0.1.13 candidate, which was never tagged. It ships in 0.2.0
+and is described only here.
 
 **Canonical legacy-bootstrap identity correction.** The immutable `v0.1.12`
 release passed protected source and tag CI, published the complete signed release,
@@ -3119,7 +3148,7 @@ label. The supervisor normalized the missing backend value to `unknown` but comp
 the raw missing Web value, incorrectly treating two matching legacy identities as a
 mismatch.
 
-### Fixed
+#### Fixed
 
 - The updater now normalizes an absent state-schema label on both installed
   application components to the same explicit `unknown` value before coherence
@@ -3132,16 +3161,24 @@ mismatch.
   rejection in addition to the existing preflight tests for the v0.1.1 exception and
   unmanaged later releases.
 
-### Release boundary
+#### Release boundary
 
-- No application-state migration, updater-protocol change, signed-plan schema
-  change, Sigstore identity/issuer change, privilege expansion, or frozen-base
-  change is introduced. `deploy/docker-compose.agnostic.yml` remains byte-identical
-  with updater-protocol-1 SHA-256
+- The correction itself introduces no application-state migration, updater-protocol change,
+  signed-plan schema change, privilege expansion or frozen-base change.
+- Version 0.2.0 as a whole adds two changes to that boundary: the publisher identity, the
+  GHCR namespace and the OCI source label move to `ARYDESTROYER/Kavach-AgenticSOC`
+  (artifacts of v0.1.12 and earlier stay valid under the former identity), and on
+  PostgreSQL the first start widens `audit.id` to `bigint` in place. Updater protocol 1,
+  signed-plan schema 1 and state schema 1 stay. `deploy/docker-compose.agnostic.yml`
+  remains byte-identical with updater-protocol-1 SHA-256
   `e3f7ecbb0f749cc9d88f4392c58c9a63ddbd064e80ecde9f21fe9de199086fd4`.
-- Version 0.1.13 must repeat the complete protected Testing/main/tag, signed-publication,
-  anonymous-pull, signature, canonical v0.1.1 bootstrap, supervisor-receipt, and
-  browser-acceptance gates under a fresh immutable tag.
+- Version 0.2.0 must pass the complete protected Testing, `main` and tag, signed-publication,
+  anonymous-pull, signature, canonical v0.1.1 bootstrap, supervisor-receipt and
+  browser-acceptance gates under its own immutable tag.
+
+## Development snapshot - 2026-08-05 - 0.1.13 Testing candidate (never tagged; folded into 0.2.0)
+
+Folded into [0.2.0]; see Legacy bootstrap correction.
 
 ## [0.1.12] - 2026-08-05
 

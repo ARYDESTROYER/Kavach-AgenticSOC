@@ -21,7 +21,7 @@ Do not develop directly on `main`. `Testing` is the integration and acceptance
 channel, not a different edition of the product. Package/API/image metadata uses
 Semantic Version **0.2.0**; public documentation uses the **0.2** line.
 
-The remote uses `Testing` for integration and default `main` for accepted Stable
+The remote uses `Testing` for integration and `main` for accepted Stable
 source. Version 0.2.0 is Stable only when the exact verified `main` commit has the
 immutable `v0.2.0` tag and matching signed/public artifacts. Repository owners
 must independently verify pull-request protection, required checks, and release-

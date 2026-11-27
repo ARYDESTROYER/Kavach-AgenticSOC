@@ -5,15 +5,15 @@
   "releases": [
     {
       "version": "0.2.0",
-      "status": "testing",
-      "date": null,
+      "status": "released",
+      "date": "2026-11-27",
       "title": "Visible AI work, explainable numbers and a clearer Case Manager",
       "summary": "Everything since 0.1.1 in one release, under a new repository identity and the Apache-2.0 license.",
       "docs": "releases/0.2.0/",
       "updates": [
         {
           "id": "0.2.0.2026-12",
-          "date": null,
+          "date": "2026-11-27",
           "title": "Visible AI work, explainable numbers and a clearer Case Manager",
           "highlights": [
             {

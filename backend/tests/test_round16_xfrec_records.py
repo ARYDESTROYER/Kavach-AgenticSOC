@@ -190,7 +190,9 @@ def test_the_spec_records_every_package_after_xfr_and_the_acceptance_pass() -> N
     for sha in ("a34c056", "5e5fb08"):
         assert f"`{sha}`" in a11y, sha
     assert "Recorded with the closing gates." not in per_package
-    assert "WP19 is recorded with the release preparation." in per_package
+    # WP19 replaced its placeholder with its own line (the release preparation).
+    assert "WP19 is recorded with the release preparation." not in per_package
+    assert "- **WP19, the frozen release preparation**" in per_package
     assert "WP17B and WP19 are recorded with the closing gates." not in per_package
 
     acceptance = _flat(_section(spec, "8.6 Acceptance pass"))
@@ -341,7 +343,7 @@ def test_the_a11y_records_count_findings_and_name_what_they_changed() -> None:
     assert "A11Y runs the closing sweep" not in acceptance
     per_package = _flat(_section(spec, "8.2 Per package"))
     start = per_package.index("- **A11Y, closing accessibility and phone sweep**")
-    a11y = per_package[start:per_package.index("WP19 is recorded", start)]
+    a11y = per_package[start:per_package.index("- **", start + 4)]
     deviations = a11y[a11y.index("Deviations:"):]
     for name in ("scrolled pass", "`theme.css`", "`Metrics.tsx`", "`MitreHeatmap.tsx`"):
         assert name in deviations, name

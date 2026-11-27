@@ -14,9 +14,11 @@ mistaken for release or production evidence.
 
 ### Repository protections require administrator verification
 
-The canonical `Testing` and default `main` branches now exist, but branch protection,
-required checks, Pages source, and environment rules are GitHub repository settings;
-the application source cannot enforce or attest to them.
+The canonical `Testing` and `main` branches exist, but the default branch, branch
+protection, required checks, Pages source, and environment rules are GitHub repository
+settings; the application source cannot enforce or attest to them. `main` must be the
+default branch; on 2026-11-27 it was still `Testing`, so a plain clone lands on the
+integration branch until the maintainer sets it back before the 0.2.0 tag.
 
 **Required control:** require the fail-closed `CI passed` aggregate and reviewed
 promotion into `main`, set Pages source to **GitHub Actions**, and protect the
@@ -348,10 +350,39 @@ Usage-ledger rows are append-only and keep their rate fields. What's new markers
 survive, because the earlier build keeps personal preference entries it does not know.
 The steps are in [Upgrades](../operations/upgrades.md#rolling-back-from-020).
 
-The image-only rollback rehearsal to v0.1.1 on PostgreSQL: Recorded at release
-preparation.
+The rollback to v0.1.1, the only installable Stable release before 0.2.0, was rehearsed
+at release preparation; its result is the next section.
 
 **Required change:** none for later releases; the earlier builds cannot be changed.
+
+### Rolling back to v0.1.1 resets the settings it does not model
+
+At release preparation the rollback to v0.1.1 was rehearsed from source on PostgreSQL
+16.15 in the order of a real upgrade: v0.1.1 on a fresh database, 0.2.0 on it, v0.1.1
+again, then 0.2.0 again. v0.1.1 booted healthy on the data 0.2.0 wrote, listed, opened
+and saved its cases, read the audit log and appended to it in the widened `audit.id`,
+and read the case spend from the ledger. It has no job registry, so the safe-stop of
+the builds before Round 14 does not apply to it. It loses:
+
+- **Settings it does not model.** Its graceful stop, and any settings save it makes,
+  rewrite the settings document without them, so back on 0.2.0 they read as defaults:
+  the sections `analyst_rule_policies`, `auto_close_review`, `chat_agent`,
+  `evidence_fields`, `evidence_max_chars_per_event`, `precedent`, `replay_capture`,
+  `resilience` and `team_activity`, and the newer keys inside `caps`, `enrichment`,
+  `rag`, `rbac`, `runbooks`, `session_policy` and `threshold_tuning`. In each log source
+  the declared severity ceiling `severity_scale_max` is reset too (a Wazuh source reads
+  its seeded 16 again, any other source the 0 to 100 identity, which can change its
+  severity bands), and in each suppression rule `approval_proposal_id`.
+- **Recorded risk inputs** on a case it saves, and the **second-factor lock counter** on
+  an account it saves.
+
+Ledger rates, the What's new marker, the auto-close review grade and case screenshots
+survive. The rehearsal ran the release's source, not a v0.1.1 Compose deployment through
+the updater; that rehearsal on a Docker host is still to run (maintainer action M5, with
+its steps in the [0.2.0 release record](0.2.0.md#rollback)).
+
+**Required control:** before rolling back to v0.1.1, note every setting you changed in
+0.2.0, and set those settings again after the return.
 
 ### The audit id column is widened in place on PostgreSQL
 
@@ -359,8 +390,12 @@ Every published release up to v0.1.12 created the PostgreSQL `audit.id` column a
 32-bit integer. On its first start on such a database, 0.2.0 widens the column and its
 sequence to `bigint` in place. PostgreSQL rewrites the audit table to do it and holds an
 exclusive lock on it, so a large audit table makes the first start slower and audit
-writes wait until it finishes. A rollback never narrows the column again. The time per
-million rows is measured at release preparation.
+writes wait until it finishes. A rollback never narrows the column again. Measured at
+release preparation on PostgreSQL 16.15 with default settings and a 4 vCPU virtual
+machine, with rows shaped like v0.1.1's poll row: 1 million rows (0.61 GB with indexes)
+took 4 to 5 seconds, 5 million (3.06 GB) 25 seconds and 10 million (6.12 GB) 44 seconds,
+inside the plan's 300-second backend timeout. The time follows the table's size on
+disk, and the rewrite needs free disk about the size of the table.
 
 **Required control:** on a very large audit table, run the two `ALTER` statements in
 [Upgrades](../operations/upgrades.md#the-audit-id-column) in a maintenance window before

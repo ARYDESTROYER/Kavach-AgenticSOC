@@ -201,7 +201,7 @@ Then choose what to build:
 | --- | --- | --- |
 | **Stable 0.2.0** | `git checkout v0.2.0` | Only after the `v0.2.0` [GitHub Release](https://github.com/ARYDESTROYER/Kavach-AgenticSOC/releases) exists with its signed plan. Git reports a detached HEAD, which is expected for a tag |
 | **Testing** | `git checkout Testing` | The integration branch: the next candidate, for evaluation of unreleased work |
-| **Current Stable source** | stay on `main` (the default branch) | The last accepted Stable tree |
+| **Current Stable source** | `git checkout main` | The last accepted Stable tree. Check it out explicitly: on 2026-11-27 the repository's default branch was still `Testing` |
 
 Keep a full clone (no `--depth 1`): a later updater bootstrap checks that the release tag is an
 annotated tag contained in `origin/main`. Never create or move a release tag locally. Tags
