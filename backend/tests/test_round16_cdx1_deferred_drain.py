@@ -24,7 +24,7 @@ from types import SimpleNamespace
 
 import pytest_asyncio
 
-from app.constants import CaseStatus, DecisionBy, EntityType, SourceSurface
+from app.constants import CaseStatus, DecisionBy, EntityType, SourceSurface, Verdict
 from app.es.fake import InMemoryESClient
 from app.models import Case, Entity
 from app.stores.base import CaseRepository
@@ -171,6 +171,63 @@ async def test_a_large_outage_drains_within_a_bounded_number_of_ticks(app_state,
     # Back at the head: the next tick walks the outage again from the oldest row.
     assert await _tick(app_state, limit=2) == 0
     assert mgr._drain_resume_after is not None  # noqa: SLF001
+
+
+async def test_the_sql_drain_resumes_across_ticks_past_a_large_outage(app_state, monkeypatch, sql_store) -> None:
+    """The SQL marker (two strings) round-trips through the drain's resume point."""
+    await _seed(sql_store, failing=500, healthy=3)
+    drained = _wire(app_state, monkeypatch, sql_store)
+    counts = [await _tick(app_state, limit=2) for _ in range(3)]
+    assert counts == [0, 0, 2] and drained == ["sig-500", "sig-501"]
+    assert app_state.poller._drain_resume_after is None  # noqa: SLF001
+
+
+async def test_every_healthy_candidate_drains_oldest_first_as_drained_ones_leave(
+    app_state, monkeypatch, es_store,
+) -> None:
+    """A drained candidate gets a verdict and leaves the queue, as a real run does.
+    With 300 unrebuildable candidates at the head, every healthy one still drains,
+    oldest first, within a bounded number of ticks, and no tick passes its allowance."""
+    await _seed(es_store.store, failing=300, healthy=60)
+    drained = _wire(app_state, monkeypatch, es_store.store)
+
+    async def _decide(cluster, *_args, known_case_id=None, **_kwargs):
+        drained.append(cluster.signature)
+        case = await es_store.store.get(known_case_id)
+        await es_store.store.save(case.model_copy(update={"verdict": Verdict.FALSE_POSITIVE}))
+
+    monkeypatch.setattr(app_state.real_pipeline, "investigate_cluster", _decide)
+    counts = [await _tick(app_state, limit=25) for _ in range(8)]
+    assert max(counts) <= 25 and sum(counts) == 60
+    assert drained == [f"sig-{i}" for i in range(300, 360)]
+
+
+async def test_a_store_on_the_base_default_reads_past_an_outage_too(app_state, monkeypatch) -> None:
+    """A third-party store that inherits the base default gets the continuation."""
+
+    class _Inherits(CaseStore):
+        list_deferred_candidates = CaseRepository.list_deferred_candidates
+
+    store = _Inherits(InMemoryESClient())
+    await _seed(store, failing=120, healthy=3)
+    drained = _wire(app_state, monkeypatch, store)
+    assert await _tick(app_state, limit=2) == 2 and drained == ["sig-120", "sig-121"]
+
+
+async def test_a_large_allowance_never_asks_one_read_for_more_than_the_page_cap(app_state, monkeypatch) -> None:
+    """``max(50, 2 * 700)`` would be 1,400 rows in one read; the drain asks for at most
+    1,000 (``DRAIN_PAGE_MAX``) and leaves the rest to further pages."""
+    from app.stores.base import DeferredCandidates
+
+    asked: list[int] = []
+
+    async def _recorder(*, older_than, limit, after=None):
+        asked.append(limit)
+        return DeferredCandidates()
+
+    monkeypatch.setattr(app_state.real_cases, "list_deferred_candidates", _recorder)
+    await _tick(app_state, limit=700)
+    assert asked == [1000]
 
 
 async def test_a_source_that_recovers_drains_its_oldest_candidates_first(app_state, monkeypatch, es_store) -> None:
