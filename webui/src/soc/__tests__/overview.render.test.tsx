@@ -1083,7 +1083,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     }
   });
 
-  it('keeps the last posture snapshot visible, UNCAPTIONED, across a window change, then swaps atomically', async () => {
+  it('keeps the last posture snapshot visible, MUTED under the new window caption, across a window change, then swaps atomically', async () => {
     const requests: Array<{
       hours: number;
       signal: AbortSignal;
@@ -1123,32 +1123,27 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
 
     /*
      * STALE-WHILE-REVALIDATE: the previous snapshot's numbers stay mounted while 168h is
-     * in flight — no perceived blanking.
+     * in flight, so nothing blanks.
      *
-     * They are NOT captioned "Loading 7 days" any more, and that is the point of the
-     * assertions below rather than an omission. This page defaults to a LIVE refresh, so
-     * posture reloads on every tick with the previous rollup still on screen: captioning
-     * those numerals "Loading" said something false about them — they are a measurement,
-     * not a placeholder — and, now that the caption is the ONLY sub a tile carries, it also
-     * grew and shrank the whole strip by ~18px on every tick, shoving the lattice below it.
-     * The loading arm is therefore gated on there being nothing on screen to caption; the
-     * FIRST-LOAD half of that gate is pinned by "captions a FIRST load…" below, so the two
-     * arms are proven together and the caption cannot simply be deleted.
+     * They are the 24h window's figures under a range control that already says 7 days,
+     * so they read MUTED and the tiles say "Loading 7 days" (FXD1): a numeral and its
+     * caption never name two different windows. Only a window change does this; a LIVE or
+     * manual refresh of the same window keeps the strip uncaptioned (pinned by "captions a
+     * FIRST load..." above), so the strip does not grow and shrink on every tick.
      *
-     * The range control names the new window and the LIVE pill keeps pulsing. The refresh
-     * button spins only for a reload the operator pressed (Round 14 review): a busy button
-     * is disabled, and one that disabled itself on every LIVE tick threw a keyboard user's
-     * focus to the page body.
+     * The refresh button spins only for a reload the operator pressed (Round 14 review): a
+     * busy button is disabled, and one that disabled itself on every LIVE tick threw a
+     * keyboard user's focus to the page body.
      */
     expect(screen.getByRole('button', { name: 'Last 7d, time range' })).toBeInTheDocument();
+    for (const id of ['kpi-false-positive-rate', 'kpi-resolved-closed']) {
+      const tile = screen.getByTestId(id);
+      expect(within(tile).getByText('Loading 7 days')).toBeInTheDocument();
+      expect(tile.querySelector('[data-pending]')).not.toBeNull();
+      expect(tile.closest('[aria-busy="true"]') ?? tile.querySelector('[aria-busy="true"]')).not.toBeNull();
+    }
     expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('48%')).toBeInTheDocument();
     expect(within(screen.getByTestId('kpi-resolved-closed')).getByText('25')).toBeInTheDocument();
-    expect(
-      within(screen.getByTestId('kpi-false-positive-rate')).queryByText('Loading 7 days'),
-    ).toBeNull();
-    expect(
-      within(screen.getByTestId('kpi-resolved-closed')).queryByText('Loading 7 days'),
-    ).toBeNull();
 
     await waitFor(() => expect(requests).toHaveLength(3));
     expect(requests[1].signal.aborted).toBe(true);
@@ -1188,6 +1183,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
       expect(tile.queryByText('Loading 7 days')).toBeNull();
       expect(tile.queryByText('Loading 24h')).toBeNull();
       expect(tile.queryByText('Posture unavailable')).toBeNull();
+      expect(screen.getByTestId(id).querySelector('[data-pending]')).toBeNull();
     }
     // (The numerals themselves are NOT re-read here: they roll via the motion spring, so
     // the plain-text timing stat above is the reliable fresh-payload witness — which is why
@@ -1208,6 +1204,32 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await Promise.resolve();
     expect(within(timingRegion).getByText('4h')).toBeInTheDocument();
     expect(within(timingRegion).queryByText('45m')).toBeNull();
+  });
+
+  it('a drill-down opened while the window changes does not restate the old figures (FXD1 review)', async () => {
+    const requests: Array<{ hours: number; resolve: (value: PostureResponse) => void }> = [];
+    fetchPostureMock.mockImplementation(
+      (hours: number) => new Promise<PostureResponse>((resolve) => requests.push({ hours, resolve })),
+    );
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    await waitFor(() => expect(requests).toHaveLength(1));
+    requests[0].resolve({ ...POSTURE_CMP, quality: { ...POSTURE_CMP.quality, terminal_cases: 25 } });
+    await waitFor(() => expect(within(screen.getByTestId('kpi-resolved-closed')).getByText('25')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Last 24h, time range' }));
+    await user.click(
+      within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole('button', { name: /Last 7 days/i }),
+    );
+    await waitFor(() => expect(within(screen.getByTestId('kpi-resolved-closed')).getByText('Loading 7 days')).toBeInTheDocument());
+
+    // The panel lists the new window's cases, so its switcher names no 24h numeral.
+    await user.click(screen.getByTestId('kpi-resolved-closed'));
+    await screen.findByTestId('kpi-drilldown');
+    const entry = screen.getByTestId('kpi-drilldown-metric-resolved-closed');
+    expect(entry).toHaveTextContent('Loading');
+    expect(entry).not.toHaveTextContent('25');
   });
 
   it('mounts the instrument band: Human vs AI + two donut snapshots + latest cases', async () => {

@@ -54,6 +54,7 @@ from tests.test_chat_routes_stream import (
     _start,
     gated_state,  # noqa: F401 -- pytest fixture
 )
+from tests._auth_helpers import ready_user
 
 REPORT_FINAL = (
     json.dumps({"action": "final", "blocks": [{"ref": "t1.a1"}], "answer_kind": "data",
@@ -401,6 +402,7 @@ def test_owner_scoping_reports_feedback_inspector_and_unread() -> None:
         created = client.post("/api/users", json={"username": "analyst", "password": "analyst-pass-12345",
                                                    "role": "analyst_tier1"})
         assert created.status_code == 200, created.text
+        ready_user(client, "analyst", "analyst-pass-12345")
         _login(client, "analyst", "analyst-pass-12345")
         assert client.get(f"/api/chat/conversations/{cid}/messages/{mid}/steps/{tool['index']}").status_code == 404
         assert client.post("/api/chat/feedback", json={
@@ -427,6 +429,7 @@ def test_routes_need_cases_read() -> None:
             "rbac": state.prefs.rbac.model_copy(update={"denies": denies})}))
         assert client.post("/api/users", json={"username": "viewer", "password": "viewer-pass-12345",
                                                "role": "auditor"}).status_code == 200
+        ready_user(client, "viewer", "viewer-pass-12345")
         _login(client, "viewer", "viewer-pass-12345")
         for method, path, payload in (
             ("get", "/api/chat/turns/active", None),

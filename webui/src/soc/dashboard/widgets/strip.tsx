@@ -33,6 +33,21 @@ import {
   type KpiStripContextValue,
 } from '@/soc/components/KpiTile';
 
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainChange } from '@/lib/explain/builders';
+import { count, plain } from '@/lib/explain/rounding';
+import type { Explanation } from '@/lib/explain/types';
+import {
+  explainAlertReduction,
+  explainCount,
+  explainKpiShare,
+  explainServerFigure,
+  slaAttainmentInitial,
+} from '@/soc/components/metrics-explain/builders';
+import { MetricExplain } from '@/soc/components/metrics-explain/MetricExplain';
+import { TimingExplain } from '@/soc/components/metrics-explain/TimingExplain';
+import type { StatBlock } from '@/soc/pages/Metrics.posture.api';
+
 import { useDashboardData, useDashboardRequests, type DashboardReader } from '../DashboardDataProvider';
 import { kpiStripCells, type KpiStripBinding, type KpiStripPreset } from '../kpi-bindings';
 import { bindingRequests, evaluateBinding, getPath, type KpiCellResult } from './kpi-eval';
@@ -114,6 +129,42 @@ export function cellDelta(binding: KpiStripBinding, read: DashboardReader): KpiD
   const d = cur - prev;
   if (compared.format === 'minutes') return { value: d, label: signedDuration(d) };
   return { value: d, label: `${d > 0 ? '+' : d < 0 ? '-' : ''}${fmtNumber(Math.abs(d))}` };
+}
+
+/**
+ * The change chip explained (FXD1): the figure now and in the window just before, and
+ * the difference the chip shows ("56 cases in the last 7 days and 21 cases in the 7 days
+ * before. 56 - 21 = +35."). A count change is a difference, never a percent.
+ */
+export function cellDeltaExplanation(
+  binding: KpiStripBinding,
+  read: DashboardReader,
+  delta: KpiDelta,
+  window: { phrase: string },
+): Explanation | null {
+  const compared = COMPARED[binding.cell];
+  if (!compared) return null;
+  const posture = read({ key: 'posture' }).data;
+  const cur = getPath(posture, `compare.${compared.field}.value`);
+  const prev = getPath(posture, `compare.${compared.field}.prev`);
+  if (typeof cur !== 'number' || typeof prev !== 'number') return null;
+  const minutes = compared.format === 'minutes';
+  return explainChange({
+    metric: `${binding.cell}_change`,
+    title: binding.label,
+    shown: delta.label ?? String(delta.value),
+    kind: 'difference',
+    now: cur,
+    before: prev,
+    words: minutes ? (n) => `${plain(n, 2)} minutes` : (n) => countOf(n, 'case'),
+    term: minutes ? (n) => plain(n, 2) : (n) => count(n),
+    unit: minutes ? ' minutes' : '',
+    window: `in the ${window.phrase}`,
+    beforeWindow: `in the ${window.phrase.replace(/^last /, '')} before`,
+    rounding: minutes ? 'The chip writes the difference as a duration.' : 'Counts are whole numbers.',
+    source: 'Server comparison',
+    provenanceNote: 'Computed by the server: this window against the window of the same length just before it.',
+  });
 }
 
 /**
@@ -316,6 +367,171 @@ export function stripFailureText(
   return parts.length ? parts.join(' ') : null;
 }
 
+// SLA attainment's first reading lives with the other figure builders, so the Analytics
+// Posture tab and this strip say the same thing (Round 16 numbers review).
+export { slaAttainmentInitial };
+
+/** What one unit of a count cell counts, plural. */
+const CELL_NOUN: Readonly<Record<string, string>> = {
+  sources_reporting: 'sources',
+  silent_sources: 'sources',
+  alerts_ingested: 'alerts',
+  techniques_seen: 'techniques',
+};
+
+/** What a count cell leaves out, where its definition does not say it. */
+const CELL_CAVEATS: Readonly<Record<string, readonly string[]>> = {
+  sla_breached: [
+    "A case counts when the time to a person's first response is over its priority's response target, the rule the Posture tab and the case page use. A case whose priority has no target is not counted.",
+  ],
+};
+
+/**
+ * The explanation of a measured cell (Round 16 numbers review): its inputs and, where
+ * the Console holds them, its arithmetic. Null for a cell with no figure, a lower bound
+ * or an approximation (their help popover already says what they are).
+ */
+export function stripCellExplanation(view: StripCellView, read: DashboardReader, phrase: string): Explanation | null {
+  const { binding, result } = view;
+  if (view.gate !== 'ok' || !result || result.status !== 'value' || result.value == null) return null;
+  // A lower bound of a count explains what it counts and why it is a floor (FXD1); an
+  // approximation says so in its help popover.
+  if (result.qualifier === 'about') return null;
+  if (result.qualifier === 'at least') {
+    if (binding.format !== 'count') return null;
+    const noun = CELL_NOUN[binding.cell] ?? 'cases';
+    const stockWindow = binding.window === 'all' ? 'right now' : `the ${phrase}`;
+    const base = explainCount({
+      metric: binding.cell,
+      title: binding.label,
+      value: result.value,
+      noun,
+      window: stockWindow,
+      summary: `At least ${count(result.value)} ${noun}, ${stockWindow}: a lower bound. ${result.reason ?? ''}`.trim(),
+      formula: binding.definition,
+      provenanceNote: 'Counted by the server for this window, over the part it could measure.',
+      // The reason is already the summary's second sentence; the caveat says what it means.
+      caveats: [
+        result.reason
+          ? 'The true figure can be higher.'
+          : 'Part of the window was not counted, so the true figure can be higher.',
+      ],
+    });
+    return base ? { ...base, display: `at least ${count(result.value)}` } : null;
+  }
+  const stock = binding.window === 'all';
+  const window = stock ? 'right now' : `the ${phrase}`;
+  const windowSource = stock ? 'Not limited by the time range above' : undefined;
+  const data = (key: Parameters<DashboardReader>[0]['key']) => read({ key, window: binding.window }).data;
+  switch (binding.cell) {
+    case 'closed_by_agent': {
+      const decided = getPath(data('autoClose'), 'current.decided');
+      return explainKpiShare({
+        metric: 'closed_by_agent',
+        title: binding.label,
+        numerator: result.value,
+        denominator: typeof decided === 'number' ? decided : null,
+        numeratorLabel: 'closed by the AI agent',
+        denominatorLabel: 'decided cases',
+        window,
+        dividedBy: 'server',
+        tileRounding: 'The tile shows the count; the share beside it is a whole percent.',
+        caveats: [binding.definition],
+      });
+    }
+    case 'alert_reduction': {
+      const noise = data('noise');
+      const ingested = getPath(noise, 'stages[key=ingested].total');
+      const cases = getPath(noise, 'stages[key=cases].total');
+      return explainAlertReduction(
+        typeof ingested === 'number' ? ingested : null,
+        typeof cases === 'number' ? cases : null,
+        window,
+        // The tile shows a whole percent: the explanation ends on that figure.
+        result.text,
+      );
+    }
+    case 'events_per_minute':
+      return explainServerFigure({
+        metric: 'events_per_minute',
+        title: binding.label,
+        display: result.text,
+        value: result.value,
+        summary: `${result.text} events per minute, ${window}: the alerts the counters tallied over the whole hours they measured.`,
+        formula: 'alerts ingested in the measured hours / the minutes from the first measured hour to now',
+        window,
+        windowSource,
+        caveats: [
+          binding.definition,
+          'When the counters began inside the window, the hour they began in is left out, so the rate can cover less than the window.',
+        ],
+      });
+    default:
+      if (binding.format !== 'count') return null;
+      return explainCount({
+        metric: binding.cell,
+        title: binding.label,
+        value: result.value,
+        noun: CELL_NOUN[binding.cell] ?? 'cases',
+        window,
+        windowSource,
+        // "Over the cases in the window" only for a count of cases: sources and alerts
+        // are not cases.
+        provenanceNote: stock
+          ? 'Counted by the server for this reading.'
+          : binding.caseDerived
+            ? undefined
+            : 'Counted by the server for this window.',
+        summary: `${result.text} ${CELL_NOUN[binding.cell] ?? 'cases'}, ${window}. ${binding.definition}`,
+        formula: binding.definition,
+        caveats: [...(CELL_CAVEATS[binding.cell] ?? [])],
+      });
+  }
+}
+
+/** The cell's explain slot: the figure's own explanation on hover and click. */
+function stripCellExplain(
+  view: StripCellView,
+  read: DashboardReader,
+  windowHours: number,
+  phrase: string,
+): ((numeral: React.ReactNode) => React.ReactNode) | undefined {
+  const measured = view.gate === 'ok' && view.result?.status === 'value' ? view.result : null;
+  if (!measured) return undefined;
+  if (view.binding.cell === 'sla_attainment') {
+    return (numeral) => (
+      // Opening it reads the figure's own explanation (metric=sla_attainment).
+      <MetricExplain
+        metric="sla_attainment"
+        title={view.binding.label}
+        windowHours={windowHours}
+        initial={slaAttainmentInitial(measured.text, phrase)}
+      >
+        {numeral}
+      </MetricExplain>
+    );
+  }
+  if (view.binding.cell === 'mttd_p50' || view.binding.cell === 'mttr_p50') {
+    const metric = view.binding.cell === 'mttd_p50' ? 'mttd' : 'mttr';
+    const block = getPath(read({ key: 'posture' }).data, `lifecycle.${metric}_minutes`) as StatBlock | undefined;
+    if (!block || typeof block !== 'object') return undefined;
+    return (numeral) => (
+      <TimingExplain
+        metric={metric}
+        title={view.binding.label}
+        block={block}
+        windowHours={windowHours}
+        window={`the ${phrase}`}
+      >
+        {numeral}
+      </TimingExplain>
+    );
+  }
+  const explanation = stripCellExplanation(view, read, phrase);
+  if (!explanation) return undefined;
+  return (numeral) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger>;
+}
+
 export function KpiStripWidget(props: WidgetProps) {
   const preset = optionChoice(props.options, 'preset', PRESETS, 'operations');
   // The strip's accessible name: the operator's title, else what the preset shows.
@@ -376,10 +592,15 @@ export function KpiStripWidget(props: WidgetProps) {
         help={stripCellHelp(view)}
         helpLabel={`About ${view.binding.label}`}
         delta={delta}
+        deltaExplain={(() => {
+          const explanation = delta ? cellDeltaExplanation(view.binding, read, delta, windowInfo) : null;
+          return explanation ? (chip: React.ReactNode) => <ExplainTrigger explanation={explanation}>{chip}</ExplainTrigger> : undefined;
+        })()}
         goodDirection={view.binding.cell === 'mttr_p50' || view.binding.cell === 'mttd_p50' ? 'down' : 'none'}
         roll={false}
         size="fluid"
         numeral="hero"
+        explain={stripCellExplain(view, read, windowHours, windowInfo.phrase)}
       />
     );
   });

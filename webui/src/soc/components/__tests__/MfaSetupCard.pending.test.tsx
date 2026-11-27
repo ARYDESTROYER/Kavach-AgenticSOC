@@ -192,7 +192,9 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
     fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
     fireEvent.click(screen.getByRole('button', { name: 'Verify and sign in' }));
 
-    expect(await screen.findByText('invalid code')).toBeInTheDocument();
+    // At sign-in a wrong code answers 401: a fixed sentence, never the server's text.
+    expect(await screen.findByText('That code did not work. Enter the current code from your app.')).toBeInTheDocument();
+    expect(screen.queryByText('invalid code')).not.toBeInTheDocument();
     expect(onPendingExpired).not.toHaveBeenCalled();
     expect(onComplete).not.toHaveBeenCalled();
     // The form is still there for another attempt while the pending token lives.

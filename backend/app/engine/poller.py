@@ -255,10 +255,12 @@ class Poller:
         WIDEST configured rule window (never less than one poll interval) plus a
         small safety margin, so a slow-burn burst is seen whole. The cursor still
         governs what is "new" for de-dup of investigation/attach (Non-negotiable #4).
+
+        The widest window includes every enabled rule-catalog definition's own window
+        (Round 16 B07, :meth:`Preferences.widest_correlation_window_seconds`); the
+        caller still clamps the look-back to the cold-start window.
         """
-        windows = [prefs.default_correlation.window_seconds]
-        windows += [r.window_seconds for r in prefs.correlation_rules.values()]
-        widest = max(windows) if windows else prefs.default_correlation.window_seconds
+        widest = prefs.widest_correlation_window_seconds()
         interval = max(1, prefs.poll_interval_seconds)
         # +2 poll intervals of slack absorbs poll jitter / a late-arriving event at
         # the trailing edge of the window without re-scanning unboundedly.
@@ -737,8 +739,10 @@ class Poller:
                 from ..engine.ingest import link_cross_source
 
                 try:
+                    # ``pipeline``: each link is written to the case as stored now,
+                    # under its case write lock (Round 16 B09, the cross-cutting review).
                     stats["cross_source_linked"] = await link_cross_source(
-                        clusters, prefs, cases=self._cases
+                        clusters, prefs, cases=self._cases, pipeline=self._pipeline
                     )
                 except Exception as exc:  # noqa: BLE001 — never break the poll loop
                     logger.warning("cross-source correlation failed: %s", exc)
@@ -835,8 +839,9 @@ class Poller:
         return stats
 
     async def _attach(self, existing, cluster) -> None:
-        """Merge a cluster's new events into an open case (shared ingest logic)."""
-        await attach_cluster(self._cases, existing, cluster)
+        """Merge a cluster's new events into an open case (shared ingest logic), on the
+        case as stored now (the pipeline's case lock, Round 16 WP08)."""
+        await attach_cluster(self._cases, existing, cluster, pipeline=self._pipeline)
 
     # --- background loop ---
     async def _run(self) -> None:

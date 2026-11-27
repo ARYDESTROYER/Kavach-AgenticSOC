@@ -5,7 +5,7 @@ description: Choose the shortest supported path from a first look at Agentic SOC
 
 # Getting started
 
-These guides apply to **Agentic SOC 0.1**. They take you from an empty checkout to a
+These guides apply to **Agentic SOC 0.2**. They take you from an empty checkout to a
 working console, a configured source, and a case whose provenance you can verify.
 
 ## Choose a path
@@ -35,10 +35,25 @@ At the end of the onboarding path:
 
 !!! note "Evaluation boundary"
 
-    Agentic SOC 0.1 is designed for a single backend replica. Some runtime-entered
+    Agentic SOC 0.2 is designed for a single backend replica. Some runtime-entered
     secrets and push-source evidence are memory-only. Keep the authoritative event
     in its source and read the [known limitations](../releases/known-limitations.md)
     before connecting sensitive or production data.
+
+## Use the Console with a keyboard or screen reader
+
+- **Skip to main content**, the first Tab stop on every page, moves focus straight to
+  the page content. The page and any open case stay where they are.
+- On a phone, closing the navigation menu returns focus to its button. Choosing a page
+  moves focus to that page.
+- Popovers are announced by name, for example "Notifications", "Time range" or "Event
+  filter".
+- Long code blocks and scrolling tables take keyboard focus, so you can scroll them with
+  the arrow keys.
+- On touch screens, text fields use 16 px text so the browser does not zoom in when you
+  tap one. Pinch zoom still works.
+- Numbers that explain themselves open their calculation with Enter or Space; see
+  [Explainable numbers](../analyst/explainable-numbers.md).
 
 ## Next steps
 

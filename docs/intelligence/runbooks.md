@@ -13,8 +13,8 @@ policy does that.
 Open **Intelligence → Runbooks** to see the library. Every runbook is used in three places:
 
 - **The library and the editor**, where your team writes, reviews and publishes runbooks.
-- **The case**, where the matching runbook appears on the Runbook tab of Case detail and
-  Case Manager, with a Next step card on the Overview tab.
+- **The case**, where the matching runbook appears on the Response tab of Case detail and
+  Case Manager (the runbook and the case's tasks), with a Next step row on the Brief tab.
 - **The investigator**, which reads the published runbook that specifically matches a
   cluster as trusted guidance before it investigates, and the knowledge search, which
   indexes published runbooks. The Generic incident fallback is never given to the
@@ -26,7 +26,9 @@ days and when its review is due. The figures above the list count runs, complete
 cases with a runbook from your cases, so they need `cases:read`; without it they say so and
 the rest of the page works. A figure that is still loading or could not be read says so
 rather than showing a number, and when a month of runs is too large to count in full the run
-figures read "at least".
+figures read "at least". When you go back from a runbook to the library, focus moves to
+the runbook you just left, on a phone too; if the library cannot be loaded, focus moves to
+the library heading.
 
 Reading runbooks needs `runbooks:read`. Writing, sending for review, retiring and
 restoring a version as a draft need `runbooks:manage`. Publishing, sending a version back
@@ -84,7 +86,7 @@ values, and a runbook needs every condition it lists:
 When several runbooks match, the most specific wins: a rule match first, then a technique
 match, then the other conditions, then the fallback. Ties go to the higher priority, then the
 runbook that matched the most conditions, then the newest published, then the id in
-alphabetical order. The case's Runbook tab says why a runbook was attached ("Matched rule
+alphabetical order. The case's Response tab says why a runbook was attached ("Matched rule
 ssh_auth_failed and technique T1110").
 
 Matching happens twice. Before the investigation, a cluster has no verdict, status, tags and
@@ -125,7 +127,7 @@ has three views of the same runbook:
   with Alt and the arrow keys. **Runbook details** at the top of the outline holds the title,
   summary, use when, prerequisites, priority, owner, review cadence, the techniques the
   runbook covers, search phrases and references (https links only).
-- **Preview as analyst** shows the Runbook tab as an analyst will see it before anyone
+- **Preview as analyst** shows the case's runbook as an analyst will see it before anyone
   starts. **Fill with** a recent matching case resolves the lookup values from that case (a
   screen reader hears when they arrive and which values the case does not have), and
   the meter shows the investigator guidance against its budget, for example "Investigator

@@ -65,6 +65,16 @@ The public barrel currently exposes:
 - `DESIGN_SYSTEM_CATALOG`, a JSON-serializable inventory of the stable component,
   token, asset, and accessibility contracts.
 
+The Explain kit, `ExplainTrigger` and `ExplainPanel` (catalog id `feedback.explain`), is
+not in the barrel. It makes a number explainable. Hover or keyboard focus shows a one-line
+formula with the real numbers, in a hover card that meets WCAG 2.2 SC 1.4.13 (Escape
+dismisses it); a click, Enter, Space or a tap opens the full arithmetic with "Copy
+calculation", and a queue row uses the mouse-only `row-hover` mode with no focusable
+content. Like the material's subpath, it is a separate entry: import it from
+`@/design-system/explain`, never from the barrel, and only from lazy route chunks, so it
+never reaches the entry bundle. The numbers come from the pure builders in
+`webui/src/lib/explain/`, pinned against the server by `explain.contract.json`.
+
 The catalog also documents stable page-anatomy components in their owning modules:
 `PageHeader` (the title, a help tip, the `controls` slot beside the title, `actions` on
 the right, and `back`, a link to the list a page was opened from), `KpiStrip` (the one
@@ -211,7 +221,7 @@ Round 14 added the entries for the page grammar: `surface.panel`,
 and the pre-Round-14 `SettingsCard` has its own `settings.card` entry. Every other
 existing id keeps its meaning.
 
-Version **0.1.13 does not ship a design-system MCP server, endpoint, registry
+Version **0.2.0 does not ship a design-system MCP server, endpoint, registry
 service, or remote package**. The serializable catalog is the deliberately small
 input contract for that future work. A future transport must version its schema
 independently and preserve existing token, component, accessibility, and asset ids.

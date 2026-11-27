@@ -61,7 +61,7 @@ describe('Automation applied names a runbook attach in runbook words', () => {
 
   it('keeps the legacy name for a record from before Round 14', () => {
     showActions([record('Queued')]);
-    expect(screen.getByText('Runbook automation (before Round 14)')).toBeInTheDocument();
+    expect(screen.getByText('Older runbook automation')).toBeInTheDocument();
   });
 
   it('lists attaching a runbook among what automation may do, and never says "playbook"', () => {
@@ -69,7 +69,7 @@ describe('Automation applied names a runbook attach in runbook words', () => {
     const about = screen.getByText(/It can tag, recommend, notify,\s+attach a runbook, queue a/);
     expect(screen.getByText('Tagged')).toBeInTheDocument();
     const EM_DASH = String.fromCharCode(0x2014);
-    for (const text of [about.textContent ?? '', 'Runbook attached', 'Runbook not attached', 'Runbook automation (before Round 14)']) {
+    for (const text of [about.textContent ?? '', 'Runbook attached', 'Runbook not attached', 'Older runbook automation']) {
       expect(text).not.toMatch(/playbook/i);
       expect(text.includes(EM_DASH)).toBe(false);
     }

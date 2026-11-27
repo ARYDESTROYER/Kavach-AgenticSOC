@@ -30,6 +30,7 @@ import { Eye, EyeOff, Maximize2 } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { fmtNumber } from '@/lib/format';
+import { percentOf } from '@/lib/explain/rounding';
 import { api } from '@/lib/api';
 import type {
   NoiseLineage,
@@ -51,9 +52,12 @@ import { CountUp } from './CountUp';
 import { HelpTip } from './HelpTip';
 import { AskAboutThis } from './AskAboutThis';
 import { alertReduction, type AlertReduction } from './alert-reduction';
+import { PARTIAL_COVERAGE_NOTE } from './coverage-notes';
 import { KPI_TOPICS } from './ask-topics';
 import { NoiseLineageView } from './NoiseLineage';
 import { SegmentedControl } from './SegmentedControl';
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainNeverReachedPerson } from './metrics-explain/builders';
 import { usePrefersReducedMotion } from '@/soc/hooks/usePrefersReducedMotion';
 import {
   placeFlowLabels,
@@ -301,6 +305,24 @@ function formatShare(value: number): string {
   return value > 0 && rounded === 0 ? '<1%' : `${rounded}%`;
 }
 
+/**
+ * Alert reduction's arithmetic with the real counts: "1 - 40 / 1,000 = 96%" (Round 16
+ * WP12, research explainability R11), to two decimals so the figure can be checked.
+ * Exported for tests.
+ */
+export function alertReductionMath(ingested: number | undefined, cases: number | undefined): string {
+  if (typeof ingested !== 'number' || typeof cases !== 'number' || !(ingested > 0)) return '';
+  return `1 - ${fmtNumber(cases)} / ${fmtNumber(ingested)} = ${percentOf(1 - cases / ingested, 2)}`;
+}
+
+/** The payload's window in words, for an explanation ("the last 24 hours", "all time"). */
+export function noiseWindowWords(hours: number | null | undefined): string {
+  const h = typeof hours === 'number' && Number.isFinite(hours) ? Math.round(hours) : 0;
+  if (h <= 0) return 'all time';
+  if (h % 24 === 0 && h > 48) return `the last ${fmtNumber(h / 24)} days`;
+  return `the last ${fmtNumber(h)} ${h === 1 ? 'hour' : 'hours'}`;
+}
+
 /** The em dash used everywhere a share has no denominator to be measured against. */
 export const SHARE_DASH = '—';
 
@@ -354,16 +376,39 @@ export interface StageShare {
 }
 
 /**
+ * The Simple-view stages counted from the case tally whose flow parent is a COUNTER
+ * stage (`clustered`). While the counters cover only part of the window, their share
+ * divides a whole-window case count by a partial counter count (Round 16 B64).
+ */
+const CASE_TALLY_UNDER_COUNTERS: ReadonlySet<string> = new Set(['candidate', 'awaiting', 'cases']);
+
+/** What a share of a payload needs to know beyond the two totals. */
+export interface StageShareOptions {
+  /** `counters.incomplete`: the alert counters cover only part of the window. */
+  countersIncomplete?: boolean;
+}
+
+/** The share options a noise payload implies (`counters.incomplete`). */
+export function shareOptionsOf(data: { counters?: { incomplete?: boolean } | null } | null | undefined): StageShareOptions {
+  return { countersIncomplete: data?.counters?.incomplete === true };
+}
+
+/**
  * Derive one stage's share of its flow parent.
  *
- * A 0 / absent / non-finite denominator never fabricates `0%` — it renders the em dash
+ * A 0 / absent / non-finite denominator never fabricates `0%`: it renders the em dash
  * and says why, because "0% of nothing" and "0% of 40 cases" are different facts.
- * Exported for tests.
+ *
+ * Round 16 B64: a case-tally stage under a counter parent reads "not measured: partial
+ * coverage" while the counters cover only part of the window (the Detection and data
+ * health board's words), and no reduction stage ever prints a share above 100%: a stage
+ * larger than its parent reads the dash with the reason. Exported for tests.
  */
 export function stageShare(
   key: string,
   total: number,
   denominator: number | null | undefined,
+  options?: StageShareOptions,
 ): StageShare {
   const parentKey = parentStageKey(key);
   const noun = parentKey ? SHARE_DENOMINATOR_NOUN[parentKey] ?? 'the previous stage' : null;
@@ -384,6 +429,16 @@ export function stageShare(
       pct: null,
       text: SHARE_DASH,
       sentence: `share unavailable, no ${noun} counted in this window`,
+    };
+  }
+  if (options?.countersIncomplete && parentKey === 'clustered' && CASE_TALLY_UNDER_COUNTERS.has(key)) {
+    return { pct: null, text: SHARE_DASH, sentence: PARTIAL_COVERAGE_NOTE };
+  }
+  if (total > denominator) {
+    return {
+      pct: null,
+      text: SHARE_DASH,
+      sentence: `share unavailable, more than the ${noun} counted in this window`,
     };
   }
   const pct = (total / denominator) * 100;
@@ -1983,8 +2038,30 @@ export function NoiseFunnel({
       : 'Reduction pending';
   const relativeTo = derived.mode === 'full' ? 'of ingested' : 'of cases';
   const n = derived.rows.length;
-  const closedByHuman = derived.rows.find((r) => r.key === 'closed')?.total ?? 0;
+  // The Detailed headline's own inputs: `reduction.overall_pct` is 1 - needs human /
+  // ingested, so its numerator is the Needs a human stage, read from the payload (the
+  // derived rows leave that stage out). It is withheld under partial coverage, the rule
+  // the Simple view and chat's noise tool follow (D8).
+  const stageTotal = (key: string): number | null => {
+    const total = data.stages?.find((s) => s.key === key)?.total;
+    return typeof total === 'number' && Number.isFinite(total) ? total : null;
+  };
+  const ingestedTotal = stageTotal('ingested');
+  const needsHumanTotal = stageTotal('needs_human');
+  const detailedWithheld = data.counters?.incomplete === true || data.cases_meta?.truncated === true;
+  const detailedExplanation =
+    headlinePct != null && !detailedWithheld
+      ? explainNeverReachedPerson({
+          ingested: ingestedTotal,
+          needsHuman: needsHumanTotal,
+          escalated: stageTotal('escalated'),
+          shownPct: headlinePct,
+          window: noiseWindowWords(data.window_hours),
+        })
+      : null;
   const rowByKey = new Map(derived.rows.map((row) => [row.key, row]));
+  // One share rule for every Simple-view surface, with the payload's coverage (B64).
+  const shareOptions = shareOptionsOf(data);
   const hasPolicyClosed = (rowByKey.get('policy_closed')?.total ?? 0) > 0;
   const candidateRow = rowByKey.get('candidate') ?? rowByKey.get('awaiting') ?? null;
   const escalatedRow = rowByKey.get('escalated') ?? null;
@@ -2007,6 +2084,7 @@ export function NoiseFunnel({
             row.key,
             row.total,
             rowByKey.get(parentStageKey(row.key) ?? '')?.total ?? null,
+            shareOptions,
           )
         : null;
     const pctLabel = railShare ? railShare.text : formatShare(row.pctRetained);
@@ -2189,7 +2267,7 @@ export function NoiseFunnel({
       aria-label="Detailed noise reduction view"
     >
       {headlinePct != null ? (
-        <div>
+        <div data-testid="noise-detailed-headline">
           <p
             className={cn(
               'font-semibold tracking-tight text-foreground',
@@ -2197,15 +2275,28 @@ export function NoiseFunnel({
             )}
           >
             {flat ? 'Reduced by ' : 'Noise reduced by '}
-            <span className="text-primary tabular-nums">{headlinePct}%</span>
+            {detailedWithheld ? (
+              <span className="text-muted-foreground tabular-nums">{SHARE_DASH}</span>
+            ) : (
+              <ExplainTrigger explanation={detailedExplanation}>
+                <span className="text-primary tabular-nums">{headlinePct}%</span>
+              </ExplainTrigger>
+            )}
           </p>
-          <p className="mt-1 text-xs tabular-nums text-muted-foreground">
-            {fmtNumber(derived.topTotal)}{' '}
-            {derived.mode === 'full' ? 'events ingested' : 'cases opened'}
-            <span className="mx-1.5 text-muted-foreground/70" aria-hidden>
-              →
-            </span>
-            {fmtNumber(closedByHuman)} case{closedByHuman === 1 ? '' : 's'} closed by a human
+          {/* The headline's own inputs (Round 16 numbers review): its numerator is the
+              Needs a human stage, never the Closed by human stage. */}
+          <p className="mt-1 text-xs tabular-nums text-muted-foreground" data-testid="noise-detailed-inputs">
+            {detailedWithheld ? (
+              <span>Not measured: partial coverage.</span>
+            ) : (
+              <>
+                {fmtNumber(ingestedTotal ?? derived.topTotal)} alerts ingested
+                <span className="mx-1.5 text-muted-foreground/70" aria-hidden>
+                  →
+                </span>
+                {fmtNumber(needsHumanTotal ?? 0)} case{needsHumanTotal === 1 ? '' : 's'} needed a human
+              </>
+            )}
           </p>
         </div>
       ) : (
@@ -2416,6 +2507,11 @@ export function NoiseFunnel({
           <span className="text-xs tabular-nums">
             {fmtNumber(rowByKey.get('ingested')?.total ?? 0)} alerts became{' '}
             {fmtNumber(rowByKey.get('cases')?.total ?? 0)} cases
+            {/* The arithmetic with the real counts (Round 16 WP12, research R11). */}
+            <span data-testid="noise-alert-reduction-math">
+              {' · '}
+              {alertReductionMath(rowByKey.get('ingested')?.total, rowByKey.get('cases')?.total)}
+            </span>
           </span>
         )}
         <HelpTip
@@ -2425,8 +2521,8 @@ export function NoiseFunnel({
             'Alert reduction is 1 − cases opened ÷ alerts ingested, over the same selected ' +
             'window. It is shown only when the alert counters cover the whole window and ' +
             'every case in it was counted; otherwise it reads as a dash with the reason. ' +
-            'Detailed view’s “Reduced by” figure is a different measure: the share of ' +
-            'ingested alerts that never needed a human.'
+            'The Detailed view’s Reduced by figure is a different measure: the share of ' +
+            'ingested alerts that did not end in a Needs a human case.'
           }
           className="self-center"
         />
@@ -2664,6 +2760,7 @@ export function NoiseFunnel({
                     node.key,
                     node.row.total,
                     rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+                    shareOptions,
                   );
                   const labelClassName = cn(
                     'absolute rounded-sm bg-card/95 px-1.5 py-1 text-left',
@@ -2747,6 +2844,7 @@ export function NoiseFunnel({
                     node.key,
                     node.total,
                     rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+                    shareOptions,
                   );
                   const leftPct = (labelX / simpleLayout.width) * 100;
                   // One line where it fits, else name over figures (`placeFlowLabels`).
@@ -3073,6 +3171,7 @@ export function NoiseFunnel({
                 node.key,
                 node.row.total,
                 rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+                shareOptions,
               );
               return (
                 <span
@@ -3098,6 +3197,7 @@ export function NoiseFunnel({
                   node.key,
                   node.total,
                   rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+                  shareOptions,
                 );
                 return (['line', 'stack'] as const).map((form) => (
                   <span

@@ -14,7 +14,7 @@ Quick triage:
 ```bash
 # Backend health (the agnostic stack publishes :8088; or exec into the container)
 curl -s localhost:8088/api/health ; echo
-#   -> {"status":"ok","version":"0.1.13","es_connected":...,"store_type":"...","setup_complete":...}
+#   -> {"status":"ok","version":"0.2.0","es_connected":...,"store_type":"...","setup_complete":...}
 
 # Same health THROUGH the web UI's nginx proxy (proves the SPA → backend path)
 curl -fsS http://localhost:8080/api/health ; echo
@@ -66,15 +66,22 @@ client — see the callout above; it does not confirm Postgres).
 ### A2. pgvector extension missing
 
 **Symptom.** Backend logs `Could not ensure pgvector extension (...); RAG uses
-JSON cosine`; RAG works but native kNN does not.
+JSON cosine`. Knowledge search still works.
 
 **Likely cause.** The Postgres image lacks the `vector` extension or the role
 can't `CREATE EXTENSION`.
 
+**What it means since 0.2.0.** The store ranks knowledge chunks in the backend process
+with a cached in-memory matrix (single-threaded numpy, then an exact re-score), on SQLite
+and PostgreSQL alike, so most corpora never use pgvector. pgvector ranks only a corpus too
+large for that matrix, or a process without numpy. Without it, such a corpus is ranked in
+Python: slower, with the same results.
+
 **Fix.** Use the **`pgvector/pgvector:pg16`** image (the agnostic compose already
-does) or install the extension package and grant create privilege. The suite is
-**fail-safe**: without pgvector it degrades to JSON + Python cosine, so this is a
-performance/quality note, not an outage.
+does) or install the extension package and grant create privilege. This is a performance
+note for very large corpora, not an outage. `GET /api/diagnostics/health` shows
+`event_loop` (the worst and 99th-percentile loop lag over the last minute) if you suspect
+slow searches.
 
 **How to confirm.** Backend logs `pgvector extension ensured`;
 `docker exec tlsoc-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\\dx"'` lists `vector`.
@@ -612,10 +619,13 @@ read-only mode`.
 role, source, runbook and dashboard change, and every job file download, writes its
 audit row first; when the row cannot be written, nothing changes. Check the audit
 store's health and the management key's write rights. On an Elasticsearch state backend
-upgraded from an earlier build, apply the shipped audit template and roll the audit
-write index (`docs/operations/upgrades.md`, "Applying the Round 14 audit template"):
-until then a date-like value in an audit row can map a field as a date and later rows
-are refused.
+upgraded from an earlier build, the backend extends the audit mapping itself at every
+start. When its log says it could not ("Audit template ... could not be read" or "could
+not be updated", "Audit index mappings could not be read", "Audit index ... mapping could
+not be extended", or "Audit index ... already maps ... another way"), apply the shipped
+audit template and roll the audit write index (`docs/operations/upgrades.md`, "Applying
+the Round 14 audit template"): until the mapping is extended, a date-like value in an
+audit row can map a field as a date and later rows are refused.
 
 **Symptom: on PostgreSQL the Audit log's People and settings or Agent activity view
 answers `503 audit_unavailable`, while All still works, and account activity is empty.**

@@ -1,6 +1,6 @@
 ---
 title: Analyst overview
-description: Start a shift from the v0.1 Cyber Defence Center and move from posture to action.
+description: Start a shift from the Cyber Defence Center, read how each figure was calculated, and move from posture to action.
 ---
 
 # Analyst overview
@@ -52,6 +52,12 @@ and recent outcomes without changing any case or detection policy.
    full sentence is announced to screen readers; where a value is **withheld** because
    the window was not fully covered, the dash shown in its place carries that
    explanation instead.
+   Every numeral shows how it was calculated: point at it for a one-line formula with
+   the real numbers. In the drill-down, the formula sits under the sentence that says which
+   cases it counts, and **Show the calculation** opens the inputs, steps and rounding with
+   **Copy calculation**. The response times in the **Response time** card (MTTD and
+   Respond) also read the cases behind the median: select one for the rank arithmetic
+   and **Show all**. See [Explainable numbers](explainable-numbers.md).
    Hover or keyboard-focus a metric to reveal
    its recent trendline for the same window: the card names the exact series it
    draws, states the bucketing (for example `last 24 hours · 1h buckets`), and shows
@@ -124,12 +130,17 @@ successful read: it never moves past the oldest data on screen.
 AI-verdict FP rate, Resolved or closed and Auto-closed come from the server posture
 rollup rather than the bounded case list. They are keyed to the selected window and
 comparison mode. When the range changes, the Console keeps the last successful posture
-snapshot visible instead of blanking the tiles. It no longer captions those numerals
-`Loading …` while a refresh is in flight: on a Live dashboard that fired on every tick,
-and the numbers being captioned were a real measurement, not a placeholder. The green
-Live dot says the page refreshes itself, and the refresh button spins while a reload you
-pressed is in flight. A **first** load, with nothing yet to show, still says so on the
-tiles. The superseded request
+snapshot visible instead of blanking the tiles, but those figures belong to the old
+range: they turn grey under "Loading 7 days" (the new range), their explanations are
+withheld, and the new range's figures replace them when they arrive. The same holds below
+the strip: Response time and the Deeper analytics timing figures turn grey under the same
+caption, the flow's open-case count is left out, and a tile's drill-down shows "Loading"
+in place of the old figures. A figure and its caption never name two different ranges. A refresh
+of the same range, a Live tick or the
+refresh button, is not captioned, because the figures on screen are still a real
+measurement of that range. The green Live dot says the page refreshes itself, and the
+refresh button spins while a reload you pressed is in flight. A **first** load, with
+nothing yet to show, says so on the tiles. The superseded request
 is cancelled, and a response is published only if its echoed `window_hours` still
 matches the active selector, so a slower earlier request can never repaint either
 tile beneath a newer range. The retained snapshot is always labelled as refreshing,

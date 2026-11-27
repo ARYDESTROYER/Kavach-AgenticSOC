@@ -803,7 +803,11 @@ async def _read_recent_events(state: AppState, body: _PreviewIn) -> list[dict[st
     SCOPED READ-ONLY key (#1), hard-capped. Mirrors the ``GET /api/logs`` read path but
     returns the raw ``_log_row`` shape (so ``_raw`` is available for predicate eval).
     Resilient: one slow/failing source degrades to nothing, never blocks the rest. NEVER
-    calls the LLM / ``decide()``."""
+    calls the LLM / ``decide()``.
+
+    Round 16 (B34): in Demo Mode the preview reads the Demo sources through the same
+    reader ``GET /api/logs`` uses there (``engine.log_rows.demo_browse_targets``) and
+    never a tenant source; a ``source_id`` that is not a Demo source reads nothing."""
     import asyncio
 
     from ..connectors.base import StructuredQuery
@@ -814,6 +818,23 @@ async def _read_recent_events(state: AppState, body: _PreviewIn) -> list[dict[st
     from .routes import _log_row, _source_can_browse
 
     limit = int(body.limit)
+    if state.demo_active:
+        from ..engine.log_rows import browse_query, demo_browse_targets, fan_out
+
+        demo_targets = demo_browse_targets(
+            state.demo_sources_overlay(),
+            prefs=state.prefs,
+            demo_source_connector=state.demo_source_connector,
+            source_id=(body.source_id or None),
+        )
+        if not demo_targets:
+            return []
+        envelope = await fan_out(
+            demo_targets,
+            browse_query(limit=limit, time_from=body.from_, time_to=body.to),
+            per_source_timeout=8.0,
+        )
+        return list(envelope.get("logs") or [])[:limit]
     reg = get_registry()
 
     async def _read_pull(src) -> list[dict[str, Any]]:

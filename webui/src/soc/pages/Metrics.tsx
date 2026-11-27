@@ -73,11 +73,27 @@ import {
   fetchMitreCoverage,
   fetchPosture,
   navigatorLayerUrl,
+  type CompareBlock,
   type MitreCoverageResponse,
   type PostureResponse,
   type SlaBreachRow,
 } from './Metrics.posture.api';
 import { deltaView, ratioPct } from './posture.format';
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainChange } from '@/lib/explain/builders';
+import { plain } from '@/lib/explain/rounding';
+import type { Explanation } from '@/lib/explain/types';
+import type { FeedbackAgreementFields, MetricsExplainFields, MttrByDecider } from '@/lib/types-metrics-explain';
+import {
+  explainAgreement,
+  explainAverageRisk,
+  explainCount,
+  explainKpiShare,
+  explainSlaAtRisk,
+  slaAttainmentInitial,
+} from '@/soc/components/metrics-explain/builders';
+import { MetricExplain } from '@/soc/components/metrics-explain/MetricExplain';
+import { TimingExplain } from '@/soc/components/metrics-explain/TimingExplain';
 import {
   AnalyticsWindowPicker,
   RouteTextLink,
@@ -395,7 +411,7 @@ function MetricsView({ onNavigate, tab: tabProp, onTabChange }: MetricsProps) {
         posture: post,
         mitre: mit,
         openByVerdict: verdicts,
-        updatedAt: new Date().toISOString(),
+        updatedAt: metricsReadAt(m),
       });
     } catch (e) {
       if (request === requestRef.current) setError(e);
@@ -519,6 +535,119 @@ interface OperationalTabProps {
   onNavigate?: Navigate;
 }
 
+/**
+ * The Operational MTTR (Round 16 WP12, research explainability R9 and D3): the median
+ * (p50) of the same per-case clock as the Performance tab and the Overview, from the
+ * additive `mttr_lifecycle` block. A server without it keeps the mean, said so.
+ */
+export function operationalMttr(data: Metrics): {
+  value: string;
+  help: string;
+  block?: StatBlockShape;
+  byDecider?: MttrByDecider;
+} {
+  const extra = data as Metrics & MetricsExplainFields;
+  const block = extra.mttr_lifecycle;
+  if (block && typeof block === 'object') {
+    return {
+      value: block.available && typeof block.p50 === 'number' ? fmtDuration(block.p50) : DASH,
+      help: 'Median (p50) time from case creation, or detection when recorded, to the first time the case was resolved or closed, over the cases that are resolved or closed now.',
+      block,
+      byDecider: extra.mttr_by_decider,
+    };
+  }
+  return {
+    value: data.resolved_count > 0 ? fmtDuration(data.mttr_minutes) : DASH,
+    help: 'Mean time from case creation to the first time the case was resolved or closed.',
+  };
+}
+
+/**
+ * When the figures on the page were read (Round 16 WP06 and WP12). `GET /api/metrics`
+ * reads the all-time population the server keeps for 60 s, and says when it read it in
+ * `generated_at`; the page's "Updated" stamp is that read time when it is older than now,
+ * so a served copy never reads as "just now". An older server sends no stamp, and then
+ * the settle time stands in.
+ */
+export function metricsReadAt(data: unknown, now: number = Date.now()): string {
+  const stamp = (data as MetricsExplainFields | null)?.generated_at;
+  const read = typeof stamp === 'string' ? Date.parse(stamp) : Number.NaN;
+  return new Date(Number.isFinite(read) && read < now ? read : now).toISOString();
+}
+
+/** The Agreement rate's context: its own population (grade entries), not graded cases (D10). */
+export function agreementContext(fb: Metrics['feedback'] | undefined, population: string): string {
+  if (!fb) return population;
+  const signals = (fb as FeedbackAgreementFields).agreement_signals;
+  if (typeof signals === 'number') {
+    return `${fmtNumber(signals)} assessed ${signals === 1 ? 'grade' : 'grades'}, ${population}`;
+  }
+  return `${fmtNumber(fb.graded_cases)} graded, ${population}`;
+}
+
+/** The KpiTile explain slot for a ready explanation (nothing when there is none). */
+function explainSlot(explanation: Explanation | null | undefined): ((numeral: React.ReactNode) => React.ReactNode) | undefined {
+  if (!explanation) return undefined;
+  return (numeral) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger>;
+}
+
+/**
+ * A rate's counts in words ("39 of 56 verdicted cases"), or undefined when the server
+ * sent none for that window.
+ */
+function rateCounts(numerator: unknown, denominator: unknown, of: string | undefined): string | undefined {
+  if (!of || typeof numerator !== 'number' || typeof denominator !== 'number') return undefined;
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator)) return undefined;
+  return `${fmtNumber(numerator)} of ${fmtNumber(denominator)} ${of}`;
+}
+
+/**
+ * A Performance change chip explained (FXD1): both values of the posture comparison, the
+ * window of each, and the relative change the server rounded, so "+108.9%" beside a rate
+ * reads as relative to the earlier rate, never as percentage points. A rate also prints
+ * the counts it divides in both windows (FXF, `of` names the denominator's cases). Null
+ * when the chip is not shown or a value is missing.
+ */
+export function compareChipExplanation(
+  block: CompareBlock | undefined,
+  title: string,
+  kind: 'rate' | 'minutes',
+  hours: number,
+  of?: string,
+): Explanation | null {
+  const view = deltaView(block);
+  if (!block || !view.show) return null;
+  const now = typeof block.value === 'number' ? block.value : null;
+  const before = typeof block.prev === 'number' ? block.prev : null;
+  if (now === null || before === null) return null;
+  const caption = windowCaption(hours);
+  const rate = kind === 'rate';
+  return explainChange({
+    // "MTTA (p50)" is `mtta_p50_change`: no doubled or trailing separator.
+    metric: `${title.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}_change`,
+    title,
+    shown: view.label,
+    kind: 'relative',
+    now,
+    before,
+    words: rate ? (n) => `${plain(n * 100, 2)}%` : (n) => `${plain(n, 2)} minutes`,
+    term: rate ? (n) => plain(n * 100, 2) : (n) => plain(n, 2),
+    window: `in the ${caption}`,
+    beforeWindow: `in the ${caption.replace(/^last /, '')} before`,
+    nowCounts: rate ? rateCounts(block.numerator, block.denominator, of) : undefined,
+    beforeCounts: rate ? rateCounts(block.prev_numerator, block.prev_denominator, of) : undefined,
+    ofPercent: rate,
+    rounding: 'The server divides the two values as shown and rounds the change to one decimal.',
+    source: 'Server comparison',
+    provenanceNote: 'Computed by the server: this window against the window of the same length just before it.',
+  });
+}
+
+function chipSlot(explanation: Explanation | null): ((chip: React.ReactNode) => React.ReactNode) | undefined {
+  if (!explanation) return undefined;
+  return (chip) => <ExplainTrigger explanation={explanation}>{chip}</ExplainTrigger>;
+}
+
 function OperationalTab({ data, rag, memory, openByVerdict, loading, failed, hours, onNavigate }: OperationalTabProps) {
   // GET /api/metrics leaves its `cost` part empty without `cost:view` (Round 14 roles-11),
   // so the LLM spend card says why instead of showing dashes, and links to Cost only for a
@@ -560,6 +689,7 @@ function OperationalTab({ data, rag, memory, openByVerdict, loading, failed, hou
 
   const population = populationCaption(data);
   const split = statusSplit(data);
+  const mttr = operationalMttr(data);
   const note = (data.counts_note || '').toLowerCase();
   const statusPartial = data.counts_exact === false && note.includes('status');
   const fb = data.feedback;
@@ -599,22 +729,49 @@ function OperationalTab({ data, rag, memory, openByVerdict, loading, failed, hou
         />
         <KpiTile
           label="MTTR"
-          value={data.resolved_count > 0 ? fmtDuration(data.mttr_minutes) : DASH}
-          context={`${fmtNumber(data.resolved_count)} closed, ${population}`}
-          help="Mean time from a case's creation to its last update, over closed cases."
+          value={mttr.value}
+          context={`${fmtNumber(data.resolved_count)} resolved or closed, ${population}`}
+          help={mttr.help}
           testId="mttr"
+          explain={
+            mttr.block
+              ? (numeral) => (
+                  <TimingExplain
+                    metric="mttr"
+                    title="MTTR"
+                    block={mttr.block}
+                    windowHours={0}
+                    window={population === 'all time' ? 'all time' : `the ${population}`}
+                    windowSource="Every case analysed, whatever the time range above"
+                    byDecider={mttr.byDecider}
+                  >
+                    {numeral}
+                  </TimingExplain>
+                )
+              : undefined
+          }
         />
         <KpiTile
           label="Agreement rate"
-          value={fb && fb.graded_cases > 0 ? fmtPercent(fb.agreement_rate) : DASH}
-          context={fb ? `${fmtNumber(fb.graded_cases)} graded, ${population}` : population}
+          value={fb && typeof fb.agreement_rate === 'number' && fb.graded_cases > 0 ? fmtPercent(fb.agreement_rate) : DASH}
+          context={agreementContext(fb, population)}
+          help="Analysts' grades that compare their call with the AI's: agreed counts 1, partly agreed counts half, over every grade entry with an assessment."
           testId="agreement"
+          explain={explainSlot(fb ? explainAgreement(fb as FeedbackAgreementFields & typeof fb, population) : null)}
         />
         <KpiTile
           label="Average risk"
           value={typeof data.avg_risk_score === 'number' ? String(Math.round(data.avg_risk_score)) : DASH}
           context={`0 to 100, ${population}`}
+          help={`Mean risk score of the scored cases, ${population}. Cases without a score are left out.`}
           testId="risk"
+          explain={explainSlot(
+            explainAverageRisk({
+              mean: data.avg_risk_score,
+              scoredCases: data.avg_risk_case_count,
+              population,
+            }),
+          )}
         />
       </KpiStrip>
 
@@ -1192,7 +1349,7 @@ function PerformanceTab({
       key: 'dwell',
       label: 'Dwell (p50)',
       block: lifecycle.dwell_minutes,
-      help: 'Median time from case creation to the first response. It is time to first response, not time to detect.',
+      help: 'Median time from case creation to the first response by a person. Automatic closes are not counted. It is time to first response, not time to detect.',
     },
   ];
 
@@ -1209,8 +1366,25 @@ function PerformanceTab({
               value={tile.value}
               context={tile.context}
               help={t.help}
+              explain={
+                t.block.available
+                  ? (numeral) => (
+                      <TimingExplain
+                        metric={t.key as 'mtta' | 'mttr' | 'dwell'}
+                        title={t.label}
+                        block={t.block}
+                        windowHours={hours}
+                        window={hours > 0 ? `the ${caption}` : 'all time'}
+                        byDecider={t.key === 'mttr' ? (lifecycle as { mttr_by_decider?: MttrByDecider }).mttr_by_decider : undefined}
+                      >
+                        {numeral}
+                      </TimingExplain>
+                    )
+                  : undefined
+              }
               goodDirection="down"
               delta={dv.show && typeof dv.value === 'number' ? { value: dv.value, label: dv.label, period: 'vs the previous window' } : undefined}
+              deltaExplain={chipSlot(t.cmp ? compareChipExplanation(compare?.[t.cmp], t.label, 'minutes', hours) : null)}
               testId={`timing-${t.key}`}
             />
           );
@@ -1218,7 +1392,9 @@ function PerformanceTab({
       </KpiStrip>
 
       <Panel title="Percentile distribution" caption={caption} padding="none" data-testid="performance-percentiles">
-        <Table aria-label="Lifecycle timing percentiles" containerClassName="pb-2">
+        {/* On a phone the six columns scroll sideways and no cell can take focus, so the
+            scroller is a named region a keyboard can focus (axe scrollable-region-focusable). */}
+        <Table aria-label="Lifecycle timing percentiles" scrollLabel="Lifecycle timing percentiles" containerClassName="pb-2">
             <TableHeader>
               <TableRow>
                 <TableHead density="compact" className="pl-4 xl:pl-5 3xl:pl-6">Interval</TableHead>
@@ -1261,32 +1437,103 @@ function PerformanceTab({
           value={ratioPct(quality.false_positive_rate)}
           context={`${fmtNumber(quality.false_positive_cases)} of ${fmtNumber(quality.verdicted_cases)} verdicted`}
           delta={deltaView(compare?.false_positive_rate)}
+          deltaExplanation={compareChipExplanation(compare?.false_positive_rate, 'FP rate', 'rate', hours, 'verdicted cases')}
           goodDirection="down"
+          explanation={explainKpiShare({
+            metric: 'fp_rate',
+            title: 'FP rate',
+            numerator: quality.false_positive_cases,
+            denominator: quality.verdicted_cases,
+            numeratorLabel: 'false positive verdicts',
+            denominatorLabel: 'verdicted cases',
+            window: hours > 0 ? `the ${caption}` : 'all time',
+            dividedBy: 'server',
+            tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
+            caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.'],
+          })}
         />
+        {/* The three shares over the agent-worked cohort (`quality.total_cases`, never
+            the posture `case_count`), explained like FP rate (numbers review). */}
         <QualityTile
           label="Incident yield"
           value={ratioPct(quality.alert_to_incident_ratio)}
           context={`${fmtNumber(quality.true_positive_cases)} true positives`}
           delta={deltaView(compare?.alert_to_incident_ratio)}
+          deltaExplanation={compareChipExplanation(compare?.alert_to_incident_ratio, 'Incident yield', 'rate', hours, 'cases')}
           goodDirection="none"
+          explanation={explainKpiShare({
+            metric: 'incident_yield',
+            title: 'Incident yield',
+            numerator: quality.true_positive_cases,
+            denominator: quality.total_cases,
+            numeratorLabel: 'true positive verdicts',
+            denominatorLabel: 'cases',
+            window: hours > 0 ? `the ${caption}` : 'all time',
+            dividedBy: 'server',
+            tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
+            caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.'],
+          })}
         />
         <QualityTile
           label="Escalation rate"
           value={ratioPct(quality.escalation_rate)}
           context={`${fmtNumber(quality.escalated_cases)} escalated`}
           delta={deltaView(compare?.escalation_rate)}
+          deltaExplanation={compareChipExplanation(compare?.escalation_rate, 'Escalation rate', 'rate', hours, 'cases')}
           goodDirection="down"
+          explanation={explainKpiShare({
+            metric: 'escalation_rate',
+            title: 'Escalation rate',
+            numerator: quality.escalated_cases,
+            denominator: quality.total_cases,
+            numeratorLabel: 'escalated cases',
+            denominatorLabel: 'cases',
+            window: hours > 0 ? `the ${caption}` : 'all time',
+            dividedBy: 'server',
+            tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
+            caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.', 'A case counts once if it was ever escalated.'],
+          })}
         />
         <QualityTile
           label="Containment"
           value={ratioPct(quality.containment_rate)}
           context={`${fmtNumber(quality.terminal_cases)} worked to close`}
+          explanation={explainKpiShare({
+            metric: 'containment_rate',
+            title: 'Containment',
+            numerator: quality.terminal_cases,
+            denominator: quality.total_cases,
+            numeratorLabel: 'resolved or closed cases',
+            denominatorLabel: 'cases',
+            window: hours > 0 ? `the ${caption}` : 'all time',
+            dividedBy: 'server',
+            tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
+            caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.'],
+          })}
         />
         <QualityTile
           label="Automation rate"
           value={ratioPct(quality.automation_rate)}
           context={`${fmtNumber(quality.auto_closed_cases)} closed by the agent`}
           delta={deltaView(compare?.automation_rate)}
+          deltaExplanation={compareChipExplanation(compare?.automation_rate, 'Automation rate', 'rate', hours, 'closed cases')}
+          explanation={explainKpiShare({
+            metric: 'automation_rate',
+            title: 'Automation rate',
+            numerator: quality.auto_closed_cases,
+            denominator: quality.terminal_cases,
+            numeratorLabel: 'closed by the AI agent',
+            denominatorLabel: 'agent-worked closes',
+            window: hours > 0 ? `the ${caption}` : 'all time',
+            dividedBy: 'server',
+            tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
+            caveats: ['Who closed a case is the last decider it records.'],
+          })}
         />
       </StripPanel>
 
@@ -1306,6 +1553,8 @@ function QualityTile({
   context,
   delta,
   goodDirection,
+  explanation,
+  deltaExplanation,
 }: {
   label: string;
   value: string;
@@ -1313,6 +1562,10 @@ function QualityTile({
   delta?: ReturnType<typeof deltaView>;
   /** Which direction is an improvement (drives the delta colour; the arrow follows the sign). */
   goodDirection?: KpiGoodDirection;
+  /** Round 16 (WP12): the share's arithmetic, on hover and click. */
+  explanation?: Explanation | null;
+  /** The change chip's arithmetic (FXD1). */
+  deltaExplanation?: Explanation | null;
 }) {
   return (
     <KpiTile
@@ -1320,6 +1573,8 @@ function QualityTile({
       value={value}
       context={context}
       goodDirection={goodDirection}
+      explain={explainSlot(explanation)}
+      deltaExplain={chipSlot(deltaExplanation ?? null)}
       delta={delta && delta.show && typeof delta.value === 'number' ? { value: delta.value, label: delta.label } : undefined}
     />
   );
@@ -1631,13 +1886,48 @@ function PostureTab({
       ) : sla?.enabled ? (
         <>
           <StripPanel title="SLA attainment" caption={caption} data-testid="posture-sla">
+            {/* Every figure explains itself (numbers review): Attainment reads its own
+                explanation on open, the same one the Executive board shows. */}
             <KpiTile
               label="Attainment"
               // null = nothing in the window could be scored: a dash, never "0%".
               value={ratioPct(typeof sla.attainment_pct === 'number' ? sla.attainment_pct / 100 : null)}
               context={typeof sla.attainment_pct === 'number' ? 'met their target' : sla.attainment_reason || 'not measured'}
+              explain={
+                typeof sla.attainment_pct === 'number'
+                  ? (numeral) => (
+                      <MetricExplain
+                        metric="sla_attainment"
+                        title="SLA attainment"
+                        windowHours={hours}
+                        initial={slaAttainmentInitial(
+                          ratioPct(sla.attainment_pct! / 100),
+                          hours > 0 ? `the ${caption}` : 'all time',
+                        )}
+                      >
+                        {numeral}
+                      </MetricExplain>
+                    )
+                  : undefined
+              }
             />
-            <KpiTile label="Evaluated" value={fmtNumber(sla.evaluated)} context="cases with a target" />
+            <KpiTile
+              label="Evaluated"
+              value={fmtNumber(sla.evaluated)}
+              context="cases with a target"
+              explain={explainSlot(
+                explainCount({
+                  metric: 'sla_evaluated',
+                  title: 'Evaluated',
+                  value: sla.evaluated,
+                  noun: 'cases',
+                  window: hours > 0 ? `the ${caption}` : 'all time',
+                  summary: `${fmtNumber(sla.evaluated ?? 0)} cases created in ${hours > 0 ? `the ${caption}` : 'all time'} have a priority with an SLA target.`,
+                  formula: 'count of cases whose priority has an SLA target',
+                  caveats: ['A case whose priority has no target, or no readable creation time, is not evaluated.'],
+                }),
+              )}
+            />
             <KpiTile
               label="Response breached"
               value={fmtNumber(sla.response_breached)}
@@ -1645,6 +1935,18 @@ function PostureTab({
               format={fmtNumber}
               accent="critical"
               context="past the response target"
+              explain={explainSlot(
+                explainCount({
+                  metric: 'sla_response_breached',
+                  title: 'Response breached',
+                  value: sla.response_breached,
+                  noun: 'cases',
+                  window: hours > 0 ? `the ${caption}` : 'all time',
+                  summary: `${fmtNumber(sla.response_breached ?? 0)} evaluated cases took longer than their response target.`,
+                  formula: 'count of evaluated cases whose first response came after the response target, or that still wait for one past it',
+                  caveats: ['A response stops the clock, so a late response stays late by the same amount.'],
+                }),
+              )}
             />
             <KpiTile
               label="Resolve breached"
@@ -1653,11 +1955,30 @@ function PostureTab({
               format={fmtNumber}
               accent="critical"
               context="past the resolve target"
+              explain={explainSlot(
+                explainCount({
+                  metric: 'sla_resolve_breached',
+                  title: 'Resolve breached',
+                  value: sla.resolve_breached,
+                  noun: 'cases',
+                  window: hours > 0 ? `the ${caption}` : 'all time',
+                  summary: `${fmtNumber(sla.resolve_breached ?? 0)} evaluated cases took longer than their resolve target.`,
+                  formula: 'count of evaluated cases resolved or closed after the resolve target, or still open past it',
+                  caveats: [],
+                }),
+              )}
             />
             <KpiTile
               label="At risk"
               value={fmtNumber((sla.response_at_risk ?? 0) + (sla.resolve_at_risk ?? 0))}
               context="close to a target"
+              explain={explainSlot(
+                explainSlaAtRisk({
+                  responseAtRisk: sla.response_at_risk,
+                  resolveAtRisk: sla.resolve_at_risk,
+                  window: hours > 0 ? `the ${caption}` : 'all time',
+                }),
+              )}
             />
           </StripPanel>
           <BreachingPanel sla={sla} caption={caption} onNavigate={onNavigate} />

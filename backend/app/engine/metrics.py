@@ -3,7 +3,7 @@
 Pure aggregation functions over a list of ``Case`` objects (plus the existing
 usage/cost ledger summary, merged by the route). No new storage, no LLM — these
 power the analytics UI: verdict mix, status breakdown, persona and runbook usage,
-average risk, a coarse MTTR, a per-day case trend, and the AI-decision feedback
+average risk, the operational MTTR, a per-day case trend, and the AI-decision feedback
 quality roll-up. Everything is defensive: malformed timestamps are skipped, never
 raised, so a dashboard query can't fail a request.
 
@@ -30,7 +30,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable, NamedTuple
 
 from ..constants import (
     SEVERITY_BANDS,
@@ -166,9 +166,13 @@ def feedback_stats(cases: list[Case]) -> dict:
             entries.extend(own)
     rated_zero = {f"{name}_rated": 0 for name in _FEEDBACK_SUBSCORES}
     if not entries:
+        # Round 16 (WP12, research explainability D10): nothing was graded, so there is
+        # no agreement rate. ``None``, never ``0.0``: a 0% agreement would claim that
+        # every graded case disagreed.
         return {
-            "graded_cases": 0, "feedback_count": 0, "agreement_rate": 0.0,
+            "graded_cases": 0, "feedback_count": 0, "agreement_rate": None,
             "agreement_signals": 0,
+            "agreement_agreed": 0, "agreement_partial": 0, "agreement_disagreed": 0,
             "avg_accuracy": 0.0, "avg_reasoning_quality": 0.0,
             "avg_action_appropriateness": 0.0, "time_saved_minutes": 0,
             "outcome_distribution": {},
@@ -191,6 +195,12 @@ def feedback_stats(cases: list[Case]) -> dict:
         "feedback_count": n,
         "agreement_signals": len(signals),
         "agreement_rate": round((agree + partial) / len(signals), 4) if signals else None,
+        # Round 16 (WP12, D10): the rate's population, so an explanation can print the
+        # arithmetic: (agreed + 0.5 x partial) / agreement_signals, over grade ENTRIES
+        # with an assessment (not graded cases).
+        "agreement_agreed": agree,
+        "agreement_partial": sum(1 for a in signals if a == "partial"),
+        "agreement_disagreed": sum(1 for a in signals if a == "disagree"),
         **averages,
         "time_saved_minutes": int(sum(e.time_saved_minutes for e in entries)),
         "outcome_distribution": dict(Counter(e.actual_outcome for e in entries if e.actual_outcome)),
@@ -338,6 +348,9 @@ def compute_metrics(
 
     risks = [c.risk_score for c in cases if isinstance(c.risk_score, (int, float))]
     avg_risk = round(sum(risks) / len(risks), 1) if risks else 0.0
+    # How many scored cases the mean divides by (Round 16 numbers review): the Console
+    # explains Average risk as "sum / N", and N was nowhere on the wire. Advisory only.
+    avg_risk_case_count = len(risks)
 
     # Active Risk Index: the mean deterministic risk_score over LIVE (non-terminal)
     # cases only — the single "how hot is the board right now?" instrument (the UI's
@@ -353,13 +366,22 @@ def compute_metrics(
     active_risk_index = round(sum(active_risks) / len(active_risks), 1) if active_risks else 0.0
     active_risk_case_count = len(active_risks)
 
-    # Coarse MTTR: resolution latency of CLOSED cases (updated_at - created_at).
+    # Operational MTTR (Round 16 B59): the mean time from creation to the FIRST
+    # terminal transition, over every terminal case (resolved and closed). It is the
+    # same per-case clock as the lifecycle MTTR (``lifecycle_intervals``), so the two
+    # agree on the same cases. A later edit (a comment, a tag, a grade) moves
+    # ``updated_at`` but never this figure, and a reopened case is not resolved.
+    # Round 16 (WP12, research explainability D3 and R9): the same samples also give the
+    # lifecycle stat block (``mttr_lifecycle``: p50, p90, mean, max, count), the figure
+    # the Analytics MTTR tile shows, and its split by decider (``mttr_by_decider``). The
+    # mean ``mttr_minutes`` stays on the wire for one release.
     resolution_minutes: list[float] = []
+    resolution_deciders: list[str] = []
     for c in cases:
-        if c.status == CaseStatus.CLOSED:
-            start, end = _parse_iso(c.created_at), _parse_iso(c.updated_at)
-            if start and end and end >= start:
-                resolution_minutes.append((end - start).total_seconds() / 60.0)
+        start, end = _created_dt(c), _resolved_dt(c)
+        if start and end and end >= start:
+            resolution_minutes.append((end - start).total_seconds() / 60.0)
+            resolution_deciders.append(_decider_key(c))
     mttr = round(sum(resolution_minutes) / len(resolution_minutes), 1) if resolution_minutes else 0.0
 
     # Per-day created trend (UTC date buckets) for the last ``trend_days`` days.
@@ -399,10 +421,13 @@ def compute_metrics(
         "runbook_usage": dict(by_runbook),
         "playbook_usage": dict(by_playbook),
         "avg_risk_score": avg_risk,
+        "avg_risk_case_count": avg_risk_case_count,
         "active_risk_index": active_risk_index,
         "active_risk_case_count": active_risk_case_count,
         "mttr_minutes": mttr,
         "resolved_count": len(resolution_minutes),
+        "mttr_lifecycle": _stat_block(resolution_minutes, missing_reason=LIFECYCLE_MISSING["mttr"]),
+        "mttr_by_decider": mttr_by_decider(resolution_minutes, resolution_deciders),
         "cases_per_day": [{"date": d, "count": n} for d, n in trend],
         "burndown": burndown,
         "timing_trend": timing_trend(cases, trend_days=trend_days),
@@ -586,11 +611,99 @@ def lifecycle_intervals(
     ``webui/src/soc/pages/posture.format.ts`` (``LIFECYCLE_METRICS``). NOTE (#3): none of
     these is EVER read by ``case_manager.decide()`` — they are read-time reporting only.
     MTTD is now a real detection-latency measurement (we store the first-event instant on
-    the case); dwell remains time-to-first-response (a distinct human-response metric)."""
-    mtta: list[float] = []
-    mttr: list[float] = []
-    dwell: list[float] = []
-    mttd: list[float] = []
+    the case); dwell remains time-to-first-response (a distinct human-response metric).
+
+    Round 16 (WP12): the samples come from :func:`lifecycle_samples`, the one loop the
+    metric explanations (``GET /api/metrics/explain``) also read, so an explained median
+    is always the median shown. ``mttr_by_decider`` (additive) splits the MTTR samples by
+    the case's recorded decider (see :func:`mttr_by_decider`); its counts sum to
+    ``mttr_minutes.count``."""
+    samples = lifecycle_samples(cases, _timings=_timings)
+    return {
+        "mtta_minutes": _stat_block(samples["mtta"], missing_reason=LIFECYCLE_MISSING["mtta"]),
+        "mttr_minutes": _stat_block(samples["mttr"], missing_reason=LIFECYCLE_MISSING["mttr"]),
+        "dwell_minutes": _stat_block(samples["dwell"], missing_reason=LIFECYCLE_MISSING["dwell"]),
+        "mttd_minutes": _stat_block(samples["mttd"], missing_reason=LIFECYCLE_MISSING["mttd"]),
+        "mttr_by_decider": mttr_by_decider(samples["mttr"], samples["mttr_deciders"]),
+    }
+
+
+#: Why a lifecycle block is not measured, per clock (the ``_stat_block`` reasons).
+LIFECYCLE_MISSING: dict[str, str] = {
+    "mtta": "no case has been acknowledged yet",
+    "mttr": "no case has been resolved/closed yet",
+    # Dwell counts a person's response only: an automatic close is not one.
+    "dwell": "no case has received a first response from a person yet",
+    "mttd": "detection latency not available yet",
+}
+
+#: The deciders an MTTR sample is split by (Round 16 WP12, research explainability D3):
+#: the case's recorded ``decision_by`` (agent, analyst, analyst_policy, system), and
+#: ``unrecorded`` for a case that records none, so the split always sums to the total.
+MTTR_DECIDERS: tuple[str, ...] = ("agent", "analyst", "analyst_policy", "system", "unrecorded")
+
+
+class IntervalSample(NamedTuple):
+    """One lifecycle sample with the records behind it (``detail=True``)."""
+
+    minutes: float
+    case: Case
+    start: datetime | None
+    end: datetime
+    start_anchor: str
+    end_anchor: str
+
+
+def _decider_key(case: Case) -> str:
+    """The case's recorded decider as an ``MTTR_DECIDERS`` key. This is the LAST
+    recorded decider (see the caveat in :func:`quality_metrics`), not proof of who
+    performed the close."""
+    raw = getattr(case, "decision_by", None)
+    value = str(getattr(raw, "value", raw) or "").strip().lower()
+    return value if value in MTTR_DECIDERS[:-1] else "unrecorded"
+
+
+def mttr_by_decider(minutes: list[Any], deciders: list[str]) -> dict[str, Any]:
+    """The MTTR samples split by decider: one ``_stat_block`` per ``MTTR_DECIDERS`` key,
+    over the samples whose case records that decider. ``minutes`` and ``deciders`` are
+    parallel lists (floats or :class:`IntervalSample`); the counts sum to the total."""
+    groups: dict[str, list[float]] = {key: [] for key in MTTR_DECIDERS}
+    for value, decider in zip(minutes, deciders):
+        number = value.minutes if isinstance(value, IntervalSample) else value
+        groups[decider if decider in groups else "unrecorded"].append(float(number))
+    return {
+        key: _stat_block(values, missing_reason="no case in this group was resolved or closed")
+        for key, values in groups.items()
+    }
+
+
+def _from_millis(value: float) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def lifecycle_samples(
+    cases: list[Case],
+    *,
+    _timings: dict[int, _CaseTimings] | None = None,
+    detail: bool = False,
+) -> dict[str, list[Any]]:
+    """The samples behind :func:`lifecycle_intervals`, in one pass over ``cases``.
+
+    Returns ``{"mtta", "mttr", "dwell", "mttd": [minutes, ...], "mttr_deciders":
+    [decider, ...]}`` (``mttr_deciders`` is parallel to ``mttr``). With ``detail`` each
+    sample is an :class:`IntervalSample` naming its case, its start and end instants
+    and the record each came from, for the metric explanations; without it each sample
+    is the plain float, so the posture rollup pays nothing extra. The minutes are the
+    same floats either way (one computation), so an explanation's median is the
+    rollup's median. Pure and advisory (#3)."""
+    mtta: list[Any] = []
+    mttr: list[Any] = []
+    dwell: list[Any] = []
+    mttd: list[Any] = []
+    mttr_deciders: list[str] = []
 
     for case in cases:
         timings = _timings_for(case, _timings)
@@ -603,30 +716,49 @@ def lifecycle_intervals(
             if created is not None:
                 created_ms = created.timestamp() * 1000.0
                 if created_ms >= fs:
-                    mttd.append((created_ms - fs) / 60000.0)
+                    minutes = (created_ms - fs) / 60000.0
+                    mttd.append(
+                        IntervalSample(minutes, case, _from_millis(fs), created,
+                                       "first_seen_millis", "created_at")
+                        if detail else minutes
+                    )
 
         start = timings.created
         if start is None:
             continue
+        start_anchor = ""
+        if detail:
+            start_anchor = "detected_at" if _as_dt(case.detected_at) is not None else "created_at"
 
         ack = timings.ack_anchor or timings.ack_human
         if ack and ack >= start:
-            mtta.append((ack - start).total_seconds() / 60.0)
+            minutes = (ack - start).total_seconds() / 60.0
+            mtta.append(
+                IntervalSample(minutes, case, start, ack, start_anchor,
+                               "acknowledged_at" if timings.ack_anchor else "status_history")
+                if detail else minutes
+            )
 
         resp = timings.resp_anchor or timings.resp_human
         if resp and resp >= start:
-            dwell.append((resp - start).total_seconds() / 60.0)
+            minutes = (resp - start).total_seconds() / 60.0
+            dwell.append(
+                IntervalSample(minutes, case, start, resp, start_anchor,
+                               "first_response_at" if timings.resp_anchor else "status_history")
+                if detail else minutes
+            )
 
         end = _resolved_dt(case, timings)  # guarded: a reopened (currently-open) case isn't resolved
         if end and end >= start:
-            mttr.append((end - start).total_seconds() / 60.0)
+            minutes = (end - start).total_seconds() / 60.0
+            mttr.append(
+                IntervalSample(minutes, case, start, end, start_anchor,
+                               "status_history" if timings.terminal_any is not None else "updated_at")
+                if detail else minutes
+            )
+            mttr_deciders.append(_decider_key(case))
 
-    return {
-        "mtta_minutes": _stat_block(mtta, missing_reason="no case has been acknowledged yet"),
-        "mttr_minutes": _stat_block(mttr, missing_reason="no case has been resolved/closed yet"),
-        "dwell_minutes": _stat_block(dwell, missing_reason="no case has received a first response yet"),
-        "mttd_minutes": _stat_block(mttd, missing_reason="detection latency not available yet"),
-    }
+    return {"mtta": mtta, "mttr": mttr, "dwell": dwell, "mttd": mttd, "mttr_deciders": mttr_deciders}
 
 
 def timing_trend(cases: list[Case], *, trend_days: int = 14) -> list[dict[str, Any]]:
@@ -894,6 +1026,184 @@ def _sla_priority(case: Case, prefs: Any) -> str:
         return ""
 
 
+#: A clock that still runs is "at risk" once this share of its target has passed (the
+#: explain contract's ``sla.at_risk_fraction``).
+SLA_AT_RISK_FRACTION = 0.8
+
+
+@dataclass(frozen=True)
+class SlaClockReading:
+    """One SLA clock of one case at ``now`` (see :func:`sla_case_reading`).
+
+    ``stop`` is the instant the clock stopped, or ``None`` while it still runs; then
+    ``running`` is true and ``elapsed_minutes`` runs to ``now``. ``stop_source`` names
+    the record that stopped it:
+
+    * response clock: ``first_response_at``, ``acknowledged_at`` or
+      ``status_history`` (the first human status move into a response status,
+      :func:`first_human_response`), or ``terminal`` (the case was closed or
+      resolved before any human response, so the clock stops at that instant);
+    * resolution clock: ``status_history`` (the first terminal transition) or
+      ``updated_at`` (a terminal case with no recorded transition).
+
+    ``state`` is ``breached`` (over the target, running or stopped), ``at_risk``
+    (still running and at least :data:`SLA_AT_RISK_FRACTION` of the target has
+    passed) or ``ok``. ``elapsed_minutes`` is unrounded; callers round for display."""
+
+    clock: str  # "response" | "resolution"
+    target_minutes: float
+    start: datetime
+    due_at: datetime
+    stop: datetime | None
+    stop_source: str
+    elapsed_minutes: float
+    running: bool
+    state: str  # "breached" | "at_risk" | "ok"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "clock": self.clock,
+            "target_minutes": self.target_minutes,
+            "start": self.start.isoformat(),
+            "due_at": self.due_at.isoformat(),
+            "stop": self.stop.isoformat() if self.stop is not None else None,
+            "stop_source": self.stop_source,
+            "elapsed_minutes": self.elapsed_minutes,
+            "running": self.running,
+            "state": self.state,
+        }
+
+
+@dataclass(frozen=True)
+class SlaCaseReading:
+    """Both SLA clocks of one case (see :func:`sla_case_reading`). ``start`` is
+    ``None`` when the case has no readable creation time (then both clocks are
+    ``None``: it cannot be scored). A clock is ``None`` when its target is not set,
+    or when the case is terminal but no terminal instant can be read: a closed case
+    never runs a live clock."""
+
+    start: datetime | None
+    start_source: str  # "detected_at" | "created_at" | ""
+    terminal: bool
+    response: SlaClockReading | None
+    resolution: SlaClockReading | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "start": self.start.isoformat() if self.start is not None else None,
+            "start_source": self.start_source,
+            "terminal": self.terminal,
+            "response": self.response.as_dict() if self.response is not None else None,
+            "resolution": self.resolution.as_dict() if self.resolution is not None else None,
+        }
+
+
+def first_human_response(timings: _CaseTimings) -> tuple[datetime | None, str]:
+    """The first human response to a case and the record that holds it: the earliest
+    of ``first_response_at``, ``acknowledged_at`` (an acknowledgement stops the clock
+    even when the case was already investigating, so no status move was recorded)
+    and the first status move a person made into a response status. A system or
+    agent move never counts (audit #9): an auto-escalation at creation is not a
+    response. ``(None, "")`` when no person has responded. Shared by
+    :func:`sla_case_reading` and the Standup SLA aging, so the two cannot drift."""
+    best: datetime | None = None
+    source = ""
+    for value, name in (
+        (timings.resp_anchor, "first_response_at"),
+        (timings.ack_anchor, "acknowledged_at"),
+        (timings.resp_human, "status_history"),
+    ):
+        if value is not None and (best is None or value < best):
+            best, source = value, name
+    return best, source
+
+
+def _sla_clock(
+    clock: str, target_minutes: float, start: datetime, stop: datetime | None,
+    stop_source: str, now: datetime,
+) -> SlaClockReading:
+    running = stop is None
+    elapsed = ((stop or now) - start).total_seconds() / 60.0
+    if elapsed > target_minutes:
+        state = "breached"
+    elif running and elapsed >= target_minutes * SLA_AT_RISK_FRACTION:
+        state = "at_risk"
+    else:
+        state = "ok"
+    try:
+        due_at = start + timedelta(minutes=target_minutes)
+    except (OverflowError, ValueError):
+        # A target so large its due instant is past the last representable time
+        # (SlaTarget has no upper bound): the clock is simply never due.
+        due_at = datetime.max.replace(tzinfo=timezone.utc)
+    return SlaClockReading(
+        clock=clock, target_minutes=target_minutes, start=start,
+        due_at=due_at, stop=stop,
+        stop_source=stop_source if stop is not None else "", elapsed_minutes=elapsed,
+        running=running, state=state,
+    )
+
+
+def sla_case_reading(
+    case: Case,
+    target: Any,
+    timings: _CaseTimings | None,
+    *,
+    now: datetime,
+) -> SlaCaseReading:
+    """The per-case SLA clock rules, in one pure function (Round 16 B26, with B58).
+    :func:`sla_metrics` counts its readings; the case-level SLA reading
+    (``engine/sla_reading.py``) reuses it, so the two can never disagree.
+
+    ``target`` is the case's ``SlaTarget`` (``response_minutes``, ``resolve_minutes``;
+    a value of 0 or less means no target for that clock). ``timings`` is the case's
+    :class:`_CaseTimings` (``None`` builds it). Both clocks start at the detection
+    instant when recorded, else at creation.
+
+    * **Response.** Stops at the first human response (:func:`first_human_response`).
+      A terminal case stops it at its terminal instant at the latest: a case the
+      agent closed before anyone responded is no longer awaiting a response, so the
+      clock stops at the close. An auto-close inside the target is met; one after
+      the target is a late response of fixed size that never grows. A genuinely
+      open, unresponded case keeps the live clock.
+    * **Resolution.** Stops at the first terminal transition (``updated_at`` for a
+      terminal case with no recorded transition), only while the case is terminal
+      now: a reopened case runs its clock again (the :func:`_resolved_dt` rule).
+    * **State.** Breached when the elapsed time is over the target; at risk when the
+      clock still runs and at least :data:`SLA_AT_RISK_FRACTION` of the target has
+      passed; otherwise ok.
+
+    Pure and advisory (#3): it reads the case, never changes it, and never feeds
+    ``decide()``. Never raises on a malformed case."""
+    timings = timings if timings is not None else _CaseTimings(case)
+    terminal = (case.status.value if case.status else "") in _TERMINAL
+    start = timings.created
+    if start is None:
+        return SlaCaseReading(start=None, start_source="", terminal=terminal, response=None, resolution=None)
+    start_source = "detected_at" if _as_dt(case.detected_at) is not None else "created_at"
+    end = _resolved_dt(case, timings)  # None unless the case is terminal now
+    end_source = "status_history" if timings.terminal_any is not None else "updated_at"
+
+    response: SlaClockReading | None = None
+    response_minutes = float(getattr(target, "response_minutes", 0) or 0)
+    if response_minutes > 0:
+        stop, source = first_human_response(timings)
+        if terminal and end is not None and (stop is None or end < stop):
+            stop, source = end, "terminal"
+        if stop is not None or not terminal:
+            response = _sla_clock("response", response_minutes, start, stop, source, now)
+
+    resolution: SlaClockReading | None = None
+    resolve_minutes = float(getattr(target, "resolve_minutes", 0) or 0)
+    if resolve_minutes > 0 and (end is not None or not terminal):
+        resolution = _sla_clock("resolution", resolve_minutes, start, end, end_source, now)
+
+    return SlaCaseReading(
+        start=start, start_source=start_source, terminal=terminal,
+        response=response, resolution=resolution,
+    )
+
+
 def sla_metrics(
     cases: list[Case],
     sla_policy: Any,
@@ -908,7 +1218,9 @@ def sla_metrics(
     time against the target for its P-level and classify it breached / at-risk (>=80%
     of target, not yet met) / ok. SLA classification NEVER feeds ``decide()``. Returns
     ``enabled:false`` (untouched today) when the policy is off so the existing
-    behaviour is byte-identical.
+    behaviour is byte-identical. Each case is read by :func:`sla_case_reading` (the
+    one home of the clock rules), so a case the agent closed stops its response clock
+    at the close and never turns into a breach as time passes.
 
     The P-level is the persisted ``priority_level`` or, with ``prefs`` (the posture
     route passes them), the read-time ITIL projection an analyst sees on the case (see
@@ -919,9 +1231,10 @@ def sla_metrics(
     if not enabled or not targets:
         return {"enabled": False, "evaluated": 0, "reason": "SLA policy disabled or no targets"}
 
-    AT_RISK_FRACTION = 0.8
-    response_breached = response_at_risk = 0
-    resolve_breached = resolve_at_risk = 0
+    tally = {
+        ("response", "breached"): 0, ("response", "at_risk"): 0,
+        ("resolution", "breached"): 0, ("resolution", "at_risk"): 0,
+    }
     evaluated = 0
     no_target = no_clock = 0
     breaching: list[dict[str, Any]] = []
@@ -932,9 +1245,10 @@ def sla_metrics(
         if target is None:
             no_target += 1
             continue  # no target for this (or no) priority → not SLA-scored
-        timings = _timings_for(c, _timings)
-        start = timings.created
-        if start is None:
+        # The per-case clock rules (response anchor, terminal stop, resolution
+        # fallback, at-risk) live in ``sla_case_reading`` (Round 16 B26).
+        reading = sla_case_reading(c, target, _timings_for(c, _timings), now=now)
+        if reading.start is None:
             # Unparseable created_at → no clock to measure. Exclude from the
             # attainment denominator (matching the guard-before-count idiom used
             # everywhere else in this file) so a corrupted doc can neither inflate
@@ -942,40 +1256,17 @@ def sla_metrics(
             no_clock += 1
             continue
         evaluated += 1
-
-        # Response clock: created → first response (status_history / anchor), else now.
-        resp_at = timings.resp_anchor or timings.resp_human
-        resp_target = float(getattr(target, "response_minutes", 0) or 0)
-        if resp_target > 0:
-            elapsed = ((resp_at or now) - start).total_seconds() / 60.0
-            if resp_at is None:  # still unresponded → live clock
-                if elapsed > resp_target:
-                    response_breached += 1
-                    breaching.append(_breach_row(c, "response", elapsed, resp_target, "breached", prio))
-                elif elapsed >= resp_target * AT_RISK_FRACTION:
-                    response_at_risk += 1
-                    breaching.append(_breach_row(c, "response", elapsed, resp_target, "at_risk", prio))
-            elif elapsed > resp_target:  # responded, but late
-                response_breached += 1
-                breaching.append(_breach_row(c, "response", elapsed, resp_target, "breached", prio))
-
-        # Resolution clock: created → terminal transition, else live to now.
-        end = timings.terminal_any
-        if end is None and (c.status.value if c.status else "") in _TERMINAL:
-            end = timings.updated_iso
-        resolve_target = float(getattr(target, "resolve_minutes", 0) or 0)
-        if resolve_target > 0:
-            elapsed = ((end or now) - start).total_seconds() / 60.0
-            if end is None:  # still open → live clock
-                if elapsed > resolve_target:
-                    resolve_breached += 1
-                    breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "breached", prio))
-                elif elapsed >= resolve_target * AT_RISK_FRACTION:
-                    resolve_at_risk += 1
-                    breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "at_risk", prio))
-            elif elapsed > resolve_target:  # resolved, but late
-                resolve_breached += 1
-                breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "breached", prio))
+        for clock in (reading.response, reading.resolution):
+            if clock is None or clock.state == "ok":
+                continue
+            tally[(clock.clock, clock.state)] += 1
+            breaching.append(
+                _breach_row(c, clock.clock, clock.elapsed_minutes, clock.target_minutes, clock.state, prio)
+            )
+    response_breached = tally[("response", "breached")]
+    response_at_risk = tally[("response", "at_risk")]
+    resolve_breached = tally[("resolution", "breached")]
+    resolve_at_risk = tally[("resolution", "at_risk")]
 
     met = evaluated - len({b["case_id"] for b in breaching if b["state"] == "breached"})
     return {
@@ -1077,6 +1368,21 @@ def _delta_pct(value: Any, prev: Any) -> Any:
 
 def _compare_block(curr: Any, prev: Any) -> dict[str, Any]:
     return {"value": curr, "prev": prev, "delta_pct": _delta_pct(curr, prev)}
+
+
+def _rate_compare_block(
+    quality: dict[str, Any], prev_quality: dict[str, Any], rate: str, numerator: str, denominator: str,
+) -> dict[str, Any]:
+    """A rate's :func:`_compare_block` with the counts behind both windows (additive,
+    Round 16 FXF), so a change chip can print "39 of 56" and "10 of 30" beside the two
+    rates it divides."""
+    return {
+        **_compare_block(quality[rate], prev_quality[rate]),
+        "numerator": int(quality[numerator]),
+        "denominator": int(quality[denominator]),
+        "prev_numerator": int(prev_quality[numerator]),
+        "prev_denominator": int(prev_quality[denominator]),
+    }
 
 
 def truncation_marker(
@@ -1426,20 +1732,20 @@ def posture_metrics(
         rollup["compare"] = {
             "mode": "prev",
             "case_count": _compare_block(len(current), len(prev_window)),
-            "alert_to_incident_ratio": _compare_block(
-                quality["alert_to_incident_ratio"], prev_quality["alert_to_incident_ratio"]
+            "alert_to_incident_ratio": _rate_compare_block(
+                quality, prev_quality, "alert_to_incident_ratio", "true_positive_cases", "total_cases",
             ),
-            "false_positive_rate": _compare_block(
-                quality["false_positive_rate"], prev_quality["false_positive_rate"]
+            "false_positive_rate": _rate_compare_block(
+                quality, prev_quality, "false_positive_rate", "false_positive_cases", "verdicted_cases",
             ),
             "analyst_confirmed_fp": _compare_block(
                 quality["analyst_confirmed_fp"], prev_quality["analyst_confirmed_fp"]
             ),
-            "escalation_rate": _compare_block(
-                quality["escalation_rate"], prev_quality["escalation_rate"]
+            "escalation_rate": _rate_compare_block(
+                quality, prev_quality, "escalation_rate", "escalated_cases", "total_cases",
             ),
-            "automation_rate": _compare_block(
-                quality["automation_rate"], prev_quality["automation_rate"]
+            "automation_rate": _rate_compare_block(
+                quality, prev_quality, "automation_rate", "auto_closed_cases", "terminal_cases",
             ),
             "mttr_p50": _compare_block(
                 lifecycle["mttr_minutes"]["p50"], prev_life["mttr_minutes"]["p50"]
@@ -1450,6 +1756,285 @@ def posture_metrics(
         }
 
     return rollup
+
+
+# --------------------------------------------------------------------------- #
+# Metric explanations (Round 16 WP12; research explainability D-API-4, R8, R9).
+#
+# ``GET /api/metrics/explain`` lists the cases behind one dashboard figure so a reader
+# can cross-check it. Every figure here is computed by the SAME code as the figure it
+# explains (the posture window filter, ``lifecycle_samples``, ``_stat_block``,
+# ``sla_case_reading``), so an explained median is the median shown. Ids, enums and
+# our own numbers only (#7); pure and advisory (#3).
+# --------------------------------------------------------------------------- #
+
+#: The figures the explain route answers for.
+EXPLAIN_METRICS: tuple[str, ...] = (
+    "mtta", "mttr", "dwell", "mttd", "active_risk_index", "fp_rate", "sla_attainment",
+)
+#: The timing figures and the lifecycle block each one is.
+EXPLAIN_TIMINGS: dict[str, str] = {
+    "mtta": "mtta_minutes", "mttr": "mttr_minutes", "dwell": "dwell_minutes", "mttd": "mttd_minutes",
+}
+#: The most sample rows one explanation returns.
+EXPLAIN_MAX_SAMPLES = 200
+
+_EXPLAIN_POPULATION: dict[str, str] = {
+    "mtta": "Cases created in {window} that a person acknowledged, or moved to investigating, escalated or on hold.",
+    "mttr": "Cases created in {window} that are resolved or closed now.",
+    "dwell": (
+        "Cases created in {window} that a person responded to: acknowledged, or moved to "
+        "investigating, escalated, on hold, resolved or closed. Automatic and analyst rule "
+        "policy closes are not counted."
+    ),
+    "mttd": "Cases created in {window} whose first event time is recorded.",
+    "active_risk_index": "Every case that is not resolved or closed, all time.",
+    "fp_rate": "Cases created in {window} with an AI verdict, without the cases an analyst rule policy closed.",
+    "sla_attainment": "Cases created in {window} whose priority has an SLA target.",
+}
+
+
+def _window_words(window_hours: int) -> str:
+    if window_hours <= 0:
+        return "all time"
+    if window_hours % 24 == 0 and window_hours > 48:
+        return f"the last {window_hours // 24} days"
+    return f"the last {window_hours} hours"
+
+
+def _iso_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _case_ref(case: Case) -> dict[str, Any]:
+    return {
+        "case_id": case.case_id,
+        "case_number": case.case_number or case.case_id,
+        "status": case.status.value if case.status else "",
+    }
+
+
+def _select_rows(rows: list[Any], *, max_samples: int, centre_rank: float | None) -> tuple[list[Any], int]:
+    """At most ``max_samples`` rows and the rank of the first one. With more rows than
+    that, a timing explanation keeps the run centred on the median rank (so the two
+    values the median interpolates between are always listed) and the others keep the
+    first rows of their order."""
+    if len(rows) <= max_samples:
+        return rows, 0
+    if centre_rank is None:
+        return rows[:max_samples], 0
+    start = int(math.floor(centre_rank)) - max_samples // 2 + 1
+    start = max(0, min(start, len(rows) - max_samples))
+    return rows[start:start + max_samples], start
+
+
+def _sample_payload(
+    rows: list[Any], cases_of: Callable[[Any], Case], visible: Callable[[Case], bool] | None,
+    *, max_samples: int, centre: bool,
+) -> dict[str, Any]:
+    shown = [r for r in rows if visible is None or visible(cases_of(r))]
+    chosen, offset = _select_rows(
+        shown, max_samples=max_samples, centre_rank=(0.5 * (len(shown) - 1)) if centre and shown else None,
+    )
+    return {
+        "chosen": chosen,
+        "sample_count": len(rows),
+        "visible_count": len(shown),
+        "hidden_by_scope": len(rows) - len(shown),
+        "samples_offset": offset,
+        "samples_truncated": len(chosen) < len(shown),
+    }
+
+
+def explain_metric(
+    cases: list[Case],
+    metric: str,
+    *,
+    window_hours: int = 24,
+    now: datetime | None = None,
+    sla_policy: Any = None,
+    prefs: Any = None,
+    visible: Callable[[Case], bool] | None = None,
+    max_samples: int = EXPLAIN_MAX_SAMPLES,
+) -> dict[str, Any]:
+    """The explanation of one dashboard figure over ``cases`` (the route's population).
+
+    * ``mtta``, ``mttr``, ``dwell``, ``mttd``: the posture lifecycle block for the window
+      (``stat``: p50, p90, mean, max, count) and its samples sorted by minutes, each
+      naming its case, start and end instants and the record each came from. With more
+      than ``max_samples`` samples the run around the median rank is listed and
+      ``samples_offset`` is the rank of its first row. ``mttr`` adds ``by_decider``.
+    * ``active_risk_index``: the mean risk score of every case that is not resolved or
+      closed (``GET /api/metrics``), with its sum and count; rows by risk, highest first.
+    * ``fp_rate``: false-positive verdicts over verdicted cases (posture ``quality``),
+      analyst-policy closes left out; rows are the verdicted cases, the counted ones first.
+    * ``sla_attainment``: met over evaluated (posture ``sla``); rows are the evaluated
+      cases, breached first.
+
+    ``visible`` (optional) says which cases the caller may see (object scope); a hidden
+    case still counts in the figure and in ``sample_count`` but is left out of the rows,
+    and ``hidden_by_scope`` says how many were. Pure; never raises on a malformed case."""
+    now = now or datetime.now(timezone.utc)
+    wh = max(0, int(window_hours))
+    if metric not in EXPLAIN_METRICS:
+        raise ValueError(f"unknown metric {metric!r}")
+    window = "all time" if metric == "active_risk_index" else _window_words(wh)
+    base: dict[str, Any] = {
+        "metric": metric,
+        "window_hours": 0 if metric == "active_risk_index" else wh,
+        "window": window,
+        "generated_at": now.isoformat(),
+        "population": _EXPLAIN_POPULATION[metric].format(window=window),
+    }
+    timings: dict[int, _CaseTimings] = {}
+    current = cases if metric == "active_risk_index" else _window_filter(
+        cases, window_hours=wh, now=now, _timings=timings,
+    )
+    base["population_size"] = len(current)
+
+    if metric in EXPLAIN_TIMINGS:
+        samples = lifecycle_samples(current, _timings=timings, detail=True)[metric]
+        block = _stat_block([s.minutes for s in samples], missing_reason=LIFECYCLE_MISSING[metric])
+        ordered = sorted(samples, key=lambda s: (s.minutes, s.case.case_id))
+        picked = _sample_payload(ordered, lambda s: s.case, visible, max_samples=max_samples, centre=True)
+        rows = [
+            {
+                **_case_ref(s.case),
+                "value": round(s.minutes, 4),
+                "minutes": round(s.minutes, 4),
+                "start_at": _iso_or_none(s.start),
+                "end_at": _iso_or_none(s.end),
+                "start_anchor": s.start_anchor,
+                "anchor": s.end_anchor,
+                "decided_by": _decider_key(s.case),
+            }
+            for s in picked.pop("chosen")
+        ]
+        out = {
+            **base, "kind": "timing", "unit": "minutes", "headline": "p50",
+            "value": block["p50"], "available": block["available"], "reason": block["reason"],
+            "stat": block, **picked, "samples": rows, "samples_order": "minutes_ascending",
+        }
+        if metric == "mttr":
+            out["by_decider"] = mttr_by_decider(samples, [_decider_key(s.case) for s in samples])
+        return out
+
+    if metric == "active_risk_index":
+        active = [
+            c for c in current
+            if isinstance(c.risk_score, (int, float))
+            and (c.status.value if c.status else "") not in TERMINAL_CASE_STATUSES
+        ]
+        total = sum(float(c.risk_score) for c in active)
+        count = len(active)
+        ordered = sorted(active, key=lambda c: (-float(c.risk_score), c.case_id))
+        picked = _sample_payload(ordered, lambda c: c, visible, max_samples=max_samples, centre=False)
+        rows = [{**_case_ref(c), "value": round(float(c.risk_score), 2)} for c in picked.pop("chosen")]
+        return {
+            **base, "kind": "mean", "unit": "score", "headline": "mean",
+            "value": round(total / count, 1) if count else None,
+            "available": bool(count),
+            "reason": "" if count else "no case is open, so there is no index",
+            "numerator": round(total, 2), "denominator": count,
+            **picked, "samples": rows, "samples_order": "value_descending",
+        }
+
+    if metric == "fp_rate":
+        agent_worked = [c for c in current if not is_policy_closed(c)]
+        verdicted = [c for c in agent_worked if c.verdict is not None]
+        fp = sum(1 for c in verdicted if c.verdict == Verdict.FALSE_POSITIVE)
+        ordered = sorted(
+            verdicted,
+            key=lambda c: (c.verdict != Verdict.FALSE_POSITIVE, -(_created_ts(c)), c.case_id),
+        )
+        picked = _sample_payload(ordered, lambda c: c, visible, max_samples=max_samples, centre=False)
+        rows = [
+            {
+                **_case_ref(c),
+                "value": 1 if c.verdict == Verdict.FALSE_POSITIVE else 0,
+                "verdict": c.verdict.value if c.verdict else "",
+                "counted": c.verdict == Verdict.FALSE_POSITIVE,
+                "created_at": c.created_at,
+            }
+            for c in picked.pop("chosen")
+        ]
+        return {
+            **base, "kind": "ratio", "unit": "fraction", "headline": "ratio",
+            "value": _ratio(fp, len(verdicted)) if verdicted else None,
+            "available": bool(verdicted),
+            "reason": "" if verdicted else "no case in this window has an AI verdict",
+            "numerator": fp, "denominator": len(verdicted),
+            "policy_closed": len(current) - len(agent_worked),
+            **picked, "samples": rows, "samples_order": "counted_first_newest_first",
+        }
+
+    # sla_attainment: the same readings ``sla_metrics`` counts.
+    summary = sla_metrics(current, sla_policy, now=now, _timings=timings, prefs=prefs)
+    if not summary.get("enabled"):
+        return {
+            **base, "kind": "ratio", "unit": "percent", "headline": "ratio", "value": None,
+            "available": False, "reason": str(summary.get("reason") or "SLA policy disabled"),
+            "numerator": 0, "denominator": 0, "sample_count": 0, "visible_count": 0,
+            "hidden_by_scope": 0, "samples_offset": 0, "samples_truncated": False,
+            "samples": [], "samples_order": "breached_first",
+        }
+    targets = getattr(sla_policy, "targets", {}) or {}
+    scored: list[tuple[Case, str, SlaCaseReading]] = []
+    for c in current:
+        prio = _sla_priority(c, prefs)
+        target = targets.get(prio)
+        if target is None:
+            continue
+        reading = sla_case_reading(c, target, _timings_for(c, timings), now=now)
+        if reading.start is None:
+            continue
+        scored.append((c, prio, reading))
+
+    def _breached(reading: SlaCaseReading) -> bool:
+        return any(
+            clock is not None and clock.state == "breached"
+            for clock in (reading.response, reading.resolution)
+        )
+
+    ordered_sla = sorted(scored, key=lambda t: (not _breached(t[2]), t[0].case_number or t[0].case_id))
+    picked = _sample_payload(ordered_sla, lambda t: t[0], visible, max_samples=max_samples, centre=False)
+
+    def _clock(clock: SlaClockReading | None) -> dict[str, Any] | None:
+        if clock is None:
+            return None
+        return {
+            "state": clock.state,
+            "elapsed_minutes": round(clock.elapsed_minutes, 1),
+            "target_minutes": round(clock.target_minutes, 1),
+            "running": clock.running,
+            "stop_source": clock.stop_source,
+        }
+
+    rows = [
+        {
+            **_case_ref(c), "priority": prio,
+            "value": 0 if _breached(reading) else 1,
+            "counted": not _breached(reading),
+            "response": _clock(reading.response),
+            "resolution": _clock(reading.resolution),
+        }
+        for c, prio, reading in picked.pop("chosen")
+    ]
+    evaluated = int(summary.get("evaluated") or 0)
+    met = sum(1 for _c, _p, reading in scored if not _breached(reading))
+    return {
+        **base, "kind": "ratio", "unit": "percent", "headline": "ratio",
+        "value": summary.get("attainment_pct"),
+        "available": summary.get("attainment_pct") is not None,
+        "reason": str(summary.get("attainment_reason") or ""),
+        "numerator": met, "denominator": evaluated,
+        **picked, "samples": rows, "samples_order": "breached_first",
+    }
+
+
+def _created_ts(case: Case) -> float:
+    created = _parse_iso(case.created_at)
+    return created.timestamp() if created is not None else 0.0
 
 
 # --------------------------------------------------------------------------- #

@@ -31,6 +31,7 @@ import * as React from 'react';
 import type { LucideIcon } from 'lucide-react';
 import type { NavOpts } from '@/lib/types';
 import type { CasesProps } from './pages/Cases';
+import { loadWhatsNew } from './whats-new/WhatsNewGate';
 import {
   LayoutDashboard,
   LayoutGrid,
@@ -101,6 +102,7 @@ export type PageId =
   | 'sources'
   | 'cost'
   | 'inbox'
+  | 'whats_new'
   | 'account'
   | 'sessions'
   | 'settings'
@@ -277,7 +279,8 @@ export const FEATURES: FeatureNode[] = [
         icon: LayoutGrid,
         perm: METRICS_VIEW,
       },
-      { id: 'standup', label: 'Standup', icon: CalendarDays },
+      // GET /api/standup and the standup reads need `metrics:view` (Round 16 D11).
+      { id: 'standup', label: 'Standup', icon: CalendarDays, perm: METRICS_VIEW },
     ],
   },
 
@@ -391,8 +394,8 @@ export const FEATURES: FeatureNode[] = [
       // offers a page that would answer 403: Metrics and Agent effectiveness read
       // `metrics:view` endpoints (GET /api/metrics, /api/metrics/agent-improvement),
       // and Cost reads GET /api/usage/summary, which needs `cost:view` (Round 14
-      // roles-11). `models` stays ungated: GET /api/llm/models is auth-only, so gating
-      // it would hide a page the principal can actually read.
+      // roles-11). Models reads GET /api/llm/models, which needs `models:read`
+      // (Round 16, B01).
       { id: 'metrics', label: 'Metrics', icon: BarChart3, perm: METRICS_VIEW },
       // Round 15 (SPEC D3.1, D3.2): per-person work counts from the audit log, for a
       // SOC manager (and, read only, an auditor). GET /api/team/* needs `team:view`.
@@ -404,7 +407,7 @@ export const FEATURES: FeatureNode[] = [
         perm: METRICS_VIEW,
       },
       { id: 'cost', label: 'Cost', icon: DollarSign, perm: COST_VIEW },
-      { id: 'models', label: 'Models', icon: Cpu },
+      { id: 'models', label: 'Models', icon: Cpu, perm: { resource: 'models', action: 'read' } },
       {
         id: 'baseline',
         label: 'Baseline',
@@ -419,16 +422,22 @@ export const FEATURES: FeatureNode[] = [
     ],
   },
 
-  /* ---- Notifications --------------------------------------------------- *
-   * Its only child is its own page, so the navigation draws it as a plain destination
-   * with no chevron (SPEC §4.8.1); the child keeps the console-map path
-   * "Notifications > Inbox".                                                 */
+  /* ---- Communication ---------------------------------------------------- *
+   * Round 16 (SPEC D5): the group keeps its id `notifications` (stored navigation state
+   * and tests key on it) and is labelled Communication. Its two pages, Inbox and What's
+   * new, make the row a disclosure; pressing the row opens Inbox, its own page. The
+   * top-bar bell keeps the name Notifications. What's new needs no grant: the notes ship
+   * with the Console, like the Help Center.                                  */
   {
     id: 'inbox',
-    label: 'Notifications',
+    label: 'Communication',
     icon: Bell,
     group: 'notifications',
-    children: [{ id: 'inbox', label: 'Inbox', icon: Inbox }],
+    children: [
+      { id: 'inbox', label: 'Inbox', icon: Inbox },
+      // No icon of its own (entry bytes): the command palette shows the group's.
+      { id: 'whats_new', label: "What's new" },
+    ],
   },
 
   /* ---- Platform -------------------------------------------------------- */
@@ -529,7 +538,7 @@ export const FEATURE_GROUPS: { id: NavGroupId; label: string }[] = [
   { id: 'triage', label: 'Triage' },
   { id: 'intelligence', label: 'Intelligence' },
   { id: 'analytics', label: 'Analytics' },
-  { id: 'notifications', label: 'Notifications' },
+  { id: 'notifications', label: 'Communication' },
   { id: 'platform', label: 'Platform' },
 ];
 
@@ -576,6 +585,9 @@ const AdminSessions = React.lazy(() => import('./pages/AdminSessions'));
 const Models = React.lazy(() => import('./pages/Models'));
 const Roles = React.lazy(() => import('./pages/Roles'));
 const InboxPage = React.lazy(() => import('./pages/Inbox'));
+// The release tracker reads its deep-link keys (`v`, `h`) from the router (`useRoute`). Its
+// chunk also holds the welcome host, so the route and the gate share one import thunk.
+const WhatsNewPage = React.lazy(loadWhatsNew);
 // The `logs` route renders the standalone Logs page, which also honours the chat's
 // "Open in Logs" deep link (`logQuery`/`from`/`to`/`sourceId`, SPEC §10.7) and otherwise
 // shows the shared `UnifiedLogsBody` browser.
@@ -659,6 +671,7 @@ export const ROUTES: Record<PageId, RouteDef> = {
   models: { element: Models },
   roles: { element: Roles },
   inbox: { element: InboxPage },
+  whats_new: { element: WhatsNewPage },
 
   /* ---- Triage ---- */
   cases: {

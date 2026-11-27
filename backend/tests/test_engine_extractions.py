@@ -308,8 +308,9 @@ def test_manual_trigger_reason_sentence():
     )
     reason = case_cluster.manual_trigger_reason(cluster, "now-7d")
     assert reason.mode == "manual"
+    # The window in plain words (Round 16 FXF), never the raw "now-7d" token.
     assert reason.sentence == (
-        "Manually investigated: 1 event for ip 198.51.100.9 in the last now-7d "
+        "Manually investigated: 1 event for ip 198.51.100.9 in the last 7 days "
         "across rules [r1]"
     )
 

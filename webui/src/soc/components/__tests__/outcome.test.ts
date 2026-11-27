@@ -289,4 +289,51 @@ describe('pendingDispositionNote: where an unclassified case’s disposition cam
     expect(pendingDispositionNote({ verdict: 'TRUE_POSITIVE', disposition: null })).toBe(`No outcome recorded yet${tail}`);
     expect(pendingDispositionNote({ verdict: 'TRUE_POSITIVE', disposition: ' None ' })).toBe(`No outcome recorded yet${tail}`);
   });
+
+  describe("an analyst's classification a later AI investigation kept (XFCM)", () => {
+    const KEPT = 'Classified by an analyst before a later AI investigation set the status';
+    const close = {
+      event: 'analyst_action',
+      action: 'close',
+      analyst: 'Admin',
+      ts: '2026-11-20T10:00:00Z',
+      classified_disposition: 'false_positive',
+    };
+    const base = {
+      case_id: 'c-replaced',
+      status: 'escalated',
+      verdict: 'TRUE_POSITIVE',
+      decision_by: 'system',
+      disposition: 'false_positive',
+    };
+
+    it('says so when a run replaced the close (close, then a system status move)', () => {
+      const c = {
+        ...base,
+        history: [close],
+        status_history: [
+          { from_status: 'on_hold', to_status: 'closed', by: 'Admin' },
+          { from_status: 'closed', to_status: 'escalated', by: 'system' },
+        ],
+      } as unknown as Case;
+      expect(pendingDispositionNote(c)).toBe(KEPT);
+      expect(pendingDispositionNote(c)).not.toMatch(/no analyst has classified/);
+      // The outcome of record stays pending: the ground-truth gate needs decision_by analyst.
+      expect(caseOutcome(c).source).toBe('pending');
+    });
+
+    it('says so for a closed case reinvestigated in place (no close-replaced row)', () => {
+      const c = {
+        ...base,
+        history: [close, { event: 'decision', ts: '2026-11-20T10:05:00Z', status: 'escalated', decision_by: 'system' }],
+      } as unknown as Case;
+      expect(pendingDispositionNote(c)).toBe(KEPT);
+      expect(caseOutcome(c).source).toBe('pending');
+    });
+
+    it('keeps "Recorded on the case" when the classified value is not the current disposition', () => {
+      const c = { ...base, disposition: 'suspicious', verdict: 'NEEDS_HUMAN', history: [close] } as unknown as Case;
+      expect(pendingDispositionNote(c)).toBe(`Recorded on the case${tail}`);
+    });
+  });
 });

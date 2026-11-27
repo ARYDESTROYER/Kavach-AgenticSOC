@@ -194,6 +194,88 @@ def test_state_changing_routes_declare_authz() -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# AuthZ coverage of READ routes (Round 16, B01).
+# --------------------------------------------------------------------------- #
+# Every /api GET that is not public must declare a permission dependency or an
+# in-body ``_enforce``, or sit on one of the two reviewed lists below. A new read
+# that is neither fails ``test_read_routes_declare_authz``.
+#
+# Reviewed GET allowlist: authentication only, each with its reason.
+_GET_AUTHZ_EXEMPT: dict[str, str] = {
+    # Self-service reads of the caller's own bucket.
+    "/api/account/me": "the caller's own account record",
+    "/api/account/activity": "the caller's own audit rows only",
+    "/api/account/permissions": "the Console's permission bootstrap for the caller",
+    "/api/prefs/effective": "the caller's own preference cascade, read on every page",
+    "/api/prefs/user": "the caller's own personal preferences",
+    "/api/prefs/org": "the organisation defaults the preference cascade needs",
+    "/api/sessions": "the caller's own sessions",
+    "/api/views": "the caller's own saved views and the shared ones",
+    "/api/terminology": "the labels every page needs",
+    "/api/notifications/prefs": "the caller's own notification preferences",
+    "/api/notifications/inbox": "the caller's own inbox",
+    "/api/notifications/inbox/unread-count": "the caller's own unread count",
+    # Static catalogs with no tenant data.
+    "/api/connectors": "the static connector catalog, no tenant data",
+    "/api/connectors/{source_type}": "one static connector manifest, no tenant data",
+    "/api/personas": "the static persona catalog, no case data",
+    # The SSE endpoint: each topic is gated separately (_REALTIME_TOPIC_GRANTS).
+    "/api/events": "the realtime stream; every topic checks its own grant",
+}
+# Reviewed "gated in body" list: these GETs choose their grant from the request and
+# enforce it inside the handler, so the code must still reference the gate.
+_GET_GATED_IN_BODY: dict[str, tuple[str, ...]] = {
+    "/api/metrics/breakdown": ("require_permission",),
+    "/api/rules/summary": ("resolve_access",),
+}
+
+
+def _get_routes() -> list[APIRoute]:
+    return [
+        r for r in app.routes
+        if isinstance(r, APIRoute) and r.path.startswith("/api") and "GET" in r.methods
+    ]
+
+
+def test_read_routes_declare_authz() -> None:
+    """Every non-public /api GET declares a permission dependency or an in-body
+    ``_enforce``, or is on a reviewed list. This is the rule that would have caught
+    the case export, trace, rationale, collaboration, scans, standup and settings
+    reads answering a role that lacks their read grant (B01)."""
+    ungated: list[str] = []
+    for route in _get_routes():
+        if route.path in PUBLIC_API_PATHS or route.path in PUBLIC_GET_PATHS:
+            continue
+        if _has_authz_dependency(route) or _enforces_in_body(route):
+            continue
+        if route.path in _GET_AUTHZ_EXEMPT or route.path in _GET_GATED_IN_BODY:
+            continue
+        ungated.append(route.path)
+    assert not ungated, (
+        "these /api GET routes declare no authZ gate and are not on the reviewed "
+        "GET allowlist or the gated-in-body list: " + ", ".join(sorted(ungated))
+    )
+
+
+def test_read_route_lists_are_reviewed_and_current() -> None:
+    """Each listed GET is a real route, has a reason, and is not already gated (a
+    listed route that gained a gate should leave the list). A gated-in-body route
+    must still reference its gate in its compiled code, so it cannot lose it
+    silently."""
+    routes = {r.path: r for r in _get_routes()}
+    assert not (set(_GET_AUTHZ_EXEMPT) & set(_GET_GATED_IN_BODY))
+    for path, reason in _GET_AUTHZ_EXEMPT.items():
+        assert path in routes, f"stale GET allowlist entry {path}"
+        assert reason.strip(), f"{path} needs a reason"
+        assert not _has_authz_dependency(routes[path]), f"{path} is gated; drop it from the list"
+    for path, names in _GET_GATED_IN_BODY.items():
+        assert path in routes, f"stale gated-in-body entry {path}"
+        endpoint = inspect.unwrap(routes[path].endpoint)
+        code_names = _code_names(endpoint.__code__)
+        assert any(n in code_names for n in names), f"{path} lost its in-body gate"
+
+
 def test_case_action_paths_are_enforced_in_body() -> None:
     """The case lifecycle writers (single + bulk action, comment, tags, assign)
     enforce RBAC INLINE via ``_enforce`` (they resolve a TARGET-AWARE grant from the
@@ -261,6 +343,7 @@ from app.llm.providers import MockProvider
 from app.state import AppState
 from app.utils import now_utc, to_millis
 from tests.conftest import make_log_event
+from tests._auth_helpers import ready_user
 
 
 @asynccontextmanager
@@ -335,6 +418,7 @@ def test_fix1_set_status_resolved_requires_cases_close() -> None:
             "role": UserRole.ANALYST_TIER1.value,
         })
         assert r.status_code == 200, r.text
+        ready_user(c, "tier1", "tier1-pass-1")
 
         _login(c, "tier1", "tier1-pass-1")
         # A non-terminal set_status is fine (cases:write).
@@ -366,6 +450,7 @@ def test_fix1_cases_close_role_can_set_status_resolved() -> None:
             "role": UserRole.ANALYST_TIER2.value,
         })
         assert r.status_code == 200, r.text
+        ready_user(c, "tier2", "tier2-pass-1")
         _login(c, "tier2", "tier2-pass-1")
         r = c.post(f"/api/cases/{cid}/action",
                    json={"action": "set_status", "status": "resolved"})
@@ -383,6 +468,7 @@ def test_setup_secrets_requires_settings_manage() -> None:
             "role": UserRole.ANALYST_TIER1.value,
         })
         assert r.status_code == 200, r.text
+        ready_user(c, "tier1", "tier1-pass-1")
         _login(c, "tier1", "tier1-pass-1")
         r = c.post("/api/setup/secrets", json={"es_url": "https://evil:9200"})
         assert r.status_code == 403, r.text
@@ -405,6 +491,7 @@ def test_investigate_routes_require_cases_reinvestigate() -> None:
             "role": UserRole.ANALYST_TIER1.value,
         })
         assert r.status_code == 200, r.text
+        ready_user(c, "tier1", "tier1-pass-1")
         _login(c, "tier1", "tier1-pass-1")
         assert c.post(f"/api/cases/{cid}/investigate").status_code == 403
         assert c.post(f"/api/cases/{cid}/reinvestigate", json={}).status_code == 403

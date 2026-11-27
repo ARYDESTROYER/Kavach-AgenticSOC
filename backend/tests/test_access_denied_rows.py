@@ -43,6 +43,7 @@ from app.llm.providers import MockProvider
 from app.middleware.request_id import RequestIdMiddleware
 from app.models import Case, Entity
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 T1 = UserRole.ANALYST_TIER1.value
 CASE_ID = "case-denials-1"
@@ -88,6 +89,7 @@ def client(tmp_path):
         _login(c, "Admin", "Admin@123")
         created = c.post("/api/users", json={"username": "tina", "password": "tina-pass-12345", "role": T1})
         assert created.status_code == 200, created.text
+        ready_user(c, "tina", "tina-pass-12345")
         c.cookies.clear()
         _login(c, "tina", "tina-pass-12345")
         yield c

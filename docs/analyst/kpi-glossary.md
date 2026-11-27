@@ -45,6 +45,13 @@ ledger; none of them feeds the deterministic close or escalate decision.
   as complete. Chat's case counts have no such limit, so for a window that large the
   chat figure is the exact one.
 
+## See how a figure was calculated
+
+Point at a figure to see a one-line formula with the real numbers. Select it, or press
+Enter or Space while it has focus, for the full calculation: the inputs and where each
+comes from, the steps, how the result is rounded, and who computed it. **Copy
+calculation** copies it as text. See [Explainable numbers](explainable-numbers.md).
+
 ## Risk
 
 ### Active Risk Index
@@ -73,14 +80,29 @@ of five factors (default weights):
 | --- | --- | --- |
 | Reputation | 30% (heaviest) | The worst threat-intelligence reputation among the cluster's IP addresses; 0 when there is no IP |
 | Volume | 25% | How many events fired, log-normalised so large clusters level off around 50 events |
-| Velocity | 20% | Events per minute (full near 10 per minute); 0 below three events or a sub-second window |
+| Velocity | 20% | Events per minute (full at 10 per minute); 0 below three events. A window shorter than 1 second counts as 1 second, so a fast burst of three or more events scores high |
 | Diversity | 15% | How many distinct rule types fired (maxes out at five) |
 | Asset criticality | 10% | How important the targeted asset is, from the operator's CIDR or exact-match map; 0 when uncatalogued |
+
+Each case scored by version 0.2 or later keeps the inputs and the weights it was scored
+with, so its score can be checked by hand; older cases say their inputs were not
+recorded. A score is shown rounded half up, and its band is the band of the shown
+number. The formula for each factor and a worked example are in
+[Explainable numbers](explainable-numbers.md#the-risk-score).
+
+An indicator's **Reputation** in a case's threat context is its reputation score from
+the providers asked. **Not checked** means no provider was asked, so there is no score,
+not a score of 0.
 
 Change the weights in **Settings → General → Detection → Risk weights** and the asset
 map in **Settings → General → Detection → Asset criticality**. The risk score only
 ranks what an analyst looks at first and decides which candidates reach investigation;
 it never closes or escalates a case on its own. It is not the model's confidence.
+
+### Average risk
+
+The mean risk score of the scored cases in the window. Its explanation names how many
+cases it divides by; a case with no risk score is not counted.
 
 ## Case volume KPIs
 
@@ -159,6 +181,14 @@ time, not close time.
 Timing metrics use the case creation time, or the detection time when it is known, as
 their start. A metric with no eligible samples shows "no samples yet" rather than zero.
 
+Each timing figure explains itself: its hover line gives the median, the p90, the mean
+and the number of cases, and its panel shows the rank arithmetic of the median and the
+p90. **Show all** opens the cases behind it in a side sheet, sorted shortest first, with
+the median case or cases marked and each one linked to Case Manager. When more than 200
+cases count, it lists the 200 around the median, and the rank lines still count every
+case. You see a case only with `cases:read` and inside your data scope; a hidden case
+still counts in the figure.
+
 ### MTTD
 
 **Mean time to detect**: from the cluster's first event to case creation. It shows as
@@ -180,23 +210,43 @@ or on hold. An automatic close is not an acknowledgement.
 
 ### MTTR
 
-**Mean time to resolve**, reported as the median (p50) time from case creation to the
-first terminal transition (resolved or closed).
+**Mean time to resolve**, reported as the median (p50) time from case creation, or
+detection when recorded, to the first time the case was resolved or closed. Later edits
+do not change it. The **MTTR** tile on the Analytics Operational tab uses the same clock
+over the cases that are resolved or closed now. Its explanation also says how many of
+those cases the AI agent closed and how many a person closed, with each group's
+median.
 
 ### Dwell
 
-The median (p50) time from case creation to the first active response (investigating,
-escalated, on hold, resolved, or closed). Dwell is time to first response, not time to
-detect.
+The median (p50) time from case creation, or detection when recorded, to the first
+response by a person: investigating, escalated, on hold, resolved or closed. An automatic
+close is not a response, so a case only the AI agent closed is not counted. Any of these
+moves stops it, so dwell can be shorter than MTTA. Dwell is time to first response, not
+time to detect.
 
 ### SLA attainment
 
 The share of SLA-scored cases in the window that met their response and resolution
-targets (set under **Settings → General → SLA, priority & suppression**). A case is
+targets (set under **Settings → General → SLA, priority & suppression**). The response
+clock starts when the case was detected, or when it was created if no detection time is
+recorded. It stops at the first human response: an acknowledgement, or a person moving
+the case to investigating, escalated, on hold, resolved or closed. A move made by the
+system or the AI agent is not a response. If the AI agent closes the case before anyone
+responds, the response clock stops at the close: a close inside the target counts as
+met, and a close after the target counts as late. The resolution clock stops when the
+case is first resolved or closed, and runs again if the case is reopened. A case is
 scored when its priority, as shown on the case, has a configured target and it has a
 readable creation time. When no case in the window could be scored, attainment shows an
 em dash with the reason, for example "3 cases have no priority with an SLA target, so
 attainment was not measured", never 0%: 0% would claim that every scored case breached.
+
+### SLA breached
+
+The open cases past their response target. A case is at risk from 80 percent of its
+target and breached only once it is past the target. A case whose priority has no
+target is not counted. Standup, the SOC operations board, chat's past-target card, the
+case page and Posture all count it with this one rule.
 
 ## Noise reduction funnel
 

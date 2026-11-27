@@ -36,6 +36,7 @@ from app.constants import UserRole
 from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 
 # --------------------------------------------------------------------------- #
@@ -330,6 +331,7 @@ def test_per_user_isolation_auth_on() -> None:
             "username": "bob", "password": "bob-pass-12", "role": UserRole.ANALYST_TIER1.value,
         })
         assert r.status_code == 200, r.text
+        ready_user(c, "bob", "bob-pass-12")
 
         # Admin saves a dashboard.
         admin_board = c.post("/api/dashboards", json=_layout("Admin board")).json()

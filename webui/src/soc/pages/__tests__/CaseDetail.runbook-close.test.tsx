@@ -8,8 +8,8 @@
  *     keeps the dialog open with the steps it named, and a second submit with a reason
  *     goes through;
  *   - the close itself is the existing analyst verb (#3): nothing here reaches `decide()`;
- *   - a request to land in the Runbook tab (Take action's Start runbook, Collaboration's
- *     "Open the Runbook tab") is handled once: leaving the tab and coming back never
+ *   - a request to land in the Response tab (Take action's Start runbook, the Brief's
+ *     "Open response") is handled once: leaving the tab and coming back never
  *     replays it, and Other tasks takes focus.
  */
 import type * as React from 'react';
@@ -187,22 +187,26 @@ describe('CaseDetail: requests to land in the Runbook tab', () => {
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByTestId('start-runbook-dialog')).toBeNull());
 
-    await user.click(screen.getByRole('tab', { name: /^Overview/ }));
-    await user.click(screen.getByRole('tab', { name: /^Runbook/ }));
+    await user.click(screen.getByRole('tab', { name: /^Brief/ }));
+    await user.click(screen.getByRole('tab', { name: /^Response/ }));
     // The tab's own empty state (the facts rail says the same sentence beside it).
     expect(await screen.findByRole('button', { name: 'Start runbook' })).toBeInTheDocument();
     await act(async () => undefined);
     expect(screen.queryByTestId('start-runbook-dialog')).toBeNull();
   });
 
-  it('lands on Other tasks from Collaboration', async () => {
+  it('opens the Response tab from the Brief, with the tasks under Other tasks', async () => {
     const user = userEvent.setup();
     getCaseRunbooks.mockResolvedValue(makeData());
     renderCase('embedded');
     await screen.findByText('Password spray against the VPN', undefined, { timeout: 5000 });
-    await user.click(screen.getByRole('tab', { name: /^Collaboration/ }));
-    await user.click(await screen.findByRole('button', { name: 'Open the Runbook tab' }));
-    const heading = await screen.findByRole('heading', { level: 3, name: 'Other tasks' }, { timeout: 5000 });
-    await waitFor(() => expect(document.activeElement).toBe(heading));
+    await user.click(await screen.findByRole('button', { name: /Open response/ }));
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /^Response/ })).toHaveAttribute('data-state', 'active'),
+    );
+    expect(await screen.findByRole('heading', { level: 3, name: 'Other tasks' }, { timeout: 5000 })).toBeInTheDocument();
+    // Activity holds no tasks pointer any more.
+    await user.click(screen.getByRole('tab', { name: /^Activity/ }));
+    expect(screen.queryByRole('button', { name: 'Open the Runbook tab' })).toBeNull();
   });
 });

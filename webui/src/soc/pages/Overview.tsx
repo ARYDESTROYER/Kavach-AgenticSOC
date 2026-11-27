@@ -209,6 +209,12 @@ import {
   type LifecycleMetricKey,
 } from './posture.format';
 import type { PostureResponse, StatBlock } from './Metrics.posture.api';
+import type { MttrByDecider } from '@/lib/types-metrics-explain';
+import type { Explanation } from '@/lib/explain/types';
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainCloseShare } from '@/lib/explain/builders';
+import { explainCount, explainKpiShare } from '@/soc/components/metrics-explain/builders';
+import { TimingExplain } from '@/soc/components/metrics-explain/TimingExplain';
 import { GrantsUnknownNotice, isPermissionRefusal, usePageGrants } from './PageAccess';
 
 /**
@@ -714,6 +720,20 @@ function TrendChip({
 }
 
 /**
+ * The donut's arithmetic in one line (FXD1): the severity counts that add up to the
+ * centre number, then each legend share with the legend's own rounding (whole percents,
+ * half up), so "4 critical + 1 high = 5 cases from this window still open. 4 / 5 = 80%,
+ * 1 / 5 = 20%." reproduces the ring and its legend. Null with no case to count.
+ */
+export function snapshotFormula(counts: SevCounts, total: number, population: string): string | null {
+  const rows = SEV_ORDER.map((s) => ({ key: s, value: counts[s] })).filter((r) => r.value > 0);
+  if (!rows.length || !(total > 0)) return null;
+  const sum = rows.map((r) => `${fmtNumber(r.value)} ${SEV_LABEL[r.key].toLowerCase()}`).join(' + ');
+  const shares = rows.map((r) => `${fmtNumber(r.value)} / ${fmtNumber(total)} = ${Math.round((r.value / total) * 100)}%`).join(', ');
+  return `${sum} = ${fmtNumber(total)} ${population}. ${shares}${rows.length > 1 ? ', as whole percents' : ''}.`;
+}
+
+/**
  * A compact donut snapshot inside the shared resolved/open instrument column. The parent
  * supplies the panel boundary; this helper intentionally has no card chrome so both states
  * read as one instrument, matching the supplied command-center prototype.
@@ -734,9 +754,16 @@ function SnapshotCard({
   bound,
   roll = true,
   ringPx = SNAPSHOT_RING_PX,
+  population,
   className,
 }: {
   title: string;
+  /**
+   * What the centre number counts, for the hover line's arithmetic ("cases from this
+   * window still open"). With it, the hover card leads with the severity sum and the
+   * legend shares before the arrivals trend.
+   */
+  population?: string;
   /**
    * The window this snapshot counts ("last 24 hours"), right after the title (Round 14,
    * SPEC §4.3.2): the band caption that used to say it for the whole row is gone.
@@ -924,7 +951,19 @@ function SnapshotCard({
         // hover/focus-reachable trend card (WCAG 1.4.13 via MetricHoverTrend).
         // `h-auto`: the wrapper's default `h-full` would take the whole (stretched) card
         // and push the footnote below it.
-        <MetricHoverTrend {...trend} focusable={!onClick} side="top" className="h-auto self-start">
+        <MetricHoverTrend
+          {...trend}
+          focusable={!onClick}
+          side="top"
+          className="h-auto self-start"
+          // The centre number's own arithmetic first (FXD1): the trend below it counts
+          // arrivals per bucket, a different number.
+          preview={
+            population
+              ? { eyebrow: title, population: caption, formula: snapshotFormula(counts, total, population) ?? undefined }
+              : undefined
+          }
+        >
           {body}
         </MetricHoverTrend>
       ) : (
@@ -958,31 +997,48 @@ function TimingStat({
   block,
   dotClass,
   help,
+  explain,
+  pending,
 }: {
   label: string;
   sub: string;
   block: StatBlock | undefined;
   dotClass: string;
   help?: string;
+  /** Round 16 (WP12): wraps the shown value in its explanation (hover and click). */
+  explain?: (value: React.ReactNode) => React.ReactNode;
+  /**
+   * The block belongs to the window being replaced ("Loading 7 days"): the value reads
+   * muted, its explanation is withheld and the detail line says what loads (FXD1).
+   */
+  pending?: string;
 }) {
   const available = block?.available === true;
   const value = available ? humanizeMins(block!.p50) : DASH;
   // p90 beside p50 when the posture rollup reports it (Round 12, additive): the tail is
   // what an operator is paged about, and the server already computes it.
   const p90 = p90Of(block);
-  const detail = available
-    ? `p50 · ${fmtNumber(block!.count)} sample${block!.count === 1 ? '' : 's'}${
-        p90 != null ? ` · p90 ${humanizeMins(p90)}` : ''
-      }`
-    : block?.reason || 'not measured (n/a)';
+  const detail = pending
+    ? pending
+    : available
+      ? `p50 · ${fmtNumber(block!.count)} sample${block!.count === 1 ? '' : 's'}${
+          p90 != null ? ` · p90 ${humanizeMins(p90)}` : ''
+        }`
+      : block?.reason || 'not measured (n/a)';
   return (
-    <div className="min-w-0 py-0.5" title={help}>
+    <div className="min-w-0 py-0.5" title={help} aria-busy={pending ? true : undefined}>
       <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
         <span className={cn('h-1.5 w-1.5 rounded-full', dotClass)} aria-hidden />
         {label}
       </div>
-      <div className="mt-1.5 text-3xl font-semibold leading-none tabular-nums text-foreground">
-        {value}
+      <div
+        className={cn(
+          'mt-1.5 text-3xl font-semibold leading-none tabular-nums',
+          pending ? 'text-muted-foreground' : 'text-foreground',
+        )}
+        data-pending={pending ? '' : undefined}
+      >
+        {explain && available && !pending ? explain(value) : value}
       </div>
       <div className="mt-1.5 text-sm text-muted-foreground">{sub}</div>
       <div className="text-xs tabular-nums text-muted-foreground" data-timing-detail="">
@@ -994,8 +1050,12 @@ function TimingStat({
 
 type LatestCaseBadgeVariant = NonNullable<React.ComponentProps<typeof Badge>['variant']>;
 
-/** Prototype status vocabulary: compact, operational, and semantically tokenised. */
-function latestCaseStatus(status: string | null | undefined): {
+/**
+ * Prototype status vocabulary: compact, operational, and semantically tokenised. Closed
+ * and resolved are distinct lifecycle states, so each keeps its own word (Round 16 B67),
+ * as the queue and the Cases list say them.
+ */
+export function latestCaseStatus(status: string | null | undefined): {
   label: string;
   variant: LatestCaseBadgeVariant;
 } {
@@ -1007,7 +1067,8 @@ function latestCaseStatus(status: string | null | undefined): {
   if (key === 'investigating' || key === 'in_progress') {
     return { label: 'Investigating', variant: 'low' };
   }
-  if (key === 'closed' || key === 'resolved') return { label: 'Resolved', variant: 'success' };
+  if (key === 'closed') return { label: 'Closed', variant: 'success' };
+  if (key === 'resolved') return { label: 'Resolved', variant: 'success' };
   return { label: humanizeToken(key), variant: 'secondary' };
 }
 
@@ -1515,6 +1576,15 @@ function VolumeColumns({ data }: { data: Array<{ x: string; y: number }> }) {
   );
 }
 
+/**
+ * The least time between two `GET /api/metrics` reads on LIVE ticks (Round 16 WP12,
+ * backend roadmap R2 layer 3): its all-time figures change slowly and their server copy
+ * lives 60 s. Exported for its test.
+ */
+export const METRICS_LIVE_MIN_MS = 30_000;
+/** A LIVE tick's stand-in for a metrics read it did not send. */
+const METRICS_KEPT = Symbol('metrics kept');
+
 /** Re-render on an interval so relative stamps ("Updated 2m ago") stay true. */
 function useNow(intervalMs: number): number {
   const [now, setNow] = React.useState(() => Date.now());
@@ -1647,6 +1717,21 @@ const RESPONSE_TIME_HELP =
   'Medians (p50) over the cases that arrived in this window, computed on the server from ' +
   "each case's own timestamps. A measured figure says how many cases it measured, and " +
   'its p90 when the server reports one; a figure that is not measured says why.';
+
+/**
+ * The detect and respond figures say what they are (Round 16 B66): each value is the
+ * median (p50), and the Respond clock is the MTTA clock, which only a person's
+ * acknowledgement or a move to investigating, escalated or on hold stops. Assigning a
+ * case does not stop it.
+ */
+export const MTTD_HELP =
+  "Median (p50) time to detect: the cluster's first event to the case being opened. " +
+  'Not measured when no case records a first-event time.';
+export const RESPOND_SUB =
+  'First human acknowledgement, or a move to investigating, escalated or on hold · same clock as MTTA';
+export const RESPOND_HELP =
+  'Median (p50) time to respond: case open to the first human acknowledgement, or a human move to ' +
+  'investigating, escalated or on hold. Assigning a case alone does not stop this clock.';
 
 /** The Response time and Latest cases `h2` ids: each panel is the region its title names. */
 const RESPONSE_TIME_HEADING_ID = 'overview-response-title';
@@ -2246,9 +2331,25 @@ export default function Overview({ onNavigate }: OverviewProps) {
   // covered by the seq check alone.
   const loadSeqRef = React.useRef(0);
   const loadAbortRef = React.useRef<AbortController | null>(null);
+  /**
+   * Round 16 (WP12, backend roadmap R2 layer 3): `GET /api/metrics` reads the ALL-TIME
+   * population, whose server copy lives 60 s, so a LIVE tick re-reads it at most once
+   * per `METRICS_LIVE_MIN_MS`. A window change, a manual refresh and the first load
+   * always read it. `liveTickRef` marks the batch a LIVE tick started.
+   */
+  const liveTickRef = React.useRef(false);
+  const metricsReadRef = React.useRef<{ hours: number; at: number } | null>(null);
 
   const load = React.useCallback(async () => {
     const seq = (loadSeqRef.current += 1);
+    const liveTick = liveTickRef.current;
+    liveTickRef.current = false;
+    const lastMetricsRead = metricsReadRef.current;
+    const metricsFresh =
+      liveTick &&
+      lastMetricsRead !== null &&
+      lastMetricsRead.hours === hours &&
+      Date.now() - lastMetricsRead.at < METRICS_LIVE_MIN_MS;
     loadAbortRef.current?.abort();
     const controller = new AbortController();
     loadAbortRef.current = controller;
@@ -2279,7 +2380,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // honour the range (backend caps at 200 by created-desc).
         api.listCases({ limit: 200, from: `now-${hours}h` }),
         // The metric totals and LLM spend are read only with their grants (roles-02).
-        canMetrics ? api.getMetrics(hours) : Promise.resolve(null),
+        // A LIVE tick inside the metrics cadence keeps the figures it has (WP12).
+        canMetrics
+          ? metricsFresh
+            ? Promise.resolve(METRICS_KEPT)
+            : api.getMetrics(hours)
+          : Promise.resolve(null),
         canCost ? api.usageSummary(hours) : Promise.resolve(null),
         noiseP,
         // The immediately-preceding equal window — powers the honest open/resolved
@@ -2310,10 +2416,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
         });
         setCasesLoadedAt(settledAt);
       }
-      if (m.status === 'fulfilled') {
-        setMetrics(m.value);
-        // A read that was not sent is not a freshness the page can claim.
-        setMetricsLoadedAt(m.value ? settledAt : null);
+      if (m.status === 'fulfilled' && m.value !== METRICS_KEPT) {
+        const read = m.value as Metrics | null;
+        setMetrics(read);
+        if (read) metricsReadRef.current = { hours, at: Date.now() };
+        // A read that was not sent is not a freshness the page can claim. The all-time
+        // figures say when the server read their cases (`generated_at`, WP06 and WP12);
+        // an older server does not, and then the settle time stands in.
+        setMetricsLoadedAt(read ? (typeof read.generated_at === 'string' && read.generated_at) || settledAt : null);
       }
       if (u.status === 'fulfilled') {
         setUsage(u.value);
@@ -2470,6 +2580,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
   /** A refresh the operator did not just ask for a new window with: numerals do not roll. */
   const refreshQuietly = React.useCallback(() => {
     setRollKpis(false);
+    liveTickRef.current = true;
     void refreshAll();
   }, [refreshAll]);
 
@@ -2667,6 +2778,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         key: metric,
         label: copy.label,
         help: copy.help,
+        block: b,
         value: b && b.available ? humanizeMins(b.p50) : DASH,
         sub:
           b && b.available
@@ -2690,6 +2802,19 @@ export default function Overview({ onNavigate }: OverviewProps) {
   // series is likewise ACK-based server-side.
   const mttdBlock = posture?.lifecycle?.mttd_minutes;
   const respondBlock = posture?.lifecycle?.mtta_minutes;
+  /** MTTR split by who closed the cases (Round 16 WP12, additive on the posture rollup). */
+  const mttrByDecider = (posture?.lifecycle as { mttr_by_decider?: MttrByDecider } | undefined)
+    ?.mttr_by_decider;
+  /**
+   * Which timing figure's explanation is open, so its hover trend card stands down: two
+   * floating cards over one number would cover each other (Round 16 WP12).
+   */
+  const [timingExplainOpen, setTimingExplainOpen] = React.useState<string | null>(null);
+  const timingExplainOpenChange = React.useCallback(
+    (id: string) => (open: boolean) =>
+      setTimingExplainOpen((prev) => (open ? id : prev === id ? null : prev)),
+    [],
+  );
 
   /*
    * The newest cases for the live queue — up to LATEST_MAX_ROWS (Round 12). The panel
@@ -3222,9 +3347,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
      * A real DEGRADATION still takes the face, unconditionally: an error, or a successful
      * read of a store the server could not measure, in the server's own words. Those are
      * worth a reflow, and they are the reason this slot survives at all.
+     *
+     * A WINDOW CHANGE is the other case with nothing current to caption (FXD1): the
+     * numerals on screen are the previous window's snapshot (`postureStale`, never set by
+     * a LIVE or manual refresh of the same window). The tiles show them muted under
+     * "Loading 7 days" until the new window's read arrives, so a numeral and its
+     * caption never name two different windows.
      */
     const postureSub =
-      postureLoading && !posture
+      postureLoading && (!posture || postureStale)
         ? `Loading ${windowLabel(hours)}`
         : postureError
           ? 'Posture unavailable'
@@ -3323,7 +3454,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
     /** A context string as-is, or nothing when it is the "no honest denominator" dash. */
     const orNone = (s: string): string | undefined => (s === DASH ? undefined : s);
 
-    return [
+    const tiles: KpiItem[] = [
       {
         label: 'Total cases',
         // Re-keyed WITH the label. `KpiTile` derives its anchor from `testId` when one
@@ -3734,12 +3865,129 @@ export default function Overview({ onNavigate }: OverviewProps) {
         },
       },
     ];
+
+    /*
+     * Round 16 (WP12): every tile explains its numeral with the real numbers (the hover
+     * card's arithmetic line; the drill-down's "Show the calculation"). Each reads the
+     * very numbers the tile shows, so the two cannot disagree; a tile that withholds its
+     * numeral (an outage, an uncovered window for a share) explains nothing.
+     */
+    const windowWords = `the last ${trendSpanLabel(hours)}`;
+    const partialCaveat = covered
+      ? []
+      : ['Part of the window could not be read, so this is a lower bound.'];
+    const explanations: Record<string, Explanation | null> = {
+      'total-cases': explainCount({
+        metric: 'case_count',
+        title: 'Total cases',
+        value: caseCount,
+        noun: 'cases',
+        window: windowWords,
+        summary: `${fmtNumber(caseCount)} cases arrived in ${windowWords}, policy-closed included.`,
+        formula: 'count of cases created in the window',
+        caveats: partialCaveat,
+      }),
+      'total-critical': covered
+        ? explainKpiShare({
+            metric: 'critical_share',
+            title: 'Total critical',
+            numerator: criticalCount,
+            denominator: caseCount,
+            numeratorLabel: `${topBandLabel.toLowerCase()} cases`,
+            denominatorLabel: 'cases',
+            window: windowWords,
+            dividedBy: 'console',
+            tileRounding: 'The tile shows the count; its share is a whole percent.',
+          })
+        : explainCount({
+            metric: 'critical_count',
+            title: 'Total critical',
+            value: criticalCount,
+            noun: `${topBandLabel.toLowerCase()} cases`,
+            window: windowWords,
+            summary: `${fmtNumber(criticalCount)} ${topBandLabel.toLowerCase()} cases arrived in ${windowWords}.`,
+            formula: `count of cases in the ${topBandLabel.toLowerCase()} severity band`,
+            caveats: partialCaveat,
+          }),
+      'open-cases': explainCount({
+        metric: 'open_now',
+        title: 'Open cases',
+        value: openNowCount,
+        noun: 'open cases',
+        window: 'Now, any arrival date',
+        // A stock measured now, never limited to the window (numbers review).
+        windowSource: 'Not limited by the time range above',
+        provenanceNote: 'Counted by the server over every open case, whenever it arrived.',
+        summary: `${fmtNumber(openNowCount)} cases are open now, whenever they arrived.`,
+        formula: 'count of cases that are not resolved or closed, all time',
+        caveats: openNowComplete ? [] : ['The store held more cases than were read, so this is a lower bound.'],
+      }),
+      'false-positive-rate': fpPercent === undefined
+        ? null
+        : explainKpiShare({
+            metric: 'fp_rate',
+            title: 'AI-verdict FP rate',
+            numerator: quality?.false_positive_cases,
+            denominator: quality?.verdicted_cases,
+            numeratorLabel: 'false positive verdicts',
+            denominatorLabel: 'verdicted cases',
+            window: windowWords,
+            dividedBy: 'server',
+            tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
+            caveats: [
+              'Cases an analyst rule policy closed are left out: no model ran on them.',
+              ...(typeof analystFp === 'number'
+                ? [`Analysts confirmed ${fmtNumber(analystFp)} of the window's cases as false positive; that count is separate.`]
+                : []),
+            ],
+          }),
+      'resolved-closed': covered
+        ? explainKpiShare({
+            metric: 'terminal_share',
+            title: 'Resolved or closed',
+            numerator: terminalCases,
+            denominator: caseCount,
+            numeratorLabel: 'resolved or closed cases',
+            denominatorLabel: 'cases',
+            window: windowWords,
+            dividedBy: 'console',
+            tileRounding: 'The tile shows the count; its share is a whole percent.',
+            caveats: policyClosedReported
+              ? [`Includes ${fmtNumber(policyClosed as number)} declared benign by an analyst rule policy.`]
+              : [],
+          })
+        : null,
+      'auto-closed': automationPercent === undefined
+        ? null
+        : explainKpiShare({
+            metric: 'automation_rate',
+            title: 'Auto-closed',
+            numerator: autoClosedCases,
+            denominator: strippedTerminal,
+            numeratorLabel: 'closed by the AI agent',
+            denominatorLabel: 'agent-worked closes',
+            window: windowWords,
+            dividedBy: 'server',
+            tileRounding: 'The tile shows the count; its share is a whole percent.',
+            caveats: [
+              'Agent-worked closes leave out analyst rule policy closes. Who closed a case is the last decider it records.',
+            ],
+          }),
+    };
+    // While the window changes the figures are the previous window's: no explanation
+    // names the new window over them (FXD1).
+    return tiles.map((tile) => ({
+      ...tile,
+      drilldown: { ...tile.drilldown, explanation: postureStale ? null : (explanations[tile.testId] ?? null) },
+    }));
   }, [
     posture,
     postureCovered,
     postureUnmeasured,
     postureLoading,
     postureError,
+    postureStale,
     humanVsAi,
     hours,
     navigate,
@@ -3925,8 +4173,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
    * panel labels them as such, because the list it draws underneath reads case pages.
    */
   const kpiMetrics = React.useMemo(
-    () => kpis.map((k) => ({ key: k.testId, label: k.label, value: k.value })),
-    [kpis],
+    () =>
+      kpis.map((k) => ({
+        key: k.testId,
+        label: k.label,
+        // While the window changes the tiles hold the previous window's figures; the
+        // panel already lists the new window's cases, so its switcher says the figures
+        // are loading instead of restating the old ones under the new window (FXD1).
+        value: postureStale ? 'Loading' : k.value,
+      })),
+    [kpis, postureStale],
   );
 
   /**
@@ -3993,7 +4249,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
    */
   const deeperSummary = React.useMemo(() => {
     const parts: string[] = [];
-    for (const t of timing) if (t.value !== DASH) parts.push(`${t.label} ${t.value}`);
+    // The held timing figures belong to the previous window: left out while it changes.
+    if (!postureStale) for (const t of timing) if (t.value !== DASH) parts.push(`${t.label} ${t.value}`);
     if (usageLoad.availability !== 'unavailable' && typeof usage?.total_cost === 'number') {
       parts.push(`${fmtMoney(usage.total_cost, usage.currency)} spend`);
     }
@@ -4017,7 +4274,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
       text: [...parts, ...(signature ? [signature.short] : [])].join(' · '),
       full: [...parts, ...(signature ? [signature.full] : [])].join(' · '),
     };
-  }, [timing, usage, usageLoad.availability, coverage, signatureItems]);
+  }, [timing, postureStale, usage, usageLoad.availability, coverage, signatureItems]);
 
   // ----- The header control cluster --------------------------------------- //
   const headerControls = (
@@ -4146,6 +4403,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
    * its title and caption name what it holds.
    */
   const timingShown = canMetrics ? timing : [];
+  /**
+   * While the window changes, the posture figures below the strip (Response time, the
+   * Deeper analytics timing tiles and the flow's open-case count) are the previous
+   * window's too: they read muted under the same "Loading 7 days" as the strip, with no
+   * explanation, so no figure sits under a caption naming another window (FXD1).
+   */
+  const postureLoadingLabel = postureStale ? `Loading ${windowLabel(hours)}` : undefined;
   const efficiencyTileCount = timingShown.length + (canCost ? 1 : 0);
   const efficiencyShown = efficiencyTileCount > 0 || canSources;
   const efficiencyTitle = canMetrics || canCost ? 'Efficiency and cost' : 'Sources';
@@ -4327,11 +4591,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       density="comfortable"
                       size="fluid"
                       numeral="hero"
-                      // Roll on the first load and on a window change; a refresh (LIVE or
-                      // manual) shows the new value without motion.
+                      // A refresh (LIVE or manual) shows the new value without motion. On
+                      // a window change the previous window's figures stay muted under
+                      // "Loading 7 days" (FXD1) as plain text, so the new window's
+                      // numeral mounts at its own value: a roll from the old figure would
+                      // pass through numbers no window holds, under the new caption.
                       roll={rollKpis}
+                      pending={postureStale}
                       goodDirection={kpi.goodDirection}
-                      countTo={kpi.countTo}
+                      countTo={postureStale ? undefined : kpi.countTo}
                       format={kpi.format}
                       formatCompact={fmtSnapshotCenter}
                       onClick={() => toggleKpiPanel(kpi.testId)}
@@ -4360,14 +4628,19 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   // focus stop. Every card is FORCED closed while ANY drill-down or help
                   // popover is open (two stacked explanations of one numeral is worse than
                   // either alone, and the focus return would otherwise pop one back open).
-                  return kpi.trend ? (
+                  const formula = kpi.drilldown.explanation?.summary;
+                  return kpi.trend || formula ? (
                     <MetricHoverTrend
                       key={kpi.testId}
-                      {...kpi.trend}
+                      {...(kpi.trend ?? { metric: kpi.label, points: undefined, windowLabel: '' })}
+                      showTrend={Boolean(kpi.trend)}
                       preview={{
                         eyebrow: kpi.label,
                         population: kpi.drilldown.population,
-                        affordance: 'Select for the full population, filters and paging.',
+                        formula,
+                        affordance: formula
+                          ? 'Select for the calculation, the full population, filters and paging.'
+                          : 'Select for the full population, filters and paging.',
                       }}
                       focusable={false}
                       forceClosed={openKpi !== null || helpOpenKpi !== null}
@@ -4488,17 +4761,23 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         <NoiseFunnel
                           data={noise}
                           onStageClick={onStageClick}
-                          openCases={{
-                            count: posture?.aging.queue_depth ?? derived.open,
-                            // `queue_depth` is COHORT-scoped (open cases that arrived in the
-                            // window), so its completeness is the window's (`#103`
-                            // `window_covered`). Without a posture rollup the fallback count is
-                            // the fetched page, whose completeness the store proves via
-                            // `window_total_exact`.
-                            partial: posture
-                              ? !postureCovered
-                              : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
-                          }}
+                          // Withheld while the window changes: the held posture counts the
+                          // previous window's open cases, under this flow's new window (FXD1).
+                          openCases={
+                            postureStale
+                              ? undefined
+                              : {
+                                  count: posture?.aging.queue_depth ?? derived.open,
+                                  // `queue_depth` is COHORT-scoped (open cases that arrived in
+                                  // the window), so its completeness is the window's (`#103`
+                                  // `window_covered`). Without a posture rollup the fallback
+                                  // count is the fetched page, whose completeness the store
+                                  // proves via `window_total_exact`.
+                                  partial: posture
+                                    ? !postureCovered
+                                    : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
+                                }
+                          }
                           onOpenCasesClick={onOpenCasesClick}
                           hidden={noiseHidden}
                           onToggleHidden={toggleNoiseHidden}
@@ -4547,6 +4826,20 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       alertsIngested={humanVsAi.alerts}
                       crossReference={
                         crossRefs.aiAgent ? 'AI agent is the same count as Auto-closed above.' : undefined
+                      }
+                      // Each count and share explains itself over the window's closed
+                      // cases (FXD1).
+                      explainFigure={(band, figure) =>
+                        humanVsAi.totals ? (
+                          <ExplainTrigger
+                            explanation={explainCloseShare(humanVsAi.totals, band, `the last ${trendSpanLabel(hours)}`)}
+                            className="flex-wrap items-baseline gap-x-1.5"
+                          >
+                            {figure}
+                          </ExplainTrigger>
+                        ) : (
+                          figure
+                        )
                       }
                       className="h-full w-full"
                     />
@@ -4615,6 +4908,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         title="Open cases"
                         windowCaption={windowPhrase}
                         caption="Arrived in this window, still open"
+                        population="cases from this window still open"
                         total={derived.open}
                         delta={snapshotDeltaHonest ? countDelta(derived.open, prev?.open ?? null) : null}
                         bound={snapshotBound}
@@ -4648,6 +4942,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         title="Cases resolved"
                         windowCaption={windowPhrase}
                         caption="Arrived in this window, now resolved or closed"
+                        population="cases from this window now resolved or closed"
                         total={derived.resolved}
                         delta={
                           snapshotDeltaHonest ? countDelta(derived.resolved, prev?.resolved ?? null) : null
@@ -4740,13 +5035,27 @@ export default function Overview({ onNavigate }: OverviewProps) {
                           colorToken="info"
                           side="top"
                           className="h-auto"
+                          forceClosed={timingExplainOpen === 'response-mttd'}
                         >
                           <TimingStat
                             label="MTTD"
                             sub="Detect · log arrival → case"
                             block={mttdBlock}
                             dotClass="bg-info"
-                            help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
+                            help={MTTD_HELP}
+                            pending={postureLoadingLabel}
+                            explain={(value) => (
+                              <TimingExplain
+                                metric="mttd"
+                                title="Time to detect"
+                                block={mttdBlock}
+                                windowHours={hours}
+                                window={`the ${windowPhrase}`}
+                                onOpenChange={timingExplainOpenChange('response-mttd')}
+                              >
+                                {value}
+                              </TimingExplain>
+                            )}
                           />
                         </MetricHoverTrend>
                         <MetricHoverTrend
@@ -4757,6 +5066,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                           colorToken="success"
                           side="top"
                           className="h-auto"
+                          forceClosed={timingExplainOpen === 'response-respond'}
                         >
                           {/* "Respond" is the ACK clock (`mtta_minutes`), NOT `mttr_minutes`:
                               calling it MTTR would present time-to-first-human-action as
@@ -4765,10 +5075,23 @@ export default function Overview({ onNavigate }: OverviewProps) {
                               figures read as one measurement shown twice, not a coincidence. */}
                           <TimingStat
                             label="Respond"
-                            sub="First human action, e.g. assignment or acknowledgement · same clock as MTTA"
+                            sub={RESPOND_SUB}
                             block={respondBlock}
                             dotClass="bg-success"
-                            help="Mean time to respond: the first active human response (investigating / escalated / assignment / ack)."
+                            help={RESPOND_HELP}
+                            pending={postureLoadingLabel}
+                            explain={(value) => (
+                              <TimingExplain
+                                metric="mtta"
+                                title="Respond"
+                                block={respondBlock}
+                                windowHours={hours}
+                                window={`the ${windowPhrase}`}
+                                onOpenChange={timingExplainOpenChange('response-respond')}
+                              >
+                                {value}
+                              </TimingExplain>
+                            )}
                           />
                         </MetricHoverTrend>
                       </div>
@@ -4896,8 +5219,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                 size="fluid"
                                 label={s.label}
                                 value={s.value}
-                                context={measured ? s.sub : undefined}
-                                sub={measured ? undefined : s.sub}
+                                // A held figure of the previous window reads muted under
+                                // "Loading 7 days", with no explanation (FXD1).
+                                pending={postureStale}
+                                context={measured && !postureLoadingLabel ? s.sub : undefined}
+                                sub={postureLoadingLabel ?? (measured ? undefined : s.sub)}
                                 accent={s.accent}
                                 icon={Clock3}
                                 goodDirection="down"
@@ -4907,6 +5233,23 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                     : s.help
                                 }
                                 askTopic={kpiTopic(s.key)}
+                                explain={
+                                  measured && !postureStale
+                                    ? (numeral) => (
+                                        <TimingExplain
+                                          metric={s.key}
+                                          title={s.label}
+                                          block={s.block}
+                                          windowHours={hours}
+                                          window={`the ${windowPhrase}`}
+                                          byDecider={s.key === 'mttr' ? mttrByDecider : undefined}
+                                          onOpenChange={timingExplainOpenChange(`deeper-${s.key}`)}
+                                        >
+                                          {numeral}
+                                        </TimingExplain>
+                                      )
+                                    : undefined
+                                }
                                 // The context/state line wraps in its two-line slot (KpiTile,
                                 // every hero strip since the final review): at 1280 with the
                                 // navigation pinned these tiles are ~215px, and a server reason
@@ -4931,6 +5274,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                 // not clickable, so a press toggles the card (touch).
                                 focusable={false}
                                 toggleOnClick={true}
+                                forceClosed={timingExplainOpen === `deeper-${s.key}`}
                               >
                                 {tile}
                               </MetricHoverTrend>

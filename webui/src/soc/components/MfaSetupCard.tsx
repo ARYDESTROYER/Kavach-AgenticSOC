@@ -39,6 +39,9 @@
  * server mints the session + cookie and `onComplete` receives the verify-shaped
  * LoginResult. A rejected/expired pending token surfaces via `onPendingExpired`.
  *
+ * ERRORS (Round 16): a failure shows a fixed sentence chosen by its status
+ * (`mfaFailText`), as the sign-in page's `failText` does, never the server's own text.
+ *
  * All values shown here are the user's own enrollment data (trusted), but the secret
  * + recovery codes are sensitive — they are shown only transiently and never persisted
  * client-side beyond the component's state.
@@ -70,6 +73,8 @@ import { Alert, AlertDescription } from '@/ui/alert';
 import { Card, CardContent } from '@/ui/card';
 import { Badge } from '@/ui/badge';
 import { Separator } from '@/ui/separator';
+import { cn } from '@/lib/cn';
+import { FieldError, LOGIN_ERROR_ID, LoginTextInput } from '@/soc/components/auth/loginParts';
 
 /**
  * Stand-in for the QR encoder when its chunk cannot be fetched. It reports the failure
@@ -88,9 +93,10 @@ function QrChunkUnavailable({ onError }: { onError?: () => void }) {
 }
 
 /**
- * The QR encoder (~6 kB) loads only when an enrollment actually shows a code: this card
- * is on the eager login path, and nearly every sign-in never enrolls. The secret and URI
- * are always shown as text, so scanning is never the only path while it loads.
+ * The QR encoder (~6 kB) loads only when an enrollment actually shows a code: nearly
+ * every sign-in never enrolls (the sign-in page loads this card itself only for an
+ * enrollment step). The secret and URI are always shown as text, so scanning is never
+ * the only path while it loads.
  *
  * The import fails soft. Login renders outside every error boundary, so a rejected chunk
  * (a stale hashed file after a redeploy or supervised update, a proxy, going offline)
@@ -174,6 +180,28 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
   );
 }
 
+/**
+ * The fixed sentence for a failed step. The server's text only picks the sentence (a lapsed
+ * setup, an account set in the environment, a turn-off on an account whose two-factor is
+ * already off) and is never shown. A wrong code answers 400,
+ * or 401 at sign-in (`pending`); any other 401 is a fresh sign-in that did not happen.
+ */
+function mfaFailText(err: unknown, step: 'setup' | 'confirm' | 'disable', pending: boolean): string {
+  const status = err instanceof ApiError ? err.status : -1;
+  const said = err instanceof ApiError ? err.message ?? '' : '';
+  if (status === 0 || status >= 500) return 'Could not reach the server. Try again.';
+  if (status === 429) return 'Too many attempts. Wait a few minutes, then try again.';
+  if (status === 409) return 'Two-factor is already on for this account.';
+  if (status === 400 && /environment/i.test(said)) return 'This account is set by the server and cannot use two-factor.';
+  if (status === 400 && /no pending/i.test(said)) return 'This setup has ended. Start again.';
+  if (status === 400 && /not enabled/i.test(said)) return 'Two-factor is already off for this account.';
+  if (step !== 'setup' && (status === 400 || (status === 401 && pending))) {
+    return step === 'disable' ? 'That code did not work. Enter a current code or a recovery code.' : 'That code did not work. Enter the current code from your app.';
+  }
+  if (status === 401) return 'Sign in again, then try again.';
+  return step === 'setup' ? 'Could not start two-factor setup.' : step === 'confirm' ? 'Could not confirm the code.' : 'Could not turn off two-factor.';
+}
+
 /** A busy submit looks unavailable but keeps focus (see the module comment). */
 const BUSY_INERT = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-50';
 
@@ -212,6 +240,9 @@ export function MfaSetupCard({
   // pulls focus back to it).
   const focusOnMount = React.useCallback((el: HTMLElement | null) => el?.focus(), []);
   const [disableCode, setDisableCode] = React.useState('');
+  // The sign-in page's 44px field (16px text on phones, so no focus zoom) in the login
+  // mode; the dense Settings field otherwise.
+  const CodeInput = pendingToken ? LoginTextInput : Input;
 
   /**
    * Is this error the pending token being rejected (vs a retryable wrong code)?
@@ -243,7 +274,7 @@ export function MfaSetupCard({
       if (isPendingRejected(e, 'setup')) {
         onPendingExpired?.();
       } else {
-        setError(e instanceof ApiError ? e.message : 'Could not start two-factor setup.');
+        setError(mfaFailText(e, 'setup', !!pendingToken));
       }
     } finally {
       setBusy(false);
@@ -319,7 +350,7 @@ export function MfaSetupCard({
         onPendingExpired?.();
       } else {
         refocusOnError.current = true;
-        setError(err instanceof ApiError ? err.message : 'Could not confirm the code.');
+        setError(mfaFailText(err, 'confirm', !!pendingToken));
       }
     } finally {
       setBusy(false);
@@ -338,7 +369,7 @@ export function MfaSetupCard({
       onChanged?.();
     } catch (err) {
       refocusOnError.current = true;
-      setError(err instanceof ApiError ? err.message : 'Could not turn off two-factor.');
+      setError(mfaFailText(err, 'disable', false));
     } finally {
       setBusy(false);
     }
@@ -352,6 +383,13 @@ export function MfaSetupCard({
     );
     downloadBlob('agentic-soc-recovery-codes.txt', blob);
   };
+
+  // On the sign-in page a refused code shows under the code field, as every sign-in
+  // field error does: the card's top alert sat above the QR code, off screen on a phone,
+  // and pushed the field being retyped down.
+  const fieldError = pendingToken && enroll ? error : null;
+  // The sign-in page's 16px rhythm between sections; the Settings card keeps 20px.
+  const rhythm = pendingToken ? 'space-y-4' : 'space-y-5';
 
   const body = (
     <>
@@ -372,7 +410,7 @@ export function MfaSetupCard({
         </div>
       )}
 
-        {error ? (
+        {error && !fieldError ? (
           <Alert variant="destructive">
             <AlertCircle aria-hidden />
             <AlertDescription>{error}</AlertDescription>
@@ -459,12 +497,15 @@ export function MfaSetupCard({
 
         {/* ---- Enrollment in progress: QR + secret + recovery + confirm ----- */}
         {enroll ? (
-          <div className="space-y-5">
+          <div className={rhythm}>
             {/* A host-started card sits under its Settings row, whose hairline already
                 divides it from the row; a second rule would stack under it. */}
             {hostStarted ? null : <Separator />}
-            <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
-              <div className="shrink-0">
+            {/* On the sign-in page (`pendingToken`) the 400px column is too narrow for the
+                QR code beside the text: it sits centred above it, and the secret wraps. The
+                sign-in page keeps its 16px rhythm between sections. */}
+            <div className={cn('flex flex-col', pendingToken ? 'gap-4' : 'gap-5 sm:flex-row sm:items-start')}>
+              <div className={pendingToken ? 'self-center' : 'shrink-0'}>
                 {qrFailed ? (
                   <div className="flex h-[180px] w-[180px] items-center justify-center rounded-md border border-dashed border-border bg-muted/40 p-3 text-center text-xs text-muted-foreground">
                     QR code unavailable. Enter the secret by hand below.
@@ -498,7 +539,7 @@ export function MfaSetupCard({
                 <div className="space-y-1.5">
                   <Label className="text-xs">Secret</Label>
                   <div className="flex items-center gap-2">
-                    <code className="min-w-0 flex-1 truncate rounded border border-border bg-muted px-2 py-1 font-mono text-xs">
+                    <code className={cn('min-w-0 flex-1 rounded border border-border bg-muted px-2 py-1 font-mono text-xs', pendingToken ? 'break-all' : 'truncate')}>
                       {enroll.secret}
                     </code>
                     <CopyButton text={enroll.secret} />
@@ -556,30 +597,35 @@ export function MfaSetupCard({
 
             <form onSubmit={confirm} className="space-y-2" noValidate>
               <Label htmlFor="mfa-confirm-code">3. Enter the 6-digit code to finish</Label>
-              <div className="flex gap-2">
+              {/* On the sign-in page the field and the button use its 44px, full-width grammar,
+                  with a refused code 8px under the field and the button 16px below. */}
+              <div className={pendingToken ? 'space-y-2' : 'flex gap-2'}>
                 {/* No autoFocus in any mode: focus starts at step 1 (or stays on the
                     login-phase mode heading), and yanking it to this last field would skip
                     the QR code, secret and one-time recovery codes. Read-only, not
                     disabled, while the request runs, so focus is never dropped. */}
-                <Input
+                <CodeInput
                   ref={confirmInputRef}
                   id="mfa-confirm-code"
                   inputMode="numeric"
                   autoComplete="one-time-code"
                   placeholder="123456"
-                  className="max-w-[160px]"
+                  className={pendingToken ? undefined : 'max-w-[160px]'}
                   value={confirmCode}
                   onChange={(ev) => setConfirmCode(ev.target.value)}
                   readOnly={busy}
                   aria-busy={busy || undefined}
+                  aria-invalid={fieldError ? true : undefined}
+                  aria-describedby={fieldError ? LOGIN_ERROR_ID : undefined}
                 />
+                <FieldError message={fieldError} />
                 <Button
                   type="submit"
-                  size="sm"
+                  size={pendingToken ? 'default' : 'sm'}
                   // Busy, not disabled: it keeps focus while the code is checked.
                   disabled={!busy && (confirmCode.trim().length < 6 || (!!pendingToken && !savedAck))}
                   aria-disabled={busy || undefined}
-                  className={BUSY_INERT}
+                  className={cn(BUSY_INERT, pendingToken && '!mt-4 h-11 w-full')}
                 >
                   {busy ? <Loader2 className="animate-spin" aria-hidden /> : <Check aria-hidden />}
                   {/* In the login-phase mandated mode a successful confirm IS the login. */}
@@ -602,7 +648,7 @@ export function MfaSetupCard({
 
   // Frameless: a parent supplies the card frame + heading (login MFA-enroll step),
   // so render just the body to avoid a double frame + duplicate heading.
-  if (frameless) return <div ref={rootRef} className="space-y-5">{body}</div>;
+  if (frameless) return <div ref={rootRef} className={rhythm}>{body}</div>;
 
   return (
     <Card>

@@ -133,7 +133,7 @@ function EventFacet({ value, onPick }: { value: string | null; onPick: (event: s
       <PopoverTrigger asChild>
         <FacetTrigger label="Event" current={value ? eventFilterLabel(value) : null} aria-label={value ? `Event: ${eventFilterLabel(value)}` : 'Event'} />
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 p-0">
+      <PopoverContent align="start" aria-label="Event filter" className="w-80 p-0">
         <Command label="Events">
           <CommandInput placeholder="Search events" aria-label="Search events" />
           <CommandList className="max-h-80">
@@ -213,7 +213,7 @@ function ActorFacet({
           aria-label={current || kindLabel ? `Actor: ${[current, kindLabel].filter(Boolean).join(', ')}` : 'Actor'}
         />
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 space-y-3">
+      <PopoverContent align="start" aria-label="Actor filter" className="w-80 space-y-3">
         <form
           className="space-y-1.5"
           onSubmit={(e) => {
@@ -424,7 +424,7 @@ function MoreFilters({
       <PopoverTrigger asChild>
         <FacetTrigger label="More filters" current={count ? `(${count})` : null} aria-label={count ? `More filters, ${count} set` : 'More filters'} />
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80">
+      <PopoverContent align="end" aria-label="More filters" className="w-80">
         {form}
       </PopoverContent>
     </Popover>
@@ -479,7 +479,7 @@ export function AuditCustomRange({
           Custom
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-72">
+      <PopoverContent align="end" aria-label="Custom range" className="w-72">
         <form
           className="space-y-3"
           onSubmit={(e) => {

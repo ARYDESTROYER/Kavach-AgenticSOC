@@ -259,6 +259,9 @@ async def tuning_recommendations(
         "cadence": _safe(cfg.cadence),
         "fp_rate_target": float(cfg.fp_rate_target),
         "min_samples": int(cfg.min_samples),
+        # The z of the Wilson lower bound behind every ``fp_rate`` (additive, so an
+        # explanation can name the confidence in force instead of assuming 1.96).
+        "wilson_z": float(cfg.wilson_z),
         "auto_apply_confirmed": bool(cfg.auto_apply_confirmed),
         "window_cases": len(cases),
         "rule_noise": rule_noise,

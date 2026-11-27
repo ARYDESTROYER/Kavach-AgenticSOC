@@ -27,6 +27,7 @@ from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.middleware.request_id import RequestIdMiddleware
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 PASSWORD = "rbac-switch-pass-1"
 STALE = "2000-01-01T00:00:00+00:00"
@@ -83,6 +84,7 @@ def _as(client: TestClient, role: str, username: str | None = None) -> str:
     username = username or f"{role.replace('_', '-')}-person"
     created = client.post("/api/users", json={"username": username, "password": PASSWORD, "role": role})
     assert created.status_code == 200, created.text
+    ready_user(client, username, PASSWORD)
     client.cookies.clear()
     signed_in = client.post("/api/auth/login", json={"username": username, "password": PASSWORD})
     assert signed_in.status_code == 200, signed_in.text
@@ -779,6 +781,7 @@ def test_a_users_manage_holder_cannot_make_itself_super_admin():
             made = client.post("/api/users", json={"username": "new-analyst", "password": PASSWORD,
                                                    "role": "analyst_tier1"})
             assert made.status_code == 200, made.text
+            ready_user(client, "new-analyst", PASSWORD)
             moved = client.put("/api/users/new-analyst", json={"role": "analyst_tier2"})
             assert moved.status_code == 200, moved.text
 
@@ -791,6 +794,7 @@ def test_a_users_manage_holder_cannot_change_or_delete_a_super_admin_account():
         made = client.post("/api/users", json={"username": "second-admin", "password": PASSWORD,
                                                "role": "super_admin"})
         assert made.status_code == 200, made.text
+        ready_user(client, "second-admin", PASSWORD)
         before = _stored(client, "second-admin")
         username = _as(client, "soc_manager", "mgr")
         for patch in ({"password": "taken-over-pass-1"}, {"active": False}, {"role": "analyst_tier1"},

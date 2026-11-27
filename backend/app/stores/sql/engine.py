@@ -10,6 +10,7 @@ here: SQLAlchemy resolves the ``+asyncpg`` driver lazily from the URL only when 
 from __future__ import annotations
 
 import logging
+import weakref
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -65,10 +66,55 @@ async def create_all(engine: AsyncEngine) -> None:
     reconcile in-place column-type migrations for tables that already exist."""
     if engine.url.get_backend_name() == "postgresql":
         await _ensure_pgvector(engine)
+        await probe_pgvector(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await ensure_schema_migrations(engine)
     logger.info("SQL state schema ensured")
+
+
+# Round 16 (WP06): whether the ``vector`` extension is installed, read ONCE per engine
+# from ``pg_extension`` at start (``create_all``). The SQL vector store reads the answer:
+# with it, a corpus too large for its in-process matrix (or a process without numpy) is
+# ranked in the database with pgvector's ``<=>``. Only a probe that ran is remembered: a
+# probe that could not connect leaves no answer, and the store then asks once itself.
+_PGVECTOR_PROBES: weakref.WeakKeyDictionary[AsyncEngine, bool] = weakref.WeakKeyDictionary()
+
+
+def pgvector_probed(engine: AsyncEngine) -> bool | None:
+    """The remembered probe for ``engine``: True (installed), False (absent or not
+    PostgreSQL) or None (not probed yet)."""
+    if engine.url.get_backend_name() != "postgresql":
+        return False
+    return _PGVECTOR_PROBES.get(engine)
+
+
+async def probe_pgvector(engine: AsyncEngine) -> bool:
+    """Is the pgvector extension installed in ``engine``'s database? One
+    ``pg_extension`` read, remembered for the engine's lifetime. Never raises: a failed
+    read answers False for this call and is not remembered."""
+    if engine.url.get_backend_name() != "postgresql":
+        return False
+    known = _PGVECTOR_PROBES.get(engine)
+    if known is not None:
+        return known
+    from sqlalchemy import text
+
+    try:
+        async with engine.connect() as conn:
+            version = await conn.scalar(
+                text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+            )
+    except Exception as exc:  # noqa: BLE001 (RAG then ranks in process)
+        logger.warning("Could not read pg_extension (%s); RAG ranks vectors in process", exc)
+        return False
+    available = bool(version)
+    _PGVECTOR_PROBES[engine] = available
+    if available:
+        logger.info("pgvector %s found; RAG can rank a large corpus in the database", version)
+    else:
+        logger.info("pgvector not installed; RAG ranks vectors in process")
+    return available
 
 
 # ``audit.id`` shipped as 32-bit ``integer`` through 0.1.13 while the strict audit
@@ -152,8 +198,9 @@ async def _ensure_pgvector(engine: AsyncEngine) -> None:
     """Best-effort ``CREATE EXTENSION IF NOT EXISTS vector`` on Postgres.
 
     Lazily imports nothing pg-specific (raw SQL); failures (e.g. extension not
-    installed / insufficient privilege) are logged and tolerated — the SQL vector
-    store falls back to JSON+Python cosine when no native vector column exists."""
+    installed / insufficient privilege) are logged and tolerated. :func:`probe_pgvector`
+    then records whether the extension is there; without it the SQL vector store ranks
+    the stored JSON embeddings in process (no native vector column either way)."""
     from sqlalchemy import text
 
     try:

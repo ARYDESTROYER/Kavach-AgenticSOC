@@ -340,12 +340,12 @@ export function KnowledgeSection({
       <SettingsGroup
         id="knowledge-threat"
         title="Threat context panel"
-        caption="The Threat context tab on each case. A missing enrichment or MITRE lookup leaves its part empty, never an error."
+        caption="The Threat context section on each case's Evidence tab. A missing enrichment or MITRE lookup leaves its part empty, never an error."
       >
         <SettingRow
           variant="switch"
           label="Threat context panel enabled"
-          help="Assemble and show the Threat context tab on each case."
+          help="Assemble and show the Threat context section on each case's Evidence tab."
           checked={cfg.enabled ?? true}
           onCheckedChange={(v) => set({ enabled: v })}
         />

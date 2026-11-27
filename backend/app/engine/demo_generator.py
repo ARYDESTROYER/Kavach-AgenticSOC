@@ -46,15 +46,21 @@ from ..constants import CaseStatus, DecisionBy, Disposition, EntityType, SourceS
 from ..models import (
     Case,
     CaseComment,
+    Cluster,
     Entity,
     EvidenceItem,
     FeedbackEntry,
     RawEvent,
     RiskBreakdown,
     StatusHistoryEntry,
+    TriggerReason,
+    UsageDoc,
 )
 from ..ocsf import OCSFEvent, ecs_to_ocsf
+from .analyst_outcomes import CLASSIFIED_DISPOSITION_KEY, analyst_confirmed_outcome
 from .case_manager import Decision, decide
+from .risk import compute_risk
+from .risk_explain import explain_risk
 
 DEMO_SOURCE_IDS: tuple[str, ...] = (
     "demo-splunk", "demo-qradar", "demo-wazuh", "demo-syslog", "demo-entra-id",
@@ -847,6 +853,26 @@ def _seed_confidence(raw: float, *, verdict: Verdict, agent_close: bool) -> floa
     return round(0.5 + raw * 0.49, 2)
 
 
+#: The most a seeded investigation cost, in USD (the spread one draw picks from).
+_SEED_COST_MAX_USD = 0.04
+
+
+def _seed_token_cost(raw: float) -> float:
+    """A seeded case's investigation cost from one uniform draw ``raw`` (Round 16, B48):
+    what the Demo gateway charges for one investigator call of that many prompt tokens
+    (``llm.gateway._demo_synthetic_cost`` at its simulated input rate), so the cost
+    re-derives from the tokens of the ledger row :func:`demo_seeded_usage_docs` writes
+    for the case."""
+    from ..llm.gateway import _DEMO_IN_RATE, _demo_synthetic_cost
+
+    return _demo_synthetic_cost(_seed_prompt_tokens(raw * _SEED_COST_MAX_USD, _DEMO_IN_RATE), 0)
+
+
+def _seed_prompt_tokens(cost: float, rate: float) -> int:
+    """The whole number of prompt tokens that cost ``cost`` at ``rate`` USD a token."""
+    return max(0, round(round(cost, 6) / rate)) if rate > 0 else 0
+
+
 def seeded_decision(case: Case) -> Decision:
     """The deterministic decision a seeded case was given when it was opened: what
     ``case_manager.decide()`` returns for its verdict, confidence and risk under
@@ -916,6 +942,18 @@ def _with_seeded_decision(case: Case, *, analyst: str = "", now_ms: int | None =
         StatusHistoryEntry(from_status=CaseStatus.INVESTIGATING.value, to_status=status, by=person,
                            at=closed, reason=terminal_reason),
     ]
+    # Round 16 (B61): the close records the disposition the analyst chose, as the live
+    # close writes it (``routes._perform_case_action``: the Console's close asks for the
+    # disposition and declares it), so the case reads as analyst confirmed.
+    entry: dict[str, Any] = {
+        "ts": closed, "event": "analyst_action",
+        "action": "close" if status == CaseStatus.CLOSED.value else "resolve",
+        "analyst": person, "note": "",
+    }
+    disposition = getattr(case.disposition, "value", case.disposition)
+    if disposition:
+        entry[CLASSIFIED_DISPOSITION_KEY] = str(disposition)
+    case.history.append(entry)
     case.acknowledged_at = datetime.fromtimestamp(ack_ms / 1000, tz=timezone.utc)
     case.updated_at = closed
     if escalated:
@@ -923,36 +961,93 @@ def _with_seeded_decision(case: Case, *, analyst: str = "", now_ms: int | None =
     return case
 
 
-def _demo_risk_breakdown(total: float) -> RiskBreakdown:
-    """Return varied demo factors that reconcile to ``total`` under defaults.
+def seed_scoring_prefs(prefs: Preferences | None = None) -> Preferences:
+    """The settings a seeded case's risk is scored under (Round 16, B62): the shipped
+    default risk weights, as the seeded history was decided under the shipped default
+    policy (:data:`SEED_AUTO_CLOSE_POLICY`), with the asset map of ``prefs`` (the
+    settings the Demo runs under: its asset criticality entries and network ranges), so
+    a seeded case's asset factor is the criticality its impact chip reads. Without
+    ``prefs``, the shipped defaults (an empty asset map)."""
+    base = Preferences()
+    if prefs is None:
+        return base
+    return base.model_copy(update={
+        "asset_criticality": dict(prefs.asset_criticality),
+        "asset_networks": [network.model_copy() for network in prefs.asset_networks],
+    })
 
-    Demo cases pre-date a persisted risk-weight snapshot.  Keeping their five
-    factor values internally coherent with the default ``RiskWeights`` makes the
-    Timeline's read-only risk explanation useful instead of presenting invented,
-    non-reconciling arithmetic.  If an operator later changes those weights, the
-    API still reports the difference honestly rather than rewriting history.
-    """
-    risk = max(0.0, min(100.0, float(total)))
-    spread = min(risk, 100.0 - risk, 15.0) / 15.0
-    volume = round(risk + 10.0 * spread, 2)
-    velocity = round(risk - 5.0 * spread, 2)
-    reputation = round(risk + 5.0 * spread, 2)
-    diversity = round(risk - 10.0 * spread, 2)
-    # Solve the final factor after rounding the others so the persisted demo
-    # values reproduce the displayed score with the default 25/20/30/15/10 mix.
-    asset = round(
-        (risk - 0.25 * volume - 0.20 * velocity - 0.30 * reputation - 0.15 * diversity)
-        / 0.10,
-        2,
+
+def _seed_first_seen(first_seen_ms: int | None, created_ms: int) -> int:
+    """When a seeded case's first member event happened: its ``first_seen_millis``, or a
+    minute before it was opened when it has none, never after it was opened. The same
+    rule its Demo source dates the case's own rows by
+    (``demo_sources.NativeDemoSource.record_case_history``)."""
+    first = int(first_seen_ms or (created_ms - 60_000))
+    return min(first, created_ms)
+
+
+def _seed_member_span_ms(first_ms: int, created_ms: int, count: int) -> int:
+    """How far apart a seeded case's first and last member events are. Its Demo source
+    dates the case's rows evenly from first seen to opened (row ``k`` of ``n`` at
+    ``first + (opened - first) * k // n``), so the last member is row ``n - 1``; the
+    score's window is that span, which the case's Evidence rows show."""
+    if count <= 1:
+        return 0
+    return (created_ms - first_ms) * (count - 1) // count
+
+
+def seeded_risk(
+    *, entity: Entity, rule_ids: list[str], member_ids: list[str], first_seen_ms: int | None,
+    created_ms: int, target: float, scoring: Preferences, agent_close: bool = False,
+    min_members: int = 1,
+) -> tuple[RiskBreakdown, list[str]]:
+    """A seeded case's risk, computed as the pipeline computes it (Round 16, B62):
+    ``compute_risk`` over a cluster made from the case's own entity, rules and member
+    events, with the inputs ``explain_risk`` records beside it, so every factor
+    reproduces from the case (volume from its member count, velocity from its members'
+    span, diversity from its rules, reputation, and the asset criticality of the asset
+    map in ``scoring``). Reputation is an IP's alone: for an IP case it is solved, as a
+    whole number clamped to 0 to 100, so the total comes as close to the template's
+    ``target`` as the other factors allow; any other entity has none.
+
+    An automatic close (``agent_close``) must be one ``decide()`` makes under
+    :data:`SEED_AUTO_CLOSE_POLICY`: when the score is over that policy's risk bar, the
+    case keeps fewer of its drawn member events (never fewer than ``min_members``, the
+    template's smallest draw) until it is not. Returns the breakdown and the member ids
+    kept (the first ones drawn). Pure and deterministic: no random draw."""
+    first = _seed_first_seen(first_seen_ms, created_ms)
+    is_ip = getattr(entity.type, "value", entity.type) == EntityType.IP.value
+    weights = scoring.risk_weights
+    total_weight = (
+        weights.volume + weights.velocity + weights.reputation
+        + weights.diversity + weights.asset_criticality
+    ) or 1.0
+    bar = SEED_AUTO_CLOSE_POLICY.false_positive.max_risk_score
+    kept = list(member_ids)
+    floor = max(1, min(int(min_members), len(kept) or 1))
+    while True:
+        count = max(1, len(kept))
+        cluster = Cluster(
+            signature="demo-seed", entity=entity, group_by=entity.type,
+            rule_values=list(dict.fromkeys(str(r) for r in rule_ids if r)),
+            member_event_ids=list(kept), count=count, first_seen_millis=first,
+            last_seen_millis=first + _seed_member_span_ms(first, created_ms, count),
+        )
+        reputation = 0.0
+        if is_ip and weights.reputation > 0:
+            rest = compute_risk(cluster, scoring, 0.0).total
+            solved = (float(target) - rest) * total_weight / weights.reputation
+            reputation = float(max(0, min(100, round(solved))))
+        breakdown = compute_risk(cluster, scoring, reputation)
+        if not agent_close or breakdown.total <= bar or len(kept) <= floor:
+            break
+        kept = kept[:-1]
+    inputs = explain_risk(
+        cluster, scoring, reputation,
+        reputation_source="enrichment" if is_ip else "not_ip_entity",
+        scored_at=_iso(created_ms),
     )
-    return RiskBreakdown(
-        volume=volume,
-        velocity=velocity,
-        reputation=reputation,
-        diversity=diversity,
-        asset_criticality=max(0.0, min(100.0, asset)),
-        total=round(risk, 2),
-    )
+    return breakdown.model_copy(update={"inputs": inputs}), kept
 
 
 #: A verdict as the console words it in a seeded summary or status reason ("Outbound data
@@ -992,6 +1087,7 @@ def _hist_case(
     rng: random.Random, org: Org, tmpl: dict[str, Any], *, cid: str, sig_suffix: str,
     created_ms: int, first_seen_ms: int, idx: int, ordinal: int,
     status: CaseStatus | None = None, now_ms: int | None = None,
+    scoring: Preferences | None = None, graded: bool = False,
 ) -> Case:
     """Build ONE finished/near-finished demo Case from a template (shared by the
     historical spread and the recent pre-seed). ``status`` overrides the template's.
@@ -1002,7 +1098,8 @@ def _hist_case(
     its analyst (assignee and comment author) is on the Demo SOC team or is the triage
     automation, never the account the case is about, and an analyst-closed case is
     acknowledged and then resolved by that analyst after it was opened, never after
-    ``now_ms``."""
+    ``now_ms``. With ``graded``, an automatic false positive close carries an analyst's
+    confirmation (:func:`_seed_fp_confirmation`)."""
     from .demo_sources import source_user_name
 
     source_key, source_id, rule = seeded_case_detection(tmpl, idx, ordinal=ordinal)
@@ -1035,8 +1132,9 @@ def _hist_case(
     notifications_sent: list[dict[str, Any]] = []
     if verdict == Verdict.TRUE_POSITIVE and idx % 2 == 0:
         notifications_sent.append({
+            # ``type``, as the live dispatcher records a send (``notifications/dispatch.py``).
             "ts": created, "trigger": "on_true_positive", "channel_id": "demo-email",
-            "channel_type": "email", "ok": True, "detail": "delivered (simulated)",
+            "type": "email", "ok": True, "detail": "delivered (simulated)",
         })
     automation_actions: list[dict[str, Any]] = []
     if idx % 4 == 0:
@@ -1053,6 +1151,22 @@ def _hist_case(
         from_status="new", to_status=st.value, by=decision_by.value,
         at=created, reason=f"demo: {tmpl['rname']}, {_VERDICT_TEXT[verdict]}",
     )]
+    # The seed's draws for this case, in the order they have always been taken (the
+    # member count, the confidence, the persona, the cost), so the seed's stream and
+    # every later case stay as they were. One draw for every case's confidence (the
+    # stream never depends on the outcome); an automatic close cleared the policy's
+    # bar, as decide() requires.
+    member_ids = [f"demo-hist-{sig_suffix}-{j}" for j in range(rng.randint(2, 9))]
+    confidence = _seed_confidence(rng.random(), verdict=verdict, agent_close=decision_by == DecisionBy.AGENT)
+    persona = rng.choice(["identity", "web", "malware", "recon", "threat_intel", ""])
+    token_cost = _seed_token_cost(rng.random())
+    entity = Entity(type=et, value=entity_val)
+    # Round 16 (B62): the risk the pipeline computes from the case's own inputs.
+    breakdown, member_ids = seeded_risk(
+        entity=entity, rule_ids=[rule], member_ids=member_ids, first_seen_ms=first_seen_ms,
+        created_ms=created_ms, target=risk, scoring=scoring or seed_scoring_prefs(),
+        agent_close=decision_by == DecisionBy.AGENT, min_members=2,
+    )
     case = Case(
         case_id=cid,
         cluster_signature=sig,
@@ -1062,20 +1176,18 @@ def _hist_case(
         source_surface=SourceSurface.AUTOMATED_SCAN if idx % 2 == 0 else SourceSurface.INVESTIGATE,
         origin_surface=SourceSurface.AUTOMATED_SCAN if idx % 2 == 0 else SourceSurface.INVESTIGATE,
         rule_ids=[rule],
-        entity=Entity(type=et, value=entity_val),
+        entity=entity,
         source_id=source_id,
         source_name=DEMO_SOURCE_NAMES[source_id],
         # Unique across the whole seed (the historical spread and the recent pre-seed
         # number their cases from 0 alike): each id is also the id of the case's own row
         # its Demo source keeps (``demo_sources.NativeDemoSource.record_case_history``).
-        member_event_ids=[f"demo-hist-{sig_suffix}-{j}" for j in range(rng.randint(2, 9))],
+        member_event_ids=member_ids,
         first_seen_millis=first_seen_ms,
-        risk_score=risk,
-        risk_breakdown=_demo_risk_breakdown(risk),
+        risk_score=breakdown.total,
+        risk_breakdown=breakdown,
         verdict=verdict,
-        # One draw for every case (the seed's stream never depends on the outcome); an
-        # automatic close cleared the policy's bar, as decide() requires.
-        confidence=_seed_confidence(rng.random(), verdict=verdict, agent_close=decision_by == DecisionBy.AGENT),
+        confidence=confidence,
         evidence=[EvidenceItem(summary=f"{tmpl['rname']} on {entity_val}.", event_ids=[])],
         mitre=list(tmpl["mitre"]),
         recommended_action=("Escalate." if st == CaseStatus.ESCALATED
@@ -1087,24 +1199,55 @@ def _hist_case(
         escalation_level=1 if st == CaseStatus.ESCALATED else 0,
         status_history=status_history,
         decision_by=decision_by,
-        agent_persona=rng.choice(["identity", "web", "malware", "recon", "threat_intel", ""]),
+        agent_persona=persona,
         tags=list(tmpl["tags"]),
         comments=comments,
         assignee=analyst if st in (CaseStatus.ESCALATED, CaseStatus.ON_HOLD) else "",
         title=f"{et.value}:{entity_val} · {rule}",
         summary=f"{tmpl['rname']} ({_VERDICT_TEXT[verdict]}).",
-        token_cost=round(rng.random() * 0.04, 6),
+        # Round 16 (B48): the cost of the one investigator call the Demo ledger records
+        # for the case (``demo_seeded_usage_docs``), so the two agree.
+        token_cost=token_cost,
         notifications_sent=notifications_sent,
         automation_actions=automation_actions,
         knowledge_used=knowledge_used,
         retrieval_history_status="available",
         retrieval_observation_status="measured",
     )
+    if graded and decision_by == DecisionBy.AGENT and verdict == Verdict.FALSE_POSITIVE:
+        # Round 16 (B35): an analyst rated the agent's automatic close and confirmed
+        # it, as the tuner noise's closes are confirmed, so the analyst-confirmed false
+        # positives the precedent corpus holds come from more than one detection.
+        case.feedback = [_seed_fp_confirmation(created, confidence)]
     return _with_seeded_decision(case, analyst=analyst, now_ms=now_ms)
+
+
+#: How many of each false positive template's automatic closes in the historical
+#: spread an analyst confirmed (its first ones), beside the tuner noise's closes.
+_HIST_CONFIRMED_FP_PER_TEMPLATE = 2
+
+
+def _seed_fp_confirmation(ts: str, confidence: float) -> FeedbackEntry:
+    """The explicit synthetic analyst grade that confirms an automatic false positive
+    close: the production tuner and the precedent corpus learn only from independent
+    analyst outcomes, never from the model's verdict alone."""
+    return FeedbackEntry(
+        ts=ts,
+        analyst="demo.analyst",
+        assessment="agree",
+        accuracy=1.0,
+        reasoning_quality=1.0,
+        action_appropriateness=1.0,
+        actual_outcome="false_positive",
+        comment="Synthetic analyst-confirmed demo outcome.",
+        ai_verdict=Verdict.FALSE_POSITIVE.value,
+        ai_confidence=confidence,
+    )
 
 
 def generate_historical_cases(
     seed: int, org: Org, *, history_days: int, run_id: str, now_millis: int,
+    prefs: Preferences | None = None,
 ) -> list[Case]:
     """A believable, BACKDATED spread of finished cases over ``history_days``.
 
@@ -1116,8 +1259,11 @@ def generate_historical_cases(
     acknowledged and resolved by a person on the Demo SOC team after it was opened
     (:func:`_with_seeded_decision`). Deterministic for a given
     seed; every case is tagged ``demo`` + ``case_id='demo-...'`` and carries the
-    ``run_id`` (in a tag) so disable can purge by run_id."""
+    ``run_id`` (in a tag) so disable can purge by run_id. Each case's risk is computed
+    from its own inputs under :func:`seed_scoring_prefs` of ``prefs`` (the settings the
+    Demo runs under; the shipped defaults when omitted)."""
     del run_id  # run identity is carried by _DemoCaseStore's run tag, not fixture facts
+    scoring = seed_scoring_prefs(prefs)
     rng = random.Random(seed ^ 0x5EED)
     seed_tag = f"{seed & 0xFFFFFFFF:08x}"
     cases: list[Case] = []
@@ -1138,7 +1284,8 @@ def generate_historical_cases(
         cases.append(_hist_case(
             rng, org, tmpl, cid=cid, sig_suffix=str(i),
             created_ms=created_ms, first_seen_ms=first_seen_ms, idx=i, ordinal=i // len(_HIST_TEMPLATES),
-            now_ms=now_millis,
+            now_ms=now_millis, scoring=scoring,
+            graded=i // len(_HIST_TEMPLATES) < _HIST_CONFIRMED_FP_PER_TEMPLATE,
         ))
     return cases
 
@@ -1168,6 +1315,7 @@ _PRESEED_TEMPLATES: tuple[tuple[dict[str, Any], CaseStatus], ...] = (
 def generate_recent_preseed(
     seed: int, org: Org, *, run_id: str, now_millis: int,
     recent_minutes: int = 10, case_count: int = 3, event_count: int = 100,
+    prefs: Preferences | None = None,
 ) -> tuple[list[Case], list[dict[str, Any]]]:
     """A tight, backdated "just happened" window: ``case_count`` cases whose
     ``created_at``/``first_seen_millis`` land in the last ``recent_minutes`` (the
@@ -1178,8 +1326,10 @@ def generate_recent_preseed(
     to show 'already processed' volume). Deterministic for a given seed+run_id.
 
     The trio is varied on purpose (TP-escalate + NEEDS_HUMAN + FP) with realistic
-    still-open statuses so at least one case is non-terminal ("just arrived")."""
+    still-open statuses so at least one case is non-terminal ("just arrived"). Risk as
+    in :func:`generate_historical_cases`."""
     del run_id
+    scoring = seed_scoring_prefs(prefs)
     rng = random.Random(seed ^ 0x2ECE47)
     seed_tag = f"{seed & 0xFFFFFFFF:08x}"
     window_ms = max(1, recent_minutes) * 60_000
@@ -1195,6 +1345,7 @@ def generate_recent_preseed(
             rng, org, tmpl, cid=cid, sig_suffix=f"recent-{i}",
             created_ms=created_ms, first_seen_ms=first_seen_ms, idx=i,
             ordinal=i // len(_PRESEED_TEMPLATES), status=status, now_ms=now_millis,
+            scoring=scoring,
         ))
     hits = generate_recent_events(
         rng, org, from_millis=now_millis - window_ms, to_millis=now_millis,
@@ -1223,6 +1374,7 @@ DEMO_TUNER_RULE = "demo_noisy_scanner"
 
 def generate_capability_seed_cases(
     seed: int, org: Org, *, run_id: str, now_millis: int, tuner_fp_count: int = 30,
+    prefs: Preferences | None = None,
 ) -> tuple[list[Case], list[Case]]:
     """Deterministic, demo-scoped seed cases so the HITL / campaign / adaptive-tuning
     capabilities show live signal the instant demo is enabled.
@@ -1250,10 +1402,12 @@ def generate_capability_seed_cases(
     Every case is demo-tagged with a ``demo-…`` case_id (write-guard clean) and dated
     ~now (inside the campaign's daily window AND the tuner's trailing window). The id
     stem is derived from ``seed`` so resets and separate Python processes reproduce
-    identical facts; ``run_id`` remains only an isolation tag on the throwaway store."""
+    identical facts; ``run_id`` remains only an isolation tag on the throwaway store.
+    Risk as in :func:`generate_historical_cases`."""
     from .demo_sources import source_user_name
 
     del run_id
+    scoring = seed_scoring_prefs(prefs)
     rng = random.Random(seed ^ 0xCAB1E)
     tag8 = f"{seed & 0xFFFFFFFF:08x}"
 
@@ -1264,6 +1418,11 @@ def generate_capability_seed_cases(
     for i in range(2):
         source_key, source_id, hitl_rule = seeded_case_detection(
             {"signal": "story", "story": "impossible_travel"}, i, ordinal=i)
+        hitl_entity = Entity(type=EntityType.USER, value=source_user_name(source_key, "pnair"))
+        hitl_breakdown, hitl_members = seeded_risk(
+            entity=hitl_entity, rule_ids=[hitl_rule], member_ids=[f"demo-hitl-{i}-{j}" for j in range(3)],
+            first_seen_ms=hitl_ms - 60_000, created_ms=hitl_ms, target=62.0, scoring=scoring,
+        )
         hitl_cases.append(_with_seeded_decision(Case(
             case_id=f"demo-hitl-{tag8}-{i:04d}",
             cluster_signature=f"demo-cap-hitl-{i}",
@@ -1272,13 +1431,13 @@ def generate_capability_seed_cases(
             source_surface=SourceSurface.AUTOMATED_SCAN,
             origin_surface=SourceSurface.AUTOMATED_SCAN,
             rule_ids=[hitl_rule],
-            entity=Entity(type=EntityType.USER, value=source_user_name(source_key, "pnair")),
+            entity=hitl_entity,
             source_id=source_id,
             source_name=DEMO_SOURCE_NAMES[source_id],
-            member_event_ids=[f"demo-hitl-{i}-{j}" for j in range(3)],
+            member_event_ids=hitl_members,
             first_seen_millis=hitl_ms - 60_000,
-            risk_score=62.0,
-            risk_breakdown=_demo_risk_breakdown(62.0),
+            risk_score=hitl_breakdown.total,
+            risk_breakdown=hitl_breakdown,
             verdict=Verdict.NEEDS_HUMAN, confidence=0.55,
             evidence=[EvidenceItem(summary="Impossible-travel sign-in for pnair.", event_ids=[])],
             mitre=["T1078"],
@@ -1299,11 +1458,17 @@ def generate_capability_seed_cases(
         ), now_ms=now_millis))
 
     # --- Tuner noise: N same-rule CLOSED false-positives, DISTINCT benign entities.
-    tuner_iso = _iso(now_millis - 60_000)
+    tuner_ms = now_millis - 60_000
+    tuner_iso = _iso(tuner_ms)
     tuner_cases: list[Case] = []
     for i in range(max(0, tuner_fp_count)):
         # Each closed automatically, so each cleared the policy's bar (decide()).
         confidence = _seed_confidence(rng.random(), verdict=Verdict.FALSE_POSITIVE, agent_close=True)
+        tuner_entity = Entity(type=EntityType.IP, value=f"10.66.{i // 250}.{i % 250}")
+        tuner_breakdown, tuner_members = seeded_risk(
+            entity=tuner_entity, rule_ids=[DEMO_TUNER_RULE], member_ids=[f"demo-tune-{i}-0"],
+            first_seen_ms=None, created_ms=tuner_ms, target=16.0, scoring=scoring, agent_close=True,
+        )
         tuner_cases.append(_with_seeded_decision(Case(
             case_id=f"demo-tune-{tag8}-{i:04d}",
             cluster_signature=f"demo-cap-tune-{i}",
@@ -1312,12 +1477,12 @@ def generate_capability_seed_cases(
             source_surface=SourceSurface.AUTOMATED_SCAN,
             origin_surface=SourceSurface.AUTOMATED_SCAN,
             rule_ids=[DEMO_TUNER_RULE],
-            entity=Entity(type=EntityType.IP, value=f"10.66.{i // 250}.{i % 250}"),
+            entity=tuner_entity,
             source_id=DEMO_SOURCE_IDS[i % len(DEMO_SOURCE_IDS)],
             source_name=DEMO_SOURCE_NAMES[DEMO_SOURCE_IDS[i % len(DEMO_SOURCE_IDS)]],
-            member_event_ids=[f"demo-tune-{i}-0"],
-            risk_score=16.0,
-            risk_breakdown=_demo_risk_breakdown(16.0),
+            member_event_ids=tuner_members,
+            risk_score=tuner_breakdown.total,
+            risk_breakdown=tuner_breakdown,
             verdict=Verdict.FALSE_POSITIVE, confidence=confidence,
             evidence=[EvidenceItem(summary="Benign scanner noise (auto-closed).", event_ids=[])],
             recommended_action="No action required.",
@@ -1331,18 +1496,7 @@ def generate_capability_seed_cases(
             # Explicit synthetic analyst evidence keeps the demo honest under the
             # production tuner's independent-outcome requirement.  The model verdict
             # alone is never used to train a threshold change.
-            feedback=[FeedbackEntry(
-                ts=tuner_iso,
-                analyst="demo.analyst",
-                assessment="agree",
-                accuracy=1.0,
-                reasoning_quality=1.0,
-                action_appropriateness=1.0,
-                actual_outcome="false_positive",
-                comment="Synthetic analyst-confirmed demo outcome.",
-                ai_verdict=Verdict.FALSE_POSITIVE.value,
-                ai_confidence=confidence,
-            )],
+            feedback=[_seed_fp_confirmation(tuner_iso, confidence)],
             severity_band="low",
             tags=["demo", "noise"],
             title=f"ip · {DEMO_TUNER_RULE} #{i + 1}",
@@ -1351,6 +1505,175 @@ def generate_capability_seed_cases(
             retrieval_observation_status="not_measured",
         ), now_ms=now_millis))
     return hitl_cases, tuner_cases
+
+
+def demo_seeded_usage_docs(cases: Iterable[Case], *, model: str) -> list[UsageDoc]:
+    """The Demo ledger rows of the seeded cases' investigations (Round 16, B48 and B69):
+    one investigator call for each seeded case with a cost, dated when the case was
+    opened, written with its id, its surface and its cost, and with the prompt tokens
+    the Demo gateway charges that cost for at its simulated input rate (no completion
+    or cache tokens). Priced as the Demo gateway prices a call: ``pricing_source``
+    ``zero``, ``price_basis`` ``demo_simulated`` and the simulated rates, so the cost
+    re-derives from the row. The case's cost, its usage, the Cost page and Agent
+    effectiveness then agree. ``model`` is the investigator model the Demo runs under.
+    Seeds of the Demo store, never a model call (#6). Pure."""
+    from ..constants import Role
+    from ..llm.gateway import _DEMO_IN_RATE, _DEMO_OUT_RATE
+    from ..llm.pricing import DEFAULT_CACHE_WRITE_TTL
+
+    rows: list[UsageDoc] = []
+    for case in cases:
+        cost = float(getattr(case, "token_cost", 0.0) or 0.0)
+        case_id = str(getattr(case, "case_id", "") or "")
+        if cost <= 0 or not case_id:
+            continue
+        tokens = _seed_prompt_tokens(cost, _DEMO_IN_RATE)
+        surface = getattr(case, "source_surface", None)
+        rows.append(UsageDoc(
+            **current_record_provenance(),
+            ts=str(case.created_at),
+            surface=str(getattr(surface, "value", surface) or ""),
+            case_id=case_id,
+            role=Role.INVESTIGATOR.value,
+            model=str(model or ""),
+            prompt_tokens=tokens,
+            completion_tokens=0,
+            total_tokens=tokens,
+            cost=cost,
+            pricing_source="zero",
+            input_rate_per_million=_DEMO_IN_RATE * 1_000_000.0,
+            output_rate_per_million=_DEMO_OUT_RATE * 1_000_000.0,
+            cache_read_rate_per_million=0.0,
+            cache_write_rate_per_million=0.0,
+            cache_write_ttl=DEFAULT_CACHE_WRITE_TTL,
+            price_basis="demo_simulated",
+        ))
+    return rows
+
+
+#: How long before its ledger call a seeded investigation wrote its prompt row and its
+#: read-only query row, in seconds (the verdict row is written as the call ends).
+_DEMO_INVESTIGATION_LEAD_S = (4, 2)
+#: The most events the seeded query returns, as the investigator's es_query asks.
+_DEMO_INVESTIGATION_QUERY_SIZE = 20
+
+
+def demo_investigation_run_id(case_id: str) -> str:
+    """The run id of a seeded case's investigation: ``inv-`` and 32 hex characters, as
+    a live run id reads, derived from the case id so a reseed gives the same id."""
+    import hashlib
+
+    return "inv-" + hashlib.sha256(f"demo-investigation:{case_id}".encode()).hexdigest()[:32]
+
+
+def demo_investigation_audit_rows(cases: Iterable[Case], usage_docs: Iterable[UsageDoc]) -> list[dict[str, Any]]:
+    """The AI's own audit rows of the seeded investigations, oldest first, as keyword
+    arguments of ``record_strict``: for each investigator ledger row
+    :func:`demo_seeded_usage_docs` writes, the rows the live investigator writes for
+    the same work (``agents/investigator.py``), with that row's model, surface and time
+    and one run id (:func:`demo_investigation_run_id`), so a seeded case's AI
+    investigation tab shows the AI's work and its trace adds up to the ledger.
+
+    The investigator's prompt row (persona and runbook, and a short prompt excerpt with
+    the case's entity and rule fenced as untrusted log data, #9), one read-only
+    ``es_query`` tool row over the case's own entity and window, and the verdict row
+    (the case's verdict, confidence and summary as the reasoning), dated 4 s and 2 s
+    before the call and as it ends. A case without a ledger row (no recorded model
+    call, so no AI step to show) gets none. Seeds of the Demo audit, never a model
+    call (#6) and never a log read (#1). Pure."""
+    from ..agents.prompts import CLUSTER_CONTEXT_HEADING, fence
+    from ..constants import ActionType, Role
+
+    by_id = {str(getattr(c, "case_id", "") or ""): c for c in cases}
+    prompt_lead, query_lead = _DEMO_INVESTIGATION_LEAD_S
+    rows: list[tuple[datetime, int, dict[str, Any]]] = []
+    for doc in usage_docs:
+        case = by_id.get(str(doc.case_id or ""))
+        if case is None or case.verdict is None or doc.role != Role.INVESTIGATOR.value:
+            continue
+        called = _demo_moment(doc.ts, 0)
+        base: dict[str, Any] = {
+            "surface": doc.surface, "actor": Role.INVESTIGATOR.value, "actor_type": "agent",
+            "case_id": str(case.case_id), "run_id": demo_investigation_run_id(str(case.case_id)),
+            "outcome": "success",
+        }
+        entity = case.entity
+        entity_kind = str(getattr(getattr(entity, "type", None), "value", "") or "")
+        entity_value = str(getattr(entity, "value", "") or "")
+        rules = [fence(rule) for rule in case.rule_ids]
+        members = len(case.member_event_ids or [])
+        persona = case.agent_persona or "generalist"
+        runbook = f"{case.runbook_id} v{case.runbook_version}" if case.runbook_id else "none"
+        excerpt = "\n".join([
+            CLUSTER_CONTEXT_HEADING,
+            f"- entity: {entity_kind} = {fence(entity_value)}",
+            f"- event_count: {members}",
+            f"- distinct_rules: [{', '.join(rules)}]",
+            f"- risk_score: {round(float(case.risk_score), 2)}",
+        ])
+        first_seen = case.first_seen_millis
+        window_from = (_iso(int(first_seen)) if first_seen else str(case.created_at))
+        query: dict[str, Any] = {
+            **({entity_kind: entity_value} if entity_kind in ("ip", "user", "host") else {}),
+            "time_from": window_from, "time_to": str(case.created_at),
+            "size": _DEMO_INVESTIGATION_QUERY_SIZE,
+        }
+        verdict = case.verdict.value
+        reasoning = str(case.summary or "")
+        planned = [
+            (called - timedelta(seconds=prompt_lead), {
+                **base, "action_type": ActionType.PROMPT, "model": doc.model,
+                "prompt_excerpt": excerpt, "result_summary": f"persona={persona} runbook={runbook}",
+            }),
+            (called - timedelta(seconds=query_lead), {
+                **base, "action_type": ActionType.TOOL_CALL, "tool_name": "es_query",
+                "tool_input": query, "query_text": str(case.reproduce_query or ""),
+                "tool_output_summary": (
+                    f"{members} event(s) matched; returning {min(members, _DEMO_INVESTIGATION_QUERY_SIZE)}."
+                ),
+            }),
+            (called, {
+                **base, "action_type": ActionType.VERDICT, "model": doc.model,
+                "result_summary": (
+                    f"verdict={verdict} confidence={case.confidence}"
+                    + (f" reasoning={reasoning}" if reasoning else "")
+                ),
+                "tool_input": ({"reasoning": reasoning} if reasoning else None),
+            }),
+        ]
+        for moment, fields in planned:
+            rows.append((moment, len(rows), {**fields, "ts": _demo_iso(moment)}))
+    rows.sort(key=lambda item: (item[0], item[1]))
+    return [fields for _at, _order, fields in rows]
+
+
+async def seed_demo_investigation_audit(audit: Any, cases: Iterable[Case], usage_docs: Iterable[UsageDoc]) -> int:
+    """Append :func:`demo_investigation_audit_rows` to the Demo audit, once the seeded
+    ledger rows they describe are written. Returns the rows written. A failed row is
+    logged and the rest are still written; it never raises, so seeding never blocks
+    Demo Mode."""
+    import logging
+
+    log = logging.getLogger("tlsoc.engine.demo_generator")
+    if audit is None:
+        return 0
+    try:
+        planned = demo_investigation_audit_rows(list(cases), list(usage_docs))
+    except Exception as exc:  # noqa: BLE001 - seeded rows never block Demo Mode
+        log.warning("demo investigation rows not planned: %s", exc)
+        return 0
+    written = 0
+    for fields in planned:
+        # The outcome is named at the write, as every audit writer names it, so no seeded
+        # AI row reads "Not recorded" in the audit log.
+        row = dict(fields)
+        outcome = str(row.pop("outcome", None) or "success")
+        try:
+            await audit.record_strict(outcome=outcome, **row)
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - one row never blocks the rest
+            log.warning("demo investigation row for case %s not written: %s", str(row.get("case_id"))[:80], exc)
+    return written
 
 
 # --------------------------------------------------------------------------- #
@@ -1819,6 +2142,10 @@ def demo_team_activity_audit_rows(cases: Iterable[Case], *, now_millis: int) -> 
                 acknowledged = True
             if verb == "close" and disposition:
                 changes.append(AuditChange(field="disposition", before=None, after=str(disposition)))
+            if verb in ("close", "resolve") and disposition:
+                # Round 16 (B61): the disposition the analyst declared on the close, as
+                # the live close row records it beside the history entry.
+                changes.append(AuditChange(field=CLASSIFIED_DISPOSITION_KEY, after=str(disposition)))
             add(at, {
                 "ts": _demo_iso(at), "action_type": ActionType.STATUS, "surface": "case",
                 "actor": person, "actor_type": "human", "action": action, "outcome": "success",
@@ -2116,6 +2443,70 @@ async def collect_demo_runbook_lookups(
     return sum(total for total in totals if isinstance(total, int))
 
 
+#: The name the tuner noise's rows give its Demo-only rule (:data:`DEMO_TUNER_RULE`).
+DEMO_TUNER_RULE_NAME = "Known scanner noise"
+#: The 0 to 100 severity of a tuner noise row: low, as the noise cases are.
+_DEMO_TUNER_ROW_SEVERITY = 18.0
+
+
+def _record_tuner_noise_rows(source: Any, case: Case, prefs: Preferences) -> int:
+    """Keep a tuner noise case's own rows in its Demo source (Round 16): one row per
+    member event, a blocked scan from the case's address carrying the case's
+    Demo-only rule (:data:`DEMO_TUNER_RULE`), the source's known-scanner alert where
+    the source raises alerts (QRadar's LEEF events and raw syslog otherwise), dated
+    as the source dates a seeded case's rows and rendered and parsed with the
+    production receiver as live rows are. No source raises the rule, so
+    ``record_case_history`` keeps nothing for these cases: without these rows the
+    Evidence tab said their events had aged out, and the rule sheet and Logs found
+    none. Idempotent per case and bounded as ``record_case_history`` is (the same
+    keys, the same per-case and per-source bounds); never touches the live ring, the
+    poll or source health. Returns the rows recorded."""
+    from .demo_sources import NativeSignal
+
+    case_id = str(getattr(case, "case_id", "") or "")
+    entity = getattr(case, "entity", None)
+    address = str(getattr(entity, "value", "") or "")
+    if not case_id or not address:
+        return 0
+    created = int(_demo_moment(case.created_at, 0).timestamp() * 1000)
+    if created <= 0:
+        return 0
+    first = _seed_first_seen(getattr(case, "first_seen_millis", None), created)
+    member_ids = [str(m) for m in (getattr(case, "member_event_ids", None) or []) if m]
+    # The Demo world's own source adapter (``demo_sources.NativeDemoSource``): the same
+    # bounds and keys its ``record_case_history`` keeps.
+    per_case = int(getattr(source, "_HISTORY_ROWS_PER_CASE", 20))
+    bound = int(getattr(source, "_HISTORY_MAX", 2_000))
+    history = source._history
+    keys = source._history_keys
+    count = max(1, min(len(member_ids) or 1, per_case))
+    alerts = source.spec.key not in ("syslog", "qradar")
+    recorded = 0
+    for ordinal in range(count):
+        key = f"{case_id}:{ordinal}"
+        if key in keys:
+            continue
+        if len(history) >= bound:
+            break
+        signal = NativeSignal(
+            native_id=f"{source.spec.source_id}-case-{case_id}-{ordinal:02d}",
+            timestamp_millis=first + (created - first) * ordinal // count,
+            source_ip=address, user="scanner_service", host="web-api",
+            action="scan", outcome="blocked", severity=_DEMO_TUNER_ROW_SEVERITY,
+            rule_id=DEMO_TUNER_RULE, rule_name=DEMO_TUNER_RULE_NAME,
+            message=f"{DEMO_TUNER_RULE_NAME}: activity from {address} was blocked",
+            native_alert=alerts,
+        )
+        _payload, events, _alert = source._render_and_parse(signal, prefs, structured_syslog=True)
+        member_id = member_ids[ordinal] if ordinal < len(member_ids) else f"{case_id}-{ordinal:02d}"
+        for position, event in enumerate(events):
+            event.id = member_id if len(events) == 1 else f"{member_id}-{position}"
+        history.extend(events)
+        keys.add(key)
+        recorded += len(events)
+    return recorded
+
+
 def seed_demo_case_evidence(state: Any, cases: Iterable[Case]) -> int:
     """Keep each seeded case's own detection rows in its Demo source (FX3b2): the rows
     the case was built from, carrying its rule and entity and dated inside its window
@@ -2123,28 +2514,133 @@ def seed_demo_case_evidence(state: Any, cases: Iterable[Case]) -> int:
     straight to the Demo store, so without this their rule would have no rows: the
     rule sheet would show no alerts, Logs nothing and the seeded runbook lookups
     nothing for the case. Synchronous and in memory (no I/O, $0), idempotent per case,
-    bounded per source; a case whose rule its source never raises (the tuner's noise,
-    which keeps its Demo-only rule) adds nothing. Does nothing while Demo Mode is off.
-    Never raises; returns the rows recorded."""
-    import logging
+    bounded per source. The tuner's noise keeps its Demo-only rule (no source raises
+    it; its observation depends on it), so its rows are kept here instead
+    (:func:`_record_tuner_noise_rows`): its source's known-scanner alert carrying that
+    rule. Does nothing while Demo Mode is off. Never raises; returns the rows recorded.
 
+    Demo Mode's enable keeps these rows before the seeded cases are saved
+    (:func:`seed_demo_case_rows`), so this pass normally finds every row kept already."""
     if not getattr(state, "demo_active", False):
         return 0
     connector_for = getattr(state, "demo_source_connector", None)
     if not callable(connector_for):
         return 0
-    prefs = state.execution_prefs
+    return _record_seeded_rows(connector_for, cases, state.execution_prefs, triggers=False)
+
+
+def _record_seeded_rows(
+    connector_for: Callable[[str], Any], cases: Iterable[Case], prefs: Preferences, *, triggers: bool,
+) -> int:
+    """Keep each case's own rows in its Demo source (``record_case_history``, or the
+    tuner noise's rows), and with ``triggers`` record on a case without one the
+    trigger reason correlation records from those rows (:func:`seeded_trigger_reason`).
+    The tuner noise keeps none: its observation reads its cases as the pipeline never
+    correlated them. Never raises; returns the rows recorded."""
+    import logging
+
     recorded = 0
     for case in cases:
         try:
             source = connector_for(str(getattr(case, "source_id", "") or ""))
             record = getattr(source, "record_case_history", None)
-            if callable(record):
-                recorded += int(record(case, prefs) or 0)
+            if not callable(record):
+                continue
+            kept = int(record(case, prefs) or 0)
+            tuner = DEMO_TUNER_RULE in (getattr(case, "rule_ids", None) or [])
+            if not kept and tuner:
+                kept = _record_tuner_noise_rows(source, case, prefs)
+            recorded += kept
+            if triggers and not tuner and getattr(case, "trigger_reason", None) is None:
+                reason = seeded_trigger_reason(case, _seeded_case_rows(source, case), prefs)
+                if reason is not None:
+                    case.trigger_reason = reason
+                    # The band a person reads is then the one its source asserted, as
+                    # on every correlated case (no band is stored on a live case).
+                    case.severity_band = None
         except Exception as exc:  # noqa: BLE001 - one case's rows never stop the others
             logging.getLogger("tlsoc.engine.demo_generator").warning(
                 "demo evidence for case %s not recorded: %s", str(getattr(case, "case_id", ""))[:80], exc)
     return recorded
+
+
+def _seeded_case_rows(source: Any, case: Case) -> list[RawEvent]:
+    """The rows its Demo source keeps for a seeded case: the rows whose id is one of
+    the case's member event ids (or ``<member id>-<n>`` when one detection rendered as
+    several events), in the order they were kept."""
+    members = {str(m) for m in (getattr(case, "member_event_ids", None) or []) if m}
+    if not members:
+        return []
+    rows: list[RawEvent] = []
+    for event in getattr(source, "_history", None) or []:
+        eid = str(getattr(event, "id", "") or "")
+        if eid in members or eid.rsplit("-", 1)[0] in members:
+            rows.append(event)
+    return rows
+
+
+def seeded_trigger_reason(case: Case, rows: list[RawEvent], prefs: Preferences) -> TriggerReason | None:
+    """The trigger reason correlation records for a seeded case's own rows (Round 16):
+    its rule, the correlation rule that rule runs under in ``prefs`` (every occurrence
+    for an alert row, as ``correlation.correlate`` does), the rows' count and span,
+    and the lowest and highest severity the source asserted on them. So the case's
+    severity is its source's, as on every correlated case, and reads the same as its
+    Evidence rows. ``None`` when the case has no rule or no rows."""
+    from ..constants import CorrelationMode
+    from .correlation import _build_trigger_reason, _window_detail
+
+    rules = [str(r) for r in (getattr(case, "rule_ids", None) or []) if r]
+    entity = getattr(case, "entity", None)
+    if not rules or not rows or entity is None:
+        return None
+    rule = rules[0]
+    definitions = {rd.name: rd for rd in prefs.rule_catalog}
+    definition = definitions.get(rule)
+    cfg = prefs.correlation_for_def(definition) if definition is not None else prefs.correlation_for(rule)
+    every = cfg.model_copy(update={"mode": CorrelationMode.EVERY, "n": 1})
+    if cfg.mode == CorrelationMode.NEVER or any(getattr(e, "index_role", None) == "alerts" for e in rows):
+        cfg = every
+    detail = _window_detail(rows, cfg)
+    if detail is None:
+        # A seeded case exists whatever the tenant's threshold: read it as correlated
+        # on every occurrence rather than invent a firing.
+        cfg = every
+        detail = _window_detail(rows, cfg)
+    if detail is None:
+        return None
+    severities = [float(e.severity) for e in rows if e.severity is not None]
+    entity_type = entity.type if isinstance(entity.type, EntityType) else EntityType(str(entity.type))
+    return _build_trigger_reason(entity_type, str(entity.value), list(dict.fromkeys(rules)), {
+        "rule_value": rule,
+        "mode": cfg.mode.value,
+        "n": cfg.n,
+        "window_seconds": cfg.window_seconds,
+        "group_by": entity_type.value,
+        "observed_count": detail.observed_count,
+        "window_start": detail.window_start,
+        "window_end": detail.window_end,
+        "severity_min": min(severities) if severities else None,
+        "severity_max": max(severities) if severities else None,
+    })
+
+
+def seed_demo_case_rows(sources: Any, cases: Iterable[Case], prefs: Preferences) -> int:
+    """Before the seeded cases are saved (Round 16), keep each one's own rows in its
+    Demo source (``sources`` is the Demo stack's adapters by source key) and record on
+    each the trigger reason correlation records from those rows
+    (:func:`seeded_trigger_reason`): the Evidence tab, the rule sheet and Logs read the
+    rows from the first paint, and the case's severity is the one its rows assert.
+    In memory, $0, idempotent per case, bounded per source. Never raises; returns the
+    rows recorded."""
+    from .demo_sources import DEMO_SOURCE_SPECS
+
+    by_id = {spec.source_id: key for key, spec in DEMO_SOURCE_SPECS.items()}
+
+    def connector_for(source_id: str) -> Any:
+        key = by_id.get(source_id)
+        return sources.get(key) if key and hasattr(sources, "get") else None
+
+    return _record_seeded_rows(connector_for, cases, prefs, triggers=True)
 
 
 def schedule_demo_runbook_lookups(state: Any, cases: Iterable[Case], *, seed: int) -> Any | None:
@@ -2276,8 +2772,11 @@ async def seed_demo_auto_close_reviews(
                 continue
             # The disagreeing review labels its case a true positive: never one of the
             # tuner seed's same-rule false positives, whose demo tuning observation
-            # needs every label to agree.
-            if kind == "disagree" and case.case_id.startswith("demo-tune-"):
+            # needs every label to agree, and never a close an analyst already
+            # confirmed (Round 16, B35), so no case reads as both.
+            if kind == "disagree" and (
+                case.case_id.startswith("demo-tune-") or analyst_confirmed_outcome(case)[0] is not None
+            ):
                 continue
             per_rule[rule] = per_rule.get(rule, 0) + 1
             picked.append((case, kind))

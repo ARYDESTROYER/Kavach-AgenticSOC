@@ -475,15 +475,20 @@ function ProposalRow({
             disabled={busy}
           />
           <KindBadge kind={proposal.kind} />
-          <ConfidencePill confidence={proposal.confidence} />
+          {/* Only an agent scores its proposal (B36): an automation checkpoint or a
+              tuning review item carries no model confidence, so none is shown. */}
+          {proposal.created_by === 'agent' ? <ConfidencePill confidence={proposal.confidence} /> : null}
           {decided || applying ? (
-            <Badge variant={status === 'approved' ? 'success' : 'secondary'}>{humanizeToken(proposal.status)}</Badge>
+            <Badge variant={status === 'approved' ? 'success' : 'secondary'}>
+              {/* An acknowledged checkpoint reads as the footer says (B37). */}
+              {status === 'approved' && band === 'automation_ack' ? 'Acknowledged' : humanizeToken(proposal.status)}
+            </Badge>
           ) : null}
           <span className="text-sm text-muted-foreground" title={formatTimestamp(proposal.created_at)}>
             Drafted {humanizeAge(proposal.created_at)}
             {proposal.created_by ? ` by ${proposal.created_by}` : ''}
           </span>
-          {proposal.expires_at ? (
+          {proposal.expires_at && !decided ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Badge variant="outline">
@@ -594,10 +599,11 @@ function ProposalRow({
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{asText(proposal.payload)}</p>
         )}
 
-        {/* rationale (UNTRUSTED: plain text) */}
+        {/* rationale (UNTRUSTED: plain text). The agent is named only when it drafted the
+            proposal: an automation rule or the tuner wrote the others (B36). */}
         {proposal.rationale ? (
           <div>
-            <FieldLabel>Why the agent drafted this</FieldLabel>
+            <FieldLabel>{proposal.created_by === 'agent' ? 'Why the agent drafted this' : 'Why it was drafted'}</FieldLabel>
             <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
               {plainRationale(asText(proposal.rationale), labelFor, cases)}
             </p>
@@ -639,49 +645,73 @@ function ProposalRow({
           </div>
         ) : null}
 
-        {/* actions: Approve is always shown enabled; the server enforces the privileged
-            check and a 403 surfaces inline. The per-action detail lives on the Approve
-            button's own tooltip, not a padlock that reads as "disabled". */}
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {/* The console's row actions: Reject is a neutral ghost action, red only on
-              hover and focus (§4.9.2 RowActions); both are 44px tall on phones (§3.3). */}
-          <Button
-            variant="ghost"
-            size="sm"
-            className={REJECT_ACTION}
-            onClick={() => onReject(proposal)}
-            disabled={busy || locked || decided || rejectionLocked || (applying && decisionIntent !== 'reject')}
-          >
-            <X className="h-4 w-4" aria-hidden />
-            {applying && decisionIntent === 'reject'
-              ? 'Resume rejection'
-              : decisionIntent === 'reject'
-                ? 'Retry rejection'
-                : 'Reject'}
-          </Button>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                size="sm"
-                className={PHONE_TARGET}
-                onClick={() => onApprove(proposal)}
-                disabled={busy || locked || decided || approvalLocked}
-              >
-                <CheckCircle2 className="h-4 w-4" aria-hidden />
-                {busy
-                  ? 'Working…'
-                  : applying
-                    ? 'Resume approval'
-                    : decisionIntent === 'approve'
-                      ? 'Retry approval'
-                      : band === 'automation_ack'
-                        ? 'Acknowledge'
-                        : 'Approve'}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">{approveTip}</TooltipContent>
-          </Tooltip>
-        </div>
+        {/* A decided proposal is history (B37): a read-only footer says who decided it
+            and when, instead of disabled actions that read as a failed attempt. */}
+        {decided ? (
+          <div className="flex flex-col items-end gap-1 text-right text-sm" data-testid="approval-decided">
+            <p className="text-muted-foreground">
+              {status === 'rejected' ? 'Rejected' : band === 'automation_ack' ? 'Acknowledged' : 'Approved'}
+              {proposal.decided_by ? ` by ${proposal.decided_by}` : ''}
+              {proposal.decided_at ? (
+                <>
+                  {' '}
+                  <time dateTime={proposal.decided_at} title={formatTimestamp(proposal.decided_at)}>
+                    {humanizeAge(proposal.decided_at)}
+                  </time>
+                </>
+              ) : null}
+            </p>
+            {typeof proposal.decision_reason === 'string' && proposal.decision_reason.trim() ? (
+              <p className="max-w-prose whitespace-pre-wrap text-muted-foreground">
+                Reason: {proposal.decision_reason}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {/* actions: Approve is always shown enabled; the server enforces the privileged
+                check and a 403 surfaces inline. The per-action detail lives on the Approve
+                button's own tooltip, not a padlock that reads as "disabled". */}
+            {/* The console's row actions: Reject is a neutral ghost action, red only on
+                hover and focus (§4.9.2 RowActions); both are 44px tall on phones (§3.3). */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className={REJECT_ACTION}
+              onClick={() => onReject(proposal)}
+              disabled={busy || locked || rejectionLocked || (applying && decisionIntent !== 'reject')}
+            >
+              <X className="h-4 w-4" aria-hidden />
+              {applying && decisionIntent === 'reject'
+                ? 'Resume rejection'
+                : decisionIntent === 'reject'
+                  ? 'Retry rejection'
+                  : 'Reject'}
+            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="sm"
+                  className={PHONE_TARGET}
+                  onClick={() => onApprove(proposal)}
+                  disabled={busy || locked || approvalLocked}
+                >
+                  <CheckCircle2 className="h-4 w-4" aria-hidden />
+                  {busy
+                    ? 'Working…'
+                    : applying
+                      ? 'Resume approval'
+                      : decisionIntent === 'approve'
+                        ? 'Retry approval'
+                        : band === 'automation_ack'
+                          ? 'Acknowledge'
+                          : 'Approve'}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">{approveTip}</TooltipContent>
+            </Tooltip>
+          </div>
+        )}
       </article>
     </li>
   );

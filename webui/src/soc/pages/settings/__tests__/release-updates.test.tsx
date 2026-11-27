@@ -23,7 +23,7 @@ import { ReleaseUpdatesSection } from '../release-updates';
 
 const CONFIG: ReleaseUpdateConfig = {
   enabled: true,
-  repository_url: 'https://github.com/ARYDESTROYER/Agentic-Kibana',
+  repository_url: 'https://github.com/ARYDESTROYER/Kavach-AgenticSOC',
   stable_branch: 'main',
   testing_branch: 'Testing',
   check_interval_minutes: 360,
@@ -44,8 +44,8 @@ const STATUS: UpstreamReleasesResponse = {
     testing: {
       channel: 'testing', branch: 'Testing', state: 'available', version: '0.1.1',
       commit_sha: 'a'.repeat(40),
-      commit_url: `https://github.com/ARYDESTROYER/Agentic-Kibana/commit/${'a'.repeat(40)}`,
-      source_url: 'https://github.com/ARYDESTROYER/Agentic-Kibana/tree/Testing',
+      commit_url: `https://github.com/ARYDESTROYER/Kavach-AgenticSOC/commit/${'a'.repeat(40)}`,
+      source_url: 'https://github.com/ARYDESTROYER/Kavach-AgenticSOC/tree/Testing',
       checked_at: '2026-07-31T10:00:00Z', stale: false,
       error_code: null, error_message: null,
     },

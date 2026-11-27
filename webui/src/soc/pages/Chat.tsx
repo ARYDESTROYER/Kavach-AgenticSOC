@@ -87,7 +87,8 @@ export default function Chat({ caseId, opts }: ChatProps = {}) {
     (item: ChatConversationSummary) =>
       confirm({
         title: 'Delete conversation?',
-        description: `“${item.title}” and its saved messages will be removed. Its report stays in Reports.`,
+        // Round 16 (B40): the report sentence only for a conversation that has one.
+        description: `“${item.title}” and its saved messages will be removed.${item.report_id ? ' Its report stays in Reports.' : ''}`,
         confirmLabel: 'Delete',
         destructive: true,
       }),

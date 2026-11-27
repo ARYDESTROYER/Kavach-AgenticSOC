@@ -32,6 +32,8 @@ import type { StandupResponse } from '@/lib/types';
 import { DASH, caseLabel, fmtDuration, fmtNumber, fmtOverage, humanizeAge, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { Callout, LoadingState, Panel, PANEL_GAP } from '@/design-system';
+import { ExplainTrigger } from '@/design-system/explain';
+import type { Explanation } from '@/lib/explain/types';
 import { useAuth } from '@/soc/auth';
 import { pageHash, useNavigateOptional, type Navigate, type PageId } from '@/soc/router';
 import type { NavOpts } from '@/lib/types';
@@ -72,6 +74,23 @@ import {
   type ShiftAck,
   type StandupReport,
 } from './Standup.report.api';
+import {
+  explainActionItems,
+  explainHandoffAcks,
+  explainQueueAge,
+  explainSlaOverage,
+  explainSlaTotal,
+  explainStripCount,
+  explainWorkload,
+  slaRowOverMinutes,
+} from './Standup.explain';
+import { RiskExplain } from './casedetail/explain/RiskExplain';
+
+/** A KPI tile's explain slot: the numeral inside the Explain trigger. */
+function explainSlot(explanation: Explanation | null): ((numeral: React.ReactNode) => React.ReactNode) | undefined {
+  if (!explanation) return undefined;
+  return (numeral) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger>;
+}
 
 /* ----------------------------------------------------------------- windows - */
 
@@ -488,6 +507,7 @@ export default function Standup({ onNavigate }: StandupProps) {
             attention={report.attention_queue ?? []}
             evidenceComplete={!degraded}
             navigate={navigate}
+            generatedAt={report.generated_at}
           />
 
           <div className={cn('grid items-stretch lg:grid-cols-2', PANEL_GAP)}>
@@ -540,6 +560,7 @@ function DeltaStrip({ deltas, hours }: { deltas: Record<string, DeltaCell>; hour
             delta={{ value: cell.delta, label: signedDelta(cell.delta) }}
             context={`was ${fmtNumber(cell.prior)}`}
             testId={`delta-${m.key}`}
+            explain={explainSlot(explainStripCount(m.key, m.label, cell, rangeWords(hours)))}
           />
         );
       })}
@@ -579,10 +600,12 @@ function AttentionQueuePanel({
   attention,
   evidenceComplete,
   navigate,
+  generatedAt,
 }: {
   attention: AttentionRow[];
   evidenceComplete: boolean;
   navigate: Navigate;
+  generatedAt?: string;
 }) {
   const [showAll, setShowAll] = React.useState(false);
   const listId = React.useId();
@@ -624,7 +647,7 @@ function AttentionQueuePanel({
         <>
           <ol id={listId} className="flex flex-col divide-y divide-border/70" aria-label="Attention queue">
             {rows.map((row, i) => (
-              <AttentionRowItem key={row.case_id || i} row={row} rank={i + 1} navigate={navigate} />
+              <AttentionRowItem key={row.case_id || i} row={row} rank={i + 1} navigate={navigate} generatedAt={generatedAt} />
             ))}
           </ol>
           {hidden > 0 ? (
@@ -642,12 +665,21 @@ function AttentionRowItem({
   row,
   rank,
   navigate,
+  generatedAt,
 }: {
   row: AttentionRow;
   rank: number;
   navigate: Navigate;
+  generatedAt?: string;
 }) {
   const display = caseLabel(row);
+  const age = explainQueueAge(row, generatedAt);
+  const ageText = (
+    <span className="whitespace-nowrap text-sm tabular-nums text-muted-foreground" title={age ? undefined : 'Age in the queue'}>
+      {fmtDuration(row.age_minutes)}
+      <span className="sr-only"> in the queue</span>
+    </span>
+  );
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
       <span className="w-6 shrink-0 text-right text-sm tabular-nums text-muted-foreground" aria-hidden>
@@ -677,11 +709,12 @@ function AttentionRowItem({
           </span>
         ) : null}
         <StatusBadge status={row.status} />
-        <RiskBadge score={row.risk_score} />
-        <span className="whitespace-nowrap text-sm tabular-nums text-muted-foreground" title="Age in the queue">
-          {fmtDuration(row.age_minutes)}
-          <span className="sr-only"> in the queue</span>
-        </span>
+        {/* The risk chip opens the case's own risk calculation (the recorded inputs when
+            the server sends the breakdown, else today's reconstruction on first open). */}
+        <RiskExplain caseId={row.case_id} score={row.risk_score} breakdown={row.risk_breakdown ?? null}>
+          <RiskBadge score={row.risk_score} />
+        </RiskExplain>
+        {age ? <ExplainTrigger explanation={age}>{ageText}</ExplainTrigger> : ageText}
       </div>
     </li>
   );
@@ -746,32 +779,45 @@ function SlaPanel({
           <dl className="grid grid-cols-3 divide-x divide-border/70 border-y border-border/70">
             {(
               [
-                ['Open', totals?.open, 'text-foreground'],
-                ['Breached', totals?.breached, (totals?.breached ?? 0) > 0 ? 'text-critical-text' : 'text-foreground'],
-                ['At risk', totals?.about_to_breach, 'text-foreground'],
-              ] as Array<[string, number | undefined, string]>
-            ).map(([label, value, ink]) => (
-              <div key={label} className="px-3 py-2 first:pl-0">
-                <dt className="text-sm text-muted-foreground">{label}</dt>
-                <dd className={cn('mt-1 text-xl font-semibold tabular-nums', ink)}>{fmtNumber(value)}</dd>
-              </div>
-            ))}
+                ['Open', 'open', totals?.open, 'text-foreground'],
+                ['Breached', 'breached', totals?.breached, (totals?.breached ?? 0) > 0 ? 'text-critical-text' : 'text-foreground'],
+                ['At risk', 'about_to_breach', totals?.about_to_breach, 'text-foreground'],
+              ] as Array<[string, 'open' | 'breached' | 'about_to_breach', number | undefined, string]>
+            ).map(([label, kind, value, ink]) => {
+              const explanation = sla ? explainSlaTotal(kind, sla) : null;
+              return (
+                <div key={label} className="px-3 py-2 first:pl-0">
+                  <dt className="text-sm text-muted-foreground">{label}</dt>
+                  <dd className={cn('mt-1 text-xl font-semibold tabular-nums', ink)}>
+                    {explanation ? <ExplainTrigger explanation={explanation}>{fmtNumber(value)}</ExplainTrigger> : fmtNumber(value)}
+                  </dd>
+                </div>
+              );
+            })}
           </dl>
           {breached.length ? (
             <>
               <ul id={listId} className="flex flex-col divide-y divide-border/70" aria-label="Cases past their response target">
-                {rows.map((b) => (
-                  <li key={b.case_id} className="flex min-h-10 items-center gap-2 py-2 text-sm">
-                    <Badge variant="critical">Breached</Badge>
-                    <CaseLink caseId={b.case_id} label={caseLabel(b)} navigate={navigate} />
-                    {b.priority_level ? (
-                      <span className="truncate text-muted-foreground">{b.priority_level}</span>
-                    ) : null}
-                    <span className="ml-auto shrink-0 whitespace-nowrap tabular-nums text-critical-text">
-                      {fmtOverage(b.overdue_minutes)}
-                    </span>
-                  </li>
-                ))}
+                {rows.map((b) => {
+                  // The line and its explanation read the same number: elapsed minus target.
+                  const over = slaRowOverMinutes(b);
+                  const explanation = explainSlaOverage(b, caseLabel(b));
+                  const overText = (
+                    <span className="whitespace-nowrap tabular-nums text-critical-text">{fmtOverage(over)}</span>
+                  );
+                  return (
+                    <li key={b.case_id} className="flex min-h-10 items-center gap-2 py-2 text-sm">
+                      <Badge variant="critical">Breached</Badge>
+                      <CaseLink caseId={b.case_id} label={caseLabel(b)} navigate={navigate} />
+                      {b.priority_level ? (
+                        <span className="truncate text-muted-foreground">{b.priority_level}</span>
+                      ) : null}
+                      <span className="ml-auto shrink-0">
+                        {explanation ? <ExplainTrigger explanation={explanation}>{overText}</ExplainTrigger> : overText}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
               {hidden > 0 ? (
                 <p className="text-sm text-muted-foreground">
@@ -820,10 +866,12 @@ function WorkloadPanel({ workload }: { workload: StandupReport['workload'] }) {
                   <span className="flex shrink-0 items-center gap-2">
                     {w.escalated > 0 ? <Badge variant="high">{fmtNumber(w.escalated)} escalated</Badge> : null}
                     {w.needs_human > 0 ? <Badge variant="warning">{fmtNumber(w.needs_human)} awaiting</Badge> : null}
-                    <span className="text-sm font-semibold tabular-nums text-foreground">
-                      {fmtNumber(w.open)}
-                      <span className="sr-only"> open</span>
-                    </span>
+                    <ExplainTrigger explanation={explainWorkload(w)}>
+                      <span className="text-sm font-semibold tabular-nums text-foreground">
+                        {fmtNumber(w.open)}
+                        <span className="sr-only"> open</span>
+                      </span>
+                    </ExplainTrigger>
                   </span>
                 </div>
                 {/* Decorative: the count beside the name carries the fact; the bar is only
@@ -892,7 +940,13 @@ function ActionItemsPanel({ items, onChanged }: { items: ActionItem[]; onChanged
   };
 
   return (
-    <Panel title="Action items" count={items.length} caption="across shifts" data-testid="standup-actions">
+    <Panel
+      title="Action items"
+      count={items.length}
+      countExplain={explainSlot(explainActionItems(items))}
+      caption="across shifts"
+      data-testid="standup-actions"
+    >
       <div className="space-y-4">
         <Can resource="cases" action="write">
           <form
@@ -1023,7 +1077,13 @@ function AcknowledgePanel({
   };
 
   return (
-    <Panel title="Handoff sign-off" caption="this shift" data-testid="standup-signoff">
+    <Panel
+      title="Handoff sign-off"
+      count={acks.length || undefined}
+      countExplain={acks.length ? explainSlot(explainHandoffAcks(acks, shiftName(windowKey)?.detail ?? '')) : undefined}
+      caption="this shift"
+      data-testid="standup-signoff"
+    >
       <div className="space-y-4">
         {myAck ? (
           <p className="flex items-center gap-2 text-sm text-success-text">

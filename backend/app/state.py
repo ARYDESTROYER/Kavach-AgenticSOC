@@ -208,6 +208,18 @@ class AppState:
         from .engine.investigation_gate import InvestigationGate
 
         self.investigation_gate = InvestigationGate()
+        # Round 16 (SPEC §4.5 WP08): which AI investigations are queued or running, in
+        # memory only (frames on the process bus, never the Demo one), and the per-case
+        # write locks the real and Demo pipelines share with a person's case actions.
+        # Built here (not in _wire) so a credential-driven rebuild keeps both.
+        from .agents.pipeline import CaseLocks
+        from .engine.investigation_registry import InvestigationRegistry
+        from .realtime import get_event_bus
+
+        self.investigation_registry = InvestigationRegistry(
+            get_event_bus, on_finished=self._investigation_finished,
+        )
+        self.case_locks = CaseLocks()
         # Process-local registry of running chat turns (chat revamp SPEC §6.1(b)):
         # strong references to each turn task, per-user/global concurrency admission
         # and Stop. Built lazily by ``chat_turns``.
@@ -331,7 +343,10 @@ class AppState:
         return task
 
     async def cancel_mutation_tasks(self) -> int:
-        """Cancel and await every detached tenant writer registered before reset."""
+        """Cancel and await every detached tenant writer registered before reset.
+
+        Then forget every tracked AI investigation and case lock (Round 16 WP08): a
+        cancelled spawned run has ended its handle, and nothing writes a case now."""
 
         cancelled = 0
         while self._mutation_tasks:
@@ -340,7 +355,158 @@ class AppState:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+        self.investigation_registry.clear()
+        self.case_locks.clear()
         return cancelled
+
+    # ------------------------------------------------------------------ #
+    # Round 16 (SPEC §4.5 WP08, D10): AI investigation runs. The registry is memory
+    # only; the Demo stack holds its own while Demo Mode is on.
+    # ------------------------------------------------------------------ #
+    @property
+    def investigations(self):
+        """The AI investigation registry for the active real/Demo boundary (SPEC §3.2):
+        ``GET /api/investigations/active`` answers from the Demo stack's own registry
+        while Demo Mode is on."""
+        demo = self._demo
+        if demo is not None:
+            registry = getattr(demo, "investigation_registry", None)
+            if registry is not None:
+                return registry
+        return self.investigation_registry
+
+    def case_lock(self, case_id: str) -> asyncio.Lock:
+        """The per-case write lock a person's case action holds across its read and
+        save (shared with the pipelines, which take it only inside a signature lock)."""
+        return self.case_locks.lock(case_id)
+
+    def _investigation_finished(self, handle, *, demo=None) -> None:
+        """The registry's finish hook (SPEC §4.5 WP08, D10): the Inbox notices of a
+        finished run, written by a tracked task so the run never waits on them and a
+        factory reset can cancel them. Only a manual run's requester and a person whose
+        close the run replaced get one; job and automatic runs get no item. Never
+        raises."""
+        coro = None
+        try:
+            manual = handle.trigger == "manual" and bool(handle.requested_by)
+            if not handle.case_id or not (manual or handle.close_replaced):
+                return
+            coro = self._write_investigation_notices(handle, demo)
+            self.spawn_mutation_task(coro, name=f"investigation-notices:{handle.run_id}")
+        except Exception as exc:  # noqa: BLE001 (a notice never touches a run)
+            if coro is not None:
+                coro.close()
+            logger.debug("investigation finish notices skipped: %s", exc)
+
+    async def _write_investigation_notices(self, handle, demo=None) -> int:
+        """Write the finish notices of one run into the stores of the stack that ran it
+        (the Demo stack's own Inbox, audit and bus while it is the active one). Copy is
+        built from enums only (#7, #9). The ``case.close_replaced`` row is written
+        before the Inbox item it explains (#2). Returns the items delivered."""
+        from .constants import ActionType, NotificationCategory
+        from .models import InAppNotification
+        from .realtime import get_event_bus
+
+        if demo is not None:
+            inbox, audit, cases, bus = demo.inbox, demo.audit, demo.cases, demo.event_bus
+        else:
+            inbox, audit, cases, bus = self._real_inbox, self._real_audit, self._real_cases, get_event_bus()
+        case_id = str(handle.case_id)
+        label = case_id
+        try:
+            stored = await cases.get(case_id)
+            label = str(getattr(stored, "case_number", "") or "") or case_id
+        except Exception:  # noqa: BLE001 - the id stands in for the number
+            pass
+        notes: list[InAppNotification] = []
+        replaced = handle.close_replaced if isinstance(handle.close_replaced, dict) else None
+        replaced_by = str((replaced or {}).get("by") or "").strip()
+        if replaced and replaced_by:
+            try:
+                await audit.record_strict(
+                    action_type=ActionType.DECISION, surface="case", actor="pipeline",
+                    actor_type="system", outcome="success", case_id=case_id,
+                    action="case.close_replaced", run_id=handle.run_id,
+                    result_summary=(
+                        f"an AI investigation replaced the close by {replaced_by}: "
+                        f"{replaced.get('from_status')} -> {replaced.get('to_status')}"
+                    ),
+                    tool_input={
+                        "run_id": handle.run_id, "closed_by": replaced_by,
+                        "from_status": replaced.get("from_status"),
+                        "to_status": replaced.get("to_status"),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - no row, no notice
+                logger.warning("case.close_replaced audit failed for %s: %s", case_id, exc)
+                replaced_by = ""
+            if replaced_by and await self._inbox_category_allows(
+                replaced_by, NotificationCategory.ASSIGNMENT.value,
+            ):
+                notes.append(InAppNotification(
+                    recipient=replaced_by,
+                    category=NotificationCategory.ASSIGNMENT.value,
+                    title=f"An AI investigation replaced your close of case {label}",
+                    body=(
+                        "It was already running when you closed the case. It finished with "
+                        f"the verdict {_ai_verdict_words(handle.verdict_after)} and set the "
+                        f"status to {_ai_status_words(handle.status_after)}. Your disposition "
+                        "and note are kept."
+                    ),
+                    case_id=case_id, url=f"/cases/{case_id}",
+                    ref={"kind": "investigation", "run_id": handle.run_id, "event": "close_replaced"},
+                ))
+        requester = str(handle.requested_by or "").strip()
+        if (
+            handle.trigger == "manual" and requester
+            and requester.lower() != replaced_by.lower()
+            and await self._inbox_category_allows(requester, NotificationCategory.SYSTEM.value)
+        ):
+            notes.append(InAppNotification(
+                recipient=requester,
+                category=NotificationCategory.SYSTEM.value,
+                title=f"AI investigation finished on case {label}",
+                body=_ai_finish_body(handle),
+                case_id=case_id, url=f"/cases/{case_id}",
+                ref={"kind": "investigation", "run_id": handle.run_id},
+            ))
+        delivered = 0
+        for note in notes:
+            try:
+                await inbox.append(note)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("investigation notice for %s failed: %s", note.recipient, exc)
+                continue
+            delivered += 1
+            try:
+                await audit.record(
+                    action_type=ActionType.INAPP_NOTIFY, surface="investigation",
+                    actor="pipeline", actor_type="system", outcome="success", case_id=case_id,
+                    result_summary=f"investigation_{handle.outcome or 'finished'} -> {note.recipient}",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                bus.publish(
+                    "notifications", "inapp", {"category": note.category, "case_id": case_id},
+                    audience=[note.recipient],
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return delivered
+
+    async def _inbox_category_allows(self, user: str, category: str) -> bool:
+        """False when ``user`` switched ``category`` off in their Inbox preferences (the
+        rule of ``routes_auto_close_review._inapp_allows``). A read failure delivers."""
+        store = getattr(self, "notif_prefs", None)
+        if store is None:
+            return True
+        try:
+            pref = await store.get(user)
+            entry = (getattr(pref, "categories", {}) or {}).get(category)
+        except Exception:  # noqa: BLE001
+            return True
+        return not (isinstance(entry, dict) and entry.get("enabled") is False)
 
     def restore_environment_runtime_secrets(self) -> dict[str, int]:
         """Drop tenant runtime overlays while preserving deployment/boot values.
@@ -1337,6 +1503,8 @@ class AppState:
             # preserved; only this already-available collaborator moves to the ctor.
             event_bus=self.event_bus,
             investigation_gate=self.investigation_gate,
+            investigation_registry=self.investigation_registry,
+            case_locks=self.case_locks,
             mutation_task_spawner=self.spawn_mutation_task,
             # Forward fixture capture for the replay harness. Wired ONLY on the real
             # pipeline: demo traffic is synthetic and must never enter a replay corpus.
@@ -1602,77 +1770,32 @@ class AppState:
         return attach
 
     async def _automation_cluster_for_case(self, case):
-        """Rebuild a cluster for a case from its stored member events (read-only).
+        """Rebuild a cluster for a stored case (read-only): the shared
+        :func:`app.engine.case_cluster.cluster_for_case`, with the real stack's
+        dependencies and stored reconstruction on (Round 16 B06).
 
-        Mirrors the routes' ``_cluster_for_case`` but kept dependency-light here to
-        avoid a routes import cycle. Returns None when no events remain."""
-        from .engine.correlation import cluster_from_events
-        from .models import RawEvent
+        The deferred-candidate drain and the bulk reinvestigate job used to rebuild a
+        push or deleted source's events with one timestamp and one rule, which
+        saturated velocity, dropped diversity and changed the deterministic risk the
+        decision reads; an aged-out pull case failed in the job while the route
+        rebuilt it. Delegating gives the drain, the job and ``POST
+        /api/cases/{id}/reinvestigate`` the same cluster, so the same stored case scores
+        the same. ``self.prefs`` and ``self.poller.source_for_id`` (never the Demo
+        switching accessors): both callers work on the real stack. Returns ``None``
+        only when nothing can be rebuilt."""
+        from .engine.case_cluster import cluster_for_case as engine_cluster_for_case
 
-        prefs = self.prefs
-        if not case.member_event_ids:
-            return None
-        query_source = self.poller.source_for_id(case.source_id)
-        events = []
-        fetch_size = max(len(case.member_event_ids), len(case.member_event_keys or []))
-        if query_source is not None:
-            try:
-                result = await query_source.fetch_by_ids(
-                    prefs, case.member_event_ids, size=fetch_size
-                )
-                events = result.events
-            except Exception:  # noqa: BLE001
-                return None
-        elif (
-            case.source_id
-            and not prefs.sources
-            and case.source_id == getattr(self.log_source, "connector_id", None)
-        ):
-            try:
-                result = await self.log_source.fetch_by_ids(
-                    prefs, case.member_event_ids, size=fetch_size
-                )
-                events = result.events
-            except Exception:  # noqa: BLE001
-                return None
-        elif case.source_id:
-            # Push/deleted sources must never fall back to the primary/global log
-            # surface. Rebuild a minimal source-local cluster from stored identity.
-            for event_id in case.member_event_ids[:200]:
-                event = RawEvent(
-                    id=event_id,
-                    timestamp_millis=case.first_seen_millis,
-                    rule=(case.rule_ids[0] if case.rule_ids else None),
-                    source={"reconstructed": True},
-                    source_id=case.source_id,
-                    source_name=case.source_name,
-                )
-                if case.entity.type.value == "ip":
-                    event.ip = case.entity.value
-                elif case.entity.type.value == "user":
-                    event.user = case.entity.value
-                elif case.entity.type.value == "host":
-                    event.host = case.entity.value
-                events.append(event)
-        else:
-            # Legacy no-source case: preserve the implicit connector behavior.
-            try:
-                result = await self.log_source.fetch_by_ids(
-                    prefs, case.member_event_ids, size=fetch_size
-                )
-                events = result.events
-            except Exception:  # noqa: BLE001
-                return None
-        members = [e for e in events if e.entity_value(case.entity.type) == case.entity.value] or events
-        if not members:
-            return None
-        cluster = cluster_from_events(case.entity.type, case.entity.value, members)
-        cluster.signature = case.cluster_signature
-        cluster.source_id = case.source_id
-        cluster.source_name = case.source_name
-        cluster.member_event_keys = list(case.member_event_keys or cluster.member_event_keys)
-        cluster.trigger_reason = None  # preserve the existing case's trigger reason
-        return cluster
+        query_source = (
+            self.poller.source_for_id(case.source_id) if case.source_id else self.log_source
+        )
+        return await engine_cluster_for_case(
+            case,
+            es=self.es,
+            log_source=self.log_source,
+            prefs=self.prefs,
+            query_source=query_source,
+            allow_stored_reconstruction=True,
+        )
 
     async def cluster_for_case(self, case):
         """Public PollerHost seam for durable deferred-candidate reconstruction."""
@@ -2102,9 +2225,10 @@ class AppState:
 
         Gated by the same default-OFF batch/detection toggle as the funnel; a job with no
         persisted candidates (a plain investigation batch) re-enters nothing."""
-        from .constants import SourceSurface
+        from .constants import OPEN_CASE_STATUSES, SourceSurface
         from .engine import event_detection as evdet
         from .engine.cost_gate import passes_suppression
+        from .engine.ingest import is_attach_only
 
         prefs = self.prefs
         if not (getattr(getattr(prefs, "batch", None), "enabled", False)
@@ -2140,11 +2264,22 @@ class AppState:
                 # register_candidate makes the case idempotent + visible ($0);
                 # investigate_cluster runs the ReAct investigation + the UNCHANGED decide()
                 # and dedups on the same signature (one open case per signature, #4).
-                await self._real_pipeline.register_candidate(
+                case = await self._real_pipeline.register_candidate(
                     cluster, SourceSurface.AUTOMATED_SCAN, prefs)
+                # Attach-only, as the realtime path (Round 16 B04): an open case that
+                # already has a verdict, or that a person moved, keeps its decision; a
+                # case the candidate path closed by a declaration needs no run (a run
+                # would find no open case and mint a second one, #4).
+                status = getattr(case.status, "value", case.status)
+                if is_attach_only(case) or str(status) not in OPEN_CASE_STATUSES:
+                    continue
+                # The candidate is named (``known_case_id``): a person who closes it
+                # while the run waits for the gate gets it back as they left it, never
+                # a second case with its events (#4); the queued run shows on it.
                 await self._real_pipeline.investigate_cluster(
                     cluster, SourceSurface.AUTOMATED_SCAN, prefs,
                     query_source=self.poller.source_for_id(getattr(_src, "id", None)),
+                    trigger="detection", known_case_id=case.case_id,
                 )
                 count += 1
             return count
@@ -2825,7 +2960,7 @@ class AppState:
         try:
             if await self.users.count() > 0:
                 return
-            from .auth.passwords import hash_password
+            from .auth.passwords import ahash_password
             from .constants import UserRole
 
             # When an env single-admin is configured (auth_admin_password set), that
@@ -2836,7 +2971,9 @@ class AppState:
             if self.secrets.auth_seed_admin and not env_admin:
                 created = await self.users.create_if_absent(
                     username=self.secrets.auth_seed_admin_username,
-                    password_hash=hash_password(self.secrets.auth_seed_admin_password),
+                    # Off the event loop (PBKDF2): seeding also runs after a factory reset,
+                    # while the backend serves requests.
+                    password_hash=await ahash_password(self.secrets.auth_seed_admin_password),
                     role=UserRole.SUPER_ADMIN.value,
                     active=True,
                     must_change_password=False,
@@ -2847,6 +2984,15 @@ class AppState:
                         "Seeded demo super_admin '%s' (change the password!)",
                         created.username,
                     )
+                    # What's new (SPEC D7): on an installation whose setup is already
+                    # complete, this account is new and never ran the update, so it
+                    # starts with the newest update marked seen. Before setup completes
+                    # (a fresh install, or the local demo, which seeds before it posts
+                    # setup/complete) nothing is stamped and the welcome shows once.
+                    if self.prefs.setup_complete:
+                        from .whats_new import stamp_new_account
+
+                        await stamp_new_account(self, created.username)
         except Exception as exc:  # noqa: BLE001 — seeding is best-effort
             logger.warning("User seeding failed (%s); continuing", exc)
 
@@ -3237,6 +3383,13 @@ class AppState:
             # spawns them unless asked.
             await self._run_schedulers()
             await self._start_system_update_audit_reconciler()
+            # Round 16 (WP06): the event-loop lag gauge GET /api/diagnostics/health reads.
+            try:
+                from .api.routes_diagnostics import start_loop_lag_monitor
+
+                start_loop_lag_monitor(self)
+            except Exception as exc:  # noqa: BLE001 (a gauge never blocks startup)
+                logger.warning("Event-loop lag monitor did not start (%s); continuing", exc)
         logger.info(
             "AppState started (es=%s, setup_complete=%s, polling_enabled=%s)",
             type(self.es).__name__, self.prefs.setup_complete, self.prefs.polling_enabled,
@@ -3532,9 +3685,10 @@ class AppState:
     ) -> dict:
         """Engage demo mode: stamp a run_id, build the isolated stack, pre-generate a
         backdated historical case spread + a tight "just happened" pre-seed (recent
-        cases + already-processed events), eagerly seed the shared RAG corpus, run one
-        demo-local capability pass, and (in ``live``) start the simulator. If a demo is
-        already running it is disabled first (clean re-seed)."""
+        cases + already-processed events), run one demo-local capability pass, write
+        the seeded cases' Demo ledger rows, seed the shared RAG corpus once every seeded
+        case exists, and (in ``live``) start the simulator. If a demo is already running
+        it is disabled first (clean re-seed)."""
         from .config import DemoConfig
         from .engine.demo_generator import (
             build_org, generate_historical_cases, generate_recent_preseed, hits_to_raw,
@@ -3607,21 +3761,23 @@ class AppState:
             runbook_automation=bind_demo_runbook_automation(
                 self, lambda: demo_stack is not None and self._demo is demo_stack,
             ),
+            # Round 16 (SPEC §4.5 WP08): the shared case locks; the Demo registry's
+            # finish notices go to this stack's own Inbox, audit and bus.
+            case_locks=self.case_locks,
+            on_investigation_finished=lambda handle: self._investigation_finished(
+                handle, demo=demo_stack,
+            ),
         )
 
-        # Eagerly seed the SHARED demo RAG corpus so the Knowledge page shows a populated
-        # corpus immediately (idempotent; picks up any CLOSED demo cases too).
-        try:
-            await demo_stack.rag_service.ensure_seeded()
-        except Exception as exc:  # noqa: BLE001 — a cold RAG never breaks enable
-            logger.debug("demo RAG eager-seed failed: %s", exc)
-
         # Pre-generate the backdated historical spread so "old" cases exist instantly.
+        # Round 16 (B62): each seeded case's risk is computed from its own inputs, with
+        # the asset map the Demo runs under, so it matches the case's impact chip.
         org = build_org(new_demo.seed)
         now_ms = to_millis(now_utc())
+        seed_prefs = demo_stack._demo_prefs()
         cases = generate_historical_cases(
             new_demo.seed, org, history_days=new_demo.history_days,
-            run_id=new_demo.run_id, now_millis=now_ms,
+            run_id=new_demo.run_id, now_millis=now_ms, prefs=seed_prefs,
         )
 
         # Pre-seed a tight "just happened" window: a varied trio of recent cases (1
@@ -3633,6 +3789,7 @@ class AppState:
             recent_minutes=new_demo.preseed_recent_minutes,
             case_count=new_demo.preseed_case_count,
             event_count=new_demo.preseed_event_count,
+            prefs=seed_prefs,
         )
         # The capability seed cases (generated here so every seeded case is numbered
         # together; saved and acted on below).
@@ -3644,6 +3801,7 @@ class AppState:
 
                 hitl_cases, tuner_cases = generate_capability_seed_cases(
                     new_demo.seed, org, run_id=new_demo.run_id, now_millis=now_ms,
+                    prefs=seed_prefs,
                 )
             except Exception as exc:  # noqa: BLE001 — capability seeding never blocks enable
                 logger.warning("demo capability seeding failed: %s", exc)
@@ -3651,6 +3809,18 @@ class AppState:
         # Every seeded case gets its display number before it is saved, oldest first,
         # from the same nomenclature and sequence the demo pipeline continues.
         await demo_stack.number_seeded_cases([*cases, *recent_cases, *hitl_cases, *tuner_cases])
+        # Round 16: each seeded case's own rows are kept in its Demo source before it is
+        # saved, with the trigger reason correlation records from them (its source's
+        # severity), so the Evidence tab reads its events from the first paint and the
+        # runbook match below reads the same severity the case shows. Never blocks enable.
+        try:
+            from .engine.demo_generator import seed_demo_case_rows
+
+            seed_demo_case_rows(
+                demo_stack.sources, [*cases, *recent_cases, *hitl_cases, *tuner_cases], seed_prefs,
+            )
+        except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
+            logger.warning("demo seeded case rows not kept: %s", exc)
         # Round 14 (SPEC §4.10.9, §4.10.18, D45): the seeded cases never pass through the
         # pipeline, so each investigated one is stamped, before it is saved, with the
         # runbook the investigator would have read (the same match as the seeded runs
@@ -3788,6 +3958,34 @@ class AppState:
             await seed_demo_team_activity(demo_stack.audit, list(seeded_counter_cases), now_millis=now_ms)
         except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
             logger.warning("demo team activity seeding failed: %s", exc)
+
+        # Round 16 (B48, B69): the Demo ledger rows of the seeded investigations, one per
+        # seeded case with a cost (simulated Demo spend), so a case's cost, its usage,
+        # the Cost page and Agent effectiveness agree. Seeds of the Demo usage store,
+        # never a model call (#6). Never blocks enable.
+        try:
+            from .engine.demo_generator import demo_seeded_usage_docs, seed_demo_investigation_audit
+
+            usage_docs = demo_seeded_usage_docs(
+                seeded_counter_cases, model=seed_prefs.investigator_model.model,
+            )
+            for doc in usage_docs:
+                await demo_stack.usage_store.write_strict(doc)
+            # The AI's own audit rows of those investigations (prompt, query, verdict),
+            # so a seeded case's trace shows the AI's work behind its ledger row.
+            await seed_demo_investigation_audit(demo_stack.audit, seeded_counter_cases, usage_docs)
+        except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
+            logger.warning("demo seeded usage rows not written: %s", exc)
+
+        # Round 16 (B35, B47, B65): seed the Demo knowledge corpus once every seeded case
+        # and review is saved, so its first projection holds the analyst-confirmed seeded
+        # cases as precedent and the Knowledge page is full from the first paint
+        # (seeding it earlier, before the cases existed, left the precedent corpus empty
+        # and raised false agent-health alerts). A cold corpus never breaks enable.
+        try:
+            await demo_stack.rag_service.ensure_seeded()
+        except Exception as exc:  # noqa: BLE001 - a cold RAG never breaks enable
+            logger.debug("demo RAG seed failed: %s", exc)
 
         # Commit the fully-built stack. Only the Demo switch is written, onto the LIVE
         # settings read inside the write lock: a real settings save that landed while
@@ -4170,6 +4368,12 @@ class AppState:
         except Exception:  # noqa: BLE001
             pass
         try:
+            from .api.routes_diagnostics import stop_loop_lag_monitor
+
+            await stop_loop_lag_monitor(self)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             await self.poller.stop()
         except Exception:  # noqa: BLE001
             pass
@@ -4320,22 +4524,51 @@ def parse_user_agent(ua: str) -> dict[str, str]:
     return {"ua_browser": browser, "ua_os": os_name, "client_type": client_type}
 
 
-def client_ip_from(request) -> str:
-    """Best-effort client IP from a Starlette/FastAPI request (Wave 3, stdlib only).
+#: A verdict and a status in the Console's words, for the AI investigation notices
+#: (Round 16 SPEC §4.5 WP08; research ``ai-investigating`` §4.5). Enums only (#9).
+#: The verdict is the case header's word (the Console's ``verdictWords``): one term,
+#: "Needs human review", in the Inbox and on the case.
+_AI_VERDICT_WORDS = {
+    "TRUE_POSITIVE": "True positive",
+    "FALSE_POSITIVE": "False positive",
+    "NEEDS_HUMAN": "Needs human review",
+}
+_AI_STATUS_WORDS = {
+    "new": "New",
+    "open": "Open",
+    "needs_human": "Open, awaiting analyst",
+    "investigating": "Investigating",
+    "escalated": "Escalated",
+    "on_hold": "On hold",
+    "resolved": "Resolved",
+    "closed": "Closed",
+}
 
-    Honors a single ``X-Forwarded-For`` hop (first entry) when present, else the
-    socket peer. PLAIN text, never raises. (No trust decision is made here — the IP
-    is metadata only, never an authz input.)"""
-    try:
-        xff = request.headers.get("x-forwarded-for") or ""
-        if xff:
-            first = xff.split(",")[0].strip()
-            if first:
-                return first
-        client = getattr(request, "client", None)
-        return str(getattr(client, "host", "") or "")
-    except Exception:  # noqa: BLE001
-        return ""
+
+def _ai_verdict_words(value: Any) -> str:
+    return _AI_VERDICT_WORDS.get(str(value or "").upper(), "not recorded")
+
+
+def _ai_status_words(value: Any) -> str:
+    return _AI_STATUS_WORDS.get(str(value or "").lower(), "not recorded")
+
+
+def _ai_finish_body(handle: Any) -> str:
+    """The body of the requester's "AI investigation finished" notice, by outcome."""
+    outcome = getattr(handle, "outcome", None)
+    status = _ai_status_words(getattr(handle, "status_after", None))
+    if outcome == "routed_to_person":
+        return (
+            "The investigation could not finish, so the case was routed to a person. "
+            f"Status: {status}."
+        )
+    if outcome == "cancelled":
+        return "The investigation was stopped before it finished. The case was not changed."
+    if outcome == "failed":
+        return "The investigation could not finish and the case was not saved."
+    if outcome == "unchanged":
+        return "An open case already holds these events, so this case was not changed."
+    return f"Verdict: {_ai_verdict_words(getattr(handle, 'verdict_after', None))}. Status: {status}."
 
 
 def geo_for_ip(ip: str) -> dict[str, str]:

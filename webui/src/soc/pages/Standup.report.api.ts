@@ -12,6 +12,7 @@
  * types below describe the SHAPE only.
  */
 import { api } from '@/lib/api';
+import type { RiskBreakdown } from '@/lib/types';
 
 /** One urgency-ranked attention-queue row (a COMPACT case projection, not the body). */
 export interface AttentionRow {
@@ -36,6 +37,15 @@ export interface AttentionRow {
   entity: string;
   age_minutes: number;
   urgency: number;
+  /**
+   * Round 16 (FXD2), what the row's explanations print; absent from an older backend.
+   * The case's risk breakdown (the factors and the recorded inputs behind the score).
+   */
+  risk_breakdown?: RiskBreakdown | null;
+  /** Which instant the age counts from: `detected_at` when set, else `created_at`. */
+  age_from?: 'detected_at' | 'created_at' | null;
+  /** That instant, as the server parsed it (the age is `generated_at` minus it). */
+  age_from_at?: string | null;
 }
 
 export interface SlaAgingRow {
@@ -45,6 +55,19 @@ export interface SlaAgingRow {
   age_minutes: number;
   target_minutes: number;
   overdue_minutes: number;
+  /**
+   * Round 16 (FXD2), what the row's explanation prints; absent from an older backend.
+   * The response clock's elapsed minutes (2 decimals); `overdue_minutes` is that minus
+   * the target, to 1 decimal.
+   */
+  elapsed_minutes?: number;
+  /** Whether the response clock still runs (false: a person answered, late). */
+  running?: boolean;
+  start_at?: string;
+  due_at?: string;
+  stopped_at?: string | null;
+  /** What stopped the clock (`first_response_at`, `acknowledged_at`, `status_history`). */
+  stop_source?: string | null;
 }
 
 export interface SlaAgingTotals {
@@ -110,10 +133,19 @@ export interface StandupReport {
   degraded: boolean;
 }
 
+/**
+ * The share of its SLA target after which an open case counts as about to breach. The
+ * server's Standup takes it from the one per-case SLA reading
+ * (`backend/app/engine/metrics.py` `SLA_AT_RISK_FRACTION`) and sends it as
+ * `sla_aging.warn_fraction`; this copy is only what an empty block shows, and a test
+ * keeps it equal to the server's.
+ */
+export const SLA_AT_RISK_FRACTION = 0.8;
+
 /** A safe empty SLA-aging block, for the disabled/degraded shapes that omit it. */
 export const EMPTY_SLA_AGING: SlaAging = {
   enabled: false,
-  warn_fraction: 0.75,
+  warn_fraction: SLA_AT_RISK_FRACTION,
   by_priority: {},
   totals: { open: 0, breached: 0, about_to_breach: 0 },
   breached: [],

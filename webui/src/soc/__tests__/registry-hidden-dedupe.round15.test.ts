@@ -10,13 +10,17 @@ import { describe, expect, it } from 'vitest';
 import { NAV_CHILDREN, isPageId, navCurrentLabel, navLabel } from '../nav';
 import { FEATURES, ROUTES, type PageId } from '../registry';
 
-/** The removed hidden entries: id, the label they carried and their permission gate. */
+/**
+ * The removed hidden entries: id, the label they carried and their permission gate.
+ * Round 16 (D11, B01) gates two of them on the grant their page's reads now need:
+ * Models on `models:read` (GET /api/llm/models) and Standup on `metrics:view`.
+ */
 const REMOVED: ReadonlyArray<readonly [PageId, string, string | null]> = [
   ['dashboard', 'Cyber Defence Center', null],
   ['investigate', 'Entity investigation', null],
   ['cost', 'Cost', 'cost:view'],
-  ['models', 'Models', null],
-  ['standup', 'Standup', null],
+  ['models', 'Models', 'models:read'],
+  ['standup', 'Standup', 'metrics:view'],
   ['knowledge', 'Knowledge corpus', 'rag:read'],
   ['runbooks', 'Runbooks', 'runbooks:read'],
   ['memory', 'Operator memory', 'memory:read'],

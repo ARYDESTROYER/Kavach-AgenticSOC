@@ -19,6 +19,7 @@ from typing import Any
 
 from ..constants import REVIEW_VIA_AUTO_CLOSE_REVIEW, DecisionBy, TERMINAL_CASE_STATUSES
 from ..models import Case, FeedbackEntry
+from . import stats
 from .metrics import percentile, truncation_marker
 from .priority import band_of_case
 from .review_origin import is_review_grade, review_events
@@ -194,18 +195,9 @@ def _select_feedback(
 
 
 def _wilson(successes: float, total: int) -> dict[str, float] | None:
-    if total <= 0:
-        return None
-    z = 1.96
-    proportion = successes / total
-    denom = 1.0 + z * z / total
-    centre = (proportion + z * z / (2.0 * total)) / denom
-    margin = (
-        z
-        * ((proportion * (1.0 - proportion) / total + z * z / (4.0 * total * total)) ** 0.5)
-        / denom
-    )
-    return {"low": round(max(0.0, centre - margin), 4), "high": round(min(1.0, centre + margin), 4)}
+    # The one Wilson implementation (``engine/stats.py``, Round 16), rounded here.
+    interval = stats.wilson_interval(successes, total)
+    return None if interval is None else {"low": round(interval[0], 4), "high": round(interval[1], 4)}
 
 
 def _quality_summary(samples: list[_FeedbackSample]) -> dict[str, Any]:
@@ -988,7 +980,7 @@ def _recorded_case_cost(
         "direction": direction,
         "cost_per_day_direction": cost_per_day_direction,
         "definition": {
-            "formula": "sum of recorded UsageDoc cost for calls carrying a case_id",
+            "formula": "sum of the recorded cost of model calls tied to a case",
             "numerator": "Gateway-recorded case-associated model cost in USD.",
             "denominator": "Complete UTC days or distinct costed cases, as labelled.",
             "eligibility": "Usage rows with a valid timestamp, case association, and reporting-window membership.",
@@ -1055,7 +1047,7 @@ def _confirmed_positive_case_rate(
         ),
         "definition": {
             "formula": "confirmed-positive graded cases / outcome-evaluable graded cases",
-            "numerator": "Latest-valid grades marked true_positive or false_negative.",
+            "numerator": "Latest valid grades marked true positive or false negative.",
             "denominator": "Latest-valid grades with an allow-listed actual outcome.",
             "eligibility": "One latest valid analyst grade per case in the reporting window.",
             "caveats": (
@@ -1893,7 +1885,7 @@ def agent_improvement_metrics(
                     "numerator": "Explicit disagreements or allow-listed AI-verdict/outcome conflicts.",
                     "denominator": "The same comparable, identically weighted cohort as agreement.",
                     "eligibility": "Partial feedback is reported separately and is not automatically a correction.",
-                    "caveats": "NEEDS_HUMAN has no inferred outcome conflict; only explicit disagreement counts.",
+                    "caveats": "A needs-human verdict has no inferred outcome conflict; only explicit disagreement counts.",
                 },
             },
             "human_review_turnaround": {
@@ -1989,8 +1981,8 @@ def agent_improvement_metrics(
                 "breached": false_negative_breach,
                 "definition": (
                     "Missed confirmed positives / confirmed positives. A miss is an "
-                    "explicit false_negative outcome or an AI FALSE_POSITIVE later "
-                    "confirmed true positive."
+                    "explicit false negative outcome or an AI false positive verdict "
+                    "later confirmed true positive."
                 ),
             },
             "reopen_after_agent_close_rate": {

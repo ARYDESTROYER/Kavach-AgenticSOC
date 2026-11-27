@@ -35,10 +35,11 @@ FAIL-ISOLATED: ``run(...)`` never raises into the case path — any error degrad
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Any, AsyncContextManager, Awaitable, Callable, Mapping
 
 from ..audit.changes import redact_text
 from ..config import AutomationRule, Preferences
@@ -197,6 +198,48 @@ def evaluate(case: Case, prefs: Preferences) -> list[AutomationAction]:
     return matched
 
 
+def _merge_automation_changes(
+    fresh: Case,
+    worked: Case,
+    *,
+    tags_before: list[str],
+    comments_before: int,
+    actions_before: int,
+) -> Case:
+    """Apply only what this automation run added to ``worked`` onto ``fresh``, the case
+    as stored now (Round 16 B08): new tags (whole, and only while the case has room
+    under ``CASE_TAG_MAX_COUNT``), new comments and new ``automation_actions`` records,
+    each after what ``fresh`` already holds. Everything else on ``fresh`` (status,
+    disposition, assignee, a person's comments and acknowledgement) is left as it is.
+    Returns ``fresh``."""
+    known = set(tags_before)
+    tags = list(fresh.tags)
+    for tag in worked.tags:
+        if tag in known or tag in tags:
+            continue
+        if len(tags) >= CASE_TAG_MAX_COUNT:
+            break
+        tags.append(tag)
+    fresh.tags = tags
+    fresh.comments = [*fresh.comments, *worked.comments[comments_before:]]
+    fresh.automation_actions = [
+        *fresh.automation_actions, *worked.automation_actions[actions_before:]
+    ]
+    return fresh
+
+
+def _write_lock(case_lock: Callable[[str], AsyncContextManager[Any]] | None, case_id: str):
+    """The case's write lock from ``case_lock`` for automation's re-read and save, or a
+    no-op context without one (a direct call, a test) or when the lookup fails."""
+    if case_lock is None or not case_id:
+        return contextlib.nullcontext()
+    try:
+        return case_lock(case_id)
+    except Exception as exc:  # noqa: BLE001 - a lock lookup never breaks the case path
+        logger.warning("automation case lock unavailable for %s: %s", case_id, exc)
+        return contextlib.nullcontext()
+
+
 class ThresholdAutomation:
     """Executes matched automation actions for a saved case — #3-safe.
 
@@ -228,11 +271,36 @@ class ThresholdAutomation:
         self._attach_runbook = attach_runbook
         self._migrated_procedures = migrated_procedures
 
-    async def run(self, case: Case, prefs: Preferences, *, save: Callable[[Case], Any]) -> Case:
+    async def run(
+        self,
+        case: Case,
+        prefs: Preferences,
+        *,
+        save: Callable[[Case], Any],
+        fetch: Callable[[str], Awaitable[Case | None]] | None = None,
+        case_lock: Callable[[str], AsyncContextManager[Any]] | None = None,
+    ) -> Case:
         """Evaluate + execute automation for ``case`` AFTER apply()+save. Records each
         action on ``Case.automation_actions`` + audits it. Persists the case via
         ``save`` when any SAFE action mutated it. NEVER raises — any failure degrades
-        to no automation. NEVER touches status/disposition (#3)."""
+        to no automation. NEVER touches status/disposition (#3).
+
+        With ``fetch`` (the case store's ``get``), the case is read again just before
+        the save and only automation's own changes are applied to that copy: the tags
+        it added (within ``CASE_TAG_MAX_COUNT``), the comments it added and its
+        ``automation_actions`` records (Round 16 B08). A notify action awaits a send,
+        and a person may acknowledge, assign or comment on the case meanwhile; saving
+        the copy read before the send would silently undo their work. When the read
+        fails or finds no case, the copy in hand is saved, as before. Returns the case
+        that was saved.
+
+        With ``case_lock`` (the pipeline's per-case write lock), the re-read, the merge
+        and the save happen under that lock, and only they do: the actions (a notify
+        send awaits network I/O) run before it is taken. A person's action holds the
+        same lock across its own read and save, so neither save erases the other
+        (Round 16 cross-cutting review). The pipeline calls this inside the cluster's
+        signature lock and after it released its own hold on the case lock, so the
+        lock order (a signature lock, then a case lock) is kept."""
         try:
             actions = evaluate(case, prefs)
             if not actions:
@@ -243,6 +311,9 @@ class ThresholdAutomation:
 
         status_before = case.status
         disposition_before = case.disposition
+        tags_before = list(case.tags)
+        comments_before = len(case.comments)
+        actions_before = len(case.automation_actions)
         dirty = False
 
         for action in actions:
@@ -264,12 +335,28 @@ class ThresholdAutomation:
             )
 
         if dirty:
-            try:
-                result = save(case)
-                if hasattr(result, "__await__"):
-                    await result
-            except Exception as exc:  # noqa: BLE001 — a save failure never breaks the case path
-                logger.warning("automation save failed for %s: %s", case.case_id, exc)
+            async with _write_lock(case_lock, case.case_id):
+                target = case
+                if fetch is not None:
+                    try:
+                        fresh = await fetch(case.case_id)
+                    except Exception as exc:  # noqa: BLE001 - fall back to the copy in hand
+                        logger.warning("automation re-read failed for %s: %s", case.case_id, exc)
+                        fresh = None
+                    if isinstance(fresh, Case):
+                        target = _merge_automation_changes(
+                            fresh, case,
+                            tags_before=tags_before,
+                            comments_before=comments_before,
+                            actions_before=actions_before,
+                        )
+                try:
+                    result = save(target)
+                    if hasattr(result, "__await__"):
+                        await result
+                except Exception as exc:  # noqa: BLE001 - a save failure never breaks the case path
+                    logger.warning("automation save failed for %s: %s", case.case_id, exc)
+            return target
         return case
 
     async def _execute_one(self, case: Case, action: AutomationAction, prefs: Preferences) -> bool:
@@ -446,7 +533,14 @@ class ThresholdAutomation:
             kind=kind,  # type: ignore[arg-type]
             payload=payload,
             rationale=rationale,
-            confidence=float(payload.get("confidence", 0.5) or 0.5),
+            # Round 16 B36: no model scored an automation checkpoint, so nothing is made
+            # up. Only a real number the rule's payload supplies is kept.
+            confidence=(
+                float(payload["confidence"])
+                if isinstance(payload.get("confidence"), (int, float))
+                and not isinstance(payload.get("confidence"), bool)
+                else 0.0
+            ),
             source_case_ids=[case.case_id],
             created_by="automation",
             expires_at=expires,

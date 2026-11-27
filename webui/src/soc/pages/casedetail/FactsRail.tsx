@@ -1,44 +1,58 @@
 /**
- * FactsRail: the case's facts, visible beside EVERY tab (Round 12, CM-6; Round 15,
- * SPEC D8.4).
+ * FactsRail: the case inspector, the facts beside EVERY tab (Round 12, CM-6; Round 15,
+ * SPEC D8.4; Round 16, SPEC §4.4 WP03, [cmux] §5.6).
  *
  * The evidence narrative belongs in the tabs; the facts about the case belong here, each
- * with ONE home, in eight sections divided by hairlines (no icon headings):
+ * with ONE home, in six collapsible sections divided by hairlines (no icon headings).
+ * Whether each is open is kept per viewer in this browser (`soc.caseManager.
+ * inspectorSections`); Record starts closed:
  *
- *   Outcome   the outcome of record, who classified it, the AI verdict and confidence
- *             (with the auto-close bar), who decided, the objection window, and the
- *             auto-close review (Round 15, D8.4): who reviewed it and when, or that the
- *             sample is waiting (when no band says so) or expired
- *   Signal    the risk meter (its factors one click away), severity and its provenance,
- *             priority, impact and urgency
- *   Runbook   the runbook on the case (Round 14, §4.10.11): phases with counts
- *   Times     detected, opened, acknowledged, closed, updated, and the SLA
- *   Tags      the editable tags, and the campaign the case belongs to
- *   Source    where the case came from, its detection rules and the primary entity
- *   Related   the related cases
- *   Record    the case number (Ask AI), the Sample mark, cost, build, profile, runbook,
- *             classification and AI verdict history, notifications
+ *   Outcome            the outcome of record, who classified it, the AI verdict and
+ *                      confidence (with the auto-close bar of the entry for its verdict,
+ *                      B27), who decided, the objection window, the auto-close review, and
+ *                      why a case still waits for an investigation (`AwaitingReason`)
+ *   Signal             the risk meter (its factors one click away), severity and its
+ *                      provenance, one line of priority, impact and urgency, and the SLA
+ *   Times              detected, opened, acknowledged, closed, updated
+ *   Source and entity  where the case came from, its detection rules, the primary entity
+ *                      and the related cases (a link to Evidence)
+ *   Tags and campaign  the editable tags, and the campaign the case belongs to
+ *   Record             the case number (Ask AI), the Sample mark, cost (`CaseUsageButton`),
+ *                      build, profile, runbook, classification and AI verdict history,
+ *                      notifications, and "View all fields" (`AllFieldsSheet`)
  *
- * The owner's one editable home is the header's meta row, so the rail does not repeat it.
- * On a pane of 60rem or wider the rail is a column beside the tab content; narrower panes
- * open the same component in a non-blocking side sheet from the header's "Details".
+ * The owner's one editable home is the header's meta strip, so the inspector does not
+ * repeat it. The runbook's phases are the Response tab's (the Brief's People lane carries
+ * the progress). From a 52rem pane the inspector is a column beside the tab content (`]`
+ * shows or hides it); narrower panes open the same component in a non-blocking side sheet.
  *
  * SECURITY (#9): every case-derived value (names, ids, rule ids, entity, tags, source
  * names) is a plain text node or an InlineCode fence. #3: read-only except the existing
  * tag editor; nothing here decides or changes status, verdict or disposition.
  */
 import * as React from 'react';
-import { Bot } from 'lucide-react';
+import { Bot, ChevronDown, Braces } from 'lucide-react';
 
 import type { Case, SlaPolicy } from '@/lib/types';
 import type { CaseReviewState } from '@/lib/types-reviews';
-import type { CaseRunbooks, PhaseId } from '@/lib/types-runbooks';
+import {
+  compareWithPolicy,
+  comparisonSentence,
+  explainPolicyToday,
+  explainPriority,
+  explainSeverity,
+  explainSla,
+  explainTimeToDetect,
+  type AssetRangeReading,
+  type SlaReadingWire,
+} from '@/lib/explain/builders';
 import { cn } from '@/lib/cn';
-import { DASH, fmtMoney, formatTimestamp, humanizeAge, humanizeToken } from '@/lib/format';
+import { DASH, formatTimestamp, humanizeAge, humanizeToken } from '@/lib/format';
 import { caseLabel } from '@/lib/format-values';
 
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 
 import { SeverityBadge, isAutoClosedByAI, severityBand } from '@/soc/components/badges';
 import { DemoBadge, isDemoCase } from '@/soc/components/DemoBadge';
@@ -55,7 +69,6 @@ import { InlineCode } from '@/soc/components/CodeBlock';
 import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
 import { ProvenanceTag, severityProvenance } from '@/soc/components/ProvenanceTag';
 import { scoreBand } from '@/soc/components/palette';
-import { RunbookRail } from '@/soc/runbooks/run/RunbookRail';
 import type { TriageChips } from '@/soc/pages/CaseDetail.api';
 import { CampaignChip } from '@/soc/pages/Campaigns';
 import type { Campaign } from '@/soc/pages/Campaigns.api';
@@ -63,24 +76,104 @@ import type { Campaign } from '@/soc/pages/Campaigns.api';
 import { AskAi } from './AskAi';
 import { CaseTagsEditor } from './CaseTagsEditor';
 import { SignalProfile } from './SignalProfile';
-import { confidenceCalibration, type FpPolicy } from './shared';
-import { caseClocks, caseDisplayId, entityTypeLabel, severityVersusRiskNote, slaReading } from './caseFacts';
+import { DecisionExplain } from './explain/DecisionExplain';
+import { FactExplain } from './explain/FactExplain';
+import { AllFieldsSheet } from './records/AllFieldsSheet';
+import { AwaitingReason } from './records/AwaitingReason';
+import { CaseUsageButton } from './records/CaseUsageButton';
+import { NotificationsSent } from './records/NotificationsSent';
+import type { FpPolicy } from './shared';
+import { caseClocks, caseDisplayId, entityTypeLabel, firstEventAt, severityVersusRiskNote } from './caseFacts';
+import { caseSlaReading } from './triageReads';
 
 const FIELD_LABEL = 'text-xs font-medium text-muted-foreground';
 
-/** One rail section: a 13px heading over its facts, divided from the next by a hairline. */
-const RailSection: React.FC<{ title: string; testId?: string; children: React.ReactNode }> = ({
-  title,
-  testId,
-  children,
-}) => (
-  <section
-    data-testid={testId}
-    className="space-y-2.5 border-t border-border/60 py-4 first:border-t-0 first:pt-0 last:pb-0"
+/** The inspector's sections, in order, and whether each starts open. */
+export const INSPECTOR_SECTIONS = [
+  { id: 'outcome', title: 'Outcome', open: true },
+  { id: 'signal', title: 'Signal', open: true },
+  { id: 'times', title: 'Times', open: true },
+  { id: 'source', title: 'Source and entity', open: true },
+  { id: 'tags', title: 'Tags and campaign', open: true },
+  { id: 'record', title: 'Record', open: false },
+] as const;
+
+export type InspectorSectionId = (typeof INSPECTOR_SECTIONS)[number]['id'];
+
+/** Where the open sections are kept (a per-viewer convenience; never required). */
+export const INSPECTOR_SECTIONS_KEY = 'soc.caseManager.inspectorSections';
+
+function readOpenSections(): Partial<Record<InspectorSectionId, boolean>> {
+  try {
+    const raw = window.localStorage.getItem(INSPECTOR_SECTIONS_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Partial<Record<InspectorSectionId, boolean>> = {};
+    for (const { id } of INSPECTOR_SECTIONS) {
+      const value = (parsed as Record<string, unknown>)[id];
+      if (typeof value === 'boolean') out[id] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeOpenSections(value: Partial<Record<InspectorSectionId, boolean>>): void {
+  try {
+    window.localStorage.setItem(INSPECTOR_SECTIONS_KEY, JSON.stringify(value));
+  } catch {
+    /* private mode or blocked storage: the sections still open and close. */
+  }
+}
+
+/** The open state of the six sections, shared by every inspector on the page. */
+function useOpenSections(): [Record<InspectorSectionId, boolean>, (id: InspectorSectionId, open: boolean) => void] {
+  const [stored, setStored] = React.useState<Partial<Record<InspectorSectionId, boolean>>>(() => readOpenSections());
+  const state = React.useMemo(() => {
+    const out = {} as Record<InspectorSectionId, boolean>;
+    for (const section of INSPECTOR_SECTIONS) out[section.id] = stored[section.id] ?? section.open;
+    return out;
+  }, [stored]);
+  const set = React.useCallback((id: InspectorSectionId, open: boolean) => {
+    setStored((current) => {
+      const next = { ...current, [id]: open };
+      writeOpenSections(next);
+      return next;
+    });
+  }, []);
+  return [state, set];
+}
+
+/** One inspector section: a quiet heading that folds its facts, over a hairline. */
+const RailSection: React.FC<{
+  id: InspectorSectionId;
+  title: string;
+  open: boolean;
+  onOpenChange: (id: InspectorSectionId, open: boolean) => void;
+  testId?: string;
+  children: React.ReactNode;
+}> = ({ id, title, open, onOpenChange, testId, children }) => (
+  <Collapsible
+    open={open}
+    onOpenChange={(next) => onOpenChange(id, next)}
+    asChild
   >
-    <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-    {children}
-  </section>
+    <section
+      data-testid={testId}
+      data-section-id={id}
+      className="border-t border-border/60 py-3 first:border-t-0 first:pt-0 last:pb-0"
+    >
+      <h3>
+        <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 rounded-sm text-left text-xs font-semibold text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          {title}
+          <ChevronDown className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-180')} aria-hidden />
+        </CollapsibleTrigger>
+      </h3>
+      <CollapsibleContent className="space-y-2.5 pt-2.5">{children}</CollapsibleContent>
+    </section>
+  </Collapsible>
 );
 
 /** One label/value row; `value` is a plain text node (UNTRUSTED-safe). */
@@ -125,13 +218,35 @@ function classificationHistory(c: Case): Array<{ disposition: string; by?: strin
   return out;
 }
 
-/** "Auto-close bar 90% · FP auto-close enabled at this bar", when the policy is known. */
-function autoCloseBarLine(fpPolicy: FpPolicy | undefined, verdict?: string | null): string | null {
-  const calibration = confidenceCalibration(fpPolicy ?? null, verdict ?? undefined);
-  if (typeof calibration.threshold !== 'number') return null;
-  const bar = confidencePercent(calibration.threshold);
-  if (bar === null) return null;
-  return `Auto-close bar ${bar}%${calibration.note ? ` · ${calibration.note}` : ''}`;
+const finite = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+/** The auto-close entry for the case's verdict as the decision builders read it. */
+function policyThresholds(policy: FpPolicy | undefined) {
+  if (!policy) return null;
+  return {
+    enabled: typeof policy.enabled === 'boolean' ? policy.enabled : null,
+    min_confidence: finite(policy.min_confidence),
+    max_risk_score: finite(policy.max_risk_score),
+  };
+}
+
+/**
+ * Both auto-close conditions of today's entry for the case's verdict (B27), with the
+ * case's own numbers (D8): "Today's policy routes it to a person: confidence 97% >= 85%
+ * (met); risk 45 <= 30 (not met)." `decide()` closes only when BOTH hold, so the line
+ * never states half of the predicate. Null for a needs-human verdict (code fixes it, so
+ * there is no bar) and when the entry does not name both bars.
+ */
+export function autoCloseBarLine(
+  policy: FpPolicy | undefined,
+  verdict?: string | null,
+  confidence?: number | null,
+  risk?: number | null,
+): string | null {
+  const comparison = compareWithPolicy(verdict ?? null, finite(confidence), finite(risk), policyThresholds(policy));
+  if (comparison.klass === 'needs_human' || comparison.policyOutcome === 'unknown') return null;
+  return comparisonSentence(comparison, 'current');
 }
 
 export interface FactsRailProps {
@@ -139,8 +254,18 @@ export interface FactsRailProps {
   outcome: CaseOutcome;
   triage: TriageChips | null;
   slaPolicy?: SlaPolicy | null;
-  /** The FP auto-close policy, so the AI confidence is read against its bar. */
-  fpPolicy?: FpPolicy;
+  /**
+   * The server's SLA reading (the triage read's `sla`), used when the settings cannot be
+   * read (no `settings:read`).
+   */
+  serverSla?: SlaReadingWire | null;
+  /**
+   * Today's internal network range that holds the entity (the triage read's `asset_cidr`,
+   * sent only to a person who may read the settings), for the risk explanation.
+   */
+  assetRange?: AssetRangeReading | null;
+  /** The auto-close entry for the case's verdict (`policyForVerdict`, B27). */
+  policy?: FpPolicy;
   /**
    * Whether the viewer holds `cost:view`. Without it the Record section leaves the
    * investigation cost out (the server answers `token_cost: null` for that viewer too).
@@ -149,18 +274,10 @@ export interface FactsRailProps {
   onCaseChange: (next: Case) => void;
   /** Open the Set disposition dialog (offered when a human close recorded no outcome). */
   onSetDisposition?: () => void;
-  /** Jump to the Overview's related-cases list. */
+  /** Open the Evidence tab's related-cases list. */
   onShowRelated?: () => void;
-  /**
-   * Round 14 (SPEC §4.10.11): the case's runbook runs for the "Runbook" section. Left out
-   * when the viewer cannot read runbooks or runbooks are off; the section is then hidden.
-   */
-  runbook?: {
-    data: CaseRunbooks | null;
-    loading: boolean;
-    failed: boolean;
-    onOpenPhase: (phase: PhaseId | null) => void;
-  };
+  /** Open the Evidence tab's events table (the Signal section's event count). */
+  onShowEvents?: () => void;
   /** The viewer may edit the tags (`cases:write`) on the case on screen. */
   canTag?: boolean;
   /** The tag editor popover, controlled so T and "Edit tags" can open it. */
@@ -171,13 +288,14 @@ export interface FactsRailProps {
   onOpenCampaign?: () => void;
   /**
    * Round 15 (D8.4): the case's auto-close review state. `bandShown` when the pending
-   * band is on screen (it is then that fact's one home, so the rail does not repeat it).
+   * review is said elsewhere on screen (the header's review chip and the Brief's note), so
+   * the inspector does not repeat it.
    */
   review?: { state: CaseReviewState | null; bandShown: boolean };
   className?: string;
 }
 
-/** The rail's review line for a case that has no review result yet, or null. */
+/** The inspector's review line for a case that has no review result yet, or null. */
 export function reviewStatusLine(review: FactsRailProps['review']): string | null {
   const state = review?.state;
   if (!state || !state.agent_closed) return null;
@@ -197,12 +315,14 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   outcome,
   triage,
   slaPolicy,
-  fpPolicy,
+  serverSla = null,
+  assetRange = null,
+  policy,
   canViewCost,
   onCaseChange,
   onSetDisposition,
   onShowRelated,
-  runbook,
+  onShowEvents,
   canTag = false,
   tagsOpen = false,
   onTagsOpenChange,
@@ -211,6 +331,8 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   review,
   className,
 }) => {
+  const [openSections, setSectionOpen] = useOpenSections();
+  const [allFieldsOpen, setAllFieldsOpen] = React.useState(false);
   const entry = classificationEntry(c);
   // A recorded review (the outcome reads as it) names who reviewed it and when.
   const reviewed = outcome.source === 'review' ? latestReview(c) : null;
@@ -231,16 +353,26 @@ export const FactsRail: React.FC<FactsRailProps> = ({
     riskBand !== null &&
     severity !== riskBand;
   const impact = triage?.impact?.band ?? c.impact_band;
-  const priority = triage?.priority?.level ?? triage?.priority?.default ?? c.priority_level;
+  // D9: the triage read's priority is the matrix lookup; with the matrix off it carries no
+  // level on purpose, and the case has no priority (never the matrix's default level).
+  const triagePriority = triage?.priority ?? null;
+  const priority = triagePriority ? triagePriority.level : c.priority_level;
+  const noPriority =
+    triagePriority !== null &&
+    (triagePriority.level === null ||
+      triagePriority.level === undefined ||
+      triagePriority.inputs?.matrix_enabled === false ||
+      (triagePriority as { enabled?: unknown }).enabled === false);
   const clocks = caseClocks(c);
-  const sla = slaReading(c, slaPolicy);
+  // Once the case ended, only the server's reading speaks for its SLA: it knows whether a
+  // stopped clock was late (the SLA metrics count that case as a breach).
+  const sla = caseSlaReading(c, slaPolicy, serverSla, Date.now(), outcome.terminal);
   const ruleIds = (c.rule_ids || []).filter((r): r is string => typeof r === 'string' && !!r.trim());
   const entityValue = c.entity?.value || '';
   const entityType = c.entity?.type || c.entity_type || '';
   const related = (Array.isArray(c.related_case_ids) ? c.related_case_ids : []).filter(
     (rid) => typeof rid === 'string' && rid && rid !== c.case_id,
   );
-  const notifications = Array.isArray(c.notifications_sent) ? c.notifications_sent : [];
   const classifications = classificationHistory(c);
   const verdictHistory = Array.isArray(c.verdict_history) ? (c.verdict_history as Array<Record<string, unknown>>) : [];
   const appVersion = typeof c.app_version === 'string' ? c.app_version.trim() : '';
@@ -249,16 +381,57 @@ export const FactsRail: React.FC<FactsRailProps> = ({
     typeof c.objection_window_expires_at === 'string' && Date.parse(c.objection_window_expires_at) > Date.now();
   // After a person classified the case, the AI's confidence is the AI's, at assessment.
   // The bar is TODAY's policy, so it reads only against an open case: once the case ended,
-  // the decision record (Investigation) names the bar it was decided against, and today's
+  // the decision record (the Brief) names the bar it was decided against, and today's
   // ("auto-close off") beside "Auto-closed as false positive" would contradict it.
-  const barLine = c.verdict && !humanSettled && !outcome.terminal ? autoCloseBarLine(fpPolicy, c.verdict) : null;
+  const barConfidence = finite(c.confidence);
+  const barRisk = finite(c.risk_score);
+  const barLine =
+    c.verdict && !humanSettled && !outcome.terminal ? autoCloseBarLine(policy, c.verdict, barConfidence, barRisk) : null;
+  const barExplanation = barLine
+    ? explainPolicyToday(String(c.verdict), barConfidence, barRisk, policyThresholds(policy))
+    : null;
   const displayId = caseDisplayId(c);
+  // T and "Edit tags" open the tag editor, which lives inside "Tags and campaign": a
+  // folded section renders none of its content, so the editor opens the section with it,
+  // and the section stays open (the viewer asked for the tags). Folding the section while
+  // the editor is open closes the editor too, so nothing holds the case keys.
+  const tagsSectionOpen = openSections.tags || tagsOpen;
+  React.useEffect(() => {
+    if (tagsOpen && !openSections.tags) setSectionOpen('tags', true);
+  }, [tagsOpen, openSections.tags, setSectionOpen]);
+  // The section sits low in the inspector, often below the fold of its column or sheet:
+  // bring it into view as the editor opens, so the editor anchored to it is on screen
+  // (it would otherwise open, and take focus, out of sight).
+  const railRef = React.useRef<HTMLElement | null>(null);
+  React.useLayoutEffect(() => {
+    if (!tagsOpen) return;
+    const tags = railRef.current?.querySelector<HTMLElement>('[data-section-id="tags"]');
+    if (tags && typeof tags.scrollIntoView === 'function') tags.scrollIntoView({ block: 'nearest' });
+  }, [tagsOpen]);
+  const onSectionOpenChange = React.useCallback(
+    (id: InspectorSectionId, next: boolean) => {
+      setSectionOpen(id, next);
+      if (id === 'tags' && !next && tagsOpen) onTagsOpenChange?.(false);
+    },
+    [setSectionOpen, tagsOpen, onTagsOpenChange],
+  );
+  const section = (id: InspectorSectionId) => ({
+    id,
+    title: INSPECTOR_SECTIONS.find((s) => s.id === id)!.title,
+    open: id === 'tags' ? tagsSectionOpen : openSections[id],
+    onOpenChange: onSectionOpenChange,
+  });
 
   return (
-    <aside aria-label="Case facts" data-testid="case-facts-rail" className={cn('text-sm', className)}>
-      <RailSection title="Outcome" testId="facts-outcome">
+    // A labelled region, not an aside: it sits inside the case's own region, and a
+    // complementary landmark must be top level (axe landmark-complementary-is-top-level).
+    <section ref={railRef} aria-label="Case facts" data-testid="case-facts-rail" className={cn('text-sm', className)}>
+      <RailSection {...section('outcome')} testId="facts-outcome">
         <p data-testid="facts-outcome-headline" className="font-medium text-foreground">
-          {outcome.headline}
+          {/* Nobody settled it yet: the AI-led headline would only say the verdict line
+              below again, so the outcome reads as not classified (one home per fact). A
+              classification a later AI run kept keeps its own reading. */}
+          {outcome.source === 'pending' && !entry ? 'Not classified yet' : outcome.headline}
         </p>
         {outcome.source === 'analyst' && (entry?.by || entry?.at) ? (
           <p className="text-xs text-muted-foreground">
@@ -283,13 +456,25 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             <Bot className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
             <div className="min-w-0 space-y-0.5">
               <p>
-                {outcome.aiLine}
+                {/* The verdict and its confidence open the decision's explanation (the
+                    recorded gate, both conditions), as the header's verdict chip does. */}
+                {c.verdict ? (
+                  <DecisionExplain caseRecord={c}>
+                    <span data-testid="facts-ai-line">{outcome.aiLine}</span>
+                  </DecisionExplain>
+                ) : (
+                  outcome.aiLine
+                )}
                 {/* A review's agreement is its headline ("Review disagreed: ..."). */}
                 {outcome.source !== 'review' && agreementWords(outcome.agreement)
                   ? ` · ${agreementWords(outcome.agreement)}`
                   : ''}
               </p>
-              {barLine ? <p data-testid="facts-auto-close-bar">{barLine}</p> : null}
+              {barLine ? (
+                <p data-testid="facts-auto-close-bar">
+                  <FactExplain explanation={barExplanation}>{barLine}</FactExplain>
+                </p>
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -315,70 +500,73 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             {formatTimestamp(c.objection_window_expires_at)}
           </p>
         ) : null}
+        {/* Why the case still waits for an investigation, when it does (WP14). */}
+        <AwaitingReason caseRecord={c} />
       </RailSection>
 
-      <RailSection title="Signal" testId="facts-signal">
-        <SignalProfile c={c} triage={triage} />
+      <RailSection {...section('signal')} testId="facts-signal">
+        <SignalProfile c={c} triage={triage} assetRange={assetRange} onShowEvents={onShowEvents} />
         <dl className="space-y-1.5" data-testid="facts-triage">
           <Fact label="Severity">
             {severity ? (
-              <span className="inline-flex items-center gap-1">
-                <SeverityBadge severity={severity} />
-                <ProvenanceTag kind={severityProvenance(severitySource)} variant="icon" />
-              </span>
+              <FactExplain explanation={explainSeverity(triage)}>
+                <span className="inline-flex items-center gap-1">
+                  <SeverityBadge severity={severity} />
+                  <ProvenanceTag kind={severityProvenance(severitySource)} variant="icon" />
+                </span>
+              </FactExplain>
             ) : (
               DASH
             )}
           </Fact>
-          <Fact label="Priority">{chipLabel(priority)}</Fact>
-          <Fact label="Impact">{chipLabel(impact)}</Fact>
-          <Fact label="Urgency">{chipLabel(c.urgency_band)}</Fact>
         </dl>
+        <FactExplain explanation={explainPriority(triage)}>
+          <p className="text-xs text-muted-foreground" data-testid="facts-priority-line">
+            {noPriority ? (
+              <span className="text-foreground">No priority</span>
+            ) : (
+              <>
+                Priority <span className="text-foreground">{chipLabel(priority)}</span>
+              </>
+            )}{' '}
+            · Impact <span className="text-foreground">{chipLabel(impact)}</span> · Urgency{' '}
+            <span className="text-foreground">{chipLabel(c.urgency_band)}</span>
+          </p>
+        </FactExplain>
+        {sla ? (
+          <dl className="space-y-1.5">
+            <Fact label={`SLA (${sla.priority})`}>
+              <FactExplain explanation={explainSla(sla.wire)}>
+                <span data-testid="facts-sla" data-sla-state={sla.state}>
+                  {sla.text}
+                </span>
+              </FactExplain>
+            </Fact>
+          </dl>
+        ) : null}
         {disagree ? (
           <p className="text-xs leading-relaxed text-muted-foreground">{severityVersusRiskNote(severitySource)}</p>
         ) : null}
       </RailSection>
 
-      {runbook ? (
-        <RailSection title="Runbook" testId="facts-runbook">
-          <RunbookRail
-            data={runbook.data}
-            loading={runbook.loading}
-            failed={runbook.failed}
-            onOpenPhase={runbook.onOpenPhase}
-          />
-        </RailSection>
-      ) : null}
-
-      <RailSection title="Times" testId="facts-times">
+      <RailSection {...section('times')} testId="facts-times">
         <dl className="space-y-1.5">
           {clocks.map((clock) => (
             <Fact key={clock.label} label={clock.label}>
-              <span title={formatTimestamp(clock.at)}>{clock.relative}</span>
+              {clock.label === 'Time to detect' ? (
+                /* The one computed clock: its subtraction one hover or click away. */
+                <FactExplain explanation={explainTimeToDetect(firstEventAt(c), c.created_at, clock.relative)}>
+                  <span data-testid="facts-time-to-detect">{clock.relative}</span>
+                </FactExplain>
+              ) : (
+                <span title={formatTimestamp(clock.at)}>{clock.relative}</span>
+              )}
             </Fact>
           ))}
-          {sla ? <Fact label={`SLA (${sla.priority})`}>{sla.text}</Fact> : null}
         </dl>
       </RailSection>
 
-      <RailSection title="Tags" testId="facts-tags">
-        <CaseTagsEditor
-          c={c}
-          canTag={canTag}
-          onCaseChange={onCaseChange}
-          open={tagsOpen}
-          onOpenChange={(next) => onTagsOpenChange?.(next)}
-        />
-        {campaign ? (
-          /* A generated campaign id can be very long: the chip truncates, and its full
-             name stays in its accessible name and on hover. */
-          <div className="min-w-0" title={campaign.name || campaign.id} data-testid="facts-campaign">
-            <CampaignChip campaign={campaign} onOpen={onOpenCampaign} className="inline-flex min-w-0 max-w-full" />
-          </div>
-        ) : null}
-      </RailSection>
-
-      <RailSection title="Source" testId="facts-source">
+      <RailSection {...section('source')} testId="facts-source">
         <dl className="space-y-1.5">
           <Fact label="Source">{c.source_name || DASH}</Fact>
           {c.source_id ? (
@@ -430,10 +618,7 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             ) : null}
           </div>
         ) : null}
-      </RailSection>
-
-      {related.length ? (
-        <RailSection title="Related cases" testId="facts-related">
+        {related.length ? (
           <Button
             type="button"
             size="sm"
@@ -441,13 +626,31 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             className="h-auto px-0 text-primary hover:bg-transparent hover:underline"
             onClick={onShowRelated}
             disabled={!onShowRelated}
+            data-testid="facts-related"
           >
-            {related.length} related case{related.length === 1 ? '' : 's'}
+            {related.length.toLocaleString()} related case{related.length === 1 ? '' : 's'}
           </Button>
-        </RailSection>
-      ) : null}
+        ) : null}
+      </RailSection>
 
-      <RailSection title="Record" testId="facts-record">
+      <RailSection {...section('tags')} testId="facts-tags">
+        <CaseTagsEditor
+          c={c}
+          canTag={canTag}
+          onCaseChange={onCaseChange}
+          open={tagsOpen}
+          onOpenChange={(next) => onTagsOpenChange?.(next)}
+        />
+        {campaign ? (
+          /* A generated campaign id can be very long: the chip truncates, and its full
+             name stays in its accessible name and on hover. */
+          <div className="min-w-0" title={campaign.name || campaign.id} data-testid="facts-campaign">
+            <CampaignChip campaign={campaign} onOpen={onOpenCampaign} className="inline-flex min-w-0 max-w-full" />
+          </div>
+        ) : null}
+      </RailSection>
+
+      <RailSection {...section('record')} testId="facts-record">
         <dl className="space-y-1.5">
           <Fact label="Case">
             {/* Round 12 WP-ASK: a NEW Workspace chat about this case, never this case's
@@ -463,7 +666,11 @@ export const FactsRail: React.FC<FactsRailProps> = ({
               <DemoBadge className="h-5 px-1.5 text-2xs" />
             </Fact>
           ) : null}
-          {canViewCost && c.token_cost != null ? <Fact label="Investigation cost">{fmtMoney(c.token_cost)}</Fact> : null}
+          {canViewCost && c.token_cost != null ? (
+            <Fact label="Investigation cost">
+              <CaseUsageButton caseId={c.case_id} totalCost={c.token_cost} />
+            </Fact>
+          ) : null}
           <Fact label="Creation build">
             {appVersion || buildSha
               ? `${appVersion ? `v${appVersion}` : 'version unavailable'} · ${
@@ -479,7 +686,7 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             </Fact>
           ) : c.playbook_id ? (
             /* A case investigated before Round 14 keeps its stored id (shown verbatim). */
-            <Fact label="Runbook (before Round 14)" mono>
+            <Fact label="Older runbook" mono>
               {c.playbook_id}
             </Fact>
           ) : null}
@@ -520,30 +727,22 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             </ol>
           </div>
         ) : null}
-        {notifications.length ? (
-          <div className="space-y-1">
-            <span className={cn('block', FIELD_LABEL)}>Notifications sent ({notifications.length})</span>
-            <ol className="space-y-1 text-xs">
-              {[...notifications]
-                .reverse()
-                .slice(0, 5)
-                .map((n, index) => (
-                  <li key={`${n.ts ?? ''}-${index}`} className="text-foreground">
-                    {humanizeToken(String(n.type || 'channel'))}
-                    <span className="text-muted-foreground">
-                      {n.trigger ? ` · ${humanizeToken(n.trigger)}` : ''}
-                      {` · ${n.ok ? 'sent' : 'failed'}`}
-                      {/* Delivery detail is operator or provider text, rendered as plain text (#9). */}
-                      {!n.ok && n.detail ? ` (${n.detail})` : ''}
-                      {n.ts ? ` · ${humanizeAge(n.ts)}` : ''}
-                    </span>
-                  </li>
-                ))}
-            </ol>
-          </div>
-        ) : null}
+        {/* The newest five, then "Show all", each with its channel id (WP14). */}
+        <NotificationsSent records={c.notifications_sent} />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 text-xs"
+          onClick={() => setAllFieldsOpen(true)}
+          aria-haspopup="dialog"
+        >
+          <Braces className="size-3.5" aria-hidden />
+          View all fields
+        </Button>
+        <AllFieldsSheet caseId={c.case_id} open={allFieldsOpen} onOpenChange={setAllFieldsOpen} />
       </RailSection>
-    </aside>
+    </section>
   );
 };
 

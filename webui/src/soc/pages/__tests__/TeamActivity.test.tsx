@@ -16,6 +16,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import type { PersonActivity, TeamActivity, TeamEvents } from '@/lib/types-team';
 
@@ -179,6 +180,41 @@ describe('Team activity', () => {
     expect(names[2]).toContain('Not attributed');
     // The zone is named in the help tip, never as a header description.
     expect(screen.queryByText(/Days are calendar days in Asia\/Kolkata/)).toBeNull();
+  });
+
+  it('explains the median time to acknowledge with its cases (numbers review)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const strip = await screen.findByTestId('team-kpis');
+    const trigger = within(strip).getByRole('button', { name: /^7m\s*, explain$/ });
+    await user.click(trigger);
+    const panel = await screen.findByRole('dialog');
+    expect(panel).toHaveTextContent('Median 7m over 3 cases a person first acknowledged');
+    expect(panel).toHaveTextContent('the time at rank 2 of 3 sorted times');
+  });
+
+  it('lists the times the median is taken from, and says who People active counted', async () => {
+    const user = userEvent.setup();
+    const base = data();
+    h.activity.mockResolvedValue(data({ team: { ...base.team, ack_sample_seconds: [120, 420, 720], ack_sample_offset: 0 } as TeamActivity['team'] }));
+    renderPage();
+    const strip = await screen.findByTestId('team-kpis');
+    await user.click(within(strip).getByRole('button', { name: /^7m\s*, explain$/ }));
+    const median = await screen.findByRole('dialog');
+    expect(median).toHaveTextContent('The times, in order');
+    expect(median).toHaveTextContent('2m (120 s), 7m (420 s), 12m (720 s)');
+    expect(median).toHaveTextContent('the time at rank 2 of 3: 420 seconds');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await user.click(within(strip).getByRole('button', { name: /^2\s*, explain$/ }));
+    const people = await screen.findByRole('dialog');
+    expect(people).toHaveTextContent('People active');
+    expect(people).toHaveTextContent('asha.iyer');
+    expect(people).toHaveTextContent('Zoe Adams');
+    expect(people).toHaveTextContent('5 counted actions');
+    expect(people).toHaveTextContent('1 counted action');
+    // Not attributed's 4 assignments name no person, so they are not a person counted.
+    expect(people).not.toHaveTextContent('4 counted actions');
   });
 
   it('sorts by a column without ever moving Not attributed off the end', () => {
@@ -347,7 +383,14 @@ describe('Team activity', () => {
     await waitFor(() => expect(h.events).toHaveBeenCalledWith('zoe', 'today', null, expect.anything()));
     expect(await within(sheet).findByRole('link', { name: 'CASE-0001' })).toHaveAttribute('href', '#/case_manager?caseId=case-1');
     expect(within(sheet).getByText('False positive')).toBeInTheDocument();
-    expect(within(sheet).getByRole('link', { name: /Open in Audit log/ })).toHaveAttribute('href', '#/audit?actor=zoe');
+    // B56: the Audit log opens on the sheet's own window, as absolute instants. Team's
+    // window is [start, end) and the Audit range end is inclusive, so `to` is end - 1 ms.
+    const href = within(sheet).getByRole('link', { name: /Open in Audit log/ }).getAttribute('href') ?? '';
+    expect(href.startsWith('#/audit?')).toBe(true);
+    const query = new URLSearchParams(href.slice('#/audit?'.length));
+    expect(query.get('actor')).toBe('zoe');
+    expect(query.get('from')).toBe('2026-11-20T00:00:00.000Z');
+    expect(query.get('to')).toBe('2026-11-20T14:59:59.999Z');
   });
 
   it.each(['Escape', 'Close'] as const)('hands focus back to the row action when %s closes the sheet', async (how) => {

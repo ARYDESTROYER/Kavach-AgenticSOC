@@ -31,6 +31,7 @@ import type { PersonActivity, TeamActivity as TeamActivityData, TeamKind } from 
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Callout, LoadingState, Panel } from '@/design-system';
+import { ExplainTrigger } from '@/design-system/explain';
 import { useOptionalAuth } from '@/soc/auth';
 import { Unauthorized } from '@/soc/components/Can';
 import { ChartCard } from '@/soc/components/ChartCard';
@@ -49,6 +50,7 @@ import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
 import { PageAccess, usePermission } from './PageAccess';
 import { UpdatedStamp } from './analytics-shared';
 import { PersonSheet } from './team/PersonSheet';
+import { explainPeopleActive, explainTeamMedian, type TeamTotalsWithTimes } from './team/team-explain';
 import { TeamDailyChart } from './team/TeamDailyChart';
 import { TeamRangeControl } from './team/TeamRangeControl';
 import {
@@ -278,6 +280,28 @@ function bulkContext(count: number, bulk: number, range: TeamRange): string {
   return bulk ? `${fmtNumber(bulk)} in bulk actions` : 'one at a time';
 }
 
+/**
+ * The median's explanation on hover and click, with the sorted times it is taken from
+ * (FXD2); none when not measured.
+ */
+function ackExplainSlot(team: TeamTotalsWithTimes, window: string): ((numeral: React.ReactNode) => React.ReactNode) | undefined {
+  const shown = fmtSeconds(team.median_ack_seconds);
+  const explanation = shown ? explainTeamMedian(team, shown, window) : null;
+  if (!explanation) return undefined;
+  return (numeral) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger>;
+}
+
+/** People active explained: who was counted and what they did (FXD2). */
+function peopleExplainSlot(
+  people: readonly PersonActivity[],
+  total: number,
+  window: string,
+): ((numeral: React.ReactNode) => React.ReactNode) | undefined {
+  const explanation = explainPeopleActive(people, total, window);
+  if (!explanation) return undefined;
+  return (numeral) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger>;
+}
+
 function ackContext(data: TeamActivityData): string {
   const team = data.team;
   if (team.ack_status === 'too_many_cases') return 'too many cases to measure';
@@ -387,7 +411,12 @@ function TeamView() {
           </p>
         ) : null}
         <KpiStrip label="Team summary" data-testid="team-kpis">
-          <KpiTile label="People active" value={fmtNumber(team.people_active)} context={rangeCaption(range)} />
+          <KpiTile
+            label="People active"
+            value={fmtNumber(team.people_active)}
+            context={rangeCaption(range)}
+            explain={peopleExplainSlot(data.people, team.people_active, rangeCaption(range))}
+          />
           <KpiTile label="Cases closed by people" value={fmtNumber(team.counts.closed)} context={bulkContext(team.counts.closed, team.bulk.closed, range)} />
           <KpiTile label="Acknowledged" value={fmtNumber(team.counts.acknowledged)} context={bulkContext(team.counts.acknowledged, team.bulk.acknowledged, range)} />
           <KpiTile label="Reviews completed" value={fmtNumber(team.reviews.completed)} context={team.reviews.completed ? reviewsText(team.reviews) : 'auto-close reviews'} />
@@ -395,6 +424,7 @@ function TeamView() {
             label="Median time to acknowledge"
             value={team.median_ack_seconds === null ? 'Not measured' : (fmtSeconds(team.median_ack_seconds) ?? 'Not measured')}
             context={ackContext(data)}
+            explain={ackExplainSlot(team, rangeCaption(range))}
           />
         </KpiStrip>
         <ChartCard title="Work per day" caption={`${rangeCaption(range)}, days in ${data.timezone}`}>
@@ -449,6 +479,8 @@ function TeamView() {
           windowLabel={rangeLabel(range)}
           timezone={data.timezone}
           canViewAudit={can('audit', 'view')}
+          windowStart={data.window.start}
+          windowEnd={data.window.end}
           onCloseAutoFocus={personOpener.onCloseAutoFocus}
           onOpenChange={(open) => {
             if (!open) setOpenKey(null);

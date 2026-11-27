@@ -48,6 +48,11 @@ export interface PanelProps extends Omit<React.HTMLAttributes<HTMLElement>, 'tit
   caption?: React.ReactNode;
   /** A muted count beside the title, formatted with thousands separators. */
   count?: number | string;
+  /**
+   * The count's explanation slot, as `KpiTile` takes one: given the formatted count, it
+   * returns it wrapped in an explain trigger (the kit stays in the caller's lazy chunk).
+   */
+  countExplain?: (count: React.ReactNode) => React.ReactNode;
   /** Muted text on the right of the title row (a freshness stamp, a link). */
   aside?: React.ReactNode;
   /** Controls on the right of the title row (a button, a menu). */
@@ -85,6 +90,7 @@ export const Panel = /*#__PURE__*/ React.forwardRef<HTMLElement, PanelProps>(fun
     title,
     caption,
     count,
+    countExplain,
     aside,
     actions,
     as: Comp = 'section',
@@ -120,7 +126,7 @@ export const Panel = /*#__PURE__*/ React.forwardRef<HTMLElement, PanelProps>(fun
             </Heading>
             {count != null && count !== '' ? (
               <span className="text-sm tabular-nums text-muted-foreground" data-panel-count="">
-                {formatCount(count)}
+                {countExplain ? countExplain(formatCount(count)) : formatCount(count)}
               </span>
             ) : null}
             {caption ? (

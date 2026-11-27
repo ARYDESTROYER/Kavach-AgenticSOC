@@ -49,6 +49,11 @@ _ARTIFACT_ID = re.compile(r"^[0-9a-f]{32}$")
 #: a grant removed, the fresh sign-in expired) still closes its request with an
 #: outcome row (Round 14 SPEC §4.5.6).
 _HANDLER_FIRST_CHECKPOINT_KINDS = frozenset({JobKind.AUDIT_EXPORT})
+#: The item failure of a reinvestigation whose run failed (Round 16 B14): fixed text,
+#: so the job detail never repeats an exception's text.
+_REINVESTIGATE_FAILED = (
+    "The automated investigation failed; the case was routed to a person for review."
+)
 
 
 class JobCancelled(RuntimeError):
@@ -703,12 +708,21 @@ class JobRunner:
         )
 
     async def _case_reinvestigate(self, job: Job, token: str) -> None:
+        """Reinvestigate each case (forced). An item fails when the case cannot be
+        rebuilt, or when its investigation failed and the case was routed to a
+        person (:data:`_REINVESTIGATE_FAILED`)."""
         from ..api.routes import _override_models
 
         async def run(case_id: str) -> None:
             case = await self.state.real_cases.get(case_id)
             if case is None:
                 raise HTTPException(status_code=404, detail="Case not found")
+            # Round 16 (SPEC §4.5 WP08): a closed case is reinvestigated in place, unless
+            # an open case already holds its signature (#4); the item then fails with
+            # that reason, before the audit row and the rebuild.
+            from ..api.routes_investigations import open_case_conflict
+
+            await open_case_conflict(self.state.real_cases, case)
             cluster = await self.state.cluster_for_case(case)
             if cluster is None:
                 raise HTTPException(
@@ -734,14 +748,27 @@ class JobRunner:
             )
             # The canonical pipeline retains the single gateway, budget gate, usage
             # ledger, provider retry, cost cap, and deterministic decision path.
-            await self.state.real_pipeline.investigate_cluster(
+            updated = await self.state.real_pipeline.investigate_cluster(
                 cluster,
                 case.source_surface,
                 prefs,
                 force=True,
                 query_source=query_source,
                 investigation_priority="background",
+                trigger="job",
+                requested_by=job.actor,
+                known_case_id=case_id,
+                target_case_id=case_id,
             )
+            # A failed investigation does not raise: the pipeline routes the case to a
+            # person and records why on the case (``error``, written only by this run,
+            # and the ``[FAILED]`` title). The item is failed so the job's counts say
+            # so (Round 16 B14); a fixed message, never the exception text.
+            if updated is not None and (
+                getattr(updated, "error", None)
+                or str(getattr(updated, "title", "") or "").startswith("[FAILED]")
+            ):
+                raise RuntimeError(_REINVESTIGATE_FAILED)
 
         await self._item_loop(job, token, run, result_kind="case_reinvestigation")
 
@@ -1180,6 +1207,15 @@ class JobRunner:
             path, artifact_id = await self._reserve_artifact_path(
                 job, token, export.EXPORT_SUFFIXES[fmt]
             )
+            # The spend figure in a timeout, decision, runbook AI or budget refusal row
+            # follows the actor's live ``cost:view`` at run time, as ``GET /api/audit``
+            # shows it (``api.cost_text``): checked now and at every page boundary, and
+            # once withheld it stays withheld for the rest of the file. ``audit:export``
+            # alone never shows it.
+            cost_grant = job.model_copy(
+                update={"required_permissions": [JobPermission(resource="cost", action="view")]}
+            )
+            cost_shown = await self._permission_alive(cost_grant)
 
             async def ensure_capacity(nbytes: int) -> None:
                 # The data export's own rule: the write plus a megabyte of headroom,
@@ -1194,6 +1230,7 @@ class JobRunner:
                     raise
 
             async def page_boundary(done: int) -> None:
+                nonlocal cost_shown
                 await self.checkpoint(
                     job.job_id,
                     token,
@@ -1202,6 +1239,8 @@ class JobRunner:
                     unit="events",
                     emit=True,
                 )
+                if cost_shown and not await self._permission_alive(cost_grant):
+                    cost_shown = False
 
             try:
                 await ensure_capacity(0)
@@ -1212,6 +1251,7 @@ class JobRunner:
                     path=path,
                     checkpoint=page_boundary,
                     ensure_capacity=ensure_capacity,
+                    show_cost=lambda: cost_shown,
                 )
                 await self.checkpoint(
                     job.job_id,

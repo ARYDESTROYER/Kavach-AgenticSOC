@@ -551,6 +551,18 @@ describe('AgentEffectivenessSummary', () => {
     expect(comparison).not.toHaveTextContent('0 min');
   });
 
+  it('explains a measured comparison figure and never invents one for a figure without counts', async () => {
+    renderSummary();
+    // Turnaround is measured (24 human-reviewed cases): its figure opens its arithmetic.
+    const turnaround = await screen.findByTestId('comparison-tuning-agent-turnaround');
+    const trigger = turnaround.querySelector('[data-explain-trigger]');
+    expect(trigger?.getAttribute('data-explain-metric')).toBe('human_review_turnaround');
+    expect(trigger).toHaveTextContent('42');
+    // Agreement here carries no grade counts, so its figure stays plain text.
+    const agreement = screen.getByTestId('comparison-tuning-agent-agreement');
+    expect(agreement.querySelector('[data-explain-trigger]')).toBeNull();
+  });
+
   it('adds compact downstream volume and threshold context without claiming causation', async () => {
     const withOutcomes = evidence();
     withOutcomes.outcomes = operationalOutcomes();

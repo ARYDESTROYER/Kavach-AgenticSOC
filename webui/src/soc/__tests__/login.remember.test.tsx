@@ -2,9 +2,10 @@
  * Round 12 — "Remember me" on the sign-in page (SPEC D14, research/remember-me.md §6
  * web tests 1–9 and 12, SYNTHESIS-ux §4 adjustments).
  *
- *  1. The row is shown (24 h / 6 h copy), shown DISABLED with a reason when the
- *     administrator turned it off or the console is on plain HTTP, and hidden only
- *     when the backend does not advertise it.
+ *  1. The row is shown as the label alone (Round 16 D6: no duration, no accessible
+ *     description; the warning dialog states the limits), shown DISABLED with a reason
+ *     when the administrator turned it off or the console is on plain HTTP, and hidden
+ *     only when the backend does not advertise it.
  *  2. Checking opens the warning dialog (warning tone, Cancel focused, the whole
  *     warning — paragraph AND list — is its accessible description, focus returns
  *     to the box when it closes). Cancel keeps it unchecked; "Keep me signed in"
@@ -195,47 +196,47 @@ describe('Login — Remember me', () => {
   });
 
   // ---- 1 ------------------------------------------------------------------ //
-  it('offers the box with the policy duration and a 44px row', async () => {
+  it('offers the box as the label alone, with no duration, in a 44px row (D6)', async () => {
     renderLogin();
     await toPasswordStep();
     const box = rememberBox();
     expect(box).toBeEnabled();
     expect(box).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByText('Stay signed in on this device for up to 24 hours')).toBeInTheDocument();
-    expect(box).toHaveAccessibleDescription('Stay signed in on this device for up to 24 hours');
+    expect(box).toHaveAccessibleName('Remember me');
+    expect(box).not.toHaveAttribute('aria-describedby');
+    expect(box).toHaveAccessibleDescription('');
     const row = document.querySelector('[data-login-remember]');
+    expect(row).toHaveTextContent(/^Remember me$/);
+    expect(row?.textContent ?? '').not.toMatch(/hour|minute|day|stay signed in/i);
+    expect(document.getElementById('login-remember-hint')).toBeNull();
     expect(row).toHaveClass('min-h-11', 'press-scale');
   });
 
-  it('formats a 6 hour preset', async () => {
-    setupStatusMock.mockResolvedValue(status({ duration_seconds: 6 * 3600 }));
+  it('draws the sign-in page focus ring on the box, not the soft shared one (FXC)', async () => {
     renderLogin();
     await toPasswordStep();
-    expect(screen.getByText('Stay signed in on this device for up to 6 hours')).toBeInTheDocument();
+    const box = rememberBox();
+    // The shared checkbox draws its ring at 40% (1.77:1 on the light canvas); every
+    // other sign-in control draws the full ring, which holds 3:1 on --canvas.
+    expect(box).toHaveClass('focus-visible:ring-ring', 'focus-visible:ring-offset-2', 'focus-visible:ring-offset-canvas');
+    expect(box.className).not.toMatch(/ring-ring\/40/);
   });
 
-  it('states no inactivity limit when none is shorter than the remembered time', async () => {
-    // A 6 hour preset under the 12 hour idle timeout: the server reports none (0).
-    setupStatusMock.mockResolvedValue(status({ duration_seconds: 6 * 3600, idle_seconds: 0 }));
+  it.each([
+    ['a 6 hour preset', { duration_seconds: 6 * 3600, idle_seconds: 0 }],
+    ['the 24 hour default with a 12 hour idle limit', {}],
+    ['a 30 minute idle limit', { idle_seconds: 30 * 60 }],
+  ])('states no duration on the row or in the dialog for %s (D6 as amended)', async (_label, policy) => {
+    setupStatusMock.mockResolvedValue(status(policy));
     renderLogin();
     await toPasswordStep('alice');
+    expect(document.querySelector('[data-login-remember]')?.textContent ?? '').not.toMatch(/\d/);
     fireEvent.click(rememberBox());
     const dialog = await screen.findByRole('alertdialog');
-    const limits = dialog.querySelector('[data-remember-warning-limits]');
-    expect(limits).toHaveTextContent(
-      "You'll be asked to sign in again after 6 hours, or sooner if an administrator ends your session.",
-    );
-    expect(limits).not.toHaveTextContent(/without activity/);
-  });
-
-  it('states a separate remembered inactivity limit in minutes', async () => {
-    setupStatusMock.mockResolvedValue(status({ idle_seconds: 30 * 60 }));
-    renderLogin();
-    await toPasswordStep('alice');
-    fireEvent.click(rememberBox());
-    const dialog = await screen.findByRole('alertdialog');
+    // The warning about shared devices stays; no limit in hours, minutes or days.
+    expect(dialog.textContent ?? '').not.toMatch(/\d|hour|minute|\bday/i);
     expect(dialog.querySelector('[data-remember-warning-limits]')).toHaveTextContent(
-      /after 24 hours, after 30 minutes without activity, or sooner/,
+      'Your session still ends on the schedule your administrator set, and an administrator can end it sooner. Sensitive actions still ask for your password.',
     );
   });
 
@@ -273,14 +274,14 @@ describe('Login — Remember me', () => {
     await toPasswordStep('alice');
     fireEvent.click(rememberBox());
     const dialog = await screen.findByRole('alertdialog');
-    expect(within(dialog).getByText('Keep this device signed in?')).toBeInTheDocument();
+    expect(within(dialog).getByText('Stay signed in on this device?')).toBeInTheDocument();
     expect(dialog.querySelector('[data-remember-warning-title] svg.text-warning-text')).not.toBeNull();
-    expect(dialog).toHaveTextContent(/For the next 24 hours, anyone who can open this browser/);
-    expect(dialog).toHaveTextContent(/use Acme SOC as alice/);
+    expect(dialog).toHaveTextContent(/Anyone who uses this browser can open Acme SOC as alice/);
+    expect(dialog).toHaveTextContent(/until you sign out or your session ends\. Use it only on a device you trust\./);
     expect(dialog).toHaveTextContent(/shared, public, or kiosk computers/);
-    // Every limit that signs a remembered device out, inactivity included.
+    // What still signs a remembered device out, with no duration (D6 as amended).
     expect(dialog.querySelector('[data-remember-warning-limits]')).toHaveTextContent(
-      "You'll be asked to sign in again after 24 hours, after 12 hours without activity, or sooner if an administrator ends your session.",
+      'Your session still ends on the schedule your administrator set, and an administrator can end it sooner. Sensitive actions still ask for your password.',
     );
     const cancel = within(dialog).getByRole('button', { name: 'Cancel' });
     await waitFor(() => expect(cancel).toHaveFocus());
@@ -548,7 +549,9 @@ describe('Login — Remember me', () => {
     await acceptWarning();
     fireEvent.change(pw, { target: { value: 'wrong' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-    await screen.findByText('invalid credentials');
+    // A fixed sentence, never the server's own lower-case detail.
+    await screen.findByText('The username or password is not correct.');
+    expect(screen.queryByText('invalid credentials')).toBeNull();
     expect(window.localStorage.getItem(REMEMBERED_USERNAME_KEY)).toBeNull();
     expect(window.localStorage.getItem(REMEMBER_ACK_KEY)).toBeNull();
   });
@@ -830,8 +833,8 @@ describe('Login — Remember me', () => {
     await act(async () => {
       expect(await axe(dialog)).toHaveNoViolations();
     });
-    expect(dialog).toHaveAccessibleName('Keep this device signed in?');
-    expect(dialog).toHaveAccessibleDescription(/Only choose this on a device that you alone use/);
+    expect(dialog).toHaveAccessibleName('Stay signed in on this device?');
+    expect(dialog).toHaveAccessibleDescription(/Use it only on a device you trust/);
     // The bullets are part of the description, not stray content after it.
     expect(dialog).toHaveAccessibleDescription(/shared, public, or kiosk computers/);
     expect(dialog).toHaveAccessibleDescription(/Sensitive actions still ask for your password/);

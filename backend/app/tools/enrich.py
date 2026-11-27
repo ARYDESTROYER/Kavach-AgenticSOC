@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..cache import Cache
@@ -38,6 +39,38 @@ from ..models import EnrichmentResult, ProviderResult
 from .base import Tool, ToolResult
 
 logger = logging.getLogger("tlsoc.tools.enrich")
+
+#: How the per-provider results behind an ``enrich_ip`` answer were found (Round 16,
+#: [dv] R7): the providers were asked now; they were kept beside a cached answer; the
+#: cached answer was kept without them (an earlier build wrote it); no provider was
+#: asked (a private or invalid address, or enrichment switched off).
+DETAIL_CHECKED = "checked"
+DETAIL_CACHED = "cached"
+DETAIL_NOT_RECORDED = "not_recorded"
+DETAIL_SKIPPED = "skipped"
+
+
+@dataclass
+class IpEnrichmentDetail:
+    """The per-provider results behind one :meth:`EnrichTool.enrich_ip` answer, filled
+    through an object the caller owns (``detail=``), as the gateway fills a usage
+    receipt. ``providers`` are the raw :class:`app.models.ProviderResult` values (their
+    strings are UNTRUSTED provider data: fence them before showing them, #9);
+    ``status`` is one of the ``DETAIL_*`` values."""
+
+    providers: list[ProviderResult] = field(default_factory=list)
+    status: str = ""
+
+
+def _fill(detail: IpEnrichmentDetail | None, providers: list[ProviderResult], status: str) -> None:
+    if detail is not None:
+        detail.providers = list(providers)
+        detail.status = status
+
+
+def _providers_cache_key(ip: str) -> str:
+    """Where the per-provider results of a cached ``enrich:<ip>`` answer are kept."""
+    return f"enrich:ip-providers:v1:{ip}"
 
 
 class EnrichTool(Tool):
@@ -63,15 +96,22 @@ class EnrichTool(Tool):
         self._cache = cache
 
     # ----- reusable core (the risk scorer calls this directly) -----
-    async def enrich_ip(self, ip: str) -> EnrichmentResult:
+    async def enrich_ip(self, ip: str, *, detail: IpEnrichmentDetail | None = None) -> EnrichmentResult:
         """Resolve reputation for ``ip``. Never raises — always returns a result.
 
         Delegates provider calls to the enrichment SPI but keeps the LEGACY
-        ``EnrichmentResult`` shape + ``enrich:<ip>`` cache so callers are unchanged."""
+        ``EnrichmentResult`` shape + ``enrich:<ip>`` cache so callers are unchanged.
+
+        Round 16 (SPEC §4.5 WP13, [dv] R7): ``detail``, an object the caller owns, is
+        filled with the per-provider results behind the answer (the providers asked
+        now, or the ones kept beside a cached answer) and how they were found. The
+        result itself, its cache key and its cache rule are unchanged; the provider
+        results of a cached answer are kept under their own key with the same TTL."""
         cfg = self._prefs.enrichment
 
         # 1) Validate / skip private, loopback, reserved or invalid addresses.
         if not _is_public_ip(ip):
+            _fill(detail, [], DETAIL_SKIPPED)
             return EnrichmentResult(
                 ip=ip,
                 reputation_score=0,
@@ -81,6 +121,7 @@ class EnrichTool(Tool):
 
         # 2) Enrichment disabled by preference — neutral result, no providers.
         if not cfg.enabled:
+            _fill(detail, [], DETAIL_SKIPPED)
             return EnrichmentResult(
                 ip=ip,
                 reputation_score=0,
@@ -98,6 +139,9 @@ class EnrichTool(Tool):
         if cached:
             result = EnrichmentResult.model_validate(cached)
             result.cached = True
+            if detail is not None:
+                kept = await self._cached_providers(ip)
+                _fill(detail, kept or [], DETAIL_CACHED if kept is not None else DETAIL_NOT_RECORDED)
             return result
 
         # 4) Query the enabled IP providers via the SPI; best-effort, never raises.
@@ -108,6 +152,7 @@ class EnrichTool(Tool):
             ip, IndicatorKind.IP, cfg, self._secrets, cache=None
         )
         result = self._to_enrichment_result(ip, provider_results, cfg)
+        _fill(detail, provider_results, DETAIL_CHECKED)
 
         # 5) Cache only successful (non-error) results (LEGACY behaviour).
         if result.error is None:
@@ -117,8 +162,40 @@ class EnrichTool(Tool):
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("enrich cache write failed for %s: %s", ip, exc)
+            # Round 16: the per-provider results behind that answer, beside it with the
+            # same TTL, so a later reader of the cached answer can say which provider
+            # gave what. Best-effort: a missed write only reads "not recorded".
+            try:
+                await self._cache.set_json(
+                    _providers_cache_key(ip),
+                    {"v": 1, "providers": [r.model_dump(mode="json") for r in provider_results]},
+                    cfg.cache_ttl_seconds,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("enrich provider cache write failed for %s: %s", ip, exc)
 
         return result
+
+    async def _cached_providers(self, ip: str) -> list[ProviderResult] | None:
+        """The per-provider results kept beside the cached answer for ``ip``, each
+        marked ``_cached`` like a per-provider cache hit; ``None`` when none were kept
+        (an earlier build wrote the answer, or the entry expired first)."""
+        try:
+            kept = await self._cache.get_json(_providers_cache_key(ip))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("enrich provider cache read failed for %s: %s", ip, exc)
+            return None
+        if not isinstance(kept, dict) or kept.get("v") != 1 or not isinstance(kept.get("providers"), list):
+            return None
+        out: list[ProviderResult] = []
+        for item in kept["providers"]:
+            try:
+                result = ProviderResult.model_validate(item)
+            except Exception:  # noqa: BLE001 (a bad entry reads as not recorded)
+                return None
+            result.raw = {**(result.raw or {}), "_cached": True}
+            out.append(result)
+        return out
 
     # ----- new multi-indicator entry (Wave 2 wires it into threat_context) -----
     async def enrich_indicator(self, value: str, kind: IndicatorKind) -> list[ProviderResult]:

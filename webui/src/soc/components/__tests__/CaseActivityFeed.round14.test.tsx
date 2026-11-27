@@ -87,8 +87,8 @@ describe('CaseActivityFeed in plain words', () => {
     const row = screen
       .getByText('Runbook brute_force_login v3 selected for the identity persona. Its match rules matched this case.')
       .closest('li') as HTMLElement;
-    expect(within(row).getByText('Runbook (before Round 14)')).toBeInTheDocument();
-    expect(within(row).getByText('Runbook selector (before Round 14)')).toBeInTheDocument();
+    expect(within(row).getByText('Older runbook')).toBeInTheDocument();
+    expect(within(row).getByText('Older runbook selector')).toBeInTheDocument();
     // Nothing outside Details says the retired noun.
     const details = row.querySelector('details') as HTMLElement;
     const outside = (row.textContent ?? '').replace(details.textContent ?? '', '');

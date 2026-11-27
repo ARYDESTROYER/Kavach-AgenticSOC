@@ -80,6 +80,8 @@ import { FilterBar, type FilterChip } from '@/soc/components/FilterBar';
 import { CodeBlock } from '@/soc/components/CodeBlock';
 import { LoadingState, Panel } from '@/design-system';
 import { TagInput, usePendingTagDraft } from '@/soc/components/TagInput';
+import { useDemo } from '@/soc/demo';
+import { DEMO_JOB_REASON } from '@/soc/pages/settings/demo-jobs';
 import { headingOf, useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import {
   announceJobAccepted,
@@ -425,6 +427,8 @@ interface QueuedFile {
 
 export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
   const navigate = useNavigateOptional();
+  // Imports are durable jobs, which never run in Demo Mode (B49).
+  const { active: demoActive } = useDemo();
   const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
   const [title, setTitle] = React.useState('');
   const [text, setText] = React.useState('');
@@ -700,6 +704,7 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
           {...tagDraft.bind}
         />
 
+        {demoActive ? <p className="text-xs text-muted-foreground">{DEMO_JOB_REASON}</p> : null}
         <div className="mt-auto flex items-center justify-end gap-2 pt-2">
           {hasPasted || batching ? (
             <Button variant="ghost" size="sm" onClick={reset} disabled={submitting}>
@@ -707,7 +712,7 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
               Clear
             </Button>
           ) : null}
-          <Button size="sm" onClick={() => void submit()} disabled={!canSubmit}>
+          <Button size="sm" onClick={() => void submit()} disabled={demoActive || !canSubmit}>
             <Plus aria-hidden />
             {batching
               ? `Queue ${fmtNumber(queue.length)} document${queue.length === 1 ? '' : 's'}`
@@ -728,6 +733,8 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
  */
 export const ThreatIntelImportCard: React.FC<{ onImported?: () => void }> = () => {
   const navigate = useNavigateOptional();
+  // Imports are durable jobs, which never run in Demo Mode (B49).
+  const { active: demoActive } = useDemo();
   const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
   const [title, setTitle] = React.useState('');
   const [content, setContent] = React.useState('');
@@ -837,8 +844,9 @@ export const ThreatIntelImportCard: React.FC<{ onImported?: () => void }> = () =
           onChange={setTags}
           {...tagDraft.bind}
         />
+        {demoActive ? <p className="text-xs text-muted-foreground">{DEMO_JOB_REASON}</p> : null}
         <div className="mt-auto flex items-center justify-end gap-2 pt-2">
-          <Button size="sm" onClick={() => void submit()} disabled={!canSubmit}>
+          <Button size="sm" onClick={() => void submit()} disabled={demoActive || !canSubmit}>
             <Plus aria-hidden />
             Queue threat intel
           </Button>
@@ -849,8 +857,10 @@ export const ThreatIntelImportCard: React.FC<{ onImported?: () => void }> = () =
 };
 
 /** Explicit lower-trust precedent ratification, executed as one durable server job. */
-const PrecedentBootstrapCard: React.FC = () => {
+export const PrecedentBootstrapCard: React.FC = () => {
   const navigate = useNavigateOptional();
+  // The bootstrap is a durable job, which never runs in Demo Mode (B49).
+  const { active: demoActive } = useDemo();
   const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
   const [preview, setPreview] = React.useState<PrecedentBootstrapStatus | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -875,7 +885,7 @@ const PrecedentBootstrapCard: React.FC = () => {
 
   if (loading || !preview) return null;
   const exact = preview.acknowledgement_required;
-  const ready = preview.tier_enabled && preview.pending > 0 && acknowledgement.trim() === exact;
+  const ready = !demoActive && preview.tier_enabled && preview.pending > 0 && acknowledgement.trim() === exact;
 
   const submit = async () => {
     if (!ready || submitting) return;
@@ -947,6 +957,7 @@ const PrecedentBootstrapCard: React.FC = () => {
             spellCheck={false}
           />
         </div>
+        {demoActive ? <p className="text-xs text-muted-foreground">{DEMO_JOB_REASON}</p> : null}
         <div className="flex justify-end">
           <Button onClick={() => void submit()} disabled={!ready || submitting}>
             {submitting ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}

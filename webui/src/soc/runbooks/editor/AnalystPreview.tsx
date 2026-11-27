@@ -265,7 +265,7 @@ export function AnalystPreview({ defn, cases, loadCaseValues, guidance, announce
           </p>
         ) : null}
       </div>
-      <p className="text-sm text-muted-foreground">How the Runbook tab of a matching case will look before anyone starts.</p>
+      <p className="text-sm text-muted-foreground">How the runbook on the Response tab of a matching case will look before anyone starts.</p>
       {phasesOf(defn).map((phase) => {
         const steps = defn.steps.filter((s) => s.phase === phase);
         return (

@@ -74,6 +74,27 @@ PUBLIC_GET_PATHS = frozenset({"/api/branding"})
 # accident. (Also guarded by test_route_auth_coverage.)
 _PUBLIC_INGEST_RE = re.compile(r"^/api/ingest/[^/]+$")
 
+# Round 16 (B20): while an account carries ``must_change_password`` (an administrator
+# created it or reset its password), only these routes answer; every other /api route
+# answers 403 ``password_change_required``. Any method on the first set; the second set
+# are self-service reads with no case data that the Console reads once at sign-in.
+PASSWORD_CHANGE_ALLOWED_PATHS = frozenset({
+    "/api/auth/me",
+    "/api/auth/change-password",
+    "/api/auth/logout",
+    "/api/auth/refresh",
+    "/api/account/me",
+})
+PASSWORD_CHANGE_ALLOWED_GETS = frozenset({
+    "/api/account/permissions",
+    "/api/prefs/effective",
+    "/api/prefs/user",
+})
+PASSWORD_CHANGE_REQUIRED_DETAIL = {
+    "code": "password_change_required",
+    "message": "Change your temporary password to continue.",
+}
+
 
 def get_state(request: Request) -> AppState:
     state: AppState | None = getattr(request.app.state, "tlsoc", None)
@@ -123,7 +144,20 @@ async def require_auth(request: Request):
     if user is None:
         raise HTTPException(status_code=401, detail="authentication required")
     await _session_check(request, state, auth, user, token)
+    # Round 16 (B20): the forced password change is enforced here, not only by the
+    # Console. The flag is read live from the synced account record, so it clears on
+    # the request after a successful change.
+    if bool(getattr(user, "must_change_password", False)) and not _password_change_exempt(
+        request.method, path
+    ):
+        raise HTTPException(status_code=403, detail=dict(PASSWORD_CHANGE_REQUIRED_DETAIL))
     return user
+
+
+def _password_change_exempt(method: str, path: str) -> bool:
+    if path in PASSWORD_CHANGE_ALLOWED_PATHS:
+        return True
+    return str(method or "").upper() in ("GET", "HEAD") and path in PASSWORD_CHANGE_ALLOWED_GETS
 
 
 # Map a SessionStore rejection reason → the {code} surfaced on the 401 body.
@@ -330,9 +364,12 @@ def session_metadata(request: Request) -> dict[str, str]:
     lazy-register path here and the explicit session-create hooks in routes. Never
     raises — degrades to empty strings."""
     try:
-        from ..state import client_ip_from, geo_for_ip, parse_user_agent
+        from ..audit.context import audit_client_ip
+        from ..state import geo_for_ip, parse_user_agent
 
-        ip = client_ip_from(request)
+        # Round 16 (B22): the trusted-proxy resolution the audit trail uses, never the
+        # leftmost X-Forwarded-For entry, which the caller chooses.
+        ip = audit_client_ip(request).ip or ""
         ua_raw = (request.headers.get("user-agent") or "")[:512]
         ua = parse_user_agent(ua_raw)
         geo = geo_for_ip(ip)

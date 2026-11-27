@@ -71,7 +71,7 @@ export const AUDIT_LEGACY_EVENTS: readonly AuditLegacyEventEntry[] = [
   { action_type: 'reset', surface: '*', category: 'config', label: 'Data reset' },
   { action_type: 'system_update', surface: '*', category: 'config', label: 'System update' },
   { action_type: 'runbook', surface: '*', category: 'config', label: 'Runbook changed' },
-  { action_type: 'playbook', surface: '*', category: 'config', label: 'Runbook (before Round 14)' },
+  { action_type: 'playbook', surface: '*', category: 'config', label: 'Older runbook' },
   { action_type: 'tuning', surface: '*', category: 'config', label: 'Threshold tuning' },
   { action_type: 'automation', surface: '*', category: 'config', label: 'Rule automation' },
   { action_type: 'status', surface: '*', category: 'case_work', label: 'Case status changed' },
@@ -141,6 +141,7 @@ export const AUDIT_ACTIONS: readonly AuditActionEntry[] = [
   { action: 'auth.logout', category: 'access', label: 'Signed out' },
   { action: 'auth.mfa_enrolled', category: 'access', label: 'Two-factor authentication set up' },
   { action: 'auth.mfa_failed', category: 'access', label: 'Two-factor check failed' },
+  { action: 'auth.mfa_locked', category: 'access', label: 'Two-factor checks locked' },
   { action: 'auth.password_changed', category: 'access', label: 'Password changed' },
   { action: 'auth.password_change_failed', category: 'access', label: 'Password change failed' },
   { action: 'auth.mfa_setup_started', category: 'access', label: 'Two-factor setup started' },
@@ -256,6 +257,8 @@ export const AUDIT_ACTIONS: readonly AuditActionEntry[] = [
   { action: 'case.review_record_failed', category: 'case_work', label: 'Auto-close review not recorded' },
   { action: 'case.review_requested', category: 'system', label: 'Auto-close review requested' },
   { action: 'case.review_request_failed', category: 'system', label: 'Auto-close review request failed' },
+  { action: 'case.close_replaced', category: 'case_work', label: 'Close replaced by an AI investigation' },
+  { action: 'case.events_viewed', category: 'case_work', label: 'Case events viewed' },
   { action: 'team.viewed', category: 'access', label: 'Team activity viewed' },
 ];
 
@@ -267,8 +270,8 @@ export const AUDIT_ACTOR_TOKENS: Readonly<Record<'agent' | 'system', readonly st
 
 /** Friendly names for legacy actor tokens where a list shows them (stored data stays as is). */
 export const AUDIT_ACTOR_LABELS: Readonly<Record<string, string>> = {
-  playbook_selector: 'Runbook selector (before Round 14)',
-  run_playbook: 'Runbook automation (before Round 14)',
+  playbook_selector: 'Older runbook selector',
+  run_playbook: 'Older runbook automation',
 };
 
 /* ---------------------------------------------------------------- helpers -- */
@@ -383,8 +386,8 @@ export function auditEventGroups(): AuditEventGroup[] {
 }
 
 /**
- * The friendly name of an actor token for a list (`run_playbook` reads "Runbook
- * automation (before Round 14)"); Raw record keeps the stored token.
+ * The friendly name of an actor token for a list (`run_playbook` reads "Older runbook
+ * automation"); Raw record keeps the stored token.
  */
 export function actorLabel(actor: string): string {
   return AUDIT_ACTOR_LABELS[actor] ?? actor;
@@ -431,7 +434,7 @@ export const AUDIT_QUICK_VIEWS: readonly AuditQuickView[] = [
 /** The help tip beside "Quick views": what a view applies and what it leaves out. */
 export const AUDIT_QUICK_VIEWS_HELP =
   'Each quick view sets one filter, shown as a chip. Sign-in failed, User events and Settings events match rows ' +
-  'recorded since Round 14; for older rows, pick Access and identity or Configuration and data in the Event menu.';
+  'recorded by newer versions only; for older rows, pick Access and identity or Configuration and data in the Event menu.';
 
 /** Is this quick view the filter the page applies now? */
 export function quickViewActive(qv: AuditQuickView, event: string | null, outcome: string | null): boolean {

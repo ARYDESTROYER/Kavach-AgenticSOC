@@ -1,6 +1,6 @@
 ---
 title: Configuration reference
-description: Understand environment variables, durable preferences, state backends, and secret handling in Agentic SOC 0.1.
+description: Understand environment variables, durable preferences, state backends, and secret handling in Agentic SOC 0.2.
 ---
 
 # Configuration reference
@@ -72,7 +72,7 @@ RBAC, and realtime events.
 
 Prefer the UI and change one section at a time. An external full-document update can
 overwrite a concurrent administrator's change. General preferences do not have a
-universal revision/rollback interface in 0.1.
+universal revision/rollback interface in 0.2.
 
 ## Defaults that require an explicit decision
 

@@ -8,6 +8,12 @@
  * evidence quality and the daily evidence. Once the headline can speak, nothing folds.
  *
  * Fully offline: the data call and Agent health are mocked.
+ *
+ * The page's auto-close review module is a lazy chunk. On a loaded machine it can arrive
+ * after a test's last await, and a lazy component that resolves outside act() writes a
+ * React warning to stderr, which fails `npm run test:strict` (Round 16 WP16). A stand-in
+ * chunk that arrives only when released models a late chunk; every render releases it and
+ * waits for it inside Testing Library's wait, where React expects it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
@@ -24,6 +30,18 @@ const { apiMock } = vi.hoisted(() => ({
 vi.mock('@/soc/components/HealthDiagnostics', () => ({
   HealthDiagnostics: () => <section data-testid="analytics-health-diagnostics" />,
 }));
+
+const chunk = vi.hoisted(() => {
+  let release: () => void = () => undefined;
+  const ready = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { ready, release: () => release() };
+});
+vi.mock('../effectiveness/AutoCloseReviewModule', async () => {
+  await chunk.ready;
+  return { default: () => <section data-testid="auto-close-review-module" /> };
+});
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -103,12 +121,15 @@ function pageEvidence(state: AgentImprovementEvidence['headline']['state']): Age
   } as unknown as AgentImprovementEvidence;
 }
 
-function renderPage() {
-  return render(
+async function renderPage() {
+  const view = render(
     <TooltipProvider>
       <AgentEffectivenessPage />
     </TooltipProvider>,
   );
+  chunk.release();
+  await screen.findByTestId('auto-close-review-module');
+  return view;
 }
 
 const SUPPORTING = ['What supports these movements', 'Evidence by system layer', 'Trend check'];
@@ -125,7 +146,7 @@ afterEach(() => {
 describe('Agent effectiveness: the operational rows fold with the other details', () => {
   it('opens on the strip and folds the supporting rows while the headline is collecting', async () => {
     apiMock.getAgentImprovement.mockResolvedValue(pageEvidence('insufficient_evidence'));
-    renderPage();
+    await renderPage();
     const toggle = await screen.findByRole('button', { name: 'Show details' });
     const panel = screen.getByRole('region', { name: 'Operational outcomes' });
     // The headline comparisons and the period switch stay on the page.
@@ -175,7 +196,7 @@ describe('Agent effectiveness: the operational rows fold with the other details'
     week.observed_time_saved.status = 'insufficient_evidence';
     week.observed_time_saved.reason = 'requires at least 10 human-owned and 10 agent closures';
     apiMock.getAgentImprovement.mockResolvedValue(page);
-    renderPage();
+    await renderPage();
     await screen.findByRole('button', { name: 'Show details' });
     const disclosure = screen.getByTestId('agent-effectiveness-details-toggle');
     expect(disclosure).toHaveTextContent(
@@ -192,7 +213,7 @@ describe('Agent effectiveness: the operational rows fold with the other details'
 
   it('folds nothing once the headline can speak', async () => {
     apiMock.getAgentImprovement.mockResolvedValue(pageEvidence('stable'));
-    renderPage();
+    await renderPage();
     const panel = await screen.findByRole('region', { name: 'Operational outcomes' });
     expect(screen.queryByRole('button', { name: 'Show details' })).toBeNull();
     for (const name of SUPPORTING) {
@@ -203,7 +224,7 @@ describe('Agent effectiveness: the operational rows fold with the other details'
 
   it('keeps one operational outcomes panel, titled once, with no nested panel', async () => {
     apiMock.getAgentImprovement.mockResolvedValue(pageEvidence('stable'));
-    renderPage();
+    await renderPage();
     await screen.findByRole('region', { name: 'Operational outcomes' });
     expect(screen.getAllByRole('heading', { name: 'Operational outcomes' })).toHaveLength(1);
     expect(screen.getAllByTestId('agent-operational-outcomes')).toHaveLength(1);

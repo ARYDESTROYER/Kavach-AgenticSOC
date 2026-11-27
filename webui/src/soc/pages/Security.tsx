@@ -19,6 +19,7 @@ import { KeyRound, Plus, Trash2, Save, Loader2, Copy, Check } from 'lucide-react
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
+import { rbacApi } from '@/lib/api-rbac';
 import { cn } from '@/lib/cn';
 import { copyText } from '@/lib/clipboard';
 import type { Preferences, SessionPolicy, SsoConfig, SsoProviderConfig, UserRole } from '@/lib/types';
@@ -272,6 +273,44 @@ function GroupRoleMapField({
   );
 }
 
+/* ------------------------------------------------- who may change single sign-on -- */
+
+/**
+ * The server's refusal for an SSO change by anyone who is not a stored Super admin
+ * (`SSO_SUPER_ADMIN_MESSAGE` in `backend/app/api/routes.py`). The Console says it up
+ * front instead of letting a draft fail on Save.
+ */
+export const SSO_SUPER_ADMIN_ONLY = 'Only a Super admin can change single sign-on.';
+
+/**
+ * Whether this viewer may change single sign-on: a stored Super admin (Round 16). With
+ * sign-in off the server checks no role, so the controls stay editable. With role-based
+ * access on, the session role is the stored role. With it off, the Console treats every
+ * account as Super admin, so the stored role is read from `GET /api/rbac`. Until that
+ * answers (or when it fails) the controls stay editable; the server still refuses.
+ */
+function useCanChangeSso(): boolean {
+  const { authEnabled, rbacEnabled, role } = useAuth();
+  const [storedRole, setStoredRole] = React.useState<string | null>(null);
+  const needsRead = Boolean(authEnabled) && !rbacEnabled;
+  React.useEffect(() => {
+    if (!needsRead) return undefined;
+    let live = true;
+    rbacApi
+      .status()
+      .then((status) => {
+        if (live) setStoredRole(String(status?.caller_role ?? ''));
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [needsRead]);
+  if (!authEnabled) return true;
+  if (rbacEnabled) return role === 'super_admin';
+  return storedRole === null || storedRole === 'super_admin';
+}
+
 /* ---------------------------------------------------------- SSO provider editor -- */
 
 /**
@@ -288,6 +327,7 @@ function ProviderEditor({
   provider,
   callbackUrl,
   configuredSecret,
+  readOnly = false,
   onChange,
   onRemove,
   onSetSecret,
@@ -295,6 +335,8 @@ function ProviderEditor({
   provider: SsoProviderConfig;
   callbackUrl: string;
   configuredSecret: boolean;
+  /** Shown, never changed: the viewer is not a stored Super admin. */
+  readOnly?: boolean;
   onChange: (next: SsoProviderConfig) => void;
   onRemove: () => void;
   /** Writes the client secret; true when it was stored. A failure keeps the typed value. */
@@ -316,22 +358,24 @@ function ProviderEditor({
     }
   };
 
-  return (
+  const group = (
     <SettingsGroup
       title={providerName}
       caption={`${kind} provider · ${provider.id}`}
       action={
-        // Neutral at rest; red only on hover and keyboard focus (Y10).
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 text-muted-foreground hover:bg-critical/10 hover:text-critical-text focus-visible:text-critical-text"
-          onClick={onRemove}
-          aria-label={`Remove provider ${providerName}`}
-        >
-          <Trash2 className="h-4 w-4" aria-hidden />
-        </Button>
+        readOnly ? null : (
+          // Neutral at rest; red only on hover and keyboard focus (Y10).
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-muted-foreground hover:bg-critical/10 hover:text-critical-text focus-visible:text-critical-text"
+            onClick={onRemove}
+            aria-label={`Remove provider ${providerName}`}
+          >
+            <Trash2 className="h-4 w-4" aria-hidden />
+          </Button>
+        )
       }
     >
       <SettingRow
@@ -464,6 +508,15 @@ function ProviderEditor({
         control={<CopyField value={callbackUrl} />}
       />
     </SettingsGroup>
+  );
+  // A disabled fieldset turns every control in the group read-only at once (inputs, tag
+  // fields, switches, selects and the secret's Save) without a prop on each primitive.
+  return readOnly ? (
+    <fieldset disabled className="min-w-0" data-testid="sso-provider-read-only">
+      {group}
+    </fieldset>
+  ) : (
+    group
   );
 }
 
@@ -656,6 +709,8 @@ export function SecuritySsoInner({
   embedded = false,
 }: SecuritySsoInnerProps) {
   const controlled = Boolean(update);
+  // Round 16: single sign-on is for a stored Super admin; anyone else sees it read-only.
+  const canEdit = useCanChangeSso();
   // Round 15 (SPEC D1.4): the Remember-me note reads the live session's RBAC state, which
   // `auth.refresh()` updates after the switch, never the Settings draft (`PUT /api/rbac`
   // does not change the draft, so the note would be wrong until a reload).
@@ -735,7 +790,7 @@ export function SecuritySsoInner({
         caption="Add one or more OIDC providers and register each callback URL with your identity provider. Client secrets are stored on the server and never shown back."
         action={
           // In controlled (Settings) mode the parent owns the single Save button.
-          !controlled ? (
+          !controlled && canEdit ? (
             <Button size="sm" onClick={saveSso} disabled={saving || !prefs}>
               {saving ? <Loader2 className="animate-spin" aria-hidden /> : <Save aria-hidden />}
               Save SSO settings
@@ -763,38 +818,48 @@ export function SecuritySsoInner({
           </SettingRow>
         ) : (
           <>
+            {!canEdit ? (
+              <SettingRow variant="block">
+                <p className="text-sm text-muted-foreground" data-testid="sso-read-only">
+                  {SSO_SUPER_ADMIN_ONLY}
+                </p>
+              </SettingRow>
+            ) : null}
             <SettingRow
               variant="switch"
               label="Enable single sign-on"
               help="People sign in through the providers below."
               checked={Boolean(sso.enabled)}
               onCheckedChange={(v) => updateSso({ ...sso, enabled: v })}
+              disabled={!canEdit}
             />
-            <SettingRow
-              variant="action"
-              label="Add a provider"
-              help={
-                providers.length === 0
-                  ? 'No providers yet.'
-                  : `${providers.length} ${providers.length === 1 ? 'provider' : 'providers'} below.`
-              }
-              action={
-                <div className="flex flex-wrap gap-2">
-                  {(['google', 'microsoft', 'generic'] as const).map((t) => (
-                    <Button
-                      key={t}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => updateSso({ ...sso, providers: [...providers, newProvider(t)] })}
-                    >
-                      <Plus aria-hidden />
-                      {SSO_PROVIDER_ADD_LABEL[t]}
-                    </Button>
-                  ))}
-                </div>
-              }
-            />
+            {canEdit ? (
+              <SettingRow
+                variant="action"
+                label="Add a provider"
+                help={
+                  providers.length === 0
+                    ? 'No providers yet.'
+                    : `${providers.length} ${providers.length === 1 ? 'provider' : 'providers'} below.`
+                }
+                action={
+                  <div className="flex flex-wrap gap-2">
+                    {(['google', 'microsoft', 'generic'] as const).map((t) => (
+                      <Button
+                        key={t}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => updateSso({ ...sso, providers: [...providers, newProvider(t)] })}
+                      >
+                        <Plus aria-hidden />
+                        {SSO_PROVIDER_ADD_LABEL[t]}
+                      </Button>
+                    ))}
+                  </div>
+                }
+              />
+            ) : null}
           </>
         )}
       </SettingsGroup>
@@ -812,6 +877,7 @@ export function SecuritySsoInner({
             Boolean(secretConfigured[p.id]) ||
             (providers.length === 1 && Boolean(configured.sso_client_secrets))
           }
+          readOnly={!canEdit}
           onChange={(next) => {
             const arr = [...providers];
             arr[idx] = next;

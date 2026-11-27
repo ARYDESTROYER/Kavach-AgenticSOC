@@ -1,17 +1,28 @@
 /**
  * CaseDetail: the Threat context section (Coupling-D split).
  *
- * Since Round 15 (SPEC D8.3) this is the "Threat context" section of the Investigation
- * tab (it was its own tab), which owns its heading and the content rail. It holds the
- * threat summary, MITRE ATT&CK techniques (with canonical links), IOC reputation, the
- * clustering story and the asset context, as flat divider-led sub-sections. Fail-open:
- * renders empty/disabled states when the panel is off or bare. Related cases and the AI
- * verdict and risk are NOT repeated here: they live in the Overview and the facts rail.
+ * Since Round 16 (D8) this is the "Threat context" section of the Evidence tab, which
+ * owns its heading and the content rail (Round 15 had it on the Investigation tab). It
+ * holds the threat summary, MITRE ATT&CK techniques (with canonical links), IOC
+ * reputation, the clustering story and the asset context, as flat divider-led
+ * sub-sections. Fail-open: renders empty/disabled states when the panel is off or bare.
+ * The Related cases list and the AI verdict and risk are NOT repeated here: the list is
+ * the Evidence tab's own section, and the verdict and risk are the case header's and the
+ * inspector's. The clustering story names each related case by its number, as a link
+ * that opens it in Case Manager (`ClusterFormationDiagram`).
  *
- * SECURITY (#9): every indicator, country, entity, asset attribute and summary string
- * is UNTRUSTED: rendered plain text / inside <CodeBlock>. MITRE technique NAMES are
- * from the curated corpus (TRUSTED) but still rendered as plain text nodes. #3:
- * read-only projection; it never decides or mutates the case.
+ * Round 16 (SPEC §4.5 WP14, research data-visibility R7): each indicator opens its
+ * providers, one line each (score, the provider's own call, confidence, an error, from
+ * the cache), how they were fused, and the provider's raw excerpt in a fenced CodeBlock.
+ * The panel is read when the case is opened ("Checked when you opened this case"), so
+ * its reading can differ from the one the investigation used; that one is shown beside
+ * it from the recorded risk inputs ("At investigation: 0").
+ *
+ * SECURITY (#9): every indicator, country, entity, asset attribute, provider tag, error
+ * and raw value and summary string is UNTRUSTED: rendered plain text / inside
+ * <CodeBlock>. MITRE technique NAMES are from the curated corpus (TRUSTED) but still
+ * rendered as plain text nodes. #3: read-only projection; it never decides or mutates
+ * the case.
  */
 import * as React from 'react';
 import { AlertTriangle, Globe, Link2 } from 'lucide-react';
@@ -25,7 +36,10 @@ import { DASH, humanizeAge, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
 import { Badge } from '@/ui/badge';
+import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
 import { LoadingState } from '@/design-system';
+
+import { CodeBlock } from '@/soc/components/CodeBlock';
 
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
@@ -116,6 +130,155 @@ export function iocVerdict(ioc: IocReputation): {
   };
 }
 
+/** The fence the server wraps each provider string in (`agents/prompts.fence`). */
+const FENCE_OPEN = '<<<UNTRUSTED_LOG_DATA>>>';
+const FENCE_CLOSE = '<<<END_UNTRUSTED_LOG_DATA>>>';
+
+/**
+ * The text inside one fenced provider string, for a plain text node; any other value as
+ * written. Presentation only: the raw excerpt stays fenced in a CodeBlock.
+ */
+export function unfenced(value: unknown): string {
+  if (typeof value !== 'string') return value === null || value === undefined ? '' : String(value);
+  const text = value.trim();
+  if (!text.startsWith(FENCE_OPEN) || !text.endsWith(FENCE_CLOSE)) return value;
+  const inner = text.slice(0, text.length - FENCE_CLOSE.length);
+  const newline = inner.indexOf('\n');
+  return (newline >= 0 ? inner.slice(newline + 1) : '').trim();
+}
+
+/** One provider's answer as the threat-context route returns it (fenced strings). */
+export interface IocProvider {
+  provider: string;
+  score: number | null;
+  malicious: boolean | null;
+  confidence: number | null;
+  tags: string[];
+  raw: Record<string, unknown>;
+  ok: boolean;
+  error: string | null;
+  cached: boolean;
+}
+
+/** The per-provider part of an indicator row (WP13), read defensively. */
+export function iocProviders(ioc: IocReputation): {
+  providers: IocProvider[];
+  method: string | null;
+  status: string | null;
+} {
+  const list = Array.isArray(ioc.providers) ? (ioc.providers as unknown[]) : [];
+  const providers = list
+    .filter((p): p is Record<string, unknown> => Boolean(p) && typeof p === 'object')
+    .map((p) => ({
+      provider: typeof p.provider === 'string' ? p.provider : '',
+      score: typeof p.score === 'number' && Number.isFinite(p.score) ? p.score : null,
+      malicious: typeof p.malicious === 'boolean' ? p.malicious : null,
+      confidence: typeof p.confidence === 'number' && Number.isFinite(p.confidence) ? p.confidence : null,
+      tags: Array.isArray(p.tags) ? p.tags.map(String) : [],
+      raw: p.raw && typeof p.raw === 'object' ? (p.raw as Record<string, unknown>) : {},
+      ok: p.ok !== false,
+      error: typeof p.error === 'string' && p.error ? p.error : null,
+      cached: p.cached === true,
+    }));
+  return {
+    providers,
+    method: typeof ioc.method === 'string' && ioc.method ? ioc.method : null,
+    status: typeof ioc.providers_status === 'string' ? ioc.providers_status : null,
+  };
+}
+
+/** "Fused by the highest score: 87 from abuseipdb.", or the weighted blend. */
+export function fusionLine(method: string | null, score: number | undefined, providers: readonly IocProvider[]): string {
+  const value = typeof score === 'number' ? Math.round(score).toLocaleString('en-US') : 'no score';
+  if (method === 'weighted') return `Fused by a confidence-weighted average: ${value}.`;
+  if (method === 'max') {
+    const top = providers
+      .filter((p) => p.ok && p.score !== null)
+      .reduce<IocProvider | null>((best, p) => (best === null || (p.score ?? 0) > (best.score ?? 0) ? p : best), null);
+    return top ? `Fused by the highest score: ${value} from ${top.provider}.` : `Fused by the highest score: ${value}.`;
+  }
+  return 'How the providers were fused was not recorded.';
+}
+
+/** Where the providers' answers came from, in words. */
+const PROVIDER_STATUS_WORDS: Record<string, string> = {
+  checked: 'Checked when you opened this case.',
+  cached: 'Read from the enrichment cache when you opened this case.',
+  not_recorded: 'A cached answer, kept without its provider results.',
+  skipped: 'No provider was asked.',
+};
+
+/** The provider lines of one indicator, its fusion and the raw excerpts (fenced). */
+const IocProvidersPanel: React.FC<{ ioc: IocReputation }> = ({ ioc }) => {
+  const { providers, method, status } = iocProviders(ioc);
+  const score = iocScore(ioc);
+  return (
+    <div className="space-y-2 text-xs" data-testid="ioc-providers">
+      <p className="text-muted-foreground">{(status && PROVIDER_STATUS_WORDS[status]) || 'Checked when you opened this case.'}</p>
+      {providers.length ? (
+        <>
+          <p className="text-foreground">{fusionLine(method, score, providers)}</p>
+          <ul className="max-h-[50vh] divide-y divide-border/60 overflow-y-auto">
+            {providers.map((p, index) => (
+              <li key={`${p.provider}-${index}`} className="space-y-1 py-1.5 first:pt-0 last:pb-0" data-testid="ioc-provider">
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <span className="font-medium text-foreground">{p.provider || 'Provider'}</span>
+                  {p.ok ? (
+                    <span className="text-muted-foreground">
+                      {p.score !== null ? `score ${Math.round(p.score)}` : 'no score'}
+                      {p.malicious === true ? ', malicious' : p.malicious === false ? ', not malicious' : ''}
+                      {p.confidence !== null
+                        ? `, confidence ${Math.round(p.confidence <= 1 ? p.confidence * 100 : p.confidence)}%`
+                        : ''}
+                    </span>
+                  ) : (
+                    <span className="text-critical-text">did not answer</span>
+                  )}
+                  {p.cached ? <span className="text-muted-foreground">from the cache</span> : null}
+                </div>
+                {p.error ? (
+                  /* UNTRUSTED provider error: plain text. */
+                  <p className="text-muted-foreground [overflow-wrap:anywhere]">{`Error: ${unfenced(p.error)}`}</p>
+                ) : null}
+                {p.tags.length ? (
+                  /* UNTRUSTED tags: plain text. */
+                  <p className="text-muted-foreground [overflow-wrap:anywhere]">{`Tags: ${p.tags.map(unfenced).join(', ')}`}</p>
+                ) : null}
+                {Object.keys(p.raw).length ? (
+                  <CodeBlock value={p.raw} caption="untrusted provider response" wrap copyable maxHeightClassName="max-h-40" />
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="text-muted-foreground">No provider results were recorded for this indicator.</p>
+      )}
+    </div>
+  );
+};
+
+/** The reputation the investigation used, from the recorded risk inputs (WP10). */
+export function investigationReputation(c: Case): string | null {
+  const breakdown = c.risk_breakdown as
+    | { inputs?: { reputation_input?: unknown; reputation_source?: unknown } | null }
+    | null
+    | undefined;
+  const inputs = breakdown?.inputs;
+  if (!inputs || typeof inputs.reputation_input !== 'number') return null;
+  const value = Math.round(inputs.reputation_input).toLocaleString('en-US');
+  switch (inputs.reputation_source) {
+    case 'enrichment':
+      return `At investigation: ${value}.`;
+    case 'enrichment_off':
+      return `At investigation: ${value}, enrichment was off.`;
+    case 'not_ip_entity':
+      return `At investigation: ${value}, the entity was not an IP address.`;
+    default:
+      return `At investigation: ${value}, not looked up.`;
+  }
+}
+
 /** A tactic token as sentence-case words ("initial-access" → "Initial access"). */
 function tacticWords(tactic: string): string {
   const words = String(tactic || '').replace(/[_-]+/g, ' ').trim().toLowerCase();
@@ -145,12 +308,13 @@ export const ThreatContextPanel: React.FC<{
   error: unknown;
   onRetry: () => void;
   /**
-   * Accepted for API stability with the CaseDetail shell, but no longer used: the
-   * only case-to-case navigation on this panel was the Related-cases list, which now
-   * lives on the Overview tab (Round-7 dedup). Kept optional so callers can pass it.
+   * Accepted for API stability with the CaseDetail shell, and not used. The only cases
+   * this panel opens are the related cases in the clustering story, and those are links
+   * that go through the router themselves (`ClusterFormationDiagram`, Round 16), so the
+   * panel needs no navigation callback. Kept optional so callers can pass it.
    */
   onNavigate?: Navigate;
-}> = ({ panel, loading, error, onRetry }) => {
+}> = ({ c, panel, loading, error, onRetry }) => {
   if (loading) {
     return (
       <div>
@@ -207,8 +371,8 @@ export const ThreatContextPanel: React.FC<{
       ? asset.networks.filter((value) => ['string', 'number', 'boolean'].includes(typeof value))
       : [];
   const clustering = (panel.clustering || null) as ClusterExplanation | null;
-  // Related cases + evidence are shown on the Overview tab, not repeated here
-  // (Round-7 dedup), so they no longer participate in the "any section" gate.
+  // The Related cases list and the evidence are the Evidence tab's own sections, not
+  // repeated here, so they do not take part in the "any section" gate.
   const anySection =
     !!panel.summary || iocs.length > 0 || techniques.length > 0 || !!asset || !!clustering?.available;
 
@@ -234,7 +398,7 @@ export const ThreatContextPanel: React.FC<{
           indicator's value/type/verdict/score/source/country, the clustering story and
           the asset context. Log-derived values stay plain text nodes (#9). */}
       {/* The summary leads without a heading of its own: the section is "Threat context".
-          The AI verdict and the risk are the header's and the facts rail's (D8.4). */}
+          The AI verdict and the risk are the header's and the inspector's (D8). */}
       <section aria-label="Threat summary">
         {panel.summary ? (
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{panel.summary}</p>
@@ -303,6 +467,14 @@ export const ThreatContextPanel: React.FC<{
         <FlatHeading id="threat-ioc-title" count={iocs.length}>
           Indicator reputation
         </FlatHeading>
+        {iocs.length ? (
+          <p className="-mt-2 mb-3 text-xs text-muted-foreground" data-testid="threat-ioc-when">
+            {iocs.every((ioc) => ioc.providers_status === 'skipped')
+              ? 'No provider was asked when you opened this case.'
+              : 'Checked when you opened this case.'}
+            {investigationReputation(c) ? ` ${investigationReputation(c)}` : ''}
+          </p>
+        ) : null}
         {iocs.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No indicator reputation was available. Enrichment may be off or uncached, or the indicators are internal.
@@ -337,15 +509,51 @@ export const ThreatContextPanel: React.FC<{
                       <dd className="text-foreground">{source ? humanizeToken(source) : 'Unavailable'}</dd>
                     </div>
                     <div className="flex gap-1">
-                      <dt className="text-muted-foreground">Confidence</dt>
-                      <dd
-                        className={cn(
-                          'tabular-nums',
-                          typeof score === 'number' && score >= 50 ? 'font-medium text-critical-text' : 'text-foreground',
-                        )}
-                      >
-                        {typeof score === 'number' ? `${Math.round(score)}%` : 'Unavailable'}
+                      <dt className="sr-only">Providers</dt>
+                      <dd>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              className="rounded-sm font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              aria-label={`Providers for ${ioc.indicator}`}
+                            >
+                              Providers
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent
+                            align="end"
+                            aria-label={`Providers for ${ioc.indicator}`}
+                            className="w-[min(92vw,26rem)]"
+                          >
+                            <IocProvidersPanel ioc={ioc} />
+                          </PopoverContent>
+                        </Popover>
                       </dd>
+                    </div>
+                    <div className="flex gap-1">
+                      {/* The fused reputation score, the number "At investigation: N" and
+                          the fusion line show, not a provider's confidence. A placeholder 0
+                          for an indicator no provider was asked about is never shown as a
+                          measured score (numbers review). */}
+                      <dt className="text-muted-foreground">Reputation</dt>
+                      {ioc.providers_status === 'skipped' ? (
+                        <dd
+                          className="text-muted-foreground"
+                          title="No provider was asked, so there is no reputation score."
+                        >
+                          Not checked
+                        </dd>
+                      ) : (
+                        <dd
+                          className={cn(
+                            'tabular-nums',
+                            typeof score === 'number' && score >= 50 ? 'font-medium text-critical-text' : 'text-foreground',
+                          )}
+                        >
+                          {typeof score === 'number' ? String(Math.round(score)) : 'Unavailable'}
+                        </dd>
+                      )}
                     </div>
                     {ioc.country ? (
                       <div className="flex gap-1">

@@ -119,7 +119,8 @@ from ..state import AppState
 from ..stored_text import shown
 from ..stores.base import AuditCursorExpired, AuditHit, AuditSearchPage
 from ..utils import parse_es_timestamp
-from .deps import get_state, require_permission
+from .cost_text import withhold_row_cost_text
+from .deps import get_state, has_permission, require_permission
 
 logger = logging.getLogger("tlsoc.api.audit")
 
@@ -1248,6 +1249,21 @@ async def _assemble(
 _AUDIT_VIEW = require_permission("audit", "view")
 
 
+def _withhold_cost(records: list[AuditRecord], show_cost: bool) -> list[AuditRecord]:
+    """The records as a caller without ``cost:view`` reads them (Round 16, WP16): the
+    spend figure a timeout, budget refusal, case manager, runbook AI or replay spend row
+    put into its ``result_summary`` reads ``hidden`` (``api.cost_text``), as on the case
+    trace. Every other field, and every other row, is shown as recorded. Read-time
+    display only: the stored rows never change (#2)."""
+    if show_cost:
+        return records
+    out: list[AuditRecord] = []
+    for record in records:
+        text = withhold_row_cost_text(record.action_type, record.result_summary)
+        out.append(record if text == record.result_summary else record.model_copy(update={"result_summary": text}))
+    return out
+
+
 def _empty_window(filters: AuditFilters) -> bool:
     return filters.ts_from is not None and filters.ts_to is not None and filters.ts_from > filters.ts_to
 
@@ -1318,7 +1334,7 @@ async def list_audit(
             caller, chain, read.holds, run=run, continued=positions is not None, handles=handles,
         ))
     page = AuditPage(
-        records=read.records,
+        records=_withhold_cost(read.records, await has_permission(request, "cost", "view")),
         total=read.total,
         total_relation=read.relation,  # type: ignore[arg-type]
         next_cursor=next_cursor,
@@ -1410,6 +1426,7 @@ async def get_audit_record(
     if hit is None:
         raise not_found
     record = to_record(hit.doc, record_id, demo=ref.demo)
+    shown_record = _withhold_cost([record], await has_permission(request, "cost", "view"))[0]
     binding = filters.binding()
     if binding and _selected_by(state, filters, hit.doc, demo=ref.demo):
         view: dict[str, Any] = {"list": binding}
@@ -1417,4 +1434,4 @@ async def get_audit_record(
     else:
         view, summary = {"record": record_id}, views.record_open_summary(record_id)
     await _note_view(state, request, user, view, summary)
-    return record
+    return shown_record

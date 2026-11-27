@@ -72,6 +72,7 @@ from ..engine.case_cluster import WIDEN_LADDER as _WIDEN_LADDER  # noqa: F401
 from ..engine.case_cluster import cluster_for_case, entity_events_widening
 from ..engine.case_cluster import entity_field as _entity_field  # noqa: F401
 from ..engine.case_cluster import manual_trigger_reason as _manual_trigger_reason
+from ..engine.case_cluster import window_words as _window_phrase
 from ..engine.case_cluster import (  # noqa: F401
     reconstruct_cluster_from_case as _reconstruct_cluster_from_case,
 )
@@ -145,6 +146,7 @@ from ..utils import (
     relative_to_millis,
     to_millis,
 )
+from ..whats_new import stamp_new_account
 from .deps import (
     _bearer,
     _sid_tag,
@@ -442,15 +444,20 @@ async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoRe
 # Topics the UI may subscribe to. A single case-detail view may also request
 # 'cases:{case_id}' (exact-match topic) — allowed via the prefix below. ``chat``
 # (Round 12) carries only owner-targeted ``chat.turn`` frames (``realtime.publish_chat_turn``).
-_REALTIME_TOPICS = frozenset({"notifications", "inbox", "jobs", "cases", "agent", "chat", "runbooks"})
+_REALTIME_TOPICS = frozenset({
+    "notifications", "inbox", "jobs", "cases", "agent", "chat", "runbooks", "investigations",
+})
 
 # The grants a principal must hold for a topic to be served (Round 12 WP-CM: case
 # topics carry case ids and lifecycle status; Round 14 SPEC §4.10.15: the ``runbooks``
-# topic carries ``case.runbook`` progress frames, served only with BOTH grants). A topic
-# not listed here needs no grant beyond the stream itself.
+# topic carries ``case.runbook`` progress frames, served only with BOTH grants; Round 16
+# SPEC §4.5 WP08: the low-volume ``investigations`` topic carries ``case.investigation``
+# frames, ids and enums of AI runs, for the navigation count). A topic not listed here
+# needs no grant beyond the stream itself.
 _REALTIME_TOPIC_GRANTS: dict[str, tuple[tuple[str, str], ...]] = {
     "cases": (("cases", "read"),),
     "runbooks": (("runbooks", "read"), ("cases", "read")),
+    "investigations": (("cases", "read"),),
 }
 
 
@@ -996,6 +1003,26 @@ def _source_secret_paths(sources: Any) -> list[str]:
     return paths
 
 
+def _refuse_demo_source_write(state: AppState, source_id: str) -> None:
+    """Round 16 B43: while Demo Mode is on, the Demo overlay sources are read-only.
+
+    ``GET /api/sources`` lists only the overlay then, so a write to one of its ids would
+    put a Demo-only source into the live configuration, hidden until Demo Mode is turned
+    off. The overlay is the authority for which ids those are. Real-source adds stay
+    allowed, and the refusal applies only while Demo is active. Nothing is written, so
+    nothing is audited, as with ``runbook_demo_readonly``."""
+    if not state.demo_active:
+        return
+    if source_id in {str(row.get("id")) for row in state.demo_sources_overlay()}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "source_demo_readonly",
+                "message": "Demo Mode manages this source. Turn Demo Mode off to change it.",
+            },
+        )
+
+
 @router.post("/sources")
 async def upsert_source(
     body: SourceUpsert,
@@ -1003,6 +1030,7 @@ async def upsert_source(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "manage")),
 ) -> dict[str, Any]:
+    _refuse_demo_source_write(state, body.id)
     reg = get_registry()
     try:
         st = SourceType(body.source_type)
@@ -1113,6 +1141,7 @@ async def delete_source(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "manage")),
 ) -> dict[str, Any]:
+    _refuse_demo_source_write(state, source_id)
     # Atomic remove under the prefs write lock (mutate_prefs) so a concurrent full-doc
     # writer can't resurrect the deleted source by saving a stale snapshot. The 404 is
     # raised from inside the transform (before any save), so nothing is persisted when
@@ -1169,6 +1198,7 @@ async def set_source_secrets(
     Values go to the secret tier (in memory), NEVER to the persisted config; only
     the configured field NAMES are recorded on the SourceInstance (#10). Round 14
     (SPEC §3.6): audited before the credentials change, naming the fields only."""
+    _refuse_demo_source_write(state, source_id)
     src = next((s for s in state.prefs.sources if s.id == source_id), None)
     if src is None:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -1726,6 +1756,7 @@ async def sources_coverage(
 async def source_feeds(
     source_id: str,
     state: AppState = Depends(get_state),
+    _=Depends(require_permission("sources", "read")),
 ) -> dict[str, Any]:
     """The resolved EFFECTIVE feeds for a source (Wave 6) — for the per-source Feeds
     editor.
@@ -1767,7 +1798,10 @@ async def source_feeds(
 # Settings (Surface 5)
 # --------------------------------------------------------------------------- #
 @router.get("/settings")
-async def get_settings(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def get_settings(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("settings", "read")),
+) -> dict[str, Any]:
     return {
         "prefs": state.prefs.model_dump(mode="json"),
         "configured": state.secrets.configured_status(),
@@ -2075,6 +2109,141 @@ def _guard_rbac_settings_change(current: Preferences, validated: Preferences, *,
         raise _RbacEditAuthorityNeeded()
 
 
+class _SsoEditAuthorityNeeded(Exception):
+    """Raised by the settings transform when the body changes the single sign-on block
+    and the caller's Super admin authority has not been checked yet (Round 16, B15)."""
+
+
+# The refusal a single sign-on change or provider secret gets from anyone who is not a
+# stored Super admin (Round 16, B15). The Console shows it as it is.
+SSO_SUPER_ADMIN_MESSAGE = "Only a Super admin can change single sign-on."
+
+
+def _guard_sso_settings_change(current: Preferences, validated: Preferences, *,
+                               authority: dict[str, Any]) -> None:
+    """Compare the validated merged ``sso`` block with the stored one (Round 16, B15).
+
+    Any change (a provider added, removed or edited in any field, or ``sso.enabled``
+    changed) needs a stored Super admin with a strict fresh sign-in: a capability test
+    on the role values is not enough, because repointing the issuer of a provider a
+    Super admin is linked to would sign the editor in as that Super admin. Once the
+    authority is held, every role value of a changed or added provider must be a
+    built-in role, otherwise 422. A custom role name is refused too (Round 16, WP16):
+    single sign-on gives a new account its built-in role, so mapping a group to a
+    custom role is not supported in 0.2.0."""
+    before = current.sso.model_dump(mode="json")
+    after = validated.sso.model_dump(mode="json")
+    if before == after:
+        return
+    if not authority.get("checked"):
+        raise _SsoEditAuthorityNeeded()
+    known = SSO_ROLE_VALUES
+    stored = {p.get("id"): p for p in before.get("providers") or []}
+    for prov in after.get("providers") or []:
+        if stored.get(prov.get("id")) == prov:
+            continue  # unchanged: a stored value never blocks another edit
+        pid = str(prov.get("id") or "")
+        values = [("default_role", prov.get("default_role"))]
+        values += [
+            (f"group_role_map.{group}", role)
+            for group, role in (prov.get("group_role_map") or {}).items()
+        ]
+        for field, value in values:
+            if str(value or "") not in known:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Invalid settings: sso provider {pid!r} {field} must be a built-in "
+                        f"role (received {value!r})"
+                    ),
+                )
+
+
+#: The role values a single sign-on provider may give (Round 16, WP16): the built-in
+#: roles only. A custom role is a grant set added to an account, not an account role.
+SSO_ROLE_VALUES: frozenset[str] = frozenset(r.value for r in UserRole)
+
+
+def _sla_timezone_ok(name: str) -> bool:
+    """``UTC``, ``Z``, a ``+HH:MM`` offset (hours below 24) or a zone name ``zoneinfo``
+    accepts: the grammar ``engine.time_windows.zone_for`` reads (Round 16, B51)."""
+    import re
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    if name.upper() in ("UTC", "Z"):
+        return True
+    match = re.fullmatch(r"([+-])(\d{2}):?(\d{2})", name)
+    if match:
+        return int(match.group(2)) <= 23 and int(match.group(3)) <= 59
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError, TypeError):
+        return False
+    return True
+
+
+def _reject_incoherent_settings(body: Any, current: Preferences) -> None:
+    """422 with a field message for a settings value that would be saved but cannot
+    work (Round 16, B51). Like :func:`_reject_out_of_range_caps` it reads only the keys
+    the request BODY sets, so a stored bad value still loads:
+
+    * ``sla.timezone`` must be ``UTC``, ``Z``, a ``+HH:MM`` offset or a zone name;
+    * a ``sla.targets`` tier, merged with its stored value, must not respond later
+      than it resolves (``response_minutes > resolve_minutes``);
+    * ``investigate_lookback`` must parse to an instant earlier than now."""
+    if not isinstance(body, dict):
+        return
+    sla = body.get("sla")
+    if isinstance(sla, dict):
+        tz = sla.get("timezone")
+        if isinstance(tz, str) and tz.strip() and not _sla_timezone_ok(tz.strip()):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid settings: sla.timezone {tz!r} is not UTC, a +HH:MM offset "
+                    "or a time zone name such as Europe/London"
+                ),
+            )
+        targets = sla.get("targets")
+        if isinstance(targets, dict):
+            from ..config import SlaTarget
+
+            for tier, raw in targets.items():
+                if not isinstance(raw, dict):
+                    continue
+                stored = current.sla.targets.get(str(tier)) or SlaTarget()
+                respond = raw.get("response_minutes", stored.response_minutes)
+                resolve = raw.get("resolve_minutes", stored.resolve_minutes)
+                numbers = all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool)
+                    for v in (respond, resolve)
+                )
+                if numbers and respond > resolve:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Invalid settings: sla.targets.{tier}.response_minutes "
+                            f"({respond}) must not be more than resolve_minutes ({resolve})"
+                        ),
+                    )
+    if "investigate_lookback" in body:
+        from ..utils import relative_to_millis_strict
+
+        raw = body.get("investigate_lookback")
+        try:
+            start = relative_to_millis_strict(raw) if isinstance(raw, str) else None
+        except (ValueError, OverflowError, TypeError):
+            start = None
+        if start is None or start >= to_millis(now_utc()):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Invalid settings: investigate_lookback must be a time before now, "
+                    "such as now-24h or now-7d"
+                ),
+            )
+
+
 async def _require_rbac_edit_authority(request: Request, state: AppState) -> None:
     """``roles:manage`` (the route gate's core, which writes the Access denied row on a
     refusal) and a fresh sign-in. Both are no-ops with sign-in off."""
@@ -2134,6 +2303,8 @@ async def put_settings(
         _reject_out_of_range_caps(body)
         _reject_out_of_range_remember_me(body)
         _reject_out_of_range_auto_close_review(body)
+        # Round 16 (B51): values that would save but cannot work answer 422.
+        _reject_incoherent_settings(body, current)
         # Round 14 (SPEC §4.10.19): a retired runbook key the body CHANGES
         # (``rag.use_runbooks``, ``playbooks.enabled``) is carried onto its successor
         # under ``runbooks`` before the merge; validation rewrites the retired key as a
@@ -2149,6 +2320,8 @@ async def put_settings(
         # Round 15 (SPEC D1.3): the role-based access switch moved to PUT /api/rbac, and
         # the role matrix needs the role-management grant and a fresh sign-in.
         _guard_rbac_settings_change(current, validated, authorized=rbac_authority["checked"])
+        # Round 16 (B15): every single sign-on change needs a stored Super admin.
+        _guard_sso_settings_change(current, validated, authority=sso_authority)
         return validated
 
     # The legacy one-line summary keeps naming the top-level keys the body sent (never
@@ -2156,6 +2329,7 @@ async def put_settings(
     changed = sorted(str(k) for k in body.keys()) if isinstance(body, dict) else []
     body_sources = body.get("sources") if isinstance(body, dict) else None
     rbac_authority = {"checked": False}
+    sso_authority: dict[str, Any] = {"checked": False}
     while True:
         try:
             old_prefs, prefs = await audited_prefs_write(
@@ -2178,6 +2352,13 @@ async def put_settings(
                 raise
             await _require_rbac_edit_authority(request, state)
             rbac_authority["checked"] = True
+        except _SsoEditAuthorityNeeded:
+            # The same pattern for the single sign-on block (Round 16, B15): a stored
+            # Super admin with a strict fresh sign-in, asked once before the row.
+            if sso_authority["checked"]:  # pragma: no cover - the guard never asks twice
+                raise
+            await _require_super_admin_for(request, state, message=SSO_SUPER_ADMIN_MESSAGE)
+            sso_authority["checked"] = True
     # #10 / G6 R5: record an immutable version snapshot for every rule this save CHANGED
     # (detection / correlation / case-automation) so DetectionRulesHome edits populate the
     # ledger + rollback UI. Best-effort; a versioning glitch never fails the save.
@@ -2430,9 +2611,12 @@ async def chat(
 @router.post("/investigate")
 async def investigate(
     body: InvestigateRequest, state: AppState = Depends(get_state),
-    _=Depends(require_permission("cases", "reinvestigate")),
+    principal=Depends(require_permission("cases", "reinvestigate")),
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
+    """The Investigate page: a person asks for one investigation. The run is a manual
+    run of that person (Round 16, WP16), so the AI run popover names who asked and the
+    finish notice reaches them, as Investigate on a case does."""
     query_source = state.active_source_for_id(body.source_id)
     if body.source_id and query_source is None:
         raise HTTPException(
@@ -2440,12 +2624,20 @@ async def investigate(
             detail="The selected source is not an enabled queryable pull source",
         )
     cluster, widest = await _cluster_for_request(state, body, query_source=query_source)
+    if cluster is None and body.entity is not None and not body.source_id:
+        # No source was named and the default one holds nothing: look in the other
+        # sources the Logs page shows, so a push source's entity is found too (FXE).
+        found = await _cluster_from_other_sources(state, body, tried=query_source)
+        if found is not None:
+            cluster, widest, query_source = found
     if cluster is None:
         # NEUTRAL, specific detail so the FE shows an empty-state, not a scary error.
         detail = _no_events_detail(body, widest)
         raise HTTPException(status_code=400, detail=detail)
+    requested_by = str(getattr(principal, "username", "") or "") or None
     case = await state.pipeline.investigate_cluster(
-        cluster, body.source_surface, state.execution_prefs, query_source=query_source
+        cluster, body.source_surface, state.execution_prefs, query_source=query_source,
+        trigger="manual", requested_by=requested_by,
     )
     return _case_view(case, state, spend=await _case_spend_visible(request))
 
@@ -2477,7 +2669,10 @@ async def overview(
 # Model catalog (Feature 4) — for the settings per-role model pickers
 # --------------------------------------------------------------------------- #
 @router.get("/models")
-async def models(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def models(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("models", "read")),
+) -> dict[str, Any]:
     grouped = models_by_provider()
     # Merge the operator's runtime-registered self-hosted / LiteLLM (OpenAI-compatible)
     # models so a locally-added model is selectable in the per-role picker, and expose a
@@ -4030,7 +4225,8 @@ async def auth_login(
     refused = username_char_problem(body.username)
     # Constant-cost credential check (no token yet: the lifetime depends on the
     # Remember-me decision below, which needs the verified principal's role).
-    checked = auth.check_password("" if refused else body.username, body.password)
+    # Round 16 (B18): the PBKDF2 work runs off the event loop, under a semaphore.
+    checked = await auth.acheck_password("" if refused else body.username, body.password)
     user = auth.principal(body.username) if checked and refused is None else None
     if user is None:
         await _record_identity_event(
@@ -4281,7 +4477,11 @@ async def auth_change_password(
 ) -> dict[str, Any]:
     """Self-service password change (requires a valid session). Verifies the current
     password, sets the new one and clears ``must_change_password``. Works only for
-    multi-user accounts; the env single-admin has no persisted record to update."""
+    multi-user accounts; the env single-admin has no persisted record to update.
+
+    Round 16 (B21): a successful change signs out the caller's other sessions (this
+    one stays) and stops their chat answers, writes a ``session.revoked`` row and
+    returns ``sessions_revoked``."""
     auth = state.auth
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
@@ -4292,8 +4492,9 @@ async def auth_change_password(
     new_pw = (body.new_password or "").strip()
     if len(new_pw) < 8:
         raise HTTPException(status_code=400, detail="new password must be at least 8 characters")
-    # Re-authenticate with the current password (constant-time, no oracle).
-    if auth.authenticate(principal.username, body.current_password) is None:
+    # Re-authenticate with the current password (constant-time, no oracle), off the
+    # event loop (Round 16, B18).
+    if not await auth.acheck_password(principal.username, body.current_password):
         await _record_identity_event(
             state, request, action="auth.password_change_failed", outcome="failure",
             actor=principal.username, summary="password change refused: current password incorrect",
@@ -4306,7 +4507,9 @@ async def auth_change_password(
             status_code=400,
             detail="this account is managed via environment configuration and cannot self-change",
         )
-    from ..auth.passwords import hash_password
+    from ..auth.passwords import ahash_password
+
+    new_hash = await ahash_password(new_pw)
 
     async def _write() -> None:
         # An account deleted while the row was appended answers 404, so its failure
@@ -4314,7 +4517,7 @@ async def auth_change_password(
         await _patch_user_or_404(
             state,
             principal.username,
-            password_hash=hash_password(new_pw),
+            password_hash=new_hash,
             must_change_password=False,
         )
 
@@ -4329,7 +4532,34 @@ async def auth_change_password(
         surface="auth", context=audit_context(request), result_summary="password changed",
     )
     await state.refresh_users()
-    return {"ok": True}
+    # Round 16 (B21): the caller's OTHER sessions end now; this one stays. Without a
+    # registered session id there is nothing to keep, so every session ends.
+    keep = str(getattr(principal, "sid", "") or "")
+    if keep:
+        revoked = await state.sessions.revoke_others(
+            principal.username, keep, by=principal.username, reason="password_changed",
+        )
+        await _stop_chat_turns(state, principal.username, except_sid=keep)
+    else:
+        revoked = await state.sessions.revoke_all(
+            principal.username, by=principal.username, reason="password_changed",
+        )
+        await state.refresh_sessions()
+        await _stop_chat_turns(state, principal.username)
+    if revoked or not keep:
+        # One row when a session ended (or every token was invalidated); a change
+        # with no other session to end writes none.
+        await _record_identity_event(
+            state, request, action="session.revoked", actor=principal.username,
+            surface="session", target=_user_target(principal.username),
+            summary=_session_summary(
+                "session_revoke_others", keep,
+                f"password changed: revoked {int(revoked or 0)} other session(s)",
+            ),
+            tool_input={"scope": "others" if keep else "all", "count": int(revoked or 0),
+                        "reason": "password_changed"},
+        )
+    return {"ok": True, "sessions_revoked": int(revoked or 0)}
 
 
 # --------------------------------------------------------------------------- #
@@ -4432,12 +4662,17 @@ async def revoke_other_sessions(
     return {"ok": True, "revoked": count}
 
 
-@router.post("/auth/refresh")
+@router.post("/auth/refresh", deprecated=True)
 async def auth_refresh(
     body: RefreshBody, request: Request, response: Response,
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """Rotate a refresh token → mint a fresh ACCESS token + a NEW refresh token.
+
+    Round 16 (B24): deprecated. No sign-in issues a refresh token, so every call
+    answers 401 with code ``session_invalid`` and reason ``unknown_refresh``. A
+    session lasts until its access token expires, within the idle and absolute
+    limits. The route stays so an older client gets that answer, not a 404.
 
     Reuse detection (theft): if the presented token matches an ALREADY-ROTATED
     previous hash, the session is treated as compromised → revoke + bump the user's
@@ -4536,7 +4771,7 @@ async def auth_reauth(
     ``last_authn_at`` on the session so a ``require_fresh_auth``-gated action is
     unlocked for the policy window. Audited (#2)."""
     principal = _require_session(state, request)
-    if state.auth.authenticate(principal.username, body.password or "") is None:
+    if not await state.auth.acheck_password(principal.username, body.password or ""):
         await _record_identity_event(
             state, request, action="auth.reauth_failed", outcome="failure",
             actor=principal.username, surface="session", summary="reauth failed",
@@ -4565,7 +4800,17 @@ async def account_activity(
     principal = _require_session(state, request)
     rows = await _records_for_actor(state, principal.username, limit)
     # A lone surrogate an older build stored cannot be carried by a UTF-8 response.
-    return {"activity": shown(rows)}
+    # Round 16 (B55): each row carries the friendly event name the Audit log shows.
+    from ..audit import events as audit_events
+
+    labelled = []
+    for row in shown(rows):
+        try:
+            label = audit_events.classify(row).label
+        except Exception:  # noqa: BLE001 (a row that cannot be named keeps no label)
+            label = ""
+        labelled.append({**row, "event_label": label} if label else row)
+    return {"activity": labelled}
 
 
 # --------------------------------------------------------------------------- #
@@ -4994,6 +5239,96 @@ def _require_session(state: AppState, request: Request):
 # lowercased username — never persisted until the user proves possession via confirm.
 _MFA_PENDING_ENROLL: dict[str, dict[str, Any]] = {}
 
+# Round 16 (B19): every second-factor check (the sign-in verify, both enrolment
+# confirms and turning MFA off) shares one per-account bound. After this many
+# consecutive failures, checks are refused for 5 minutes, doubling for each further
+# run of failures up to an hour. A success resets the counter.
+MFA_LOCK_THRESHOLD = 10
+MFA_LOCK_BASE_MINUTES = 5
+MFA_LOCK_MAX_MINUTES = 60
+MFA_LOCKED_MESSAGE = "Too many wrong codes. Wait a few minutes, then try again."
+# Round 16 (B17): a new authenticator replaces an enrolled one only through
+# /auth/mfa/disable, which needs a current code.
+MFA_ALREADY_ENABLED_MESSAGE = (
+    "MFA is already enabled; turn it off with a current code before enrolling a new "
+    "authenticator."
+)
+
+
+def _mfa_lock_minutes(nth_lock: int) -> int:
+    """The length of the n-th lock in a row: 5, 10, 20, 40, then 60 minutes."""
+    return min(MFA_LOCK_MAX_MINUTES, MFA_LOCK_BASE_MINUTES * (2 ** max(0, int(nth_lock) - 1)))
+
+
+def _mfa_lock_seconds_left(user: Any) -> int:
+    """Seconds until the account's second-factor checks unlock (0 when not locked)."""
+    from ..utils import parse_es_timestamp
+
+    raw = str(getattr(user, "mfa_locked_until", "") or "")
+    until = parse_es_timestamp(raw) if raw else None
+    if until is None:
+        return 0
+    return max(0, int(until.timestamp() - now_utc().timestamp()))
+
+
+def _mfa_already_enabled() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"code": "mfa_already_enabled", "message": MFA_ALREADY_ENABLED_MESSAGE},
+    )
+
+
+async def _refuse_locked_mfa(state: AppState, request: Request, user: Any, *,
+                             pending: bool) -> None:
+    """429 without checking any code while the account's checks are locked (B19).
+    ``pending`` marks a sign-in step (the row never reads the request's credential)."""
+    left = _mfa_lock_seconds_left(user)
+    if left <= 0:
+        return
+    username = str(user.username)
+    await _record_identity_event(
+        state, request, action="auth.mfa_failed", outcome="denied", actor=username,
+        user=state.auth.principal(username) if pending else None,
+        summary="mfa check refused: too many failed codes",
+        target=_user_target(username), tool_input={"locked": True},
+        from_request=not pending,
+    )
+    raise HTTPException(
+        status_code=429,
+        detail={"code": "mfa_locked", "message": MFA_LOCKED_MESSAGE, "retry_after_seconds": left},
+        headers={"Retry-After": str(left)},
+    )
+
+
+async def _count_mfa_failure(state: AppState, request: Request, username: str, *,
+                             pending: bool) -> None:
+    """Count one failed second-factor check; the check that starts a lock writes one
+    ``auth.mfa_locked`` row (B19). Never raises into the caller."""
+    from datetime import timedelta
+
+    def _until(minutes: int) -> str:
+        return (now_utc() + timedelta(minutes=int(minutes))).isoformat()
+
+    try:
+        count, until, newly = await state.users.record_mfa_failure(
+            username, threshold=MFA_LOCK_THRESHOLD, lock_minutes=_mfa_lock_minutes,
+            now_iso=iso_now(), until_iso=_until,
+        )
+    except Exception as exc:  # noqa: BLE001 (the refusal itself still stands)
+        logger.warning("Counting a failed second-factor check failed: %s", exc)
+        return
+    if not newly:
+        return
+    minutes = _mfa_lock_minutes(count // MFA_LOCK_THRESHOLD)
+    await _record_identity_event(
+        state, request, action="auth.mfa_locked", outcome="denied", actor=username,
+        user=state.auth.principal(username) if pending else None,
+        summary=f"two-factor checks locked for {minutes} minutes after {count} failed codes",
+        target=_user_target(username),
+        tool_input={"failed_count": count, "locked_minutes": minutes, "locked_until": until},
+        from_request=not pending,
+    )
+
 
 def _mfa_changes(*, enabled: bool) -> list[dict[str, Any]]:
     """The audit ``changes`` of turning a second factor on or off: the flag, and the
@@ -5007,14 +5342,24 @@ def _mfa_changes(*, enabled: bool) -> list[dict[str, Any]]:
 
 
 @router.post("/auth/mfa/setup")
-async def mfa_setup(request: Request, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def mfa_setup(
+    request: Request, state: AppState = Depends(get_state),
+    _fresh=Depends(require_fresh_auth()),
+) -> dict[str, Any]:
     """Begin MFA enrollment (self, authenticated). Generates a PENDING TOTP secret +
     recovery codes and returns them ONCE (the secret + otpauth URI for the QR, and the
-    plaintext recovery codes for the user to save). Does NOT enable MFA — the user must
-    prove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret."""
+    plaintext recovery codes for the user to save). Does NOT enable MFA: the user must
+    prove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret.
+
+    Round 16 (B17): needs a fresh sign-in, and answers 409 for an account that is
+    already enrolled, so a stolen session cannot replace the authenticator."""
     from ..auth import mfa as mfa_mod
 
     principal = _require_session(state, request)
+    existing = await state.users.get(principal.username)
+    if existing is not None and existing.mfa_enabled:
+        _MFA_PENDING_ENROLL.pop(principal.username.strip().lower(), None)
+        raise _mfa_already_enabled()
     digits, period = _mfa_params(state)
     secret = mfa_mod.generate_secret()
     recovery = mfa_mod.generate_recovery_codes(10)
@@ -5023,7 +5368,7 @@ async def mfa_setup(request: Request, state: AppState = Depends(get_state)) -> d
     )
     _MFA_PENDING_ENROLL[principal.username.strip().lower()] = {
         "secret": secret,
-        "recovery_hashes": [mfa_mod.hash_recovery_code(c) for c in recovery],
+        "recovery_hashes": await mfa_mod.ahash_recovery_codes(recovery),
     }
     await _record_identity_event(
         state, request, action="auth.mfa_setup_started", actor=principal.username,
@@ -5038,24 +5383,41 @@ class MfaCodeBody(BaseModel):
 
 @router.post("/auth/mfa/confirm")
 async def mfa_confirm(
-    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state)
+    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state),
+    _fresh=Depends(require_fresh_auth()),
 ) -> dict[str, Any]:
     """Confirm MFA enrollment (self): verify a TOTP code against the PENDING secret,
     then persist the obfuscated secret + hashed recovery codes and set
-    ``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off."""
+    ``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off.
+
+    Round 16: needs a fresh sign-in and answers 409 for an enrolled account (B17); a
+    wrong code counts toward the account's second-factor bound (B19)."""
     from ..auth import mfa as mfa_mod
 
     principal = _require_session(state, request)
-    pending = _MFA_PENDING_ENROLL.get(principal.username.strip().lower())
+    key = principal.username.strip().lower()
+    user = await state.users.get(principal.username)
+    if user is not None and user.mfa_enabled:
+        _MFA_PENDING_ENROLL.pop(key, None)
+        raise _mfa_already_enabled()
+    pending = _MFA_PENDING_ENROLL.get(key)
     if not pending:
         raise HTTPException(status_code=400, detail="no pending MFA enrollment; call setup first")
+    if user is not None:
+        await _refuse_locked_mfa(state, request, user, pending=False)
     digits, period = _mfa_params(state)
     ok, step = mfa_mod.verify_totp(
         pending["secret"], body.code, window=1, period=period, digits=digits
     )
     if not ok:
+        if user is not None:
+            await _record_identity_event(
+                state, request, action="auth.mfa_failed", outcome="failure",
+                actor=principal.username, summary="mfa enrollment confirm failed",
+                target=_user_target(principal.username),
+            )
+            await _count_mfa_failure(state, request, principal.username, pending=False)
         raise HTTPException(status_code=400, detail="invalid code")
-    user = await state.users.get(principal.username)
     if user is None:
         raise HTTPException(
             status_code=400,
@@ -5069,6 +5431,7 @@ async def mfa_confirm(
         await _patch_user_or_404(
             state, principal.username, mfa_enabled=True, mfa_secret=obf,
             mfa_recovery_hashes=list(pending["recovery_hashes"]), mfa_last_step=int(step),
+            mfa_failed_count=0, mfa_locked_until="",
         )
 
     # Round 14 (SPEC §3.6): turning a second factor on is never done without its row.
@@ -5103,42 +5466,45 @@ async def mfa_verify(
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
     username = auth.pending_subject(body.pending_token)
-    if username is None:
+    # Round 16 (B19): a pending token is refused after 5 failures or once used.
+    if username is None or not auth.pending_usable(body.pending_token):
         raise HTTPException(status_code=401, detail="invalid or expired pending session")
     user = await state.users.get(username)
     if user is None or not user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is not enabled for this account")
+    await _refuse_locked_mfa(state, request, user, pending=True)
     digits, period = _mfa_params(state)
     server_key = state.secrets.mfa_server_key()
     secret = mfa_mod.deobfuscate_secret(user.mfa_secret, server_key)
     method = ""
-    # 1) TOTP (with replay rejection against the stored last step).
+    # 1) TOTP (with replay rejection against the stored last step). Round 16 (B23):
+    #    the step is consumed inside the user store's compare-and-swap, so a code
+    #    replayed by a concurrent request fails there.
     if secret:
         ok, step = mfa_mod.verify_totp(
             secret, body.code, window=1, period=period, digits=digits,
             last_step=user.mfa_last_step,
         )
-        if ok:
+        if ok and await state.users.consume_mfa(username, step=int(step)):
             method = "totp"
-            await state.users.update(username, mfa_last_step=int(step))
-    # 2) Recovery code (single-use): consume the matching hash on success.
+    # 2) Recovery code (single-use). The matching stored hash is found off the event
+    #    loop (only for a code with the recovery-code shape, B18), then that exact
+    #    string is removed inside the compare-and-swap (B23).
     if not method:
-        remaining = list(user.mfa_recovery_hashes)
-        match_idx = next(
-            (i for i, h in enumerate(remaining) if mfa_mod.verify_recovery_code(body.code, h)),
-            -1,
-        )
-        if match_idx >= 0:
+        matched = await mfa_mod.amatch_recovery_hash(body.code, list(user.mfa_recovery_hashes))
+        if matched is not None and await state.users.consume_mfa(username, recovery_hash=matched):
             method = "recovery"
-            del remaining[match_idx]
-            await state.users.update(username, mfa_recovery_hashes=remaining)
     if not method:
+        auth.note_pending_failure(body.pending_token)
         await _record_identity_event(
             state, request, action="auth.mfa_failed", outcome="failure", actor=username,
             user=auth.principal(username), summary="mfa verify failed",
             target=_user_target(username), from_request=False,
         )
+        await _count_mfa_failure(state, request, username, pending=True)
         raise HTTPException(status_code=401, detail="invalid code")
+    if not auth.mark_pending_used(body.pending_token):
+        raise HTTPException(status_code=401, detail="invalid or expired pending session")
     await state.refresh_users()
     # Round 12: the Remember-me REQUEST comes only from the SIGNED pending token
     # (never a body field), and eligibility is decided against the live policy now.
@@ -5212,7 +5578,8 @@ async def _enroll_pending_user(state: AppState, pending_token: str):
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
     username = auth.pending_subject(pending_token)
-    if username is None:
+    # Round 16 (B19): the same single-use, bounded pending token as /auth/mfa/verify.
+    if username is None or not auth.pending_usable(pending_token):
         raise HTTPException(status_code=401, detail="invalid or expired pending session")
     user = await state.users.get(username)
     if user is None:
@@ -5251,7 +5618,7 @@ async def mfa_enroll_setup(
     )
     _MFA_PENDING_ENROLL[username.strip().lower()] = {
         "secret": secret,
-        "recovery_hashes": [mfa_mod.hash_recovery_code(c) for c in recovery],
+        "recovery_hashes": await mfa_mod.ahash_recovery_codes(recovery),
     }
     await _record_identity_event(
         state, request, action="auth.mfa_setup_started", actor=username,
@@ -5279,17 +5646,23 @@ async def mfa_enroll_confirm(
         raise HTTPException(
             status_code=400, detail="no pending MFA enrollment; call enroll-setup first"
         )
+    await _refuse_locked_mfa(state, request, user, pending=True)
     digits, period = _mfa_params(state)
     ok, step = mfa_mod.verify_totp(
         pending["secret"], body.code, window=1, period=period, digits=digits
     )
     if not ok:
+        auth.note_pending_failure(body.pending_token)
         await _record_identity_event(
             state, request, action="auth.mfa_failed", outcome="failure", actor=username,
             user=auth.principal(username), summary="mfa enrollment confirm failed",
             target=_user_target(username), from_request=False,
         )
+        await _count_mfa_failure(state, request, username, pending=True)
         raise HTTPException(status_code=401, detail="invalid code")
+    # The pending token is spent before anything is saved (Round 16, B19).
+    if not auth.mark_pending_used(body.pending_token):
+        raise HTTPException(status_code=401, detail="invalid or expired pending session")
     # Persist the enrollment (the same block as /auth/mfa/confirm), audit-first.
     obf = mfa_mod.obfuscate_secret(pending["secret"], state.secrets.mfa_server_key())
 
@@ -5297,6 +5670,7 @@ async def mfa_enroll_confirm(
         await _patch_user_or_404(
             state, username, mfa_enabled=True, mfa_secret=obf,
             mfa_recovery_hashes=list(pending["recovery_hashes"]), mfa_last_step=int(step),
+            mfa_failed_count=0, mfa_locked_until="",
         )
 
     await audited_write(
@@ -5353,18 +5727,23 @@ async def mfa_enroll_confirm(
 
 @router.post("/auth/mfa/disable")
 async def mfa_disable(
-    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state)
+    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state),
+    _fresh=Depends(require_fresh_auth()),
 ) -> dict[str, Any]:
     """Disable MFA for the calling user (self). Requires a valid CURRENT TOTP or a
     single-use recovery code (so a hijacked session alone cannot turn MFA off).
     Clears the secret + recovery hashes. (A super_admin can force-disable another
-    user via PUT /api/users/{username} {mfa_enabled:false}.)"""
+    user via PUT /api/users/{username} {mfa_enabled:false}.)
+
+    Round 16 (B19): needs a fresh sign-in, and a wrong code counts toward the
+    account's second-factor bound, so a session cannot guess codes without limit."""
     from ..auth import mfa as mfa_mod
 
     principal = _require_session(state, request)
     user = await state.users.get(principal.username)
     if user is None or not user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is not enabled for this account")
+    await _refuse_locked_mfa(state, request, user, pending=False)
     digits, period = _mfa_params(state)
     secret = mfa_mod.deobfuscate_secret(user.mfa_secret, state.secrets.mfa_server_key())
     ok = False
@@ -5374,13 +5753,15 @@ async def mfa_disable(
             last_step=user.mfa_last_step,
         )
     if not ok:
-        ok = any(mfa_mod.verify_recovery_code(body.code, h) for h in user.mfa_recovery_hashes)
+        matched = await mfa_mod.amatch_recovery_hash(body.code, list(user.mfa_recovery_hashes))
+        ok = matched is not None
     if not ok:
         await _record_identity_event(
             state, request, action="auth.mfa_failed", outcome="failure",
             actor=principal.username, summary="mfa disable refused: invalid code",
             target=_user_target(principal.username),
         )
+        await _count_mfa_failure(state, request, principal.username, pending=False)
         raise HTTPException(status_code=400, detail="invalid code")
 
     async def _write() -> None:
@@ -5388,6 +5769,7 @@ async def mfa_disable(
         await _patch_user_or_404(
             state, principal.username,
             mfa_enabled=False, mfa_secret="", mfa_recovery_hashes=[], mfa_last_step=0,
+            mfa_failed_count=0, mfa_locked_until="",
         )
 
     # Round 14 (SPEC §3.6): turning a second factor off is never done without its row.
@@ -5444,7 +5826,9 @@ async def sso_providers(state: AppState = Depends(get_state)) -> dict[str, Any]:
     sso = getattr(state.prefs, "sso", None)
     out = []
     for p in (sso.enabled_providers() if sso else []):
-        out.append({"id": p.id, "type": p.type, "display_name": p.display_name or p.id})
+        # The stored name, empty when none is set: the sign-in page names an unnamed
+        # Google or Microsoft provider by its type, never by its internal id.
+        out.append({"id": p.id, "type": p.type, "display_name": (p.display_name or "").strip()})
     return {"providers": out}
 
 
@@ -5628,8 +6012,14 @@ async def _provision_sso_user(
     SECURITY (#3, SSO account takeover): we NEVER link an SSO login to a pre-existing
     LOCAL-credential account by email, and we NEVER trust an UNVERIFIED email as an
     account key. Either would let an attacker whose IdP account carries a victim's
-    address log in AS the victim."""
-    from ..auth.passwords import hash_password
+    address log in AS the victim.
+
+    Round 16 (B16): a verified email links only to an account of THIS provider that
+    has no subject yet. An account of another provider, or one that already holds a
+    different subject for this provider, is refused: the stable identity is the issuer
+    plus the subject, so an existing subject is never re-bound by email. Round 16
+    (B15): a group map never changes the role of a stored Super admin."""
+    from ..auth.passwords import ahash_password
 
     sso = getattr(state.prefs, "sso", None)
     cfg = sso.get(provider_id) if sso else None
@@ -5653,16 +6043,25 @@ async def _provision_sso_user(
             existing = u
             break
 
-    # 2) Otherwise match by the VERIFIED email — but refuse to auto-link onto a
-    #    pre-existing LOCAL-credential account (real password, not already linked to
-    #    THIS provider). That refusal is the account-takeover guard.
+    # 2) Otherwise match by the VERIFIED email, but only onto an account of THIS
+    #    provider that has no subject yet (Round 16, B16). A local account, an account
+    #    of another provider, or one bound to a different subject is refused. That
+    #    refusal is the account-takeover guard.
     if existing is None and trusted_email:
         candidate = await state.users.get(trusted_email)
         if candidate is not None:
-            already_linked_here = candidate.oauth_provider == provider_id
-            is_local_account = bool(candidate.password_hash) and not candidate.oauth_provider
-            if is_local_account and not already_linked_here:
+            if not candidate.oauth_provider:
                 return None, f"sso link refused: {provider_id} email matches a local account"
+            if candidate.oauth_provider != provider_id:
+                return None, (
+                    f"sso link refused: {provider_id} email matches an account linked to "
+                    "another provider"
+                )
+            if candidate.oauth_sub:
+                return None, (
+                    f"sso link refused: {provider_id} email matches an account linked to "
+                    "a different subject"
+                )
             existing = candidate
 
     if existing is not None:
@@ -5671,6 +6070,9 @@ async def _provision_sso_user(
             return None, None
         old_role = str(getattr(existing.role, "value", existing.role) or "")
         new_role = role if (cfg and cfg.group_role_map) else old_role
+        if old_role == UserRole.SUPER_ADMIN.value:
+            # Round 16 (B15): a Super admin's role changes only through a Super admin.
+            new_role = old_role
         update = {
             "role": new_role,
             "oauth_provider": provider_id,
@@ -5717,6 +6119,7 @@ async def _provision_sso_user(
 
     if not auto_create:
         return None, None
+    unusable_hash = await ahash_password(secrets_token())
 
     async def _create() -> str:
         # Atomic create-if-absent at our single-process scale: create() raises on a
@@ -5725,7 +6128,7 @@ async def _provision_sso_user(
         try:
             created = await state.users.create(
                 username=username,
-                password_hash=hash_password(secrets_token()),
+                password_hash=unusable_hash,
                 role=role,
                 active=True,
                 must_change_password=False,
@@ -5757,6 +6160,8 @@ async def _provision_sso_user(
         return (again.username if again else None), None
     except _SsoAccountGone:
         return None, None
+    # Round 16 (SPEC D7): a new account starts with What's new marked seen (best effort).
+    await stamp_new_account(state, created_name)
     return created_name, None
 
 
@@ -5790,7 +6195,12 @@ async def set_sso_provider_secret(
 ) -> dict[str, Any]:
     """Set/clear one OIDC provider's client secret (super_admin only). The value goes
     to the SECRET tier (in memory), NEVER to Preferences/the config doc; only a
-    configured-boolean is returned."""
+    configured-boolean is returned.
+
+    Round 16 (B15): a stored Super admin with a strict fresh sign-in only, otherwise
+    ``403 super_admin_only`` and nothing changes."""
+    await _require_super_admin_for(request, state, message=SSO_SUPER_ADMIN_MESSAGE)
+
     async def _write() -> None:
         state.secrets.set_sso_client_secret(provider_id, body.client_secret)
 
@@ -5814,7 +6224,10 @@ async def set_sso_provider_secret(
 # RBAC: roles matrix (for the UI) + multi-user administration
 # --------------------------------------------------------------------------- #
 @router.get("/roles")
-async def list_roles(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def list_roles(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("roles", "read")),
+) -> dict[str, Any]:
     """The role -> resource -> [actions] matrix (default merged with any operator
     override + the admin-managed custom roles) for the webui's permission checks + the
     RBAC settings view. Folds the out-of-band :class:`CustomRoleStore` roles into the
@@ -5898,7 +6311,9 @@ def _role_text(role: Any) -> str:
     return str(getattr(role, "value", role) or "")
 
 
-async def _require_super_admin_for(request: Request, state: AppState) -> None:
+async def _require_super_admin_for(
+    request: Request, state: AppState, *, message: str = SUPER_ADMIN_ACCOUNT_MESSAGE,
+) -> None:
     """Granting the Super admin role, or changing, disabling or deleting a Super admin
     account, is for a Super admin only (Round 15 review, security). ``users:manage``
     alone is not enough: a SOC manager holds it by default, and a Super admin account
@@ -5907,7 +6322,8 @@ async def _require_super_admin_for(request: Request, state: AppState) -> None:
     principal's stored role, never the RBAC-off "everyone is Super admin" view, writes
     an Access denied row and answers ``403 super_admin_only`` otherwise, then asks the
     strict fresh sign-in the switch asks (``401 reauth_required``). Called before the
-    audited write, so a refusal changes nothing. A no-op with sign-in off."""
+    audited write, so a refusal changes nothing. A no-op with sign-in off. ``message``
+    names what was refused (the single sign-on settings pass their own, Round 16 B15)."""
     auth = getattr(state, "auth", None)
     if auth is None or not auth.is_enabled:
         return
@@ -5920,7 +6336,7 @@ async def _require_super_admin_for(request: Request, state: AppState) -> None:
         await record_access_denied(request, "role:super_admin")
         raise HTTPException(
             status_code=403,
-            detail={"code": "super_admin_only", "message": SUPER_ADMIN_ACCOUNT_MESSAGE},
+            detail={"code": "super_admin_only", "message": message},
         )
     from .routes_rbac import require_strict_fresh_sign_in
 
@@ -6024,7 +6440,7 @@ async def create_user(
     custom_roles: list[str] = []
     if body.custom_roles is not None:
         custom_roles = await _validate_custom_role_names(state, body.custom_roles)
-    from ..auth.passwords import hash_password
+    from ..auth.passwords import ahash_password
 
     # Pre-checks (no row): a missing or taken name is refused before anything is
     # attempted, with the answers the store gave before Round 14.
@@ -6046,11 +6462,13 @@ async def create_user(
         }.items() if value not in ("", [], None)
     }
 
+    password_hash = await ahash_password(pw)
+
     async def _write() -> Any:
         try:
             created = await state.users.create(
                 username=body.username,
-                password_hash=hash_password(pw),
+                password_hash=password_hash,
                 role=body.role,
                 active=True,
                 must_change_password=True,
@@ -6079,6 +6497,8 @@ async def create_user(
             + (f" [{' '.join(extras)}]" if extras else "")
         ),
     )
+    # Round 16 (SPEC D7): a new account starts with What's new marked seen (best effort).
+    await stamp_new_account(state, user.username)
     await state.refresh_users()
     return {"ok": True, "user": user.public()}
 
@@ -6115,14 +6535,17 @@ async def update_user(
         pw = body.password.strip()
         if len(pw) < 8:
             raise HTTPException(status_code=400, detail="password must be at least 8 characters")
-        from ..auth.passwords import hash_password
+        from ..auth.passwords import ahash_password
 
-        patch["password_hash"] = hash_password(pw)
+        patch["password_hash"] = await ahash_password(pw)
         patch["must_change_password"] = True
     if body.mfa_enabled is False:
-        # Force-disable: clear the secret material too (the user re-enrolls later).
+        # Force-disable: clear the secret material too (the user re-enrolls later), and
+        # the second-factor failure count and lock (Round 16, B19), so the person can
+        # enrol again at once.
         patch.update({
             "mfa_enabled": False, "mfa_secret": "", "mfa_recovery_hashes": [], "mfa_last_step": 0,
+            "mfa_failed_count": 0, "mfa_locked_until": "",
         })
     elif body.mfa_enabled is True:
         raise HTTPException(
@@ -6173,11 +6596,35 @@ async def update_user(
         ),
     )
     await state.refresh_users()
+    sessions_revoked: int | None = None
+    if "password_hash" in patch:
+        # Round 16 (B21): an administrator reset signs the account out everywhere
+        # (every session revoked and its token version bumped, so even a token the
+        # registry never saw is refused) and stops its chat answers.
+        by = current_username(request)
+        sessions_revoked = int(await state.sessions.revoke_all(
+            username, by=by, reason="admin_password_reset",
+        ) or 0)
+        await state.refresh_sessions()
+        await _stop_chat_turns(state, username)
+        await _record_identity_event(
+            state, request, action="session.revoked", actor=by, surface="session",
+            target=_user_target(username),
+            summary=_session_summary(
+                "session_admin_revoke_all", "",
+                f"password reset: revoked {sessions_revoked} session(s) for {username}",
+            ),
+            tool_input={"scope": "all", "count": sessions_revoked,
+                        "reason": "admin_password_reset"},
+        )
     if "role" in patch or "active" in patch:
         # A disabled account's running chat answers stop now; a role change stops
         # only those that relied on a grant the account no longer holds.
         await _recheck_chat_turns(state, username)
-    return {"ok": True, "user": (updated or target).public()}
+    out: dict[str, Any] = {"ok": True, "user": (updated or target).public()}
+    if sessions_revoked is not None:
+        out["sessions_revoked"] = sessions_revoked
+    return out
 
 
 @router.delete("/users/{username}")
@@ -6381,9 +6828,18 @@ async def _case_spend_visible(request: Request | None) -> bool:
 def _withhold_case_spend(view: dict[str, Any]) -> dict[str, Any]:
     """Leave a case's own AI spend out of one serialised case: the ``token_cost`` key
     stays and its value is ``null``, the shape the timeline totals and the budget
-    windows use for a caller without ``cost:view``. Display only (#3)."""
+    windows use for a caller without ``cost:view``. Display only (#3).
+
+    Round 16 (WP16): a budget refusal that sent the case to a person keeps its reason in
+    ``error`` (``daily spend $1.2345 + est $0.0100 would exceed the $10.00 daily
+    ceiling``); its figures read ``(amount hidden)`` (``api.cost_text``), so the reason
+    still reads and the spend is not shown."""
     if "token_cost" in view:
         view["token_cost"] = None
+    if isinstance(view.get("error"), str):
+        from .cost_text import withhold_cost_text
+
+        view["error"] = withhold_cost_text(view["error"])
     return view
 
 
@@ -7532,6 +7988,14 @@ def _case_audit_fields(case: Any, context: Any = None, *, batch_id: str = "") ->
     return fields
 
 
+def _case_write_lock(state: Any, case_id: str) -> Any:
+    """The case's write lock (Round 16 SPEC §4.5 WP08): a person's action holds it
+    alone, across its read and save; an AI run takes it only inside its signature lock.
+    A state without one (a stub) gets a no-op context."""
+    lock_for = getattr(state, "case_lock", None)
+    return lock_for(case_id) if callable(lock_for) else contextlib.nullcontext()
+
+
 def _case_work_actor(user: Any, fallback: str | None) -> str:
     """The audit actor of a human case-work row (Round 15 SPEC D7.2): the verified
     principal when the request has one, else the body or caller value (a job passes
@@ -7575,192 +8039,196 @@ async def _perform_case_action(
     ``case.closed_with_open_steps`` row (a job has none). The runbook state is read
     only on this human path: automatic closes never read it and ``decide()`` /
     ``AutoClosePolicy`` are untouched (#3)."""
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    if body.action not in _ACTION_STATUS:
-        raise HTTPException(status_code=400, detail=f"Unknown action: {body.action}")
-    # Checked before anything changes, so a refused tag leaves the case untouched.
-    merged_tags = (
-        _merge_case_tags(case.tags, body.tags, replace=False) if body.tags is not None else None
-    )
-    previous_tags = list(case.tags or [])
+    # Round 16 (SPEC §4.5 WP08, research R11): the read, the change and the save hold
+    # the case's write lock, so an AI run that re-reads the case just before its own
+    # save cannot erase this action (and this action cannot erase the run's save).
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        if body.action not in _ACTION_STATUS:
+            raise HTTPException(status_code=400, detail=f"Unknown action: {body.action}")
+        # Checked before anything changes, so a refused tag leaves the case untouched.
+        merged_tags = (
+            _merge_case_tags(case.tags, body.tags, replace=False) if body.tags is not None else None
+        )
+        previous_tags = list(case.tags or [])
 
-    prev_status = case.status
-    # Round 15 (SPEC D7.1): the values the audit row's ``changes`` compare against.
-    prev_disposition = case.disposition
-    prev_acknowledged_at = case.acknowledged_at
-    prev_assignee = case.assignee or ""
+        prev_status = case.status
+        # Round 15 (SPEC D7.1): the values the audit row's ``changes`` compare against.
+        prev_disposition = case.disposition
+        prev_acknowledged_at = case.acknowledged_at
+        prev_assignee = case.assignee or ""
 
-    # Resolve the lifecycle target.
-    target = _ACTION_STATUS[body.action]
-    if body.action == "set_status":
-        if not body.status:
-            raise HTTPException(status_code=400, detail="set_status requires a status")
-        try:
-            target = CaseStatus(body.status)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"unknown status: {body.status}")
-    if body.action == "escalate" and body.level is not None:
-        case.escalation_level = max(int(body.level), 1)
-    elif body.action == "escalate":
-        case.escalation_level = max(case.escalation_level, 1)
-    elif body.action == "deescalate":
-        case.escalation_level = 0
-    # BUG #3 (R4W4): stamp the acknowledgement instant for SLA/MTTA derivation. Note
-    # the Case model asymmetry — created_at/updated_at are ISO STRINGS, but
-    # acknowledged_at is a ``datetime | None`` (the SLA-interval anchors), so use a
-    # datetime here, only on the first acknowledge (idempotent).
-    if body.action == "acknowledge" and case.acknowledged_at is None:
-        case.acknowledged_at = now_utc()
+        # Resolve the lifecycle target.
+        target = _ACTION_STATUS[body.action]
+        if body.action == "set_status":
+            if not body.status:
+                raise HTTPException(status_code=400, detail="set_status requires a status")
+            try:
+                target = CaseStatus(body.status)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"unknown status: {body.status}")
+        if body.action == "escalate" and body.level is not None:
+            case.escalation_level = max(int(body.level), 1)
+        elif body.action == "escalate":
+            case.escalation_level = max(case.escalation_level, 1)
+        elif body.action == "deescalate":
+            case.escalation_level = 0
+        # BUG #3 (R4W4): stamp the acknowledgement instant for SLA/MTTA derivation. Note
+        # the Case model asymmetry: created_at/updated_at are ISO STRINGS, but
+        # acknowledged_at is a ``datetime | None`` (the SLA-interval anchors), so use a
+        # datetime here, only on the first acknowledge (idempotent).
+        if body.action == "acknowledge" and case.acknowledged_at is None:
+            case.acknowledged_at = now_utc()
 
-    _guard_transition(body.action, prev_status, target)
+        _guard_transition(body.action, prev_status, target)
 
-    # The request is validated in full before the runbook check below, so a request
-    # that can never succeed is answered with its own 400, never with the close
-    # dialog's 409 (a reason would not make it valid). Nothing is applied here.
-    if body.action == "set_disposition" and not body.disposition:
-        raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
-    requested_disposition: Disposition | None = None
-    if body.action in _DISPOSITION_ACTIONS and body.disposition:
-        try:
-            requested_disposition = Disposition(body.disposition)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
-    # "Mark duplicate" (SPEC §4.10.15): a terminal move that carries the duplicate
-    # disposition. Decided once from the request, so the 409 exemption and the audit
-    # row's ``via`` and note always agree, whatever the case carried before.
-    marks_duplicate = requested_disposition == Disposition.DUPLICATE
+        # The request is validated in full before the runbook check below, so a request
+        # that can never succeed is answered with its own 400, never with the close
+        # dialog's 409 (a reason would not make it valid). Nothing is applied here.
+        if body.action == "set_disposition" and not body.disposition:
+            raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
+        requested_disposition: Disposition | None = None
+        if body.action in _DISPOSITION_ACTIONS and body.disposition:
+            try:
+                requested_disposition = Disposition(body.disposition)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
+        # "Mark duplicate" (SPEC §4.10.15): a terminal move that carries the duplicate
+        # disposition. Decided once from the request, so the 409 exemption and the audit
+        # row's ``via`` and note always agree, whatever the case carried before.
+        marks_duplicate = requested_disposition == Disposition.DUPLICATE
 
-    # Round 14 (D34): the first terminal move of a case with required runbook steps
-    # still open. Read before anything changes so a 409 leaves the case untouched; an
-    # unreadable run store never blocks a close (``None``).
-    open_steps = None
-    if target is not None and target in _TERMINAL and prev_status not in _TERMINAL:
-        from ..engine import runbook_runs
+        # Round 14 (D34): the first terminal move of a case with required runbook steps
+        # still open. Read before anything changes so a 409 leaves the case untouched; an
+        # unreadable run store never blocks a close (``None``).
+        open_steps = None
+        if target is not None and target in _TERMINAL and prev_status not in _TERMINAL:
+            from ..engine import runbook_runs
 
-        open_steps = await runbook_runs.open_required_steps(state, case_id)
-        if (open_steps and body.require_open_steps_reason and not body.open_steps_reason
-                and via != "bulk" and not marks_duplicate):
-            raise HTTPException(status_code=409, detail={
-                "code": "runbook_steps_open",
-                "message": (
-                    f"{len(open_steps)} required runbook "
-                    f"{'step is' if len(open_steps) == 1 else 'steps are'} still open. "
-                    "Say why you are closing the case."
-                ),
-                "required_open": len(open_steps),
-                "steps": [step.model_dump(mode="json") for step in open_steps],
-            })
+            open_steps = await runbook_runs.open_required_steps(state, case_id)
+            if (open_steps and body.require_open_steps_reason and not body.open_steps_reason
+                    and via != "bulk" and not marks_duplicate):
+                raise HTTPException(status_code=409, detail={
+                    "code": "runbook_steps_open",
+                    "message": (
+                        f"{len(open_steps)} required runbook "
+                        f"{'step is' if len(open_steps) == 1 else 'steps are'} still open. "
+                        "Say why you are closing the case."
+                    ),
+                    "required_open": len(open_steps),
+                    "steps": [step.model_dump(mode="json") for step in open_steps],
+                })
 
-    # A disposition supplied with the action. ``set_disposition`` requires one; ``close``
-    # accepts one (the Console's unified Close-with-disposition flow sends it).
-    #
-    # APPLY and CLASSIFY are separated on purpose. Applying is unconditional: the case
-    # carries the disposition the caller sent, which is what the dialog has always
-    # claimed to do. Classifying is what makes ``engine.analyst_outcomes`` treat that
-    # disposition as INDEPENDENT ground truth, and the presence of the field cannot
-    # establish it — ``case_manager.apply()`` derives a disposition from the LLM verdict,
-    # so a client echoing the stored value back is quoting the model to itself. Only the
-    # verb (``set_disposition``) or an affirmative ``disposition_declared`` says a human
-    # chose it. Absent both, the case is applied-but-unlabelled, exactly as before this
-    # path existed.
-    #
-    # One exception keeps the analyst's word final: an UNDECLARED value never replaces a
-    # disposition an analyst explicitly classified and the case still carries
-    # (``standing_analyst_disposition``). It may be the model-derived value read off the
-    # case before the analyst classified it and posted back, and applying it would turn
-    # the analyst's label into the model's while the classification entry still vouches
-    # for it. The lifecycle move itself still happens; only the echo is not applied.
-    classified_disposition = ""
-    if requested_disposition is not None:
-        if body.action in _SELF_DECLARING_ACTIONS or body.disposition_declared:
-            case.disposition = requested_disposition
-            classified_disposition = requested_disposition.value
-        elif standing_analyst_disposition(case) is None:
-            case.disposition = requested_disposition
+        # A disposition supplied with the action. ``set_disposition`` requires one; ``close``
+        # accepts one (the Console's unified Close-with-disposition flow sends it).
+        #
+        # APPLY and CLASSIFY are separated on purpose. Applying is unconditional: the case
+        # carries the disposition the caller sent, which is what the dialog has always
+        # claimed to do. Classifying is what makes ``engine.analyst_outcomes`` treat that
+        # disposition as INDEPENDENT ground truth, and the presence of the field cannot
+        # establish it: ``case_manager.apply()`` derives a disposition from the LLM verdict,
+        # so a client echoing the stored value back is quoting the model to itself. Only the
+        # verb (``set_disposition``) or an affirmative ``disposition_declared`` says a human
+        # chose it. Absent both, the case is applied-but-unlabelled, exactly as before this
+        # path existed.
+        #
+        # One exception keeps the analyst's word final: an UNDECLARED value never replaces a
+        # disposition an analyst explicitly classified and the case still carries
+        # (``standing_analyst_disposition``). It may be the model-derived value read off the
+        # case before the analyst classified it and posted back, and applying it would turn
+        # the analyst's label into the model's while the classification entry still vouches
+        # for it. The lifecycle move itself still happens; only the echo is not applied.
+        classified_disposition = ""
+        if requested_disposition is not None:
+            if body.action in _SELF_DECLARING_ACTIONS or body.disposition_declared:
+                case.disposition = requested_disposition
+                classified_disposition = requested_disposition.value
+            elif standing_analyst_disposition(case) is None:
+                case.disposition = requested_disposition
 
-    # confirm_fp is its own classification: the verb IS the analyst's declaration (it is
-    # in ``analyst_outcomes.CLASSIFICATION_ACTIONS``), and the newest decision wins. It
-    # therefore replaces every non-false-positive disposition, including the
-    # ``true_positive`` that ``case_manager.apply()`` mapped from a TRUE_POSITIVE verdict
-    # and any earlier analyst value, and keeps ``benign``, which is the analyst's
-    # false-positive-class refinement. Stamping the value on the history entry makes the
-    # entry self-describing, so ``caseOutcome``, the facts rail and
-    # ``analyst_confirmed_outcome`` all read the same false-positive class.
-    if body.action == "confirm_fp":
-        if case.disposition not in (Disposition.FALSE_POSITIVE, Disposition.BENIGN):
-            case.disposition = Disposition.FALSE_POSITIVE
-        classified_disposition = case.disposition.value
+        # confirm_fp is its own classification: the verb IS the analyst's declaration (it is
+        # in ``analyst_outcomes.CLASSIFICATION_ACTIONS``), and the newest decision wins. It
+        # therefore replaces every non-false-positive disposition, including the
+        # ``true_positive`` that ``case_manager.apply()`` mapped from a TRUE_POSITIVE verdict
+        # and any earlier analyst value, and keeps ``benign``, which is the analyst's
+        # false-positive-class refinement. Stamping the value on the history entry makes the
+        # entry self-describing, so ``caseOutcome``, the facts rail and
+        # ``analyst_confirmed_outcome`` all read the same false-positive class.
+        if body.action == "confirm_fp":
+            if case.disposition not in (Disposition.FALSE_POSITIVE, Disposition.BENIGN):
+                case.disposition = Disposition.FALSE_POSITIVE
+            classified_disposition = case.disposition.value
 
-    # Apply the lifecycle status move (analyst layer — NOT decide()/#3).
-    if target is not None:
-        case.status = target
-    case.decision_by = DecisionBy.ANALYST
-    case.updated_at = iso_now()
-    reason = (body.reason or body.note or "").strip()[:500]
-    if reason and body.action in ("hold", "resolve", "set_status"):
-        case.status_reason = reason
+        # Apply the lifecycle status move (analyst layer, NOT decide()/#3).
+        if target is not None:
+            case.status = target
+        case.decision_by = DecisionBy.ANALYST
+        case.updated_at = iso_now()
+        reason = (body.reason or body.note or "").strip()[:500]
+        if reason and body.action in ("hold", "resolve", "set_status"):
+            case.status_reason = reason
 
-    # --- Additive optional fields (persisted without touching status logic) -----
-    # assignee → set the case owner when provided (non-empty).
-    assigned = None
-    if body.assignee is not None:
-        assigned = str(body.assignee).strip()[:80]
-        # The same owner again (trimmed, any letter case) changes nothing and records
-        # no new assignment time.
-        assigned = assigned if _owner_changed(case.assignee, assigned) else None
+        # --- Additive optional fields (persisted without touching status logic) -----
+        # assignee → set the case owner when provided (non-empty).
+        assigned = None
+        if body.assignee is not None:
+            assigned = str(body.assignee).strip()[:80]
+            # The same owner again (trimmed, any letter case) changes nothing and records
+            # no new assignment time.
+            assigned = assigned if _owner_changed(case.assignee, assigned) else None
+            if assigned is not None:
+                case.assignee = assigned
+        # tags → merge into the case's tags (trim, de-dupe, bounded; the same rules as
+        # the dedicated /tags route, checked above by ``_merge_case_tags``).
+        if merged_tags is not None:
+            case.tags = merged_tags
+
+        # Record the lifecycle transition on the append-only status timeline.
+        if case.status != prev_status:
+            case.status_history.append(StatusHistoryEntry(
+                from_status=(prev_status.value if prev_status else ""),
+                to_status=case.status.value,
+                by=actor,
+                at=case.updated_at,
+                reason=reason,
+            ))
+
+        # Build the history entry, recording resolution/priority when supplied (they
+        # have no dedicated Case field, so the audited history entry is their home).
+        entry: dict[str, Any] = {
+            "ts": case.updated_at, "event": "analyst_action", "action": body.action,
+            "analyst": actor, "note": body.note,
+        }
+        if batch_id:
+            entry["batch"] = batch_id
+        if classified_disposition:
+            # The DECLARED classification made by THIS action (see the apply/classify split
+            # above: set only for a self-declaring verb or an affirmative
+            # ``disposition_declared``). The action token alone cannot carry it, because the
+            # primary close posts ``action="close"``, which is not a classification verb, so
+            # ``engine.analyst_outcomes.is_classification_entry`` reads this key instead.
+            # Append-only (#2): a new key on a NEW entry; no existing history row is
+            # rewritten and no past case is relabelled.
+            entry[CLASSIFIED_DISPOSITION_KEY] = classified_disposition
+        if body.resolution is not None:
+            entry["resolution"] = str(body.resolution)
+        if body.priority is not None:
+            entry["priority"] = str(body.priority)
         if assigned is not None:
-            case.assignee = assigned
-    # tags → merge into the case's tags (trim, de-dupe, bounded; the same rules as
-    # the dedicated /tags route, checked above by ``_merge_case_tags``).
-    if merged_tags is not None:
-        case.tags = merged_tags
-
-    # Record the lifecycle transition on the append-only status timeline.
-    if case.status != prev_status:
-        case.status_history.append(StatusHistoryEntry(
-            from_status=(prev_status.value if prev_status else ""),
-            to_status=case.status.value,
-            by=actor,
-            at=case.updated_at,
-            reason=reason,
-        ))
-
-    # Build the history entry, recording resolution/priority when supplied (they
-    # have no dedicated Case field, so the audited history entry is their home).
-    entry: dict[str, Any] = {
-        "ts": case.updated_at, "event": "analyst_action", "action": body.action,
-        "analyst": actor, "note": body.note,
-    }
-    if batch_id:
-        entry["batch"] = batch_id
-    if classified_disposition:
-        # The DECLARED classification made by THIS action (see the apply/classify split
-        # above — set only for a self-declaring verb or an affirmative
-        # ``disposition_declared``). The action token alone cannot carry it, because the
-        # primary close posts ``action="close"``, which is not a classification verb, so
-        # ``engine.analyst_outcomes.is_classification_entry`` reads this key instead.
-        # Append-only (#2): a new key on a NEW entry; no existing history row is
-        # rewritten and no past case is relabelled.
-        entry[CLASSIFIED_DISPOSITION_KEY] = classified_disposition
-    if body.resolution is not None:
-        entry["resolution"] = str(body.resolution)
-    if body.priority is not None:
-        entry["priority"] = str(body.priority)
-    if assigned is not None:
-        # A new owner set by this action: its time, for the "my cases" starter.
-        entry["assignee"] = assigned
-    # Round 15 (SPEC D4.2, D6.9): what the person did, from the fixed vocabulary, and
-    # whether they acted from an auto-close review. Both new keys on a NEW entry only
-    # (#2); ``review_via`` is recorded and never read by the close logic above.
-    if body.actions_taken:
-        entry["actions_taken"] = list(body.actions_taken)
-    review_via = getattr(body, "review_via", None)
-    if review_via:
-        entry["review_via"] = review_via
-    case.history.append(entry)
-    await state.cases.save(case)
+            # A new owner set by this action: its time, for the "my cases" starter.
+            entry["assignee"] = assigned
+        # Round 15 (SPEC D4.2, D6.9): what the person did, from the fixed vocabulary, and
+        # whether they acted from an auto-close review. Both new keys on a NEW entry only
+        # (#2); ``review_via`` is recorded and never read by the close logic above.
+        if body.actions_taken:
+            entry["actions_taken"] = list(body.actions_taken)
+        review_via = getattr(body, "review_via", None)
+        if review_via:
+            entry["review_via"] = review_via
+        case.history.append(entry)
+        await state.cases.save(case)
     # Round 15 (SPEC D7.1): the row's structured fields. ``action_type``, ``surface`` and
     # the positional ``result_summary`` below stay byte-identical.
     changes: list[AuditChange] = []
@@ -8017,24 +8485,26 @@ async def case_feedback(
 
         user = await _enforce(request, "cases", "write")
     actor = getattr(user, "username", "") or body.analyst or "analyst"
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    entry = FeedbackEntry(
-        analyst=actor,
-        assessment=body.assessment,
-        accuracy=max(0.0, min(1.0, body.accuracy)),
-        reasoning_quality=max(0.0, min(1.0, body.reasoning_quality)),
-        action_appropriateness=max(0.0, min(1.0, body.action_appropriateness)),
-        actual_outcome=body.actual_outcome.value,
-        time_saved_minutes=max(0, int(body.time_saved_minutes)),
-        comment=body.comment,
-        ai_verdict=case.verdict.value if case.verdict else "",
-        ai_confidence=case.confidence,
-    )
-    case.feedback.append(entry)
-    case.updated_at = iso_now()
-    await state.cases.save(case)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        entry = FeedbackEntry(
+            analyst=actor,
+            assessment=body.assessment,
+            accuracy=max(0.0, min(1.0, body.accuracy)),
+            reasoning_quality=max(0.0, min(1.0, body.reasoning_quality)),
+            action_appropriateness=max(0.0, min(1.0, body.action_appropriateness)),
+            actual_outcome=body.actual_outcome.value,
+            time_saved_minutes=max(0, int(body.time_saved_minutes)),
+            comment=body.comment,
+            ai_verdict=case.verdict.value if case.verdict else "",
+            ai_confidence=case.confidence,
+        )
+        case.feedback.append(entry)
+        case.updated_at = iso_now()
+        await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.FEEDBACK, surface="case", actor=actor,
         actor_type="human", outcome="success", action=CASE_GRADED_AUDIT_ACTION,
@@ -8072,18 +8542,20 @@ async def case_comment(
     # Round 15 (SPEC D7.2): the audit actor is the verified principal when the request
     # has one, never a name the body claims; the body value only without sign-in.
     actor = _case_work_actor(user, body.author)
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    if not body.body.strip():
-        raise HTTPException(status_code=400, detail="comment body is required")
-    # The stored author follows the same rule as the audit actor, so a signed-in user
-    # cannot post a comment the case shows as someone else's. Without sign-in the body
-    # value is stored exactly as before.
-    author = str(getattr(user, "username", "") or "") or body.author
-    case.comments.append(CaseComment(author=author, body=body.body.strip()[:4000]))
-    case.updated_at = iso_now()
-    await state.cases.save(case)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        if not body.body.strip():
+            raise HTTPException(status_code=400, detail="comment body is required")
+        # The stored author follows the same rule as the audit actor, so a signed-in user
+        # cannot post a comment the case shows as someone else's. Without sign-in the body
+        # value is stored exactly as before.
+        author = str(getattr(user, "username", "") or "") or body.author
+        case.comments.append(CaseComment(author=author, body=body.body.strip()[:4000]))
+        case.updated_at = iso_now()
+        await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=actor,
         actor_type="human", outcome="success", action=CASE_COMMENTED_AUDIT_ACTION,
@@ -8110,15 +8582,17 @@ async def case_tags(
     # Round 15 (SPEC D7.2): the verified principal, else the body or caller value (the
     # ``case_tag`` job passes ``job.actor``, verified at submit).
     actor = _case_work_actor(user, body.analyst)
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    # De-dupe, trim and bound the count; a new tag over the length limit is refused,
-    # never cut (``_merge_case_tags``).
-    previous_tags = list(case.tags or [])
-    case.tags = _merge_case_tags(case.tags, body.tags, replace=True)
-    case.updated_at = iso_now()
-    await state.cases.save(case)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        # De-dupe, trim and bound the count; a new tag over the length limit is refused,
+        # never cut (``_merge_case_tags``).
+        previous_tags = list(case.tags or [])
+        case.tags = _merge_case_tags(case.tags, body.tags, replace=True)
+        case.updated_at = iso_now()
+        await state.cases.save(case)
     tag_changes = (
         [AuditChange(field="tags", before=previous_tags, after=list(case.tags or []))]
         if list(case.tags or []) != previous_tags else None
@@ -8157,24 +8631,26 @@ async def case_assign(
     # ``case_assign`` job passes ``job.actor``, verified at submit). It is the audit actor
     # and the ``analyst`` of the "assigned" history entry.
     actor = _case_work_actor(user, body.analyst)
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    new_owner = body.assignee.strip()[:80]
-    previous_owner = case.assignee or ""
-    changed = _owner_changed(case.assignee, new_owner)
-    if changed:
-        case.assignee = new_owner
-    case.updated_at = iso_now()
-    # The assignment time, on the case's append-only history (Round 13 polish PB3): the
-    # "my cases" starter states how long the oldest of a caller's cases has been theirs
-    # only from this record ("Oldest assigned …"), never from the case's age. Recorded
-    # only when the owner changes: assigning a case to its current owner (Assign again,
-    # or a bulk assign over cases the person already holds) keeps the earlier time.
-    if changed:
-        case.history.append({"ts": case.updated_at, "event": "assigned", "assignee": case.assignee,
-                             "analyst": actor})
-    await state.cases.save(case)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        new_owner = body.assignee.strip()[:80]
+        previous_owner = case.assignee or ""
+        changed = _owner_changed(case.assignee, new_owner)
+        if changed:
+            case.assignee = new_owner
+        case.updated_at = iso_now()
+        # The assignment time, on the case's append-only history (Round 13 polish PB3): the
+        # "my cases" starter states how long the oldest of a caller's cases has been theirs
+        # only from this record ("Oldest assigned …"), never from the case's age. Recorded
+        # only when the owner changes: assigning a case to its current owner (Assign again,
+        # or a bulk assign over cases the person already holds) keeps the earlier time.
+        if changed:
+            case.history.append({"ts": case.updated_at, "event": "assigned", "assignee": case.assignee,
+                                 "analyst": actor})
+        await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=actor,
         actor_type="human", outcome="success", action=CASE_ASSIGNED_AUDIT_ACTION,
@@ -8192,6 +8668,7 @@ async def case_assign(
 async def case_export(
     case_id: str, format: str = "json", state: AppState = Depends(get_state),
     request: Request = None,  # type: ignore[assignment]
+    _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     """Export a case for handoff/ticketing as JSON or a Markdown report. Returns
     ``{filename, content_type, content}`` so the UI can trigger a download. The JSON
@@ -8314,50 +8791,91 @@ def _case_actions_taken_lines(case) -> list[str]:
 async def case_investigate(
     case_id: str,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("cases", "reinvestigate")),
+    principal=Depends(require_permission("cases", "reinvestigate")),
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Human-triggered (re-)investigation of a stored case (C3-4).
 
-    Rebuilds the cluster from the case — preferring an exact id-based re-query,
-    falling back to a config-windowed entity re-query — then re-runs the SAME
+    Rebuilds the cluster from the case (preferring an exact id-based re-query,
+    falling back to a config-windowed entity re-query), then re-runs the SAME
     shared pipeline with ``force=True`` so an already-investigated OPEN case is
     re-investigated in place. The case's ORIGINAL provenance (``source_surface`` /
     ``origin_surface``) is preserved by the pipeline, so an automated-scan case
     stays in the Automated Scans tab. Returns a NEUTRAL 400 if no events remain
     (the cluster aged out of the configured window).
+
+    Round 16 (SPEC §4.5 WP08): a closed case is investigated in place unless an open
+    case holds its signature (``409 open_case_exists``), and a second request while a
+    run on the case is queued or running answers ``409 investigation_running``; both
+    are checked before the rebuild.
     """
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    query_source = state.active_source_for_id(case.source_id)
-    cluster = await _cluster_for_case(
-        state, case, query_source=query_source
+    from ..agents.pipeline import INVESTIGATION_RUN_PREFIX
+    from .routes_investigations import open_case_conflict, reserve_manual_run
+
+    await open_case_conflict(state.cases, case)
+    run_id = new_id(INVESTIGATION_RUN_PREFIX)
+    requested_by = str(getattr(principal, "username", "") or "") or None
+    reservation = await reserve_manual_run(
+        request, state.investigations, case, run_id=run_id, requested_by=requested_by,
     )
-    if cluster is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"No events remain for {case.entity.type.value} {case.entity.value} "
-                f"in the last {state.prefs.investigate_lookback}; the activity may have "
-                "aged out of the retained log window."
-            ),
+    try:
+        query_source = state.active_source_for_id(case.source_id)
+        cluster = await _cluster_for_case(
+            state, case, query_source=query_source
         )
-    # force=True so an already-investigated OPEN case is genuinely re-investigated.
-    updated = await state.pipeline.investigate_cluster(
-        cluster, case.source_surface, state.execution_prefs,
-        force=True, query_source=query_source,
-    )
+        if cluster is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No events remain for {case.entity.type.value} {case.entity.value} "
+                    f"in {_window_words(state.prefs.investigate_lookback)}; the activity may have "
+                    "aged out of the retained log window."
+                ),
+            )
+        # force=True so an already-investigated OPEN case is genuinely re-investigated.
+        updated = await state.pipeline.investigate_cluster(
+            cluster, case.source_surface, state.execution_prefs,
+            force=True, query_source=query_source,
+            trigger="manual", requested_by=requested_by, known_case_id=case_id,
+            target_case_id=case_id, run_id=run_id,
+        )
+    finally:
+        reservation.release()
     return _case_view(updated, state, spend=await _case_spend_visible(request))
 
 
 class ReinvestigateRequest(BaseModel):
     """Re-run the investigation on an existing case. Optional ``model`` overrides
     the investigation-role models (router/investigator/formatter) for THIS run via a
-    prefs copy (the per-call model-override technique) — no gateway plumbing change."""
+    prefs copy (the per-call model-override technique); no gateway plumbing change.
+
+    ``wait`` (Round 16 SPEC §4.5 WP08): true (the default) answers when the run ends,
+    with the updated case; false answers ``202 {run_id, case_id, state: "queued"}`` at
+    once and the run goes on in the background (its result arrives as a case update,
+    a ``case.investigation`` frame and an Inbox notice)."""
 
     model: str | None = None
     analyst: str = "analyst"
+    wait: bool = True
+
+
+async def _run_manual_investigation(pipeline: Any, cluster: Any, surface: Any, prefs: Any, *,
+                                    query_source: Any, reservation: Any, **tracking: Any) -> None:
+    """A ``wait=false`` reinvestigation, run as a tracked task (factory reset cancels
+    it). The pipeline never raises for a failed investigation (it routes the case to a
+    person); anything else is logged. The reservation ends with the run."""
+    try:
+        await pipeline.investigate_cluster(
+            cluster, surface, prefs, force=True, query_source=query_source, **tracking,
+        )
+    except Exception as exc:  # noqa: BLE001 - the 202 is answered; the run is logged
+        logger.warning("Background reinvestigation of %s failed: %s",
+                       tracking.get("target_case_id"), exc)
+    finally:
+        reservation.release()
 
 
 @router.post("/cases/{case_id}/reinvestigate")
@@ -8367,60 +8885,105 @@ async def case_reinvestigate(
     state: AppState = Depends(get_state),
     principal=Depends(require_permission("cases", "reinvestigate")),
     request: Request = None,  # type: ignore[assignment]
-) -> dict[str, Any]:
+) -> Any:
     """Manually re-run the SHARED investigation pipeline on a stored case (force).
 
     Loads the case (404 if missing), reconstructs the cluster from the case's stored
     fields (member event ids → exact id re-query, else a config-windowed entity
-    re-query — via the same robust ``_cluster_for_case`` helper the legacy
+    re-query, via the same robust ``_cluster_for_case`` helper the legacy
     ``/investigate`` route uses), then calls ``investigate_cluster(..., force=True)``
     so it re-runs even on an already-verdicted case. An optional ``{"model": "<id>"}``
     body overrides the investigation-role models for this run only via a prefs copy
     (still through the one gateway, #6). The case's ORIGINAL provenance
     (``source_surface``) is preserved by the pipeline. The deterministic
     close/escalate decision in the Case Manager is untouched (#3). Returns the
-    updated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster."""
+    updated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster.
+
+    Round 16 (SPEC §4.5 WP08, D10), each checked before the audit row and the rebuild:
+    a closed case is reinvestigated IN PLACE unless an open case holds its signature
+    (``409 open_case_exists`` with that case's id); a second request while a run on the
+    case or its signature is queued or running answers ``409 investigation_running``
+    with the run. ``wait=false`` answers ``202 {run_id, case_id, state}`` at once."""
     body = body or ReinvestigateRequest()
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    # Rebuild the cluster from live logs; if the events aged out, fall back to a
-    # minimal reconstruction from the case's STORED evidence so the re-investigation
-    # runs over what we retained rather than dead-ending (#3 untouched).
-    query_source = state.active_source_for_id(case.source_id)
-    cluster = await _cluster_for_case(
-        state, case, allow_stored_reconstruction=True, query_source=query_source
+    from ..agents.pipeline import INVESTIGATION_RUN_PREFIX
+    from .routes_investigations import open_case_conflict, reserve_manual_run
+
+    await open_case_conflict(state.cases, case)
+    run_id = new_id(INVESTIGATION_RUN_PREFIX)
+    requested_by = str(getattr(principal, "username", "") or "") or None
+    reservation = await reserve_manual_run(
+        request, state.investigations, case, run_id=run_id, requested_by=requested_by,
     )
-    if cluster is None:
-        raise HTTPException(
-            status_code=400,
-            detail="This case has no stored evidence to reinvestigate.",
+    spawned = False
+    try:
+        # Rebuild the cluster from live logs; if the events aged out, fall back to a
+        # minimal reconstruction from the case's STORED evidence so the re-investigation
+        # runs over what we retained rather than dead-ending (#3 untouched).
+        query_source = state.active_source_for_id(case.source_id)
+        cluster = await _cluster_for_case(
+            state, case, allow_stored_reconstruction=True, query_source=query_source
         )
-    # Per-call model override (additive): swap the investigation-role models for this
-    # run only. Unchanged when body.model is None.
-    prefs_eff = _override_models(
-        state.execution_prefs, body.model, ("router", "investigator", "formatter")
-    )
-    # Audit the manual reinvestigation BEFORE the run so the trigger is recorded even
-    # if the pipeline later fails-to-human (the pipeline never raises).
-    await state.audit.record(
-        action_type=ActionType.DECISION, surface=case.source_surface.value,
-        actor="reinvestigate", case_id=case_id,
-        # The agent pipeline's own token (``audit/event_categories.json``): the row
-        # stays in Agent activity, as before; the person is named in the summary.
-        actor_type="agent", outcome="success",
-        result_summary=(
-            # Round 15 (SPEC D7.2): the verified principal when the request has one,
-            # else the body value; only this name changes, the row stays the agent's.
-            f"manual reinvestigation requested by {_case_work_actor(principal, body.analyst)}"
-            + (f"; model override={body.model}" if body.model else "")
-        ),
-    )
-    # force=True so an already-verdicted case is genuinely re-investigated in place;
-    # the pipeline preserves the original source_surface/origin_surface.
-    updated = await state.pipeline.investigate_cluster(
-        cluster, case.source_surface, prefs_eff, force=True, query_source=query_source
-    )
+        if cluster is None:
+            raise HTTPException(
+                status_code=400,
+                detail="This case has no stored evidence to reinvestigate.",
+            )
+        # Per-call model override (additive): swap the investigation-role models for this
+        # run only. Unchanged when body.model is None.
+        prefs_eff = _override_models(
+            state.execution_prefs, body.model, ("router", "investigator", "formatter")
+        )
+        # Audit the manual reinvestigation BEFORE the run so the trigger is recorded even
+        # if the pipeline later fails-to-human (the pipeline never raises).
+        await state.audit.record(
+            action_type=ActionType.DECISION, surface=case.source_surface.value,
+            actor="reinvestigate", case_id=case_id,
+            # The agent pipeline's own token (``audit/event_categories.json``): the row
+            # stays in Agent activity, as before; the person is named in the summary.
+            actor_type="agent", outcome="success", run_id=run_id,
+            result_summary=(
+                # Round 15 (SPEC D7.2): the verified principal when the request has one,
+                # else the body value; only this name changes, the row stays the agent's.
+                f"manual reinvestigation requested by {_case_work_actor(principal, body.analyst)}"
+                + (f"; model override={body.model}" if body.model else "")
+            ),
+        )
+        tracking = {
+            "trigger": "manual", "requested_by": requested_by, "known_case_id": case_id,
+            "target_case_id": case_id, "run_id": run_id,
+        }
+        if not body.wait:
+            # Round 16 (WP08, research R4): the run goes on as a tracked task (factory
+            # reset cancels it); the Console follows it through the registry route and
+            # the ``case.investigation`` frames.
+            task = state.spawn_mutation_task(
+                _run_manual_investigation(
+                    state.pipeline, cluster, case.source_surface, prefs_eff,
+                    query_source=query_source, reservation=reservation, **tracking,
+                ),
+                name=f"case-reinvestigate:{case_id}",
+            )
+            spawned = True
+            # The reservation ends with the task however it ends: a task cancelled
+            # before its first step (a factory reset or a shutdown right after this
+            # answer) never runs the coroutine's own ``finally``.
+            task.add_done_callback(lambda _task: reservation.release())
+            return JSONResponse(
+                status_code=202,
+                content={"run_id": run_id, "case_id": case_id, "state": "queued"},
+            )
+        # force=True so an already-verdicted case is genuinely re-investigated in place;
+        # the pipeline preserves the original source_surface/origin_surface.
+        updated = await state.pipeline.investigate_cluster(
+            cluster, case.source_surface, prefs_eff, force=True, query_source=query_source,
+            **tracking,
+        )
+    finally:
+        if not spawned:
+            reservation.release()
     return _case_view(updated, state, spend=await _case_spend_visible(request))
 
 
@@ -8496,17 +9059,30 @@ async def threat_context_import(
 
 
 @router.get("/cases/{case_id}/trace")
-async def case_trace(case_id: str, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def case_trace(
+    case_id: str,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
     """Ordered agent-pipeline trace for a case (C3-3).
 
     Projects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator
     → tool calls → verdict → formatter → case-manager decision) into a timeline.
-    Read-only on the management-scoped audit index. NEVER 404s — an unknown or
+    Read-only on the management-scoped audit index. NEVER 404s: an unknown or
     not-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is
-    omitted when ``prefs.trace.include_prompts`` is false."""
+    omitted when ``prefs.trace.include_prompts`` is false. For a caller without
+    ``cost:view`` the cost figures a spend writer put into a row's ``result_summary``
+    are replaced (Round 16, WP16: ``api.cost_text``); tool output is never changed."""
     rows = await state.audit.records_for_case(case_id)
     include_prompts = state.prefs.trace.include_prompts
     steps = [_trace_step(row, include_prompts) for row in rows]
+    if not await _case_spend_visible(request):
+        from .cost_text import withhold_row_cost_text
+
+        steps = [step.model_copy(update={
+            "result_summary": withhold_row_cost_text(step.action_type, step.result_summary),
+        }) for step in steps]
     return {
         "case_id": case_id,
         "steps": [s.model_dump(mode="json") for s in steps],
@@ -8515,20 +9091,45 @@ async def case_trace(case_id: str, state: AppState = Depends(get_state)) -> dict
 
 
 @router.get("/cases/{case_id}/rationale")
-async def case_rationale(case_id: str, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def case_rationale(
+    case_id: str,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
     """Case EXPLAINABILITY: a clean, human-readable "why" object assembled from the
-    case + its audit records — WITHOUT calling the LLM.
+    case + its audit records, WITHOUT calling the LLM.
 
     Surfaces exactly how a case reached its verdict: the persona/playbook chosen, the
     operator MEMORY facts consulted, the RAG knowledge retrieved (source + snippet),
     the IP enrichment/reputation, the read-only tools/queries the agent ran, the
     investigator's reasoning excerpt, the deterministic close/escalate rationale, the
     MITRE techniques, and the evidence. Every piece is parsed DEFENSIVELY from the
-    audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields — a
-    missing piece degrades to an empty value, never an error. NEVER 404s."""
+    audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields; a
+    missing piece degrades to an empty value, never an error. NEVER 404s.
+
+    Round 16 (WP16, [dv] R14): additive ``returned``, ``rows_total``,
+    ``rows_total_relation`` and ``truncated``, as the timeline answers them, say when
+    the rationale was read from only the newest audit records of a long-lived case.
+    For a caller without ``cost:view`` the cost figure in ``decision_rationale`` (the
+    case manager's DECISION row text) is replaced (``api.cost_text``)."""
+    from .routes_triage import _audit_row_total, _trace_truncated
+
     case = await state.cases.get(case_id)
     rows = await state.audit.records_for_case(case_id)
-    return _build_rationale(case_id, case, rows)
+    rows_total, rows_relation = await _audit_row_total(state, case_id)
+    rationale = _build_rationale(case_id, case, rows)
+    if not await _case_spend_visible(request):
+        from .cost_text import withhold_cost_text
+
+        rationale["decision_rationale"] = withhold_cost_text(rationale.get("decision_rationale"))
+    rationale.update({
+        "returned": len(rows),
+        "rows_total": rows_total,
+        "rows_total_relation": rows_relation,
+        "truncated": _trace_truncated(len(rows), rows_total),
+    })
+    return rationale
 
 
 @router.get("/cases/{case_id}/forwarding")
@@ -8568,6 +9169,11 @@ async def case_forwarding(
             "source_id": case.source_id,
             "is_alert": False,
             "notes": [],
+            # Round 16 (WP16): the same keys as a reconstructed answer. Nothing was
+            # walked, so there is no routing score or floor to report.
+            "routing_total": None,
+            "risk_floor": None,
+            "routing_gate_applied": False,
         }
     explanation = explain_forwarding(cluster, state.prefs)
     return {"case_id": case_id, **explanation.to_dict()}
@@ -8580,6 +9186,7 @@ async def case_forwarding(
 async def scans(
     limit: int = 50, state: AppState = Depends(get_state),
     request: Request = None,  # type: ignore[assignment]
+    _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     cases, total = await state.cases.list_scans(limit=min(limit, 200))
     rows = [c.model_dump(mode="json") for c in cases]
@@ -8590,7 +9197,8 @@ async def scans(
 
 @router.get("/scans/notifications")
 async def scan_notifications(
-    since: str = "now-24h", state: AppState = Depends(get_state)
+    since: str = "now-24h", state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     since_iso = _millis_to_iso(relative_to_millis(since))
     new_count = await state.cases.count_new_scans(since_iso)
@@ -8602,12 +9210,18 @@ async def scan_notifications(
 # --------------------------------------------------------------------------- #
 @router.get("/standup")
 async def standup(
-    window_hours: int | None = None, state: AppState = Depends(get_state)
+    window_hours: int | None = None, state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Daily standup summary. ALWAYS returns HTTP 200 with a renderable payload:
     a clear ``{enabled: false}`` shape when disabled, the full happy-path result
     when data is present, or a graceful ``degraded: true`` + ``error`` + a short
-    summary note when the aggregation/summary step is unavailable (never a 500)."""
+    summary note when the aggregation/summary step is unavailable (never a 500).
+
+    The summary's AI spend, ``cost``, follows the one spend rule, ``cost:view``
+    (Round 16 cross-cutting review): without it the key stays and its value is
+    ``null``, the withheld-spend shape of ``_withhold_case_spend``."""
     prefs = state.execution_prefs
     if not prefs.standup.enabled:
         return {
@@ -8633,6 +9247,8 @@ async def standup(
         }
     result["enabled"] = True
     result.setdefault("degraded", False)
+    if "cost" in result and not await _case_spend_visible(request):
+        result["cost"] = None
     return result
 
 
@@ -8716,9 +9332,17 @@ def _deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
 
 
 def _millis_to_iso(millis: int) -> str:
+    """Epoch millis as ISO-8601 UTC. An instant outside the representable range clamps
+    to its first or last instant (``utils.millis_to_iso_utc``) instead of raising, so
+    an out-of-range ``since`` answers 200 (Round 16 B02)."""
     from datetime import datetime, timezone
 
-    return datetime.fromtimestamp(millis / 1000.0, tz=timezone.utc).isoformat()
+    from ..utils import millis_to_iso_utc
+
+    try:
+        return datetime.fromtimestamp(millis / 1000.0, tz=timezone.utc).isoformat()
+    except (OverflowError, ValueError, OSError):
+        return millis_to_iso_utc(int(millis))
 
 
 # The auto-widen ladder and the entity-query helpers (``_WIDEN_LADDER``,
@@ -8791,6 +9415,101 @@ async def _cluster_for_request(
     return cluster, window
 
 
+#: The events of a push source's live-tail ring an entity lookup reads: the whole ring
+#: (``IngestService`` keeps the last 500 events of each source).
+_PUSH_RING_SCAN = 500
+#: The most member events one manual investigation takes, as the pull entity query does.
+_ENTITY_MEMBERS_MAX = 200
+
+
+async def _cluster_from_other_sources(
+    state: AppState, req: InvestigateRequest, *, tried: Any = None,
+) -> tuple[Cluster, str, Any] | None:
+    """An entity the default source does not hold, looked up in the other sources the
+    Logs page shows (FXE): each other Demo source while Demo Mode is on, else each
+    enabled push source's live-tail ring. The first source with events in the widening
+    windows wins, so the case stays single-source like every other case. Returns
+    ``(cluster, window, query_source)``; a push source has no search of its own, so its
+    query source is ``None``, as push ingestion investigates it. Read-only (#1)."""
+    if req.entity is None:
+        return None
+    if getattr(state, "demo_active", False):
+        from ..engine.demo_sources import DEMO_SOURCE_SPECS
+
+        for spec in DEMO_SOURCE_SPECS.values():
+            adapter = state.demo_source_connector(spec.source_id)
+            if adapter is None or adapter is tried:
+                continue
+            cluster, window = await _cluster_for_request(state, req, query_source=adapter)
+            if cluster is not None:
+                return cluster, window, adapter
+        return None
+    found = _push_ring_cluster(state, req)
+    return (found[0], found[1], None) if found is not None else None
+
+
+def _push_ring_cluster(state: AppState, req: InvestigateRequest) -> tuple[Cluster, str] | None:
+    """The entity's events in an enabled push source's live-tail ring, read with that
+    source's own field mapping (the normalised value the Logs page shows), walking the
+    same widening windows as a search. A muted (``ignore``) source is skipped, and an
+    event a live suppression rule or an excluded rule matches is left out, as the
+    search's scope filters leave it out. An event without a time counts as recent: it
+    is in the ring of the newest events. A delivery the source sent again sits in the
+    ring twice under one id; it counts once, as push ingestion correlates it."""
+    from ..engine.ingest import _push_source_role, dedup_by_id
+    from ..utils import dotted_get
+
+    entity = req.entity
+    if entity is None or entity.type not in (EntityType.IP, EntityType.USER, EntityType.HOST):
+        return None
+    ingest = getattr(state, "ingest_service", None)
+    if ingest is None:
+        return None
+    prefs = state.execution_prefs
+    registry = get_registry()
+    windows = _widen_windows(req.lookback or prefs.investigate_lookback)
+    live_rules = [rule for rule in prefs.suppression_rules if rule.is_live()]
+    excluded = set(prefs.excluded_rules or ())
+
+    def kept(ev: RawEvent) -> bool:
+        if ev.entity_value(entity.type) != entity.value:
+            return False
+        if ev.rule and ev.rule in excluded:
+            return False
+        return not any(str(dotted_get(ev.source, rule.field)) == rule.value for rule in live_rules)
+
+    for src in prefs.sources:
+        if not src.enabled or not registry.is_receiver(src.source_type):
+            continue
+        if _push_source_role(src) == "ignore":
+            continue
+        held = dedup_by_id(
+            [ev for ev in ingest.recent_events_for_source(src.id, _PUSH_RING_SCAN) if kept(ev)]
+        )
+        if not held:
+            continue
+        for window in windows:
+            floor = relative_to_millis(window)
+            members = [ev for ev in held if ev.timestamp_millis <= 0 or ev.timestamp_millis >= floor]
+            if members:
+                cluster = cluster_from_events(entity.type, entity.value, members[:_ENTITY_MEMBERS_MAX])
+                cluster.trigger_reason = _manual_trigger_reason(cluster, window)
+                return cluster, window
+    return None
+
+
+def _window_words(window: str) -> str:
+    """A trailing window in words: ``now-365d`` reads "the last 365 days", never the raw
+    token (FXE). Read with the shared window grammar (``engine.time_windows``, through
+    ``case_cluster.window_words``, FXF), so a sentence here and a manual case's trigger
+    sentence word a window alike. Anything else is returned as it is."""
+    import re
+
+    if re.fullmatch(r"now-\d+[mhdw]", str(window or "").strip()) is None:
+        return str(window)
+    return _window_phrase(window).removeprefix("in ")
+
+
 async def _cluster_for_case(
     state: AppState,
     case,
@@ -8821,7 +9540,7 @@ def _no_events_detail(req: InvestigateRequest, widest: str) -> str:
     if req.entity:
         return (
             f"No events found for {req.entity.type.value} {req.entity.value} "
-            f"in the last {widest}"
+            f"in {_window_words(widest)}"
         )
     if req.event_ids:
         return "No events found for the selected document ids"

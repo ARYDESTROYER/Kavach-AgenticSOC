@@ -12,16 +12,16 @@ feature branches → Testing → main (Stable)
 ```
 
 `Testing` is the integration and acceptance branch. `main` is the supported Stable
-branch. The current source candidate is represented as `0.1.13` in packages/images
-and becomes Stable only if the immutable `v0.1.13` tag and its complete signed/public
+branch. The current source candidate is represented as `0.2.0` in packages/images
+and becomes Stable only if the immutable `v0.2.0` tag and its complete signed/public
 artifact set pass every publication and canonical runtime acceptance gate; its
-documentation line remains `0.1`.
+documentation line is `0.2`.
 
 !!! note "Canonical topology and administrative controls"
 
     The remote now uses `Testing` for integration and default `main` for accepted
-    Stable source. Version 0.1.13 is Stable only when the exact verified `main`
-    commit has the immutable `v0.1.13` tag, matching signed/public artifacts, and
+    Stable source. Version 0.2.0 is Stable only when the exact verified `main`
+    commit has the immutable `v0.2.0` tag, matching signed/public artifacts, and
     completed canonical runtime acceptance.
     Pull-request protections,
     required checks, and release-environment policy are repository settings rather
@@ -51,7 +51,7 @@ documentation line remains `0.1`.
     images, but constrained plan verification could not traverse the runner-owned
     verification directory. The workflow stopped before GitHub Release publication,
     so no installable signed plan exists for that tag. It is also historical,
-    bootstrap-blocked, and superseded by 0.1.13.
+    bootstrap-blocked, and superseded by 0.2.0.
 
     The immutable `v0.1.10` tag passed source and exact-tag CI, then its signed-release
     workflow timed out while the architecture-neutral Web Console builder ran under
@@ -88,7 +88,7 @@ Before promoting `Testing` to `main`:
 - ensure every package, image, OpenAPI document, and documentation page uses the same
   release identity.
 
-Promote through a reviewed pull request. Tag the accepted `main` commit `v0.1.13` and
+Promote through a reviewed pull request. Tag the accepted `main` commit `v0.2.0` and
 publish artifacts identified by digest. Do not move a release tag.
 
 ### Version and promotion checklist
@@ -114,11 +114,11 @@ publish artifacts identified by digest. Do not move a release tag.
    publish by digest, and let the docs workflow move `stable`/`latest`.
 
 `TLSOC_VERSION` and `TLSOC_RELEASE_CHANNEL` answer different questions. Promoting
-`0.1.13` from Testing to Stable changes provenance, not its SemVer.
+`0.2.0` from Testing to Stable changes provenance, not its SemVer.
 
 ## Supported one-click upgrades
 
-Agentic SOC 0.1.13 includes the updater foundation for the reference deployment and
+Agentic SOC 0.2.0 includes the updater foundation for the reference deployment and
 becomes installable only after the candidate completes the immutable Stable
 publication and canonical runtime acceptance gates.
 After one explicit bootstrap, a built-in `super_admin` can authorize a compatible
@@ -126,7 +126,7 @@ Stable release from the Console and the updater performs the host-side work. The
 ordinary backend and browser never receive Docker access, registry credentials,
 arbitrary command execution, or a writable deployment file.
 
-The 0.1.13 updater bakes
+The 0.2.0 updater bakes
 `TUF_ROOT=/var/lib/agentic-soc-updater/sigstore-root`, so cosign's TUF trust state
 lives on the existing writable updater-state volume while the root filesystem stays
 read-only. Stable publication materializes the canonical plan and bundle as read-only
@@ -138,8 +138,8 @@ nginx runtime remains target-platform-specific. After the constrained verifier e
 release-fixture cleanup restores its runner-owned parent directory to private mode
 `0700`, then removes it; the plan and bundle remain mode `0444` beneath mode `0555`
 throughout verification. There is no state-schema,
-updater-protocol, publisher-identity, process-privilege, trust-policy, or frozen-base
-change.
+updater-protocol, process-privilege, or frozen-base change. The publisher identity
+does change, to the renamed repository; see "The repository was renamed" below.
 
 The first implementation is deliberately narrow:
 
@@ -167,14 +167,19 @@ that file is a manual upgrade even when every image and signature is otherwise v
 
 An installation made before the updater exists cannot grant itself host update
 authority. The supported transition from the final pre-supervisor Stable release,
-v0.1.1, to v0.1.13 therefore requires one host-authorized bootstrap. On the host:
+v0.1.1, to v0.2.0 therefore requires one host-authorized bootstrap. On the host:
 
 1. keep the existing reference PostgreSQL Compose deployment running;
 2. configure durable `.env` values for `TLSOC_PG_PASSWORD`,
    `TLSOC_AUTH_ENABLED=true`, a `TLSOC_AUTH_JWT_SECRET` of at least 32 characters,
-   and the trusted `AGENTIC_SOC_UPDATE_REPOSITORY`;
+   and the trusted repository, exactly
+   `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC`. A v0.1.1 `.env`
+   usually has no such line or names the repository's former name; add or change it
+   first. The bootstrap refuses a missing line, the former name in any letter case,
+   and the new name in the wrong letter case, prints the line to add, and never
+   edits `.env`;
 3. after the complete publication and acceptance evidence verifies, check out the
-   clean, exact annotated `v0.1.13` tag whose commit is contained in
+   clean, exact annotated `v0.2.0` tag whose commit is contained in
    `origin/main`; and
 4. run `./scripts/bootstrap-updater.sh` from that checkout.
 
@@ -196,7 +201,7 @@ it is deleted only after bootstrap observes that exact job terminal. An unreadab
 invalid supervisor or any active job fails closed for operator recovery; bootstrap
 never force-replaces work in progress.
 It builds only the initial supervisor transport from the verified checkout, then
-asks that supervisor to fetch, verify, preflight, and apply the signed v0.1.13 plan.
+asks that supervisor to fetch, verify, preflight, and apply the signed v0.2.0 plan.
 The full transition therefore uses the same digest-pinned pull, quiesce, verified
 backup, identity/health checks, durable receipt, and automatic rollback state machine
 as later Console-initiated updates. It is not an unverified local rebuild of the
@@ -209,13 +214,33 @@ application pair.
     through `v0.1.8` records and the failed-publication `v0.1.9` through `v0.1.11` records cannot be
     relabelled Stable. If an earlier attempt left
     an inspectable idle older supervisor while the application
-    remained on v0.1.1, the v0.1.13 bootstrap preserves durable state and replaces
+    remained on v0.1.1, the v0.2.0 bootstrap preserves durable state and replaces
     that version-mismatched supervisor before signed-plan verification. Reconcile
-    other states only through the documented 0.1.13 path appropriate to their actual
+    other states only through the documented 0.2.0 path appropriate to their actual
     installed release. Bootstrap also requires a strictly newer target, so an
-    already-running 0.1.13 deployment cannot bootstrap itself from the 0.1.13 plan.
+    already-running 0.2.0 deployment cannot bootstrap itself from the 0.2.0 plan.
 
-Once a supported 0.1.13 deployment has the supervisor, later compatible Stable
+### The repository was renamed
+
+The repository is now `ARYDESTROYER/Kavach-AgenticSOC`. From 0.2.0 on, that name is
+the update trust root: the signing identity of every release plan, the GHCR namespace
+`ghcr.io/arydestroyer/kavach-agenticsoc`, the OCI source label, the release discovery
+default and the public documentation address. The updater passes it verbatim to the
+signature check, which compares it exactly, letter case included.
+
+- The frozen base Compose file cannot change under updater protocol 1, so it still
+  defaults `AGENTIC_SOC_UPDATE_REPOSITORY` to the former name. That is why the
+  bootstrap requires the line in `.env` (step 2 above).
+- Artifacts of v0.1.12 and earlier stay valid under the former identity. They are
+  not re-signed.
+- GitHub does not redirect project Pages after a rename, so old
+  `arydestroyer.github.io/Agentic-Kibana/` links answer 404. The public Help Center is
+  now `https://arydestroyer.github.io/Kavach-AgenticSOC/`.
+- A saved **Updates & releases** preference that names the former repository, in any
+  letter case and with or without `.git`, reads as the new repository. Any other
+  repository, a fork included, is kept.
+
+Once a supported 0.2.0 deployment has the supervisor, later compatible Stable
 releases can be applied from the Console. A missing supervisor or a safely inspectable,
 idle older protocol or version is remediated by the host-authorized bootstrap; active, unreadable,
 or invalid supervisor state remains an explicit manual blocker. The product never
@@ -412,7 +437,7 @@ updater does not claim zero downtime or immunity from loss of its trusted host.
 
 ### Updater retention and capacity
 
-Version 0.1.13 does **not** automatically prune updater jobs, preflights, cached signed
+Version 0.2.0 does **not** automatically prune updater jobs, preflights, cached signed
 plans and signature bundles, deployment snapshots/receipts, or PostgreSQL backups.
 The reference deployment keeps updater state in the persistent
 `agentic-soc-updater-state` volume and verified dumps in the separate
@@ -436,7 +461,7 @@ Never remove or rotate away:
 Archive or remove eligible history only after **all** of these are true: a later
 successfully installed release has superseded the record's rollback authority; the
 exact terminal outcome is present in application audit; and the operator's backup and
-retention policy permits disposal. Version 0.1.13 provides no supported online,
+retention policy permits disposal. Version 0.2.0 provides no supported online,
 per-record cleanup command, so do not delete individual live-volume files while the
 supervisor is running or infer eligibility from age alone.
 
@@ -467,13 +492,111 @@ that correctly reports **Manual upgrade required**:
 
 ## Changes that need attention when upgrading to this build
 
-This build (the current `0.1.13` source candidate, after the Round 12, Round 13, Round 14
-and Round 15 changes) needs no database migration and no new index or table. It changes
+This build (the `0.2.0` source candidate, which also carries every change of the
+never-tagged 0.1.13 candidate, described in the sections below) adds no new index or table
+and no migration step you run by hand. On PostgreSQL its first start widens one column in
+place (see [The audit id column](#the-audit-id-column)). It changes
 these behaviours, which operators should know about before upgrading.
+
+### Changes made for 0.2.0
+
+Version 0.2.0 adds no key-value namespace, index or table. Read these before upgrading:
+
+- **Set the repository first.** Add
+  `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to `.env`, in exactly
+  that letter case, before the bootstrap. It refuses to run without it and prints the
+  line to add (see [The repository was renamed](#the-repository-was-renamed)). A
+  deployment that is not on the reference PostgreSQL Compose stack shows **Updates
+  unavailable** in the top bar, and its update panel says "This deployment cannot update
+  itself"; upgrade it by hand.
+- **Reads need their grant.** With role-based access on, every read asks for the grant of
+  the data it returns. The built-in roles hold every such grant; a custom role without
+  one now gets `403` on that read (see
+  [Permissions](../reference/permissions.md#read-grants-on-every-read)). The Standup now
+  needs `metrics:view`, and the Models page `models:read`.
+- **Account rules the server enforces.** An account an administrator created or reset
+  must change its password before any other request (`403 password_change_required`). A
+  password reset signs the account out everywhere, and changing your own password signs
+  out your other sessions. Ten wrong second-factor codes lock second-factor checks for
+  the account for 5 minutes, doubling up to an hour. Only a stored Super admin with a
+  fresh sign-in can change single sign-on, and an SSO default role or group mapping must
+  be a built-in role.
+- **No refresh tokens.** `POST /api/auth/refresh` is deprecated and answers `401
+  session_invalid`. A client signs in again when its access token expires.
+- **Reinvestigation.** `POST /api/cases/{case_id}/reinvestigate` answers `409
+  investigation_running` while a run on the case is in progress and `409
+  open_case_exists` for a closed case whose events another open case holds; `wait:
+  false` answers `202` at once. A script that reinvestigated a case twice in a row must
+  wait for the first run.
+- **Recorded inputs.** Cases scored by 0.2.0 keep their risk inputs, each decision records
+  the thresholds it compared in its audit row, and each new usage-ledger row records its
+  rates. Older records are not backfilled and read "not recorded".
+- **Elasticsearch cases index.** At startup the backend adds two mappings to the cases
+  index template and to every live cases index that lacks them: `risk_breakdown.inputs`,
+  stored but never indexed, and `awaiting_reason`, text with a `keyword` subfield, the
+  same as the mapping Elasticsearch made for it before. There is no operator step. When
+  the mapping cannot be added (the client may not read or change templates, or the call
+  fails), the case store leaves the inputs out, logs it once, and such cases read "not
+  recorded".
+- **What's new.** After the update, each person sees a short What's new welcome once
+  after signing in. Accounts created after the update start with it marked as seen.
+- **Communication.** The **Notifications** navigation group is now **Communication**,
+  with **Inbox** and **What's new**. Its stored id is unchanged.
+- **Case Manager.** Cases have six tabs on Alt+1 to Alt+6: Alt+2 now opens Evidence,
+  Alt+4 Response and Alt+5 Activity, and Chat moved to Alt+6. Old `#/case_manager` links
+  with a `tab` keep working.
+
+### The audit id column
+
+In every published release up to v0.1.12, the PostgreSQL `audit.id` column is a 32-bit
+integer, while the strict
+audit path writes a larger key. On its first start on an existing PostgreSQL database,
+this build widens the column and its sequence to `bigint` in place. PostgreSQL rewrites
+the table to do it and holds an exclusive lock on it meanwhile, so the first start takes
+longer on a large audit table, and audit writes wait until it is done. The time per
+million rows is measured at release preparation and recorded in the release notes.
+
+On a very large audit table, run the widening yourself in a maintenance window before
+the upgrade:
+
+```sql
+ALTER TABLE audit ALTER COLUMN id TYPE bigint;
+ALTER SEQUENCE audit_id_seq AS bigint;
+```
+
+The backend then finds the column already widened and does nothing. If the widening
+fails at startup, the backend still starts, logs the error with these statements, and
+`GET /api/diagnostics/health` reports the schema migration as failed: strict audit
+writes, such as approving or rejecting a proposal, fail until you apply it. SQLite and a
+fresh PostgreSQL database need nothing.
+
+### Rolling back from 0.2.0
+
+Every field 0.2.0 stores is additive, and the earlier builds ignore fields they do not
+know. The rollback lane boots the previous release pinned in
+`scripts/rollback_previous_release.json` on data this build wrote, and checks what it
+keeps. After an image-only rollback and the return:
+
+- **Recorded risk inputs** are lost on every case the earlier build saves again. Back on
+  this build, such a case reads "not recorded" and its explanation uses today's weights.
+- **Second-factor lock counters** reset.
+- **Usage-ledger rows** are append-only and keep their rate fields.
+- **What's new markers** survive, because the earlier build keeps unknown personal
+  preference keys.
+- **The read grants and the server-side forced password change** revert while the
+  earlier build runs: a custom role without a read grant can read again, and an account
+  flagged to change its password is not held to it. The lane runs with sign-in off, so it
+  does not prove these two; they follow from the earlier build's code.
+- **The `audit.id` column** stays `bigint`. It is never narrowed again.
+- **The in-memory investigation list** is lost, as on any restart.
+
+The result of the image-only rollback rehearsal to v0.1.1 on PostgreSQL is recorded at
+release preparation, in [Known limitations](../releases/known-limitations.md).
 
 ### Round 15 changes
 
-Round 15 keeps version `0.1.13` and adds no database migration, index or table. Case
+Round 15 (built as the 0.1.13 candidate, now part of 0.2.0) adds no database migration,
+index or table. Case
 screenshots and the auto-close review ledger live in two new key-value namespaces,
 `case_files` and `auto_close_review`. Read these before upgrading:
 
@@ -542,29 +665,31 @@ the keys it does not model. After an image-only rollback and the return:
 
 ### Round 14 changes
 
-Round 14 keeps version `0.1.13` and adds no database migration, index or table. Its
+Round 14 (built as the same candidate) adds no database migration, index or table. Its
 new state lives in the existing key-value store. Read these before upgrading:
 
-- **Elasticsearch audit mapping (required step).** New audit rows carry structured
-  fields (outcome, actor type, action, client, session, target, changes, request id,
-  run id), and the shipped audit template turns date detection off. On an Elasticsearch
-  state backend upgraded from an earlier build, do this **before** you start the
-  Round 14 backend: apply `deploy/mappings/tlsoc-agent-audit.template.json` as the index
-  template `tlsoc-agent-audit-template`, then roll the audit write index so new rows go
-  to an index made from it (the commands are in
-  [Applying the Round 14 audit template](#applying-the-round-14-audit-template) below).
-  The shipped Elasticsearch client cannot read or extend index mappings, so the backend
-  does not do this for you: bootstrap never replaces or remaps an existing template or
-  index, changes nothing here, and logs a warning naming this step on every start.
-  The warning keeps appearing after the step is done, and on deployments first created
-  by Round 14 from their second start on, because the backend cannot read the mapping
-  to check; the subsection below says how to confirm the step instead.
-  Until the step is done, a date-like value in a new audit row (a runbook review date, a
-  runbook id such as `2026-10-28`) can map a field as a date, and later audit-first
-  writes then answer `503 audit_unavailable`. If Storage & retention is active on this
-  Elasticsearch backend, the shipped template has no lifecycle settings, so the step
-  also takes the audit template and the new write index out of the lifecycle policy
-  until you put it back (also in the subsection below). A deployment whose audit index
+- **Elasticsearch audit mapping.** New audit rows carry structured fields (outcome,
+  actor type, action, client, session, target, changes, request id, run id), and the
+  shipped audit template turns date detection off. On an Elasticsearch state backend
+  upgraded from an earlier build, bootstrap applies it itself at every start since 0.2.0,
+  with the management key's documented grants (`manage_index_templates` and `manage` on
+  `tlsoc-agent-*`). It adds the missing audit properties and `date_detection: false` to
+  the stored `tlsoc-agent-audit-template`, and keeps everything else that template holds,
+  the Storage & retention lifecycle settings included. It adds the same to every existing
+  audit index. It only adds: a property that is already mapped is left as it is, and
+  nothing is reindexed or rolled over. The manual step in
+  [Applying the Round 14 audit template](#applying-the-round-14-audit-template) below is a
+  fallback, needed only when the backend logs one of these warnings:
+  - "Audit template tlsoc-agent-audit-template could not be read" or "could not be
+    updated" (the management key may not read or write templates);
+  - "Audit index mappings could not be read" or "Audit index ... mapping could not be
+    extended";
+  - "Audit index ... already maps ... another way", where rolling the audit write index
+    over is enough.
+
+  Until the mapping is extended, a date-like value in a new audit row (a runbook review
+  date, a runbook id such as `2026-10-28`) can map a field as a date, and later
+  audit-first writes then answer `503 audit_unavailable`. A deployment whose audit index
   was first created by Round 14 or later needs nothing; PostgreSQL and SQLite need
   nothing.
 - **Settings and other changes are recorded first.** A settings save, a user or role
@@ -680,9 +805,10 @@ new state lives in the existing key-value store. Read these before upgrading:
 
 #### Applying the Round 14 audit template
 
-On an Elasticsearch state backend upgraded from an earlier build, run these before the
-Round 14 backend starts, with the management API key (its `manage_index_templates`
-cluster grant and `manage` on `tlsoc-agent-*` cover both calls). `ES_URL`, `ES_CA_CERT`
+Run these only when the backend logged one of the warnings above, with the management
+API key (its `manage_index_templates` cluster grant and `manage` on `tlsoc-agent-*` cover
+both calls). A build before 0.2.0 could not apply the upgrade itself; on such a build,
+run them before the backend starts. `ES_URL`, `ES_CA_CERT`
 and `TLSOC_ES_MGMT_API_KEY` stand for your cluster's URL, its CA file and the encoded
 management key:
 
@@ -725,20 +851,18 @@ If its `template.settings` show a `lifecycle` entry, do one of these:
   }
   ```
 
-- Or put the policy back afterwards: once the Round 14 backend has started, open
+- Or put the policy back afterwards: once the backend has started, open
   **Settings → Organization → Storage & retention** and use **Apply supported
   lifecycle** again. That puts the policy back on the audit template and on every audit
   index, including the one the rollover created. Until then, Storage & retention shows
   the lifecycle as drifted rather than active.
 
-**Confirming the step.** The backend keeps logging the reminder on every start after the
-step is done, and on deployments first created by Round 14 from their second start on,
-because the shipped client cannot read the mapping to check. To confirm the step, check
-that `GET _index_template/tlsoc-agent-audit-template` shows `"date_detection": false`
-under `template.mappings`, and that the audit write index shows it too:
-`GET _alias/tlsoc-agent-audit` names the index with `"is_write_index": true`, and
-`GET <that index>/_mapping` shows `"date_detection": false`. When both do, the reminder
-can be ignored.
+**Confirming the upgrade.** Check that `GET _index_template/tlsoc-agent-audit-template`
+shows `"date_detection": false` under `template.mappings`, and that the audit write index
+shows it too: `GET _alias/tlsoc-agent-audit` names the index with
+`"is_write_index": true`, and `GET <that index>/_mapping` shows
+`"date_detection": false`. When both do, nothing more is needed, whether bootstrap or the
+manual fallback made the change.
 
 ### Rolling back from Round 14
 
@@ -784,7 +908,7 @@ with these effects:
 
 ### Round 12 and Round 13 changes
 
-These earlier changes in the same `0.1.13` candidate still apply:
+These earlier changes in the same candidate still apply:
 
 - **Chat limits migrate once.** The stored chat configuration moves to **Unlimited**
   per-question limits on first read unless an administrator had changed a per-question
@@ -866,7 +990,7 @@ GitHub repository and the branch used for each release channel. Fresh installati
 observe:
 
 ```text
-Repository: https://github.com/ARYDESTROYER/Agentic-Kibana
+Repository: https://github.com/ARYDESTROYER/Kavach-AgenticSOC
 Stable branch: main
 Testing branch: Testing
 Check interval: 360 minutes
@@ -918,7 +1042,7 @@ see [Runbooks](../intelligence/runbooks.md).
 ## Rollback
 
 Rollback is not merely starting an older image. A newer version may have written state
-that older code does not understand. Version 0.1 does not provide a general schema
+that older code does not understand. Version 0.2 does not provide a general schema
 migration framework. The v1 supervisor therefore accepts only signed plans whose
 migration strategy is `none`, verifies a PostgreSQL custom-format backup before
 switching, and retains it only for explicit break-glass recovery. Automatic in-flight,
@@ -970,6 +1094,6 @@ Stable fixes start on a focused branch from the affected source, merge into
 release. Emergency timing may shorten review, but it must not reverse the permanent
 Testing-to-Stable direction or patch only `main`.
 
-See [Version 0.1](../releases/0.1.md),
+See [Version 0.2](../releases/0.2.md),
 [Documentation versions](../releases/documentation-versions.md), and
 [Health, backup, and restore](health-backup.md).

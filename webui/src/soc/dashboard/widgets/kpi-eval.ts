@@ -398,6 +398,21 @@ function evalStageReduction(data: unknown): KpiCellResult {
 }
 
 /**
+ * The exact numerator and denominator of a ratio cell, the two sums its value divides
+ * (FXD1: its explanation prints them). Null unless both sums are exact and the
+ * denominator is above 0, the same rule {@link evaluateBinding} measures by.
+ */
+export function ratioParts(binding: KpiStripBinding, read: KpiReader): { numerator: number; denominator: number } | null {
+  const source = binding.source;
+  if (source.type !== 'ratio') return null;
+  const [numReq, denReq] = bindingRequests(binding);
+  const num = breakdownSum(source.numerator, read(numReq).data);
+  const den = breakdownSum(source.denominator, read(denReq).data);
+  if (num.value == null || den.value == null || !num.exact || !den.exact || !(den.value > 0)) return null;
+  return { numerator: num.value, denominator: den.value };
+}
+
+/**
  * What one cell may say, from the answers of its requests (see {@link bindingRequests}).
  * A cell fails when one request failed with nothing held (and still says so while that
  * request is read again, until a read succeeds), waits while a request is still loading

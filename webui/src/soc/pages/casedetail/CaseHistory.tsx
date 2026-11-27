@@ -9,9 +9,18 @@
  * auto-close review. Newest first, in append order (never re-sorted on a timestamp, so
  * one malformed time cannot reorder the trail).
  *
- * SECURITY (#9): the analyst name, the assignee and the note are UNTRUSTED text, rendered
- * as plain text nodes. Every other word is Console copy. Read only: nothing here changes
- * the case (#3).
+ * Round 16 (SPEC §4.5 WP14, research data-visibility R6) shows what people wrote and the
+ * events that arrived later: the reason a status move recorded (the Hold and De-escalate
+ * dialogs collect it; it is paired with the action by its time on the status timeline),
+ * the resolution note an action recorded, and each `attach` entry ("12 new events
+ * attached", by the system). Two entries stay out on purpose: `precedent_ratification`
+ * and `precedent_projection_ack` record that an operator reused the AI verdict as a weak
+ * precedent and that it was indexed; neither changes the case's lifecycle, and the audit
+ * log keeps both.
+ *
+ * SECURITY (#9): the analyst name, the assignee, the note, the reason and the resolution
+ * are UNTRUSTED text, rendered as plain text nodes. Every other word is Console copy. Read
+ * only: nothing here changes the case (#3).
  */
 import * as React from 'react';
 
@@ -21,6 +30,7 @@ import { formatTimestamp, humanizeAge, humanizeToken } from '@/lib/format';
 
 import { Button } from '@/ui/button';
 
+import { decisionWords } from '@/soc/components/caseActivityText';
 import { dispositionWords } from '@/soc/components/outcome';
 
 import { actionTakenWords } from './shared';
@@ -42,6 +52,10 @@ export interface CaseHistoryItem {
   actionsTaken: string[];
   /** The note the person wrote (UNTRUSTED). */
   note: string;
+  /** The reason the status move recorded, when it differs from the note (UNTRUSTED). */
+  reason?: string;
+  /** The resolution note the action recorded (UNTRUSTED). */
+  resolution?: string;
 }
 
 /** The past-tense words for an analyst verb. */
@@ -94,13 +108,34 @@ function decisionItem(entry: Record<string, unknown>, key: string): CaseHistoryI
     details: [],
     actionsTaken: [],
     note: '',
+    // The reason `decide()` recorded, in the Decision lane's words (one mapping); any
+    // other text stays in the record (View all fields), never shown here as it is.
+    reason: decisionWords(text(entry.rationale))?.why ?? '',
   };
+}
+
+/**
+ * The reasons on the status timeline, by the time of the move. An analyst action and the
+ * status move it made share one time (`case.updated_at`), so the time pairs them.
+ */
+function reasonsByTime(c: Pick<Case, 'history'> | Case): Map<string, string> {
+  const out = new Map<string, string>();
+  const moves = (c as { status_history?: unknown }).status_history;
+  if (!Array.isArray(moves)) return out;
+  for (const move of moves) {
+    if (!move || typeof move !== 'object') continue;
+    const at = text((move as Record<string, unknown>).at);
+    const reason = text((move as Record<string, unknown>).reason);
+    if (at && reason) out.set(at, reason);
+  }
+  return out;
 }
 
 /** The case's lifecycle history, newest first (pure). */
 export function caseHistoryItems(c: Pick<Case, 'history'> | Case): CaseHistoryItem[] {
   const history = (c as { history?: unknown }).history;
   if (!Array.isArray(history)) return [];
+  const reasons = reasonsByTime(c);
   const out: CaseHistoryItem[] = [];
   history.forEach((raw, index) => {
     if (!raw || typeof raw !== 'object') return;
@@ -119,6 +154,9 @@ export function caseHistoryItems(c: Pick<Case, 'history'> | Case): CaseHistoryIt
       const actions = Array.isArray(entry.actions_taken)
         ? entry.actions_taken.map(actionTakenWords).filter(Boolean)
         : [];
+      const note = text(entry.note);
+      // The route stores the note as the reason when no reason was given: show it once.
+      const reason = ts ? (reasons.get(ts) ?? '') : '';
       out.push({
         key,
         ts,
@@ -127,10 +165,27 @@ export function caseHistoryItems(c: Pick<Case, 'history'> | Case): CaseHistoryIt
         title: analystTitle(entry),
         details,
         actionsTaken: actions,
-        note: text(entry.note),
+        note,
+        reason: reason && reason !== note ? reason : '',
+        resolution: text(entry.resolution),
       });
     } else if (event === 'decision') {
       out.push(decisionItem(entry, key));
+    } else if (event === 'attach') {
+      const added = Number(entry.added_events);
+      const count = Number.isFinite(added) && added > 0 ? Math.round(added) : 0;
+      out.push({
+        key,
+        ts,
+        who: 'Ingest',
+        actor: 'system',
+        title: count
+          ? `${count.toLocaleString('en-US')} new event${count === 1 ? '' : 's'} attached`
+          : 'New events attached',
+        details: [],
+        actionsTaken: [],
+        note: '',
+      });
     } else if (event === 'assigned') {
       const assignee = text(entry.assignee);
       out.push({
@@ -171,6 +226,52 @@ export function caseHistoryItems(c: Pick<Case, 'history'> | Case): CaseHistoryIt
   });
   return out.reverse();
 }
+
+/**
+ * A note the person wrote, clamped to three lines with "Show more" when it is longer, so
+ * the whole note is one press away for touch and keyboard users too (a hover title is
+ * not). The toggle shows only when the clamp actually cuts the note, measured as the
+ * pane resizes. UNTRUSTED: a plain text node (#9).
+ */
+const HistoryNote: React.FC<{ note: string }> = ({ note }) => {
+  const [open, setOpen] = React.useState(false);
+  const [cut, setCut] = React.useState(false);
+  const ref = React.useRef<HTMLParagraphElement | null>(null);
+  const id = React.useId();
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || open) return undefined;
+    const measure = () => setCut(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [note, open]);
+  return (
+    <>
+      <p
+        ref={ref}
+        id={id}
+        data-testid="case-history-note"
+        className={cn('mt-0.5 whitespace-pre-wrap break-words text-xs text-foreground/80', !open && 'line-clamp-3')}
+      >
+        {note}
+      </p>
+      {cut || open ? (
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={id}
+          onClick={() => setOpen((value) => !value)}
+          className="mt-0.5 rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {open ? 'Show less' : 'Show more'}
+        </button>
+      ) : null}
+    </>
+  );
+};
 
 /** How many entries show before "Show all". */
 const HISTORY_PREVIEW = 8;
@@ -220,12 +321,21 @@ export const CaseHistory: React.FC<{ c: Case; className?: string }> = ({ c, clas
                 <span className="text-foreground">{item.actionsTaken.join(', ')}</span>
               </p>
             ) : null}
-            {item.note ? (
-              /* UNTRUSTED note: plain text, clamped (its full text is in the hover title). */
-              <p className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words text-xs text-foreground/80" title={item.note}>
-                {item.note}
+            {item.reason ? (
+              /* UNTRUSTED reason: plain text. */
+              <p className="mt-0.5 whitespace-pre-wrap break-words text-xs" data-testid="case-history-reason">
+                <span className="text-muted-foreground">Reason: </span>
+                <span className="text-foreground/80">{item.reason}</span>
               </p>
             ) : null}
+            {item.resolution ? (
+              /* UNTRUSTED resolution: plain text. */
+              <p className="mt-0.5 whitespace-pre-wrap break-words text-xs" data-testid="case-history-resolution">
+                <span className="text-muted-foreground">Resolution: </span>
+                <span className="text-foreground/80">{item.resolution}</span>
+              </p>
+            ) : null}
+            {item.note ? <HistoryNote note={item.note} /> : null}
           </li>
         ))}
       </ol>

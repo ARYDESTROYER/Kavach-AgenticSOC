@@ -1,6 +1,6 @@
 ---
 title: Notifications
-description: Configure channels, triggers, templates, digests, and delivery tests in Agentic SOC 0.1.
+description: Configure channels, triggers, templates, digests, and delivery tests in Agentic SOC 0.2.
 ---
 
 # Notifications
@@ -40,6 +40,23 @@ provider.
 
 In-app notifications are stored per user in a bounded inbox. Users can control their
 notification preferences, mark items read, dismiss them, or mark all read.
+
+The navigation group that holds them is **Communication**: **Inbox** and **What's new**.
+Its row opens Inbox. The top-bar bell keeps the name **Notifications**. **What's new**
+lists every release with its highlights and screenshots, newest first, and opens the
+release's notes; the same notes are in the Help Center under
+[What's new](../releases/whats-new.md). After an update, a short welcome shows once when
+a person signs in; **Show What's new after updates**, on the **What's new** page or under
+**Settings → Account → Appearance**, turns it off for that person. With sign-in turned
+off, everyone shares one set of preferences, so the welcome shows once per installation.
+A new account starts with the current release marked as seen. So does the built-in
+`Admin` account the backend creates when sign-in is turned on after setup is complete.
+Before setup completes (a fresh installation, or the local demo) it is not marked, so
+its first sign-in shows the welcome once.
+
+AI investigations add Inbox items too: the person who started a run gets one when it
+finishes, and a person whose close the run replaced gets one that says so. Runs started
+by a background job or automatically send none.
 
 Server-owned application jobs update one stable Inbox item in place with status,
 completed/total progress, bounded result counts, and a curated same-app result link.

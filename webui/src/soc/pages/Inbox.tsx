@@ -752,8 +752,9 @@ export default function Inbox({ onNavigate }: InboxProps = {}) {
       <Sheet open={prefsOpen} onOpenChange={setPrefsOpen}>
         {/* Header (with the built-in close X) stays pinned; only the inner body
             scrolls — never overflow-y-auto on SheetContent itself or the absolute X
-            scrolls away (#19). */}
-        <SheetContent side="right" size="lg" className="flex flex-col">
+            scrolls away (#19). The xl size fits the whole routing matrix at desktop
+            widths (B53); the table's own sideways scroll stays for phones. */}
+        <SheetContent side="right" size="xl" className="flex flex-col">
           <SheetHeader>
             <SheetTitle>Notification preferences</SheetTitle>
             <SheetDescription>

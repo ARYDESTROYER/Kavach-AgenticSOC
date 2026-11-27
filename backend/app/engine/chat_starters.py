@@ -1378,7 +1378,7 @@ async def _family_my_cases(b: _Build) -> _Built:
     past = 0
     sla = getattr(b.prefs, "sla", None)
     if pop.complete and sla is not None and getattr(sla, "enabled", False):
-        past = int(shift_report.sla_aging(mine, sla, now=b.now)["totals"]["breached"])
+        past = int(shift_report.sla_aging(mine, sla, now=b.now, prefs=b.prefs)["totals"]["breached"])
     multiplier, level = family_urgency("my_cases", past_target=past)
     starter: ChatStarter | None = None
     if n == 1:
@@ -1493,7 +1493,7 @@ async def _family_sla(b: _Build) -> _Built:
         # The answer's shift_report would count a subset (§3.3: a card never states a
         # count its answer would contradict).
         return _Built()
-    aging = shift_report.sla_aging(pop.cases, sla, now=b.now)
+    aging = shift_report.sla_aging(pop.cases, sla, now=b.now, prefs=b.prefs)
     breached, close = aging["breached"], aging["about_to_breach"]
     rows, any_breached = (breached, True) if breached else (close, False)
     if not rows:

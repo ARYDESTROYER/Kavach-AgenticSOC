@@ -1,6 +1,6 @@
 ---
 title: Cases
-description: Find, assess, assign, progress, and close v0.1 cases without crossing the deterministic decision boundary.
+description: Find, assess, assign, progress, and close cases without crossing the deterministic decision boundary.
 ---
 
 # Cases
@@ -53,7 +53,10 @@ The **Outcome** column shows each case's outcome of record:
 - otherwise the case's current disposition, which no analyst has classified yet. Its
   tooltip says where that value came from: "Mapped from the AI verdict", "Recorded on
   the case", "No outcome recorded yet", or "Not yet assessed by the AI" (the badge then
-  reads Undetermined), each followed by "no analyst has classified this case yet".
+  reads Undetermined), each followed by "no analyst has classified this case yet". There
+  is one exception. When an analyst classified the case and a later AI investigation then
+  set its status, for example a close that the run replaced, the tooltip reads
+  "Classified by an analyst before a later AI investigation set the status".
 
 The cell uses the Status column's badge size, and a screen reader hears the tooltip's
 words too. Once a person has classified, resolved or closed a case, or a rule policy or
@@ -82,7 +85,11 @@ decision was the agent's automatic close): "Cases the AI agent closed are left o
 them instead." The menus say how many of the selected cases that is, the confirmation
 repeats it, and when every selected case is one of them nothing is queued; review such a
 case on its own (see [Cases the agent closed](case-manager.md#cases-the-agent-closed)).
-Bulk changes are unavailable in Demo Mode. Long-running Case
+The bulk bar sits at the foot of the screen, centred on the page beside the navigation
+rail and never over it. When its actions do not fit on one row they wrap onto a second,
+so every action stays in view.
+Bulk changes are unavailable in Demo Mode; the bar says so on its own line above its
+actions. Long-running Case
 Manager operations snapshot the
 selected case IDs and submit one server-owned background job. The dialog closes after
 `202 Accepted`; work continues across navigation or reload and reports progress in
@@ -116,30 +123,38 @@ positive"), and the AI verdict stays visible as a labelled second line.
 
 ## Work a case
 
-The canonical Case Manager detail has five tabs. Cases no longer opens a separate
-sheet with another copy of the same controls.
+The canonical Case Manager detail has six tabs, one lane each, on Alt+1 to Alt+6.
+Cases no longer opens a separate sheet with another copy of the same controls. Beside
+every tab, the **case facts** list the outcome, signal, times, source and entity, tags
+and campaign, and the record. From a wide enough pane they are a column, shown or hidden
+with **]**; a narrower pane opens them in a side sheet.
 
-- **Overview**: the AI's summary in two or three sentences, then **What happened**:
-  the input → correlate → risk assigned → triage → investigate → decision story.
-  Expanding Risk Assigned reconstructs current-weight arithmetic from persisted factors
-  and flags any historical-weight mismatch; the final stage marker pulses. Key entities,
-  related cases and any baseline follow. When a runbook is attached to an open case, its
-  **Next step** card sits at the top.
-- **Runbook**: the runbook attached to the case with its pinned version and progress,
+- **Brief**: the case at a glance. When a runbook is attached to an open case, its
+  **Next step** row sits at the top. Then four lanes, each tagged with where it comes
+  from: Evidence (why the detection fired), Assessment (the AI's summary in two or three
+  sentences and its recommendation), Decision (what the code decided, in plain words,
+  with the policy inputs and any automation applied) and People (runbook progress,
+  discussion, files and the last status change or runbook step a person made). **How this case was built** folds the input → correlate → risk
+  assigned → triage → investigate → decision story. Expanding Risk Assigned shows the
+  scoring run's arithmetic (with today's weights, said so, for older cases); the final
+  stage marker pulses.
+- **Evidence**: what the sources said. **What happened**, the entities, then **Threat
+  context**: indicator reputation, ATT&CK context, and the persisted redacted Input
+  alerts → Correlation cluster → Opened case explanation. Focus or hover its nodes for
+  source counts, grouping, threshold/window, status, and verdict; raw identifiers and
+  payloads are excluded. Related cases, any baseline and the raw events follow.
+- **AI investigation**: the AI assessment, the investigation inputs, the full
+  tool/reasoning trace, and earlier gradings of the AI.
+- **Response**: the runbook attached to the case with its pinned version and progress,
   the Next step card, one tab per phase with its steps, and **Other tasks** (the case's
-  free-form tasks). The tab shows "None" when no runbook is attached, with **Start
-  runbook**, and "Abandoned" when the only runs on the case were abandoned. A completed
+  free-form tasks). With no runbook attached it says so and offers **Start runbook**;
+  the tab shows "Abandoned" when the only runs on the case were abandoned. A completed
   run stays workable (its optional steps, **Reopen step**); only an abandoned run, or
-  every run while runbooks are turned off in Settings, is read only. See
+  every run while runbooks are turned off in Settings, is read only. Without
+  `runbooks:read` the tab shows the tasks alone. See
   [Case Manager](case-manager.md#work-the-runbook).
-- **Investigation**: the AI assessment, the decision, then **Threat context**:
-  indicator reputation, ATT&CK context, and the persisted redacted Input alerts →
-  Correlation cluster → Opened case explanation. Focus or hover its nodes for source
-  counts, grouping, threshold/window, status, and verdict; raw identifiers and payloads
-  are excluded. The investigation inputs and the full tool/reasoning trace follow.
-- **Collaboration**: discussion with reactions, files, a pointer to the tasks (in the
-  Runbook tab under **Other tasks**), and the history with who, when and the actions
-  taken.
+- **Activity**: discussion with reactions, files, and the history with who, when, why
+  and the actions taken; an automatic decision shows the reason it recorded.
 - **Chat**: case-scoped questions using the shared chat engine.
 
 In Case Manager, the header offers one primary action for the case's state, and **Take
@@ -149,6 +164,15 @@ JSON/Markdown export, and notification as permissions allow. The tabs are intent
 not repeated as menu actions. **More options** holds the case link. Exports are
 available as JSON or a Markdown handoff report.
 
+## While the AI works on a case
+
+While an AI investigation runs on a case, its header shows **AI working** and the queue
+row shows the same mark. The run's result decides the status when it finishes, even if a
+person closed the case meanwhile; people's notes, dispositions and files are kept. See
+[Case Manager](case-manager.md#when-the-ai-is-working-on-a-case). Point at the **AI
+verdict** chip to see how the code decided, with the thresholds recorded at the time; see
+[Explainable numbers](explainable-numbers.md#the-decision).
+
 ## Lifecycle actions and permissions
 
 - Reading cases requires `cases:read`.
@@ -157,7 +181,7 @@ available as JSON or a Markdown handoff report.
 - Closing, resolving, or otherwise reaching a terminal state requires `cases:close`.
 - Assignment requires `cases:assign`; discussion requires `cases:comment`.
 - Re-investigation requires `cases:reinvestigate`.
-- Seeing the Runbook tab requires `runbooks:read`; starting a runbook and working its
+- Seeing the runbook on the Response tab requires `runbooks:read`; starting a runbook and working its
   steps requires `runbooks:run`. Approving an action step also needs the step's
   approval role (someone without it sees which role can approve instead of a working
   **Approve**), and the person who recorded the action cannot approve it. Each

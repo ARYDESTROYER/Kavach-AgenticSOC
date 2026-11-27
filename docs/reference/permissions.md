@@ -1,11 +1,11 @@
 ---
 title: Permissions
-description: Built-in Agentic SOC roles, resource-action grants, authorization modes, and custom-role behavior in version 0.1.
+description: Built-in Agentic SOC roles, resource-action grants, authorization modes, and custom-role behavior in version 0.2.
 ---
 
 # Permissions
 
-Agentic SOC 0.1 authorizes actions with a `resource:action` vocabulary. Six built-in roles
+Agentic SOC 0.2 authorizes actions with a `resource:action` vocabulary. Six built-in roles
 ship with the Agentic SOC API. Organization administrators can add custom roles, inherit
 from an existing role, grant narrow actions, and apply explicit denies.
 
@@ -76,9 +76,17 @@ the Executive board, chat's spending answers, the spend part of `GET /api/metric
 empty), the spent and remaining amounts of the AI budget (`GET /api/budget/status` keeps
 the caps and settings for `models:read`), the cost and tokens on a case's agent timeline,
 a case's own investigation cost (`token_cost` is `null` on every case the API returns,
-and the case page, its facts rail and Entity investigation leave it out), and the
-recorded case cost in Agent effectiveness (shown as unavailable). A role without
-`cost:view` still reads everything else on those pages.
+and the case page, its case facts and Entity investigation leave it out), and the
+recorded case cost in Agent effectiveness (shown as unavailable). Since 0.2 it also
+covers a case's AI usage list (`GET /api/cases/{case_id}/usage`), the cost values in
+**View all fields**, and the cost figures in the text of a case's timeout, decision,
+runbook AI and budget rows and of a replay experiment's spend row, which read "hidden"
+(amounts "(amount hidden)") in the trace, the timeline, the activity feed, the case
+rationale, chat answers about the case, the Audit log list and record and an audit log
+export, the figure in a budget refusal shown on a case, and the
+Standup summary's AI cost (`GET /api/standup` returns `cost` as `null`).
+Tool output and log evidence are never rewritten. A role without `cost:view` still
+reads everything else on those pages.
 
 ## Runbooks
 
@@ -160,6 +168,33 @@ A refused screenshot delete writes an Access denied row. See
 file of the rows the person can read, so it needs `audit:view` as well; both are checked
 again at every page of the export and at download. An export also asks for a fresh
 sign-in and is not available in Demo Mode. See [Audit log](../administration/audit-log.md).
+
+### Read grants on every read
+
+Since version 0.2, every read of the API asks for the grant of the data it returns, as the
+writes always did. The built-in roles hold every one of these grants, so their access does
+not change; a custom role without the grant now gets `403` on that read.
+
+| Read | Grant |
+|---|---|
+| A case's export, trace, rationale, activity, thread and tasks; `GET /api/scans` and `/api/scans/notifications` | `cases:read` |
+| The AI investigations in progress (`GET /api/investigations/active` and the `investigations` live topic) | `cases:read` |
+| A case's raw events (`GET /api/cases/{case_id}/events`) | `cases:read` and `sources:read` |
+| A case's AI usage (`GET /api/cases/{case_id}/usage`) | `cases:read` and `cost:view` |
+| The cost values in a case's **View all fields** | `cost:view` |
+| A source's feeds (`GET /api/sources/{source_id}/feeds`) | `sources:read` |
+| `GET /api/settings`, and today's network range in a case's risk explanation | `settings:read` |
+| The Standup (`GET /api/standup` and its report, action items and acknowledgements) and `GET /api/metrics/explain` | `metrics:view` |
+| `GET /api/llm/models`, `GET /api/models` and `GET /api/llm/providers` | `models:read` |
+| `GET /api/roles` | `roles:read` |
+| The name of the person who started an AI run | `users:manage` |
+
+Everyone else who may read the case sees "Started by a person" without the name. A few
+reads need only a signed-in account: your own account, preferences, sessions, views,
+terminology, notification preferences and inbox, the connector catalog, the persona
+catalog, and the live event stream, whose topics have their own grants.
+`GET /api/metrics/breakdown` and `GET /api/rules/summary` check their grants inside the
+request, per breakdown kind and per section.
 
 ## Settings and narrow administration grants
 
@@ -283,9 +318,12 @@ The Agentic SOC Console uses permission guards for presentation, but the API is 
 boundary. The guards read only `GET /api/account/permissions`, so the Console shows the
 actions a custom role grants (for example `runbooks:publish` or `audit:export`) and hides
 what a deny removes, exactly as the API decides. When that read fails, the Console hides
-every restricted action (`super_admin` excepted) rather than guess. Non-GET routes are
-expected to declare an authorization dependency in addition to the central authentication
-gate.
+every restricted action (`super_admin` excepted) rather than guess. Behind the central
+authentication gate, every `/api` route, reads included, declares the grant it needs or
+checks it in the request. The only exceptions are the public paths (health, sign-in,
+setup status, single sign-on and branding) and the reads that need only a signed-in
+account, listed under [Read grants on every read](#read-grants-on-every-read). A test
+fails the build when a new route has neither.
 
 Object-level scope conditions exist as an opt-in policy hook and use a fixed,
 non-`eval` condition vocabulary. They are off by default. Built-in RBAC therefore does

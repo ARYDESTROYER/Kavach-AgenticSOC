@@ -290,9 +290,10 @@ def resolve_effective_prefs(customization: Any, user_prefs: UserPrefs | None) ->
     * ``terminology`` — ORG label overrides merged UNDER the user's own personal
       labels (a user's label wins; absent → org; absent → built-in default at the UI
       ``t()`` helper).
-    * ``theme_mode`` — the user's ``theme_mode`` when it is a non-``system`` value,
-      else the org ``default_theme`` (an org can ship a dark-by-default console and a
-      user can still pin light/dark for themselves).
+    * ``theme_mode``: the user's own ``theme_mode``. ``system`` is resolved by the
+      Console against Branding ``default_theme``, the one organization default (an org
+      can ship a dark-by-default console and a user can still pin light/dark for
+      themselves). The legacy ``customization.default_theme`` is only echoed.
     * ``saved_views`` — org-shared views (forced ``shared=True``) UNION the user's
       personal views (a user view with the same id wins).
     * ``pinned_view_ids`` — the user's pins when set, else the org default pins.
@@ -310,8 +311,11 @@ def resolve_effective_prefs(customization: Any, user_prefs: UserPrefs | None) ->
     terminology = {**org_terms, **user_terms}
 
     org_theme = str(getattr(customization, "default_theme", "system") or "system")
-    # A user's explicit non-"system" choice wins; "system" defers to the org default.
-    theme_mode = up.theme_mode if up.theme_mode != "system" else org_theme
+    # Round 16 B45: Branding ``default_theme`` is the one organization theme default.
+    # A user's explicit choice wins; "system" stays "system" and the Console resolves it
+    # against Branding, so the legacy ``customization.default_theme`` no longer
+    # overrides it (``Preferences`` moves an old legacy choice into Branding on load).
+    theme_mode = up.theme_mode
 
     # Org-shared saved views (validated/normalised) + the user's personal set.
     org_views: list[SavedView] = []

@@ -17,6 +17,8 @@ import { PANEL_PADDING_X, Panel } from '@/design-system/panel';
 import { cn } from '@/lib/cn';
 import { DASH, fmtDuration } from '@/lib/format';
 import { KpiStripContext, KpiTile, KpiTileGrid, type KpiDelta, type KpiStripContextValue } from '@/soc/components/KpiTile';
+import type { MttrByDecider } from '@/lib/types-metrics-explain';
+import { TimingExplain } from '@/soc/components/metrics-explain/TimingExplain';
 import type { StatBlock } from '@/soc/pages/Metrics.posture.api';
 
 import { isAvailable, statNumber, useDashboardData, useDashboardRequest } from '../DashboardDataProvider';
@@ -74,7 +76,7 @@ export const TIMINGS: ReadonlyArray<{ key: TimingCell['key']; field: 'mttd_minut
     field: 'dwell_minutes',
     label: 'Dwell time',
     help:
-      'Median time from case creation, or detection when known, to the first response (investigating, escalated, on hold, resolved or closed). This is time to first response, not time to detect.',
+      'Median time from case creation, or detection when known, to the first response by a person (investigating, escalated, on hold, resolved or closed). Automatic closes are not counted. This is time to first response, not time to detect.',
   },
 ];
 
@@ -125,6 +127,8 @@ export function timingCells(lifecycle: Partial<Record<string, StatBlock | undefi
 }
 
 const STRIP_CONTEXT: KpiStripContextValue = { density: 'comfortable' };
+/** Each cell's lifecycle block. */
+const TIMING_FIELD = Object.fromEntries(TIMINGS.map((t) => [t.key, t.field])) as Record<TimingCell['key'], (typeof TIMINGS)[number]['field']>;
 const POSTURE_REQ: DashboardRequest = { key: 'posture' };
 
 export function LifecycleTimingWidget(props: WidgetProps) {
@@ -135,7 +139,10 @@ export function LifecycleTimingWidget(props: WidgetProps) {
   const posture = answer.data;
   const state = requestState(answer, () => retry(POSTURE_REQ));
   const stale = state ? null : staleOf(answer, () => retry(POSTURE_REQ));
-  const cells = timingCells(posture?.lifecycle as Partial<Record<string, StatBlock | undefined>> | undefined);
+  const lifecycle = posture?.lifecycle as Partial<Record<string, StatBlock | undefined>> | undefined;
+  const cells = timingCells(lifecycle);
+  // Round 16 (WP12): each median opens its arithmetic and the cases behind it.
+  const byDecider = (posture?.lifecycle as { mttr_by_decider?: MttrByDecider } | undefined)?.mttr_by_decider;
   const partial = posture && posture.window_covered === false;
   const edit = mode === 'edit';
   return (
@@ -177,6 +184,22 @@ export function LifecycleTimingWidget(props: WidgetProps) {
                   sub={c.sub}
                   help={c.help}
                   helpLabel={`About ${c.label}`}
+                  explain={
+                    c.sub
+                      ? undefined
+                      : (numeral) => (
+                          <TimingExplain
+                            metric={c.key}
+                            title={c.label}
+                            block={lifecycle?.[TIMING_FIELD[c.key]]}
+                            windowHours={windowInfo.hours}
+                            window={`the ${windowInfo.phrase}`}
+                            byDecider={c.key === 'mttr' ? byDecider : undefined}
+                          >
+                            {numeral}
+                          </TimingExplain>
+                        )
+                  }
                   delta={delta}
                   goodDirection="down"
                   roll={false}

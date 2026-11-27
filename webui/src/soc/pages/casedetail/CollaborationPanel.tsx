@@ -1,34 +1,33 @@
 /**
- * CaseDetail: the Collaboration tab (Coupling-D split; Round 15, SPEC D8.3).
+ * CaseDetail: the Activity tab, id `collab` (Round 16, SPEC D8, §4.4 WP03; the
+ * Collaboration tab before it).
  *
- * The people side of a case (#4), in four sections divided by hairlines:
+ * The people side of a case (#4), in three sections divided by hairlines:
  *
  *   Discussion  the case thread (AI is a first-class author but can only RECOMMEND)
  *   Files       the screenshots on the case (D5.12): the caller's gallery and drop zone
  *               (`renderFiles`, the lazy `CaseFiles`), given this tab as the scope a
  *               pasted image is caught in, with its count beside the heading
- *   Tasks       Round 14 (D36): a pointer to the Runbook tab's "Other tasks", or the tasks
- *               themselves for a viewer with no Runbook tab (`tasksSection`)
  *   History     the lifecycle with who, when and the actions taken, from the case's own
  *               history (D4.2), and the full who-did-what activity feed one click away
  *
+ * The case's tasks are on the Response tab (Round 16): this tab no longer points there.
  * There is no owner picker here: the owner's one editable home is the header (D8.2).
- * From a wide pane the discussion and files take the main column and tasks and history
- * a side column; narrower, the four sections stack. The layout follows the PANE width
- * (container queries), never the viewport.
+ * From a 52rem pane the discussion and files take the main column and the history a side
+ * column; narrower, the sections stack. The layout follows the PANE width (container
+ * queries), never the viewport.
  *
  * SECURITY (#9): thread bodies, task titles, names, notes and activity summaries are all
  * UNTRUSTED, rendered as plain text inside the child components. #3-safe: nothing here
  * changes the case decision (the backend enforces this).
  */
 import * as React from 'react';
-import { ArrowRight, ChevronDown } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 
 import type { Case } from '@/lib/types';
 import type { StreamEvent } from '@/lib/useEventStream';
 import { cn } from '@/lib/cn';
 
-import { Button } from '@/ui/button';
 import { Skeleton } from '@/ui/skeleton';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 import { LoadingBar } from '@/design-system';
@@ -68,13 +67,6 @@ export const CollaborationThreadTab: React.FC<{
   onDelete: (msgId: string) => void;
   onReact: (msgId: string, emoji: string, remove: boolean) => void;
   /**
-   * Round 14: open the Runbook tab, where the case's tasks are listed under "Other
-   * tasks". When set, the Tasks section points there instead of listing them.
-   */
-  onOpenTasks?: () => void;
-  /** The tasks themselves, for a viewer with no Runbook tab (no `runbooks:read`). */
-  tasksSection?: React.ReactNode;
-  /**
    * Round 15 (D5.12): the Files section's body (the WP4 gallery, its drop zone and file
    * picker), given this tab as the scope where a pasted image is caught. Omitted: no
    * Files section.
@@ -111,8 +103,6 @@ export const CollaborationThreadTab: React.FC<{
   onEdit,
   onDelete,
   onReact,
-  onOpenTasks,
-  tasksSection,
   renderFiles,
   filesAdornment,
   liveCaseId,
@@ -133,7 +123,10 @@ export const CollaborationThreadTab: React.FC<{
       data-case-panel="collaboration"
       data-presentation="case-manager"
     >
-      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-6 @[52rem]/collab:grid-cols-[minmax(0,1fr)_18rem] @[52rem]/collab:gap-8">
+      <div
+        className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-6 @[52rem]/collab:grid-cols-[minmax(0,1fr)_18rem] @[52rem]/collab:gap-8"
+        data-testid="case-tab-first"
+      >
         {/* ------------------------------------------- main: discussion and files */}
         <div className="min-w-0 space-y-6">
           <PanelSection
@@ -209,30 +202,13 @@ export const CollaborationThreadTab: React.FC<{
           ) : null}
         </div>
 
-        {/* ------------------------------------------- side: tasks and history */}
-        <aside
-          aria-label="Tasks and history"
+        {/* ------------------------------------------------- side: the history */}
+        {/* A plain column: its History section is the labelled region (an aside here would
+            be a complementary landmark nested in the case's region). */}
+        <div
           data-collaboration-surface="context-rail"
           className="min-w-0 space-y-6 border-t border-border/60 pt-6 @[52rem]/collab:border-l @[52rem]/collab:border-t-0 @[52rem]/collab:pl-6 @[52rem]/collab:pt-0"
         >
-          {onOpenTasks || tasksSection ? (
-            <PanelSection title="Tasks" testId="collaboration-tasks">
-              {onOpenTasks ? (
-                <div className="space-y-2">
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    Case tasks are in the Runbook tab, under Other tasks.
-                  </p>
-                  <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={onOpenTasks}>
-                    Open the Runbook tab
-                    <ArrowRight className="h-3.5 w-3.5" aria-hidden />
-                  </Button>
-                </div>
-              ) : (
-                tasksSection
-              )}
-            </PanelSection>
-          ) : null}
-
           <PanelSection title="History" testId="collaboration-history">
             <CaseHistory c={c} />
             <Collapsible
@@ -282,7 +258,7 @@ export const CollaborationThreadTab: React.FC<{
               </CollapsibleContent>
             </Collapsible>
           </PanelSection>
-        </aside>
+        </div>
       </div>
     </div>
   );

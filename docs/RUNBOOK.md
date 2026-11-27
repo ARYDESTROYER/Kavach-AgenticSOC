@@ -22,7 +22,7 @@ below are therefore **backend-conditional** — the section flags which.
 ```bash
 # Direct (the agnostic stack publishes :8088; or exec into the container)
 curl -s localhost:8088/api/health ; echo
-#   -> {"status":"ok","version":"0.1.13","es_connected":...,"store_type":"...","setup_complete":true}
+#   -> {"status":"ok","version":"0.2.0","es_connected":...,"store_type":"...","setup_complete":true}
 
 # THROUGH the web UI's nginx (proves the SPA → backend path end-to-end)
 curl -fsS http://localhost:8080/api/health ; echo
@@ -92,9 +92,12 @@ docker run --rm -v tlsoc-agentic-soc_tlsoc-pgdata:/data -v "$PWD":/backup alpine
 
 - `STATE_DB_URL` must be the async URL
   `postgresql+asyncpg://user:pass@host:5432/tlsoc`.
-- pgvector is **best-effort**: if `CREATE EXTENSION vector` fails the suite logs a
-  warning and uses JSON+Python cosine for RAG (functional, slower). Use the
-  `pgvector/pgvector:pg16` image to get native kNN.
+- pgvector is **best-effort**. Since 0.2.0 knowledge search ranks in the backend process
+  on SQLite and PostgreSQL alike, with a cached in-memory float32 matrix (single-threaded
+  numpy, then an exact re-score, so near ties are kept): about 10 to 20 ms at 2,000 chunks.
+  pgvector ranks only a corpus too large for that matrix, or a process without numpy. If
+  `CREATE EXTENSION vector` fails the suite logs a warning; search still works, and only a
+  very large corpus is slower. The `pgvector/pgvector:pg16` image installs the extension.
 - Schema is created idempotently on startup (`SQL state schema ensured`).
 
 ### 2.2 SQLite (`STATE_BACKEND=sqlite`)
@@ -118,7 +121,7 @@ management key:
 | `tlsoc-agent-cursor` | single-doc (`primary`) | constant |
 
 - Use **Settings → Organization → Storage & retention** to preview and explicitly
-  apply the owned-state ILM policy. In 0.1.13 it applies only to the append-only audit
+  apply the owned-state ILM policy. In 0.2.0 it applies only to the append-only audit
   and usage aliases; mutable cases and live metadata remain Hot. The desired default
   is 180 days Hot + 90 days Warm, with deletion always off. Do not attach a blanket
   ILM policy to every `tlsoc-agent-*` alias.
@@ -315,8 +318,15 @@ none — plan a migration on an estate with a long archived-precedent tail accor
 - **Redis** backs enrichment dedup/cache; without it the backend degrades to an
   in-memory cache. Keep TTLs generous to protect free-tier enrichment limits.
 - **Embeddings / vector store** flow through the gateway (local-hashing fallback)
-  and persist in the state backend (pgvector kNN on Postgres, JSON cosine
-  otherwise).
+  and persist in the state backend as JSON. The backend ranks them in process with an
+  in-memory matrix; on PostgreSQL with pgvector, only a very large corpus is ranked in
+  the database.
+- **Watch the event loop and the case figures.** `GET /api/diagnostics/health` reports
+  `event_loop` (the worst and 99th-percentile event-loop lag over the last minute) and
+  `case_population` (when the all-time case figures were read; they are re-read at most
+  once a minute, and the last reading is served, marked with its read time, while one
+  background read replaces it). A lag that stays high means slow synchronous work on the
+  loop; an old `case_population` read time means the background read is failing.
 
 ## 6. Incident response (for the tool itself)
 

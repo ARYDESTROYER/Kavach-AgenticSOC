@@ -12120,3 +12120,1684 @@
 - Tests: on 826bb2b, npm run test:strict 680 files, 8,874 passed, 16 skipped, zero stderr; lint 0/0; gates pass; check:types no drift; entry 329,080 B; bundle check 25 passed; corpus current (971 chunks); check_docs 86 pages; docs, knowledge, settings and correlation backend tests pass; fatal ruff clean; decide() unchanged. The follow-ups: TeamActivity and case-policy tests 30 passed, zero stderr; the new description assertion fails without its change.
 - Status: done; pushed.
 - Next: CI on the new head, then the screenshot summary comment on the PR.
+
+### 2026-11-24 19:00Z - orchestrator - Round 16 start: release 0.1.13, What's new, explainability, cleaner Case Manager and login
+- Context: Round 15 merged into Testing as 3cfd5c0 (PR #143). The operator's Round 16 asks: show when the AI agent is investigating a case (and keep the run's result authoritative), use the wasted space at the top of the Case Manager detail pane, a cleaner and segregated Case Manager from deep research, a cleaner login page and animation with "Remember me" and no duration, a bug hunt across the application, research agents on what to build next (competitors, features, backend), every number explainable on hover or click with its exact math (for example the risk score), a first-login "What's new" screen for each update plus a Communication page that tracks every release with notes and screenshots, and to ship this as the next release (0.1.13, still untagged; main is at 0.1.12).
+- Did: branch claude/round16 from origin/Testing; launched the research and bug-hunt discovery workflows.
+- Tests: none yet.
+- Status: in progress.
+- Next: synthesize the research and confirmed bugs into docs/research/2026-11-round16/SPEC.md, then build, review, gate and prepare the 0.1.13 release.
+
+### 2026-11-25 07:40Z - orchestrator - Round 16 discovery done, decisions taken, SPEC written and reviewed
+- Context: Round 16 discovery (ten research agents and an eight-area bug hunt) and the binding SPEC.
+- Did: the research reports and their synthesis are in docs/research/2026-11-round16/research/; the bug hunt confirmed 81 of 92 candidates (each checked by an independent skeptic), recorded as B01 to B81 in review/bug-hunt.md. The operator chose version 0.2.0 (the never-tagged 0.1.13 folds into it), the ARYDESTROYER/Kavach-AgenticSOC repository identity as the update trust root, and the Apache-2.0 license; the orchestrator took the recommended defaults for the rest (Communication group, What's new once per update id, six case tabs, the run's result stays authoritative with warnings and notifications, standup under metrics:view). A writer drafted SPEC.md (25 work packages, every bug allocated, 6 duplicates merged); three reviewers (backend, Console, release and security) raised 60 findings, all confirmed and resolved in Appendix C. The opening commit names Round 16 as the newest round in AGENTS.md and HANDOFF.md.
+- Tests: docs records pytest passed; no product code changed.
+- Status: done.
+- Next: build in waves per SPEC §4 (merge order: WP15A, WP05 part 1, WP01, WP15B and WP15C, WP04 and WP06, WP07 and WP05 part 2, WP15E part 1, WP08 then WP10 and WP15D, WP13, WP02 then WP03, the Console feature packages, WP15F, WP16, then WP17, WP18 and WP19).
+
+### 2026-11-25 07:50Z - WP05 sub-agent - Round 16 WP05 part 1: version 0.2.0, identity, license, guards
+- Context: SPEC 4.3 WP05 part 1 as scoped by the orchestrator: version move (3.8), repository identity (D2), Apache-2.0 (D3), check_version guards, Dependabot forward-port (D13), B52, B54. The notes-JSON guard is part 2, after WP07.
+- Did: moved every current-version string to 0.2.0 and the docs line to 0.2. New release pages 0.2.md and 0.2.0.md; 0.1.13.md folded into 0.2.0; CHANGELOG headings. The docs bundle writes /docs/0.1/ redirect pages that keep the fragment, and validates them. The plan builder admits below 0.3.0. The new repository name is in the updater default, Dockerfiles, CI smoke step, MkDocs, issue templates and Console links. The bootstrap refuses a missing, old or wrong-case repository and never edits .env. ReleaseUpdateConfig repairs the old name and keeps forks. Apache-2.0 LICENSE with backend and updater copies, pyproject and package.json declarations, the image label and text in all three images, README notices. check_version requires the license label and, on main, a v* tag or a PR into main, an empty [Unreleased] and a release body of at most 100,000 characters. Dependabot pins forward-ported and every block targets Testing. B52: bootstrap is offered only on PostgreSQL, and the closing note shows only with a job. B54: the Stable docs link always shows.
+- Tests: backend 13,175 passed, 24 skipped, 5 sandbox-only env failures. test:strict 8,883 passed, 1 skipped, 7 load timeouts; the 6 files pass alone (73 of 73). Build clean, entry 329,114 B (+34 B, inside the 1,024 B budget). check_version, check_docs, check_ci_contract, build_app_knowledge --check, docs bundle, theme, updater and bootstrap tests pass. Regression proofs done for B52, B54, the bootstrap refusals and the config repair.
+- Status: done (part 1). Branch r16-wp05 at 9561830, detached.
+- Next: WP05 part 2 adds the notes guard after WP07. WP18 updates HANDOFF:9, the AGENTS 0.1.13 contract sentences, USAGE.md:69 and :2813, and the testing.md baseline counts. WP17 refreshes the Help Center screenshot alt text and captions. WP19 writes the 0.2.0 notes and empties [Unreleased].
+
+### 2026-11-25 08:45Z - WP04 agent - Sign-in page rebuilt on Console tokens; B25 and B50 fixed
+- Context: Round 16 WP04 (SPEC 4.4, D6, D9; [login] R1 to R12, R14, R15). Built in worktree r16-wp04 from cd9ed95, in parallel with WP15A, WP05 part 1 and WP01.
+- Did: Login.tsx is now one 400px column on bg-canvas with a static brand wash, the primary Button, 44px fields on --input, the heading "Sign in to {organization}" ("Welcome back" only for a remembered device), Continue always shown, inline field errors, labelled full-width SSO buttons, a three-button appearance group, OTP cells that submit once, and a Forgot password note. Motion is CSS only in theme.css (opacity and transform, 300 ms or less, backwards fill, reduced-motion gated). The final shell paints during the probes, with a spinner that appears after 300 ms. App.tsx CenterSpinner reveals after 300 ms. theme.tsx gains brandingFresh and markBrandingUsed, so a cold load sends one branding request. The Remember me row is the label alone (D6). B25: sso_error codes map to fixed sentences in a lazy ssoErrors chunk, with a generic fallback. B50: the Branding editor reads its default accents from the live --primary and --accent2 after each render, and its preview matches the new column. D9 subject removal: LoginAuthBackdrop, ShineButton, ThemeModePill, the identity canvas CSS and gate-login-accents (with gates.mjs step 6 and its tests) are deleted. gate-contrast gains sign-in pairs on --canvas. The ui-standard Identity sections and first-run.md text are rewritten, and the knowledge corpus is regenerated.
+- Tests: backend pytest gave 13,143 passed, 24 skipped and 5 failed (the known sandbox-only environment tests, which pass with the proxy and AWS variables unset). webui test:strict gave 8,864 passed, 16 skipped and 6 failed; the 6 were load timeouts in unrelated suites and passed alone (188 of 188), but the full strict suite was not re-run. typecheck, lint, gates (178 axes), check:types, build, docs:check, check_docs, check_version, check_ci_contract and build_app_knowledge --check all pass. The B25 and B50 regression tests failed before the fix. Entry chunk 323,536 B (down 5,544 B; the SPEC expected about 7 KB). Global CSS down 16,201 B.
+- Status: done. Committed on r16-wp04 (f10b75f); HEAD detached.
+- Next: WP16 should ratchet PRE_REVAMP_ENTRY_BYTES, fix the stale ui-standard sentence near line 223 about the login identity canvas, lower the grep-baseline count for BrandingEditor.tsx (4 to 2), and remove the unused Tailwind keyframes and the stale --accent2 comment in theme.css. WP17 should replace the two first-run sign-in screenshots and their alt text. If WP15A adds a new sso_error code, login.sso-errors.test.tsx fails until ssoErrors.ts gains a sentence for it.
+
+### 2026-11-25 08:45Z - WP06 sub-agent - Round 16 performance extras
+- Context: WP06 of the Round 16 SPEC ([be] R2 layer 1, R4, R1, R5). Built in its own worktree from cd9ed95 on r16-wp06.
+- Did: api/metrics_shared keeps the all-time case population for 60 s, then serves it stale (marked, with its read time) for up to 120 s while one background read replaces it; windowed reads keep 5 s. Every population carries read_at, generated_at and freshness(). stores/auto_close_review decodes the ledger once per revision and stored text, hands out copies and looks entries up by case id; routes_auto_close_review passes the loaded ledger into _repair, and its metrics carry the population read time. stores/sql/vectorstore ranks with a cached normalised float32 matrix (rebuilt on its own writes, on a count or max(id) change, and every 60 s), rescores the returned rows exactly, and falls back to Python without numpy. On PostgreSQL with pgvector, <=> over the JSON column ranks only a corpus above 25M stored numbers or a process without numpy (measured: <=> over JSON took 1.1 to 1.4 s against about 40 ms for the matrix). engine.py probes pg_extension once. routes_diagnostics adds LoopLagMonitor (event_loop) and case_population to /api/diagnostics/health; state.py starts and stops it. Regenerated openapi.json and api-types.gen.ts for one docstring.
+- Tests: full backend 13,176 passed, 28 skipped, 5 sandbox-only failures (55/55 pass without proxy and AWS variables). WP06 module 34 passed. PostgreSQL lane 26 passed on a local PostgreSQL 16 with pgvector 0.6.0. Base code fails the new tests (12 reads, 5 and 3 decodes, 1.4 s). Ruff fatal checks and the version, CI, docs and knowledge guards pass. check:types and typecheck are clean.
+- Status: done
+- Next: WP12 stamps generated_at from population.generated_at on its all-time rollups. WP16 checks the reset path invalidates the population cache. WP18 updates the pgvector docs (RUNBOOK, TROUBLESHOOTING A2, api.md) and describes event_loop and case_population.
+
+### 2026-11-25 09:20Z - WP15A agent - Round 16 security and access fixes
+- Context: Round 16 SPEC 4.3 WP15A, merges first. Fix B01 (with B70), B15 to B24, B51, B55.
+- Did: added permission gates to 18 read routes and a GET coverage rule with a reviewed allowlist and a gated-in-body list. Server-side forced password change (403 password_change_required). Hashing off the event loop. A per-account MFA failure lock (auth.mfa_locked) and single-use pending tokens. A 409 on enrolment for an enrolled account, plus fresh sign-in on setup, confirm and disable. Compare-and-swap code consumption (UserStore.consume_mfa). Session revocation after a password change or reset. Trusted-proxy session IP. Deprecated the refresh route. Single sign-on: Super-admin-only changes, role validation, same-provider linking, hd for Google only, no group-map demotion of a Super admin. Settings coherence 422s with inline Console checks. Sessions event labels. Standup and Models nav perms; best-effort roles read on Users. Added tests/_auth_helpers.ready_user (sign in, change the temporary password to the same value, sign out) and used it in 48 test files. Updated SECURITY, USAGE, DEMO, DEPLOY and the authentication Help Center page. Regenerated openapi, api-types, the console map and the knowledge corpus.
+- Tests: full pytest 13,182 passed, 24 skipped, 10 failed. Five were fixed with ready_user and now pass; five are sandbox-only and pass with the proxy and AWS variables unset. test_round16_security 41 passed, and each test fails on the base tree. test:strict 8,893 passed, 3 failed (pinned registry gates, updated, 42 of 42 pass). Lint, gates, check:types, build, docs and version checks clean. Entry 329,090 B (+10 B).
+- Status: done. Branch r16-wp15a at 7308595, HEAD detached.
+- Next: merge first. The engine/state.py owner can delete the now-unused state.client_ip_from and update the audit/context.py docstring that mentions it. The orchestrator writes the CHANGELOG and What's new from this report.
+
+### 2026-11-25 09:40Z - WP01 agent - Round 16 contracts and foundations
+- Context: Round 16 SPEC section 4.3 WP01. Land every shared contract and stub mount point so later packages run in parallel without touching shared files. No visible behaviour.
+- Did:
+  - models.py: RiskInputs, RiskWeightsSnapshot and RiskReferences as RiskBreakdown.inputs (unreadable reads as None, omitted while unset); InvestigationView, InvestigationSlots, InvestigationsActive; TraceSpanDetail plus TraceSpan.detail and cost_basis; six UsageDoc rate fields (omitted while unset); CaseUsagePage, CaseUsageTotals, CaseEventsPage; Citation.case_number; the UserPrefs.misc keys whats_new_seen and whats_new_auto, normalised on load.
+  - New engine/risk_explain.py: explain_risk and factors_from_inputs.
+  - New engine/investigation_registry.py: begin, started, attach_case, phase, end, active, for_case, for_signature, recent, new_runs, snapshot, clear.
+  - realtime.py: CASE_INVESTIGATION_EVENT, INVESTIGATIONS_TOPIC, EventBus.publish_many, publish_case_investigation and CASE_INVESTIGATION_FRAME_KEYS. publish_review_frame now uses publish_many.
+  - Audit table: case.close_replaced and case.events_viewed under Case work.
+  - Stores: UsageRepository.records_for_case (Elasticsearch and SQL), AuditRepository.count_for_case, utils.round_half_up.
+  - Console: the channel string; types.ts mirrors pinned in types-contract-pins.ts; regenerated openapi.json and api-types.gen.ts; lib/explain (types, builders, explain.contract.json); design-system/explain ExplainTrigger; the investigations, casedetail/explain and casedetail/records stubs; the optional ConfirmActionDialog caseIds prop.
+- Tests:
+  - pytest: 13,195 passed, 24 skipped, 5 sandbox-only failures (they pass with the proxy and AWS variables unset).
+  - test:strict: 8,898 passed, 1 skipped in 681 files, no stderr.
+  - lint, gates, tsc and check:types clean; ruff fatal clean.
+  - check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - Entry chunk 329,101 B, +21 B.
+- Status: done. Commit a4414807b02c33a6961e88712e5fb368b437d928 on r16-wp01; HEAD detached.
+- Next:
+  - WP03: mount ReinvestigateDialog and pass onReinvestigated and onCloseAutoFocus; remove the inline copy and re-export reinvestigateErrorText; mount FindingsList, CaseUsageButton and AwaitingReason.
+  - WP10: write breakdown.inputs at the three compute_risk call sites.
+  - WP08: wire the registry and add investigations to the topic grants.
+  - WP15G: add ChatCitation.case_number and the producer.
+  - WP11, WP13 and WP14: fill the stub bodies.
+
+### 2026-11-25 09:45Z - WP06 reviewer - independent review of the Round 16 performance extras
+- Context: Adversarial review of WP06 (R2 layer 1, R4, R1, R5) on r16-wp06 from cd9ed95, against SPEC §4.4, §3 and §4.1.
+- Did: Confirmed decide() and engine/risk.py are untouched and edits stay in owned files. Fixed five defects in commit 727601c, each with a test:
+  - api/metrics_shared: a windowed population never evicts the all-time one under the cache budget (at scale every LIVE tick re-read it). A request whose shared read is cancelled reads again instead of failing.
+  - stores/sql/vectorstore: both float32 ranking paths (matrix and pgvector) read back every row within a rounding band of the top_k cut, so near ties never hide the best chunk. The matrix is scored with numpy's single-threaded einsum, not the BLAS thread pool, and large matrices are ranked in a worker thread.
+  - The 50 ms timing test takes the best of 15 runs.
+  - Docstrings corrected.
+- Tests: Backend 13,184 passed, 29 skipped, 5 sandbox-only failures (55/55 without the proxy and AWS variables). WP06 module 41 passed. PostgreSQL lane 27 passed on a throwaway PostgreSQL 16 with pgvector 0.6.0. Each fix's test fails when it is reverted. Ruff fatal checks and the version, CI, docs and knowledge guards pass. check:types, typecheck, lint, gates, build (entry 329,080 B) and docs:check pass. test:strict had 8,871 passed and 3 load timeouts that pass alone with zero stderr.
+- Status: done
+- Next:
+  - WP12 stamps population.generated_at on the all-time payloads in routes_metrics.py (GET /api/metrics has none, and the Console stamps the settle time).
+  - WP16 calls metrics_shared.invalidate_case_page_cache() from the cases-tier reset.
+  - Whoever owns agents/chat_tools/metrics.py stamps the all-time noise funnel with population.generated_at.
+  - WP18 updates the pgvector docs and documents event_loop and case_population.
+
+### 2026-11-25 10:30Z - WP04 reviewer - Sign-in page review: focus return fix and test gaps closed
+- Context: Independent adversarial review of Round 16 WP04 (f10b75f on r16-wp04) against SPEC 4.4, D6, D9, 3.1, 3.6 and [login] R1 to R15.
+- Did: Read the whole diff. Proved the B25 and B50 regression tests fail when each fix is reverted. Checked the live demo (8914/5914) in both themes at 1440x900 and 390x844: identity, password, empty and wrong-password errors, SSO error with stubbed providers, loading gate, two-factor, recovery code, setup, forced change, remembered device, Remember me dialog, keyboard focus and hand-off. Captured 63 screenshots. The production build sends one branding request on a cold load. Fixed one defect: a wrong recovery code, a refused forced change or a refused first-admin setup left focus on the page body. Focus now goes back to the field through a focusSoon helper, with ui-standard Identity surfaces updated. Added tests: the B50 preview stripe and Gradient tile, every _fail() in sso_callback passes a literal code, and the boot spinner's 300 ms delayed reveal. Commits 8f4b5af, 28af36b and 4dfa5ef on r16-wp04; HEAD detached.
+- Tests: Each new test fails without its fix. typecheck, lint, gates (178 axes), check:types, build, docs:check, check_version, check_ci_contract, check_docs and build_app_knowledge --check all pass. Entry 323,288 B (build:app). test:strict gave 8,883 passed, 1 skipped, 7 failed: load timeouts in 6 unrelated files, which passed 256 of 256 alone. pytest gave 13,143 passed, 24 skipped and the 5 known sandbox failures, which pass 55 of 55 with the proxy and AWS variables unset. decide() and risk.py are untouched.
+- Status: done.
+- Next: WP16 ratchets PRE_REVAMP_ENTRY_BYTES to the merged measurement and fixes the stale ui-standard sentence about the login identity canvas under prefers-contrast. It also removes the unused Tailwind keyframes and the stale --accent2 comment, and lowers the BrandingEditor grep baseline. WP17 replaces the two first-run sign-in screenshots and their alt text. WP15A decides whether the raw lowercase "invalid credentials" detail should become a sentence.
+
+### 2026-11-25 11:10Z - WP05 reviewer - Round 16 WP05 part 1 adversarial review
+- Context: independent review of r16-wp05 (9561830) against SPEC 3.8, 4.3 WP05, D1 to D3, D13, B52, B54 and Appendix C.
+- Did: confirmed the version move, the fragment-keeping /docs/0.1/ redirect pages, the plan range below 0.3.0, the identity repair and bootstrap refusals, the Apache-2.0 license and labels, the check_version guards, the Dependabot pins, B52 and B54. Proved each regression by reverting it once. Fixed three defects in a52b2b9: (1) 118 doc lines still named 0.1 as the running line ("This guide applies to Agentic SOC 0.1", page descriptions, "Version 0.1 runs one backend replica", "Known limits of 0.1"); they now say 0.2, the 0.1.x protocol sentences say updater protocol 1, and a new guard test reads the earlier lines from LEGACY_DOC_LINES; app knowledge corpus regenerated. (2) The release-guard tests depended on the live [Unreleased] holding notes and would fail after the frozen preparation empties it; each case now plants its own state. (3) The system update panel dropped focus on the page body when it closed; focus now returns to the top-bar control.
+- Tests: backend 13,176 passed, 24 skipped, 5 sandbox-only env failures. test:strict 8,888 passed, 1 skipped, 3 load timeouts that pass alone (108 of 108). typecheck, lint, gates, check:types, build (entry 329,240 B, inside the 330,104 B budget), docs:check, check_version, check_ci_contract, check_docs, build_app_knowledge --check, the docs bundle, theme, updater and bootstrap tests all pass. Live demo 48 of 48 checks in both themes at 1440x900 and 390x844, 0 console errors.
+- Status: done. r16-wp05 at a52b2b9, detached.
+- Next: WP05 part 2 adds the notes guard after WP07. WP18: docs/USAGE.md:69, HANDOFF.md:9, the AGENTS.md 0.1.13 sentences and "Version 0.1 adds only" (line 1129), ROADMAP.md:1020. WP17: the Help Center screenshot alt text and captions. WP19: refresh the build-info sample SHA in INSTALL.md and install.md.
+
+### 2026-11-25 11:50Z - WP01 reviewer - Round 16 contracts and foundations review
+- Context: independent adversarial review of WP01 (r16-wp01 at a441480, base cd9ed95) against the Round 16 SPEC (sections 3, 4.1, 4.3 WP01, 4.10, 5.1, Appendix C).
+- Did:
+  - Verified the shared contracts against the SPEC:
+    - RiskInputs, InvestigationView, the frame keys, TraceSpanDetail, the UsageDoc rate fields, the case events and usage pages, and Citation.case_number;
+    - the What's new prefs normaliser, publish_many and the review frame;
+    - the registry lifecycle, the store methods and the audit actions;
+    - the Console stubs and their props, and the types.ts mirrors (script check).
+  - Confirmed decide() and engine/risk.py are byte-identical to 3cd362c.
+  - Fixed one defect: explain_risk recorded a NaN or infinite asset criticality as 0, while compute_risk scored it as 100. It now records the clamped value. Regression test over NaN, plus and minus infinity and out-of-range values; it failed before the fix.
+  - Pinned the investigation frame test to the SPEC's literal key list.
+  - Demo smoke at 8913/5913 (light and dark; 1440x900 and 390x844): no visible change and no errors.
+- Tests:
+  - pytest: 13,200 passed, 24 skipped, 5 sandbox-only failures (55/55 with the proxy and AWS variables unset). Ruff fatal clean.
+  - typecheck, lint, gates and check:types clean.
+  - build: entry 329,101 B (+21 B).
+  - test:strict: 8,889 passed, 9 load timeouts in 7 files unrelated to WP01 (all 7 pass rerun alone), no stderr.
+  - check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done. Commits 28d65a4 and 8414d80 on r16-wp01; HEAD detached.
+- Next: WP14 (or WP03) adds detail and cost_basis to the Console TraceSpan mirror in pages/CaseDetail.api.ts. WP08 wires the registry. WP10 writes breakdown.inputs after WP15B's mapping.
+
+### 2026-11-25 12:15Z - WP15A reviewer - Round 16 security and access fixes, adversarial review
+- Context: independent review of WP15A (r16-wp15a, 7308595 from cd9ed95) against SPEC 4.3 WP15A, 3.3, 3.6, 4.1, 4.10, Appendix A and C, and the bug-hunt entries for B01, B70, B15 to B24, B51 and B55.
+- Did:
+  - Checked the full diff, ownership and copy. decide() and risk.py are untouched.
+  - Reverted 18 fix hunks one at a time; every regression test failed and then passed again.
+  - Ran the live demo (8911/5911) in both themes at 1440x900 and 390x844 and captured 26 screenshots.
+  - Fixed 5 defects on r16-wp15a, each with a regression test that failed before the fix (303f0e8):
+    - Users no longer removes an account's custom roles when the roles read is refused.
+    - Sessions says when the activity read failed.
+    - A refused single sign-on change says "Only a Super admin can change single sign-on."
+    - A Google account without hd takes its domain only from a verified email.
+    - An administrator turning MFA off clears the second-factor lock.
+  - Updated SECURITY.md and the authentication Help Center page, and regenerated the knowledge corpus.
+- Tests:
+  - pytest: 13,190 passed, 24 skipped, 5 sandbox-only failures; those four files pass 55 of 55 with the proxy and AWS variables unset.
+  - test:strict: 8,889 passed, 9 failed, 1 skipped. All 9 are load timeouts (load average 19 to 24) in files WP15A does not touch. On rerun, overview and drilldown pass and RunbookEditor passes with a longer timeout. Chat.earlier fails on the base tree too.
+  - typecheck, lint, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs, build_app_knowledge --check and ruff fatal pass. Entry 329,090 B.
+- Status: done. r16-wp15a at 303f0e8, HEAD detached.
+- Next:
+  - WP04: on the Login MFA step, return to the password step when the pending token is spent.
+  - WP15E: make the Security SSO editor read-only for anyone but a Super admin.
+  - WP18: drop "refresh rotation" from docs/reference/security.md, docs/reference/api.md and docs/ENVIRONMENT.md.
+  - Orchestrator: decide whether SSO role values may name custom roles (User.role is a UserRole).
+
+### 2026-11-25 13:04Z - orchestrator - Round 16 opening packages merged (WP15A, WP05 part 1, WP01, WP04, WP06)
+- Context: SPEC §4.8 merge steps 1 to 3 and 5: the opening packages and the two independent Wave 0 packages, each built in its own worktree and passed by an independent adversarial review.
+- Did: merged into claude/round16 in this order: WP15A (security and access, review 303f0e8), WP05 part 1 (0.2.0, repository identity, Apache-2.0, guards; review a52b2b9; the builder also built identity, license, Dependabot and guards, so part 2 is only the release-notes guard after WP07), WP01 (contracts and foundations; review 8414d80), WP06 (performance; review 727601c) and WP04 (sign-in page; review 4dfa5ef). The only conflicts were the generated knowledge corpus files; they, the OpenAPI snapshot, the generated API types and the console map were regenerated after each merge. Decisions recorded for later packages: SSO role values stay built-in roles only for 0.2.0 (WP16); RealESClient gains get_index_template so an upgraded Elasticsearch deployment stores recorded risk inputs (WP10); the sign-in step returns to the password step once a pending second-factor token is spent (WP16).
+- Tests: on the merged tree, backend full suite 13,320 passed, 29 skipped, 6 failed: the five known sandbox-only environment tests and one Round 13 chat starter timing test that dropped its case families at load average 15 to 19 and passes alone (WP16 checks it). The 29 changed Console test files pass (379 tests). check:types no drift; build_app_knowledge --check current (980 chunks); check_version (app 0.2.0, docs 0.2); fatal ruff clean; typecheck clean; build:app entry 323,479 B (5,601 B under the 329,080 B baseline). decide() and engine/risk.py unchanged since cd9ed95.
+- Status: done.
+- Next: merge WP15B and WP15C once their reviews finish (WP15B passed review at ffcff82), then WP07 and WP05 part 2, WP15E part 1, and start Wave 1 (WP08, WP13, WP15D, WP15G) from the merged base.
+
+### 2026-11-25 11:40Z - WP15B agent - Pipeline, ingest and job spine fixes
+- Context: Round 16 SPEC section 4.4 WP15B, bugs B04 to B12, B14 and B33, plus the section 3.4 cases mapping, on a worktree branch from the WP01 commit a441480.
+- Did: a decided or person-moved open case is attach-only in register_candidate, handle_clusters, unforced runs (with an audit row), the drain, the event-detection re-entry and the Demo funnel (B04, B05). state.cluster_for_case delegates to engine.case_cluster with stored reconstruction (B06). New Preferences.widest_correlation_window_seconds() for the poller and push look-backs (B07). ThresholdAutomation.run(fetch=) merges only its own changes onto the stored case (B08). Rebuilds carry automation_actions and the cross-source link fields, and link_cross_source(pipeline=) writes links to a fresh read under the signature lock (B09). The lookup runs before the failure boundary (B10). New list_deferred_candidates on Elasticsearch, SQL and the base, and the drain asks for max(50, 2 x limit) (B11). A failed run keeps its cost and adopts the ledger total (B12). A failed reinvestigate item fails (B14). The LEEF EventID is no longer an event id (B33). CASES_MAPPING gains risk_breakdown.inputs (enabled false) and awaiting_reason, extend_cases_mapping runs at bootstrap, and the case store leaves inputs out when that cannot be proven. deploy/mappings regenerated.
+- Tests: new tests/test_round16_wp15b_spine.py (29) with each regression shown failing on the base, test_round15_wp1_carry.py extended (19), the drain contract test updated. Related subset 692 passed. Full suite: 5 known sandbox failures and 2 load-sensitive chat starter tests that pass alone. ruff fatal clean. check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done, committed 492705e on r16-wp15b, detached.
+- Next: WP18 adds the push look-back limitation to known-limitations.md and the cases index to the additive bootstrap exceptions. WP08 adds the attach_cluster case-lock hunk after this merge. WP15D can pass fetch= at the Demo seeding automation call.
+
+### 2026-11-25 12:50Z - WP15C agent - Metrics, SLA and time-window fixes
+- Context: Round 16 SPEC 4.4 WP15C, bugs B02, B03, B26 (with B58), B39, B59, B60, B68. Built on r16-wp15c from WP01 (a441480).
+- Did: backend/app/engine/metrics.py: new pure sla_case_reading (SlaCaseReading, SlaClockReading) plus first_human_response and SLA_AT_RISK_FRACTION. sla_metrics now counts its readings: the response clock stops at the earliest human response or, for a terminal case, at its close at the latest; the resolution clock follows _resolved_dt. compute_metrics MTTR uses the first terminal transition over resolved and closed cases. shift_report.py: sla_aging(prefs=) resolves the level like posture and stops at the first human response; prefs is threaded through headline_counts and build_shift_report; attention rows carry created_at except in the standup model aggregate. chat_starters.py: the two sla_aging calls pass prefs. case_aggregate.py: other.groups_counted, used by routes_metrics.py. chat_tools/cases.py: shift-brief items carry created_at. utils.py and routes._millis_to_iso clamp out-of-range instants. chat_feedback.py compares instants and routes_chat_library.py answers 422 invalid_since. Updated three existing tests (starter and golden fixtures now project to P3; the exact other dict) and added tests/test_round16_wp15c_metrics.py.
+- Tests: full pytest 13,239 passed, 24 skipped, 7 failed. Of those, 5 are the sandbox-only env tests (55/55 pass with proxy and AWS vars unset), 1 was the other-dict shape test (updated, passes) and 1 is a time-dependent shift-start starter test that passed on rerun. All new tests pass and fail before the fix. ruff fatal, check:types, check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done, committed a21b584 on r16-wp15c; worktree detached.
+- Next: WP10 builds sla_reading.py on metrics.sla_case_reading. WP12 updates the Metrics.tsx MTTR tile copy ("resolved or closed"). WP18 writes the Help Center and CHANGELOG text from this report.
+
+### 2026-11-25 13:10Z - WP15C reviewer - Metrics, SLA and time-window review
+- Context: Independent adversarial review of Round 16 WP15C (B02, B03, B26 with B58, B39, B59, B60, B68) on r16-wp15c, built from WP01 (a441480).
+- Did: Checked the diff against SPEC 4.4 WP15C, 3.x, 4.1, 4.10, Appendix A, C9, C20 and the bug-hunt details. All seven fixes meet their contracts. Ownership is respected, apart from one module docstring line in metrics.py. decide() and risk.py have an empty diff; no model call, no new storage. Revert checks prove each regression test fails on the base source. The builder's B39 fence-size claim reproduces. Fixed two 500s the package introduced: metrics._sla_clock due_at overflow on a very large SLA target, and chat_feedback._instant overflow on year 1 or year 9999 instants with an offset. Both now clamp, each with a regression test (5 new tests). Commit 805257f.
+- Tests: WP15C file 51 passed. Full backend suite 13,245 passed, 24 skipped, 6 failed: the 5 sandbox env tests (55/55 with proxy and AWS vars unset) and one starter test that timed out under load and passed 3/3 on rerun. ruff fatal, check:types, check_version, check_ci_contract, check_docs and build_app_knowledge --check pass. No webui gates run: no webui change.
+- Status: done; worktree detached at 805257f.
+- Next: WP12 fixes the Metrics.tsx MTTR copy and the "SLA breached" definition in kpi-bindings.ts (response target only). WP10 builds sla_reading.py on metrics.sla_case_reading. WP18 uses the corrected Help Center text.
+
+### 2026-11-25 13:20Z - WP15B reviewer - Independent review of the pipeline, ingest and job spine fixes
+- Context: adversarial review of r16-wp15b (492705e, from the WP01 commit a441480) against Round 16 SPEC §4.4 WP15B, §3.4 and Appendix C.
+- Did: confirmed B04 to B12, B14 and B33 fixed. Each regression test fails with its fix reverted, and the bug-hunt probes give the fixed result. Fixed three defects in ffcff82. (1) The B05 attach-only guard now applies to automated-scan runs only, so the Investigate page (POST /api/investigate, not forced) runs again on a candidate a person escalated. (2) The deferred query on Elasticsearch, SQL and the base scan leaves out candidates a person acted on, so they can never fill the drain's page; tested on SQLite and on a real PostgreSQL 16. (3) The cases-mapping warning on the shipped Elasticsearch client now names the template it cannot read, and the bootstrap_indices docstring names the three additive contracts. decide(), engine/risk.py and engine/signatures.py unchanged.
+- Tests: full backend suite 13235 passed, 24 skipped, 6 failed. Five are the known sandbox environment tests; one is a chat starter test that timed out under load and passes alone. ruff fatal clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass; banned-character scan 0.
+- Status: done, committed ffcff82 on r16-wp15b, detached.
+- Next: WP10 or WP16 decides how upgraded Elasticsearch deployments store recorded risk inputs: the shipped client has no get_index_template, so they are always left out there. WP18 adds the push look-back limitation and the cases-index bootstrap exception. WP08 or WP15D passes fetch= at the Demo seeding automation call.
+
+### 2026-11-25 13:16Z - orchestrator - WP15B and WP15C merged
+- Context: SPEC §4.8 merge step 4: the pipeline, ingest and job spine fixes (WP15B, review ffcff82) and the metrics, SLA and time-window fixes (WP15C, review 805257f), both built from the WP01 build commit and passed by an independent adversarial review.
+- Did: merged both into claude/round16 with no conflicts; the generated files are unchanged. Carried forward: the dashboard "SLA breached" definition counts the response target only (kpi-bindings, WP12 or WP16), the Operational MTTR context copy (WP12), WP10 builds sla_reading on metrics.sla_case_reading and renders an unrepresentable due time as not due, the Demo seeding automation call passes fetch= (WP15D), and the push look-back limitation and the cases index bootstrap exception go to known limitations and AGENTS (WP18).
+- Tests: on the merged tree, the WP15B and WP15C test files plus the route coverage, security, decide guard, spine guard and record provenance tests: 933 passed. build_app_knowledge --check current, generated API types unchanged, fatal ruff clean. decide(), engine/risk.py and engine/signatures.py unchanged since cd9ed95.
+- Status: done.
+- Next: start Wave 1 (WP08, WP13, WP15G, WP11) from this base; merge WP07, WP05 part 2 and WP15E part 1 after their reviews; WP02 then WP03 merge after WP10 per §4.8.
+
+### 2026-11-25 12:20Z - WP15E part 1 builder - Demo sources read-only in the wizard, truthful Make primary (B43, B46)
+- Context: Round 16 SPEC 4.4 "WP15E, part 1" with the B43 and B46 contracts in 4.5 WP15E and 3.2 (Demo Mode). Base df0c61b, branch r16-wp15e1.
+- Did: added `_refuse_demo_source_write` to backend/app/api/routes.py and called it from `upsert_source`, `delete_source` and `set_source_secrets`. While Demo is active, a write to a Demo overlay id gets `409 source_demo_readonly`; real-source adds stay allowed. The wizard Data sources step shows Demo rows as "Managed by Demo Mode" with no actions. Make primary shows only for a pull source on Sources and in the wizard, and both toast success only when the returned list confirms it; otherwise they say "Only a pull source can be the primary source." The shared rules are in the new webui/src/soc/pages/sources-primary.ts. Entry grew 512 B (329,271 B to 329,783 B), inside the budget.
+- Tests: new test_round16_source_demo_readonly.py (3), Wizard.sources.round16.test.tsx (4) and a B46 block in Sources.test.tsx (3); each regression failed before its fix. Backend combined 13,275 passed, 24 skipped, 5 sandbox-only failures. Strict Vitest timed out under machine load; the cut-off files were rerun, and the remaining failures were load timeouts that pass with a longer test timeout, zero stderr. Lint, gates, check:types, the full build, check_version, check_ci_contract, check_docs and build_app_knowledge --check all pass.
+- Status: done; commit fa852d0 on r16-wp15e1, worktree detached.
+- Next: WP15E part 2 (B36, B37, B44, B45, B49, B53, B56, B57). WP18 adds the Help Center sentences below. Whoever takes SourceEditor.tsx should note its own manifest-based primary switch.
+
+### 2026-11-25 13:45Z - WP15E part 1 reviewer - Demo sources read-only and truthful Make primary reviewed (B43, B46)
+- Context: Independent adversarial review of r16-wp15e1 (builder commit fa852d0 on df0c61b) against Round 16 SPEC 4.4 "WP15E, part 1", the B43 and B46 contracts in 4.5 WP15E, and 3.2.
+- Did: Confirmed both contracts, the ownership rules, and that decide() and risk.py are unchanged. Proved each regression test fails without its fix. Checked the live demo in both themes at 1440 and 390, with Demo on and off. Fixed one defect in 3d8eb5e: after Make primary worked, a failed list reload in the wizard showed "The source change was not applied" next to the success toast. It now says "The list didn't refresh" with Reload list, as a removal does. Added a backend test that sends the exact B43 Make primary body for the Demo Wazuh source. Before the fix it got 200 and was saved live; now it gets 409 and prefs.sources is unchanged.
+- Tests: Backend 13,305 collected: 13,276 passed, 24 skipped, 5 sandbox-only failures, which pass 55 of 55 with the proxy and AWS variables unset. Strict Vitest: 677 of 683 files passed; the 6 load-timeout files pass with one worker and a 30 s timeout, with no stderr. Typecheck, lint, gates, check:types, build (entry 329,919 B, 839 B over the baseline, inside the 1,024 B budget), check_version, check_ci_contract, check_docs, build_app_knowledge --check and the fatal ruff check all pass.
+- Status: done; r16-wp15e1 at 3d8eb5e, worktree detached.
+- Next: WP15E part 2. Two open items: SourceEditor.tsx's manifest-based Primary switch has no owner. A real source added from the wizard while Demo is on is saved but never appears in the list.
+
+### 2026-11-25 13:22Z - orchestrator - WP15E part 1 merged
+- Context: SPEC §4.8 merge step 7, taken before WP07 (still in review) because the two touch different files: B43 (Demo sources read-only in the wizard and the backend 409 source_demo_readonly) and B46 (Make primary only for pull sources, toasted only when the response confirms it).
+- Did: merged review 3d8eb5e into claude/round16; the knowledge manifest was regenerated. Carried to WP15E part 2: the SourceEditor Primary switch reuses canBePrimary, and a real source added while Demo is on gets a note that it appears after Demo Mode is turned off.
+- Tests: on the merged tree, the new Demo read-only backend test with the route coverage and knowledge tests 239 passed; the Sources and wizard Vitest files 40 passed; build_app_knowledge --check current.
+- Status: done.
+- Next: WP07 and WP05 part 2 after the WP07 review; Wave 1 (WP08, WP13, WP11, WP15G) is building from 5a4ec90.
+
+### 2026-11-25 13:20Z - WP07 implementer - What's new and the Communication page
+- Context: Round 16 SPEC section 4.4 WP07 (D5, D7; [wn] R1 to R4, R6, R8, R9). Built on df0c61b.
+- Did: added the release-notes schema 1 and the stdlib generator scripts/build_release_notes.py with --check and 16 unit tests. It writes webui/src/soc/whats-new/release-notes.gen.json, backend/app/whats_new_latest.json and docs/releases/whats-new.md. Added the 0.2.0 notes skeleton: 8 dated updates, 41 highlights and the 0.1.2 to 0.1.13 records, with no screenshots. The Help Center page is in the nav and in chat's product-help corpus, with date-only update headings so it never outranks a topic page. The Notifications nav group is now Communication, holding Inbox and the lazy What's new page. The welcome dialog shows once per update, storing misc.whats_new_seen audit-first through PUT /api/prefs/user. The personal switch is on the page and in Settings, Appearance. Three account-create paths stamp new accounts. prefs gains `loaded`, and patchMisc resolves a boolean. The release badge links to What's new. CI gained a docs-lane step and a wheel data check. Updated the USAGE and ui-standard hunks.
+- Tests: full backend suite gave 13,289 passed, 24 skipped and 9 failed. Five were the known sandbox tests, two were knowledge-retrieval regressions (fixed; the subset then passed 598 of 598) and two were time-bound tests under load. test:strict failed 33 of 8,983 under load 15 to 22. Two were real and fixed: the lazy fallback and the palette label. Every other failing file passes when run alone. Build clean; entry 330,078 B against a 330,104 B budget. lint, gates, docs:check, check_docs, check_version, check_ci_contract and both --check runs pass.
+- Status: done; committed 3a5e036 on r16-wp07, worktree detached.
+- Next: WP17 writes the real notes content, featured highlights and WebP screenshots in docs/assets/releases/0.2.0/, and decides on a 0.1.1 notes file. WP05 part 2 reads the notes skeleton in check_version.py. Someone who owns mkdocs exclude_docs should decide whether docs/releases/notes/ stays in the Help Center bundle. Docs.tsx "Release notes" still links to releases/0.1/ (WP05).
+
+### 2026-11-25 14:20Z - WP07 reviewer - What's new review fixes
+- Context: Independent review of Round 16 WP07 (3a5e036 on r16-wp07, base df0c61b) against SPEC section 4.4 WP07, sections 3.1, 3.5, 3.6, 4.1 and 4.10, D5, D7, C14, C35, C37 and the [wn] design, with live checks in the seeded demo (8923, 5923) in both themes at 1440 by 900 and 390 by 844.
+- Did: confirmed and fixed four defects, each with a test that fails without its fix. (1) "See all changes" marked nothing "New to you": under StrictMode the page read and cleared the dialog's marker hand-off in one call, so the second render got nothing; it now reads while mounting and clears once mounted (notes.ts, pages/WhatsNew.tsx). (2) "Show the welcome screen" sent focus to #socMain on close; focus now returns to the button that opened it (WhatsNewHost.tsx, WhatsNewDialog.tsx). (3) The screenshot lightbox had no Radix trigger, so closing dropped focus to the body; the enlarge button is now its DialogTrigger (ReleaseFigure.tsx, new ReleaseFigure.test.tsx). (4) The notes generator read prose such as "your data: CSV" as a raw URL; a scheme now counts only when text follows its colon at once (build_release_notes.py). The rest of the package passed: owned files only, decide() and risk.py byte-identical, welcome once for the seeded Admin, no welcome for a new account, deep-link deferral, audit row, failure states.
+- Tests: backend full suite 13,293 passed, 24 skipped, 5 known sandbox-only failures; test:strict 688 files, 8,987 passed, 1 skipped, zero stderr; lint, typecheck, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs, build_app_knowledge --check and build_release_notes --check all pass. Entry 330,078 B, unchanged by the fixes.
+- Status: done; committed dc63ab1 on r16-wp07, worktree detached.
+- Next: WP07's entry growth is 807 B (base 329,271 B measured), over the SPEC's 700 B WP07 figure but inside the round's 1,024 B budget; about 120 B is Vite bookkeeping for the What's new and shared docs-url chunk names. WP16 or the orchestrator decides. The welcome can open over the What's new page itself after the badge link; harmless, left as is. Boot now consumes the prefs context for the wizard stamp, so the routed page re-renders on each prefs change; a performance nit for WP16.
+
+### 2026-11-25 14:04Z - orchestrator - WP07 What's new and Communication merged
+- Context: SPEC §4.8 merge step 6, first half: the release-notes schema and generator, the 0.2.0 notes skeleton, the Communication group with Inbox and What's new, the once-per-update welcome and the creation stamp (D5, D7).
+- Did: merged review dc63ab1 into claude/round16; the knowledge corpus (994 chunks) and manifest were regenerated. Decision: WP07's 807 B entry growth against the SPEC's 700 B package figure is accepted (the gate alone is 359 B; the rest is preload bookkeeping for the two chunks the design needs), the round budget holds and WP16 ratchets the baseline; SPEC §8.1 records it.
+- Tests: on the merged tree, the WP07 and related backend tests (with knowledge, route coverage, release guards and records) 299 passed; the changed Console test files with the first-paint bundle check 347 passed, 1 skipped; build_release_notes --check current; check:types no drift; typecheck clean; build:app entry 324,931 B.
+- Status: done.
+- Next: WP05 part 2 (the notes guard, the mkdocs exclusion of docs/releases/notes/ and the Docs Release notes link); Wave 1 continues.
+
+### 2026-11-25 10:45Z - WP02 agent - Case Manager queue and frame
+- Context: Round 16 SPEC 4.4 WP02: reclaim the route's top band and calm the queue ([cmux] R1 frame part, R7, 5.2 focus mode, 5.9 empty pane).
+- Did:
+  - Frame (webui/src/soc/pages/CaseManager.tsx): no routed PageHeader; an sr-only h1; board `-my-2 h-[calc(100dvh-5.5rem)]` on a 16px inset on every side.
+  - Band row 1: scope, Live, Refresh, view menu and the About tip. Below a 400px queue, Refresh and About move into the view menu. AiQueueNotice is mounted as a third line that takes no space while empty.
+  - Rows: a 40px leading slot that shows the severity glyph and becomes the checkbox on hover, on focus, with any selection, during a bulk job, and on touch screens. Neutral "Risk N" wrapped in RiskExplain row. AiRunMark in the status node; aiRunAccessibleText in the row's accessible name.
+  - `[` focus mode with a 44px strip; J and K work while the queue is folded; the choice is saved in soc.caseManager.queueCollapsed.
+  - Default queue width clamped to 340 to 520px.
+  - "No case open" pane with up to three counted shortcuts.
+  - The shortcuts sheet lists only usable keys, and its tab keys follow CASE_TABS.
+  - The below-xl back bar hides when the case header marks its own Back with data-case-header-back.
+  - Also: route-visual-standard matched pair; the ui-standard Queue and detail workspaces section; docs/research/2026-11-round16/acceptance/measure-case-manager.mjs.
+- Tests:
+  - CaseManager.test.tsx: 102 (17 new).
+  - test:strict: 681 files, 8,915 passed, 1 skipped.
+  - typecheck, lint, gates, check:types and build are clean; entry 329,101 B (delta 0).
+  - pytest: 13,195 passed, 24 skipped, 5 sandbox-only env failures.
+  - Measured on the seeded demo: frame top 72 and band 92 at 1440x900 and 390x844.
+- Status: done; commit 1abda6a on r16-wp02, worktree detached.
+- Next:
+  - WP03: mark the header Back with data-case-header-back.
+  - WP16: add the `]` row to caseManagerShortcuts.
+  - WP09: keep AiQueueNotice to one 16px line; no trailing separator in AiRunMark.
+  - WP18: Help Center text from the report.
+
+### 2026-11-25 12:55Z - WP03 sub-agent - Case detail structure: compact header, lanes, inspector
+- Context: Round 16 WP03 (SPEC D8, section 4.4, B27, B28, C60), on branch r16-wp03 from the WP01 commit a4414807b0.
+- Did: Six case tabs (Brief, Evidence, AI investigation, Response, Activity, Chat) on Alt+1 to Alt+6. Old tab and section links now open their new tab (router hunk). A 118px header: 44px title row, a 24px meta strip that never wraps, 36px compact tabs (new `density` prop on ui/tabs). ReviewBand moved out of the header. The inspector is a column beside the tabs from a 52rem pane, toggled with `]`, with six sections kept per viewer. The Brief has a next step row, four lanes and the new DecisionLane. New EvidencePanel. The AI investigation tab is a lane with an advisory line, the findings-to-events filter and the trace opening during a run. Response shows tasks for everyone. Mounted the WP01 stubs: ReinvestigateDialog, AiRunChip, the explainers, AwaitingReason, AllFieldsSheet, CaseUsageButton, CaseEvents and FindingsList; the close dialog gets caseIds. B27 is fixed: the page reads prefs.auto_close through policyForVerdict. B28 is fixed: the editor opens after the menu closes. C60 is fixed: Case detail and Investigate read settings only with settings:read. Updated the ui-standard Case header and Case tab bodies paragraphs and G17.
+- Tests: typecheck, lint, gates, check:types and the build are clean (entry 329,306 B, inside 330,104). The strict Vitest run covered all 686 files across two runs; load timeouts passed on rerun with zero stderr. Backend: 13,188 passed, 24 skipped, 12 failed (5 round15 docs pins expected red, 5 sandbox env, 2 load timing that pass alone). Each fix was proved by reverting it.
+- Status: done. Commit 454bea1ec16f4c3377a6d260bd767e96f74fc342; worktree detached.
+- Next: WP18 rewrites the docs pinned by test_docs_round15_records.py and docs/analyst/case-manager.md (Alt+1 to Alt+6). WP02 or WP16 removes the CaseManager phone back bar so the phone first block reaches 210px. WP14 fills the records stubs. WP11 adds the I key. The runbooks owner deletes the now unmounted RunbookRail and OverviewNextStep.
+
+### 2026-11-25 13:40Z - WP02 reviewer - Case Manager queue and frame review
+- Context: Independent review of Round 16 WP02 (SPEC 4.4) on r16-wp02 (base a4414807b0, builder commit 1abda6a).
+- Did:
+  - Checked the diff against SPEC 4.4, 3, 4.1, 4.10, 5.1 and C31, C32, C37, C40.
+  - The contract is met: no PageHeader, an sr-only h1, frame top 72 and band 92 at both sizes, the 40px glyph and checkbox slot, neutral Risk with RiskExplain row, AiRunMark in the status node, AiQueueNotice mounted, `[` focus mode, the 340 to 520 clamp, "No case open" shortcuts, a truthful shortcuts sheet.
+  - Ownership respected; decide() and risk.py untouched.
+  - Fixed four defects in commit f65c615 (webui/src/soc/pages/CaseManager.tsx and its test):
+    - strip Previous and Next use aria-disabled, so focus is not dropped at an end;
+    - closing the case while the queue is folded lands focus on Show queue;
+    - the empty pane offers no shortcut during the first load or a queue error, and counts are re-read each time it shows;
+    - the AI notice wrapper's 4px gap moved to a child with content, so an empty live region keeps the band at 92px.
+  - Each fix has a test; the three behaviour tests were proven failing with their fix reverted.
+- Tests:
+  - CaseManager.test.tsx: 105 passed.
+  - The CaseManager-importing files: 240 passed.
+  - typecheck, lint, gates, check:types and build are clean; entry 329,101 B (delta 0).
+  - pytest: 13,195 passed, 24 skipped, 5 sandbox-only env failures.
+  - test:strict was killed by my 40-minute timeout under shared-machine load (unrelated 5,000 ms timeouts). The CaseManager files pass. The three unrelated files re-run serially with a longer timeout pass (144). Four other timed-out files were not re-run, so a clean full test:strict is still owed.
+- Status: done; r16-wp02 at f65c615; worktree detached.
+- Next:
+  - WP09: AiQueueNotice content is at most one 16px line. aiRunAccessibleText returns a bare phrase, and AiRunMark adds no separator.
+  - WP03: mark the header Back with data-case-header-back.
+  - WP16: add the `]` row to caseManagerShortcuts; run a clean test:strict on the integrated tree.
+
+### 2026-11-25 14:20Z - WP03 reviewer - Case detail structure review and fixes
+- Context: Independent adversarial review of Round 16 WP03 (branch r16-wp03, builder commit 454bea1 on a4414807b0) against SPEC D8, section 4.4, B27, B28 and C60.
+- Did: Read the diff against the SPEC. Re-proved the B27, B28 and C60 regression tests by reverting each fix. Checked the seeded demo in both themes at 1440x900 and 390x844: axe, loading, error, keyboard and focus, a review sample, and geometry with WP02's frame applied locally. Fixed four confirmed defects on r16-wp03 (aec5a60), each with a test that fails without the fix: (1) T and "Edit tags" did nothing while the Tags and campaign section was folded; (2) the tag editor opened off screen below the inspector column's fold; (3) Back carried no `data-case-header-back` marker, so WP02's phone back bar stayed and first content sat at 247px; with the marker it is at 207px with one Back; (4) the related-cases link in the inspector sheet lost focus to the toggle on close. Added policyForVerdict and confidenceCalibration unit tests and one ui-standard sentence.
+- Tests: typecheck, lint, gates, check:types and the build are clean (entry 329,306 B, unchanged). test:strict: 686 files, 8,960 passed, 1 skipped, zero stderr. Backend: 13,190 passed, 24 skipped, 10 failed (5 Round 15 docs pins expected red for WP18, 5 sandbox environment). Spine guards pass. check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done. r16-wp03 is at aec5a60; the worktree is detached.
+- Next: WP02 or WP16 should list `]` (inspector) and W (watch the AI run) in caseManagerShortcuts so `?` stays true. WP18 rewrites the five docs pinned by test_docs_round15_records.py. The "(before Round 14)" labels live in caseActivityText.ts and audit/events.ts and need their owner's copy pass.
+
+### 2026-11-25 14:13Z - orchestrator - WP02 and WP03 merged (Case Manager queue, frame and case detail)
+- Context: SPEC §4.8 step 10. Taken before WP10 rather than after it: WP03 reads the triage fields through WP01's types and degrades when they are absent, and WP09, WP14, WP15E part 2 and WP15F all need WP02 and WP03 in their base. SPEC §8.1 records the reorder.
+- Did: merged WP02 (review f65c615) and WP03 (review aec5a60) into claude/round16 with no conflicts; generated files unchanged. Carried to WP16: add the ] and W rows to caseManagerShortcuts, re-measure the integrated geometry with measure-case-manager.mjs (207 px first content with one Back on a phone), remove the now unmounted RunbookRail and OverviewNextStep, and the "before Round 14" runbook labels in caseActivityText.ts and audit/events.ts that still say Round in Console copy. The five Round 15 records tests in test_docs_round15_records.py that pin the five-tab layout are expected red under D8 until the case tab docs are rewritten (a small docs package follows now, ahead of WP18).
+- Tests: on the merged tree, the 30 changed Console test files with the first-paint, route registry, navigation and console map contracts: 700 passed, 1 skipped; typecheck clean; lint clean; design gates pass; check:types no drift; route coverage, knowledge, records and spine guard backend tests 259 passed; build:app entry 325,135 B.
+- Status: done.
+- Next: the case tab docs package, WP05 part 2, then Wave 1 merges as reviews finish.
+
+### 2026-11-25 15:30Z - WP13 agent - Case records reachable: backend
+- Context: Round 16 SPEC section 4.5 WP13 ([dv] R2, R3, R7 backend, DV-6), built from base 5a4ec90 on r16-wp13.
+- Did:
+  - Added routes_case_events.py: GET /api/cases/{case_id}/events (cases:read and sources:read). It reads fetch_by_ids on the read-only client, keeps only member keys, pages with an offset cursor (limit 1 to 200) and says aged_out, push_source_not_retrievable or source_unavailable. It writes one case.events_viewed audit row per viewer per case per 10 minutes (Demo audit in Demo Mode).
+  - Added routes_case_usage.py: GET /api/cases/{case_id}/usage (cases:read and cost:view). It returns the case's ledger rows, the pipeline, chat and other totals, and reconciles against token_cost.
+  - The gateway now writes the four rates, cache_write_ttl and price_basis on every ledger row, from the same price lookup as the cost. Added pricing.rates_for; cost_for is unchanged.
+  - Threat context IP rows now list providers, method, errors and providers_status from the same enrich_ip call. A cached IP answer keeps its provider results under their own key.
+  - DV-6 comment fixed. Regenerated openapi.json and api-types.gen.ts.
+- Tests: 42 new backend tests pass. Full pytest: 13,489 collected, 7 failed (2 expected router-count, 5 sandbox env). test:strict: 8,895 passed, 4 load timeouts that pass alone. check:types, typecheck, lint, gates and build:app pass; entry chunk 323,479 B.
+- Status: done; commit c687b75.
+- Next:
+  - WP14 builds the Console on these routes.
+  - WP18 moves the router count to 46 after WP08.
+  - WP10 or WP14 should decide whether case.events_viewed rows belong in the investigation trace.
+
+### 2026-11-25 17:00Z - WP13 reviewer - Case records reachable: backend review
+- Context: Independent adversarial review of Round 16 WP13 (SPEC section 4.5; [dv] R2, R3, R7, DV-6), branch r16-wp13 at c687b75, base 5a4ec90.
+- Did:
+  - Checked the events route, the usage route, the ledger rate fields, the threat context provider fields and the DV-6 comment against the SPEC and the non-negotiables. decide() and risk.py are untouched.
+  - Fixed two defects in c42271e:
+    - A self-hosted model registered through the custom-model route gets a $0 overlay row, so its ledger rows said price_basis "overlay". The gateway now reads a $0 overlay on a registered model as "custom".
+    - The events cursor check used str.isdigit, so a superscript digit gave a 500 and a long cursor gave a 422. A cursor is now one to nine ASCII digits, and anything else is 400 case_events_bad_cursor.
+  - Corrected the usage route docstring on the 1e-8 rounding.
+  - Regenerated openapi.json.
+  - Added tests/test_round16_wp13_review.py (13 tests). Without the fixes, 5 of them fail.
+  - Probed seeded Demo Mode: 30 of 47 Demo cases read aged_out (their member events are not in the Demo adapters). No Demo case has ledger rows yet (B48, WP15D).
+- Tests:
+  - Full pytest: 13,502 collected; 13,465 passed, 29 skipped, 8 failed (2 expected router-count, 5 sandbox env, 1 chat starters timeout under load that passes alone).
+  - check:types, typecheck, lint, gates and build:app pass; entry chunk 323,479 B.
+  - test:strict under load: 29 load failures in 20 files, which pass when rerun with a longer timeout.
+  - check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done; r16-wp13 at c42271e, worktree detached.
+- Next:
+  - WP14: when truncated, read the usage chat and other totals as "at least". Offer next_cursor even when a page says aged_out.
+  - WP15D: seed Demo cases whose events the Demo adapters hold, and seed the B48 ledger rows.
+  - WP18: move the router count to 46 after WP08 merges.
+
+### 2026-11-25 17:00Z - orchestrator - WP13 merged (case records reachable, backend)
+- Context: SPEC §4.8 step 9: GET /api/cases/{id}/events and /usage, the ledger rate fields and price basis, and the threat context provider detail.
+- Did: merged review c42271e into claude/round16 with no conflicts; generated files unchanged. Carried to WP15D: 30 of 47 seeded Demo cases answer aged_out for their events and Demo cases have no ledger rows (B48), so the Demo shows real events and usage before WP17's screenshots.
+- Tests: on the merged tree, the WP13 tests with route coverage, security, spine and decide guards: 169 passed. decide() and engine/risk.py unchanged.
+- Status: done.
+- Next: WP14 (case records Console) starts from this base.
+
+### 2026-11-25 15:10Z - WP15G agent - Chat and local-model fixes
+- Context: Round 16 WP15G (SPEC section 4.5). Fix bugs B38, B40 and B42 and [oss] B1 and B3, and take the WP01 carry-forwards (ChatCitation.case_number, the get_case producer, the Sources label).
+- Did: The conversation export names a log source by the server's _scope_for rule: recorded step sources, else the turn source when search_logs or log_stats ran, else none (model.ts answerSources). The Delete conversation dialog mentions the report only when report_id is set (Chat.tsx). get_case passes case_number; ChatCitation and normaliseCitation carry it; SourcesDisclosure shows the number and keeps case_id as the target and hover text. providers.py adds openai_api_root() and _openai_base(), so the openai and openai_compatible clients strip one trailing /v1 and slash; the stored URL stays as typed. The Models dialog now gives host.docker.internal examples and the Linux host-gateway note. New tests: backend/tests/test_round16_wp15g_chat_local_models.py and webui/src/soc/chat/__tests__/round16-wp15g.test.tsx, plus cases added in Chat.test.tsx and Models.custom.test.tsx.
+- Tests: Each fix's test fails when the fix is reverted. Backend full suite: 13,434 passed, 29 skipped, 6 failed (the 5 sandbox-only tests, which pass 55 of 55 with the proxy and AWS variables unset, and the load-sensitive chat starter timing test, which passes alone). test:strict: 8,921 passed, 1 skipped, 1 load-timeout failure in Runbooks.management, which passes 24 of 24 alone; no stderr. typecheck, lint, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs, build_app_knowledge --check and ruff fatal pass. Entry 323,479 B (no change). Seeded demo at 1440x900 and 390x844 in both themes: 12 screenshots, 0 console errors.
+- Status: done on r16-wp15g at 20e911b, HEAD detached.
+- Next: Owners outside WP15G: the noise funnel generated_at in agents/chat_tools/metrics.py (should be population.generated_at); case-snapshot.ts sourceLine for case numbers; the ui-standard.md:971 and useChatConversations.ts:336 wording for B40; the Help Center local model text.
+
+### 2026-11-25 17:20Z - WP15G reviewer - Chat and local-model fixes reviewed
+- Context: Independent adversarial review of Round 16 WP15G (SPEC section 4.5) on r16-wp15g, built from 5a4ec90. Covers B38, B40 and B42, [oss] B1 and B3, and the WP01 carry-forwards.
+- Did: Checked the diff against the SPEC, the bug hunt and the oss research. The five contracts are met, the edits stay in owned files and the two allowed hunks, and decide() and engine/risk.py are unchanged. Proved each regression by reverting its fix. On the seeded demo, in both themes at both sizes: the CASE-000048 chip opens the case by its internal id; the delete dialog names a report only when one exists; exports of case-store answers carry no "Sources queried" line. Fixed four defects on r16-wp15g. c9f846f: the Models hint says "on the Docker host" instead of "this computer", says to put the Linux host-gateway step in a Compose override file because the base file is pinned, and is now the Base URL field's accessible description. 7ed7aba: a complete_stream test covers the streamed chat call for B1.
+- Tests: WP15G backend file 26 passed. Full backend run: 13,438 passed, 29 skipped, 6 failed: the 5 sandbox-only tests (55 of 55 with proxy and AWS unset) and one timing bound that passes alone. test:strict at load average 20: 8,884 passed, 1 skipped, 39 load timeouts in 21 untouched files, and every one of those files passes on rerun. typecheck, lint, gates, check:types, build:app, build, docs:check, check_version, check_ci_contract, check_docs, build_app_knowledge --check and ruff fatal pass. Entry 323,479 B, no change.
+- Status: done on r16-wp15g at 7ed7aba, HEAD detached.
+- Next: Owners outside WP15G:
+  - noise funnel generated_at in agents/chat_tools/metrics.py;
+  - case_id in case-snapshot.ts sourceLine;
+  - B40 wording at ui-standard.md:971 and useChatConversations.ts:336;
+  - localhost example in the routes_models.py base_url 400 detail;
+  - focus that falls to the page body after Cancel in any useConfirm dialog (WP15F);
+  - Help Center local-model text (WP18).
+
+### 2026-11-25 17:11Z - orchestrator - WP15G merged (chat and local-model fixes)
+- Context: SPEC §4.8 step 11: B38 (chat exports name only the sources a tool read), B40 (the delete dialog mentions a report only when there is one), B42 (case citations show the case number) and the [oss] B1 and B3 local-model URL fixes.
+- Did: merged review 7ed7aba into claude/round16 with no conflicts; generated files unchanged. Carried: the ConfirmProvider focus return after Cancel (WP15F) and the routes_models example base URL (WP16).
+- Tests: on the merged tree, the WP15G backend tests 26 passed and its Console test files 49 passed; typecheck clean.
+- Status: done.
+- Next: WP08, WP11 and WP05 part 2 as their reviews finish; WP10 and WP14 are building.
+
+### 2026-11-25 14:50Z - WP08 agent - AI run tracking: backend
+- Context: Round 16 SPEC section 4.5 WP08 (D10, research ai-investigating R1 to R5, R8, R11) on r16-wp08 from 5a4ec90.
+- Did: wired the WP01 investigation registry onto AppState and the Demo stack (its own registry on the Demo bus, state.investigations has the Demo split). The pipeline registers each run before the gate and ends it in a finally, with trigger, requester, phase, outcome and the status after. A failed run now sends its final decision failed frame. New routes_investigations.py: GET /api/investigations/active (cases:read, memory only, the requester name only for users:manage). New investigations SSE topic. Reinvestigate: wait=false answers 202; a second request answers 409 investigation_running (case id or signature, with a reservation); a closed case is reinvestigated in place or answers 409 open_case_exists (also /investigate and the bulk job). Drain skip for candidates a person closed or moved. Finish Inbox notices and a strict case.close_replaced audit row. A per-case lock held by the pipeline, the case action path, the feedback, comment, tags and assign writers, and attach_cluster. seed_users hashes off the event loop; state.client_ip_from removed. openapi.json and api-types.gen.ts regenerated.
+- Tests: 35 new tests pass; 9 fixes proven to fail with the fix turned off. Full backend suite: 13,446 passed, 29 skipped, 7 failed (2 expected router-count tests, 5 sandbox env tests that pass without the proxy variables). ruff fatal clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass. check:types shows no drift. test:strict on an overloaded machine: 47 timing failures, and every affected file passes when rerun with fewer workers.
+- Status: done; committed 482c455 on r16-wp08, HEAD detached.
+- Next: WP10 and WP15D rebase on the pipeline.py and state.py hunks. WP09 uses the route, the 202 and 409 shapes and the investigations topic. WP18 moves the router count to 44 (46 after WP13). The audit/context.py docstring still names client_ip_from (not my file).
+
+### 2026-11-25 17:30Z - WP08 reviewer - AI run tracking: backend review
+- Context: independent adversarial review of Round 16 WP08 (SPEC section 4.5, D10, Appendix C rows C3, C7, C8, C26) on r16-wp08 from 5a4ec90, builder commit 482c455.
+- Did: checked the diff against the contracts and file ownership. decide() and engine/risk.py are unchanged. Reverted seven fixes one at a time; every one failed its test except the reservation, which had none. Fixed two defects in 03a2638. First, a wait=false Reinvestigate cancelled before its first step kept its reservation, so its case and signature answered 409 investigation_running until a restart; a done callback now ends it. Second, the frame sent when a run took its slot said phase queued; the run now enters triage before that frame. Added a direct reservation test.
+- Tests: 38 pass in test_round16_investigation_registry.py, and both new regressions fail without their fixes. The full backend suite in three shards: 13,448 passed, 29 skipped, 8 failed. The 8 are the 2 expected router-count tests, 5 sandbox env tests (55 of 55 pass without the proxy and AWS variables) and 1 timing bound that passes alone. ruff fatal clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass. typecheck, lint, gates, check:types and build pass (entry 323,479 B). test:strict under load: 8,895 passed and 18 failed on timeouts; every failing file passes on a rerun with one worker.
+- Status: done; r16-wp08 at 03a2638, HEAD detached.
+- Next: WP10 and WP15D rebase on pipeline.py (new _run_started helper; both registry.started calls go through it) and on routes.py (case_reinvestigate keeps the task and adds a done callback). The owner of audit/context.py rewords the client_ip_from note. WP18 moves the router count to 44.
+
+### 2026-11-25 17:31Z - orchestrator - WP08 merged (AI run tracking, backend)
+- Context: SPEC §4.8 step 8: the investigation registry on AppState and the Demo stack, GET /api/investigations/active, the investigations topic, the Reinvestigate 202 and 409 shapes, the D10 drain skip, finish notices and case.close_replaced, and the per-case lock.
+- Did: merged review 03a2638 into claude/round16 with no conflicts; generated files unchanged. Carried to WP16: the queued frame for a background job waiting on headroom, POST /api/investigate passing trigger manual with its requester, and the whole-document case writers that still save without the case lock.
+- Tests: on the merged tree, the WP08 tests with route coverage, security, spine, decide guard, WP15B spine and the Round 15 carry tests: 165 passed; the collaboration, reinvestigate, job, pipeline, ingest and Demo tests: 315 passed. decide() and engine/risk.py unchanged.
+- Status: done.
+- Next: WP09 (AI run Console) and WP15D (Demo correctness) from this base; WP10 merges after its review.
+
+### 2026-11-25 16:30Z - WP05 part 2 agent - Release-notes guard, notes out of the Help Center, Release notes card on the 0.2 line
+- Context: Round 16 SPEC 4.3 WP05 part 2, after WP07's notes skeleton; branch r16-wp05p2 from bc60784.
+- Did: scripts/check_version.py requires docs/releases/notes/<VERSION>.json (schema 1, naming VERSION, a known status) on every ref. On main, a v* tag or a pull request into main the notes must also be released, dated like the dated CHANGELOG heading, with every update dated; the Testing skeleton passes off a release ref. mkdocs.yml exclude_docs gains releases/notes/, and scripts/build_docs_bundle.py refuses a bundle that still carries it. Docs.tsx Release notes card uses RELEASE_LINE_PAGE (releases/<line>/ of the Console's own VERSION), so 0.2.x opens releases/0.2/. channels.md (frozen preparation step 3 and the guard) and docs/development/testing.md updated; app knowledge corpus regenerated.
+- Tests: backend 13,509 passed, 29 skipped, 5 sandbox-only failures (55 of 55 pass without proxy and AWS variables). 68 new guard cases fail before the fix; 2 new bundle tests and 1 Docs test fail before their fixes. typecheck, lint, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs, build_release_notes --check and build_app_knowledge --check pass. test:strict hit load timeouts (load about 20 on 4 CPUs); its 17 failed files rerun green in one worker except Chat.earlier.test.tsx, which also fails at bc60784. Entry delta 0 B (Docs is lazy).
+- Status: done, commit 4b79c83 on r16-wp05p2 (detached).
+- Next: WP19 sets the notes to released with the tag date and every update dated, beside the empty [Unreleased]. The orchestrator should look at the Chat.earlier failure at bc60784 and the bundled Help Center's /docs/versions.json 404.
+
+### 2026-11-25 18:30Z - WP05 part 2 reviewer - Notes guard, Help Center exclusion and Release notes card reviewed; release-prep wording fixed
+- Context: Independent adversarial review of r16-wp05p2 (4b79c83 on bc60784) against SPEC 4.3 WP05 part 2, 3.8, 4.1 and 4.10.
+- Did: Confirmed the check_version.py notes guard. Every ref needs the notes file, schema 1, VERSION and a known status. main, a v* tag and a pull request into main also need released, the heading date and a date on every update. Simulated release contexts fail only on the four records WP19 writes. Confirmed mkdocs exclude_docs releases/notes/ plus the bundle check (no notes in the built bundle, the JSON answers 404). Confirmed the Docs Release notes card opens /docs/0.2/releases/0.2/ (seeded demo, light and dark, 1440x900 and 390x844, focus ring, search and empty states, build-info error). Fixed channels.md frozen preparation step 3: it said to set "the same date on the release and on every update", which would overwrite the seven already-dated 0.2.0 updates. It now dates only the undated updates. Fixed the same wording in testing.md, the check_version.py comment and the test docstring. Regenerated the app knowledge corpus. Commit 1a203ec.
+- Tests: backend 13,513 passed, 29 skipped, 5 sandbox-only failures (55 of 55 pass with proxy and AWS variables unset). Reverting each fix fails its test: 68 guard cases, the mkdocs exclude test, the Docs card test and the new channels.md test. build, lint, gates, check:types, docs:check, check_version, check_ci_contract, check_docs, build_release_notes --check and build_app_knowledge --check pass. Entry 324,931 B. test:strict had 7 failed files at load about 15; all 7 pass rerun with one worker and a 60 s timeout. decide() and risk.py are unchanged.
+- Status: done, r16-wp05p2 at 1a203ec (detached).
+- Next: WP19 sets docs/releases/notes/0.2.0.json to released and gives the tag date to the release and to the undated update 0.2.0.2026-12 only. The earlier updates keep their dates.
+
+### 2026-11-25 18:12Z - orchestrator - WP05 part 2 merged; work resumed after a container restart
+- Context: SPEC §4.8 step 6, second half: the release-notes guard in check_version.py, the Help Center bundle without docs/releases/notes/, and the Release notes card on the 0.2 line. A container restart stopped every running build and review before this merge.
+- Did: merged review 1a203ec into claude/round16 with no conflicts; generated files unchanged. After the restart each interrupted package's uncommitted work was saved as a work-in-progress commit on its own branch (WP10 review 2d50b31, WP14 6076328, WP15E part 2 d8828eb, WP09 d8ca23e; WP15D keeps its own 29391e9), and the builds and reviews were relaunched from those commits: WP10, WP11 and WP18A reviews finish from their committed fixes, and WP14, WP15E part 2, WP09 and WP15D builders continue from their saved work. Carried to WP16: the bundled Help Center Testing banner's em dashes and its /docs/versions.json request.
+- Tests: on the merged tree, check_version (app 0.2.0, docs 0.2), build_release_notes --check, the docs bundle unit tests, and the release guard, build identity and knowledge tests: 344 passed.
+- Status: done.
+- Next: merge WP10, WP11, WP18A, WP14, WP15E part 2, WP09 and WP15D as their reviews finish, then WP12 and WP15F, then WP16.
+
+### 2026-11-25 18:10Z - WP18A sub-agent - Case workspace docs for the six tabs
+- Context: Round 16 WP18A, an early slice of WP18 (SPEC 4.7, 6.1, 6.2): five tests in test_docs_round15_records.py still pinned the Round 15 five-tab layout after WP02 and WP03 merged.
+- Did: rewrote the case workspace descriptions from the merged code. Case Manager page: band row 1 (Live, Refresh, About), deep-link ids, queue rows, the [ fold, the empty pane, queue width, the header and meta strip, the case facts (52rem column, ] toggle, sheet, six sections), and a six-tab table on Alt+1 to Alt+6 with the Alt+2, Alt+4 and Alt+5 changes. Also USAGE, quickstart, README, first case, demo tour, Cases, Investigation, Collaboration, the testing.md Triage row, one-line tab fixes in six other Help Center pages, and DEMO.md. The five records tests now pin Round 16 and read the code first. Added test_the_docs_name_the_six_case_tabs_in_the_code_order. Regenerated the knowledge corpus and fixed two ranking regressions in the wording. Console map unchanged.
+- Tests: backend 13,439 passed, 29 skipped, 5 sandbox-only env failures (55 of 55 pass with proxy and AWS unset). Docs records tests fail on the old docs and pass on the new ones. test:strict had 65 failures under load average 20 (55 timeouts); the 20 failing files rerun at 2 workers gave 632 passed and 1 load-dependent failure that passes alone. npm run build, docs:check, check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done on r16-wp18a, commit 8adb164, detached.
+- Next: WP17 refreshes case-manager.webp and its alt text in README and quickstart. WP18 does AGENTS, HANDOFF, ROADMAP and CHANGELOG. Owners should fix the stale Console strings and the shortcut list (see the report).
+
+### 2026-11-25 19:40Z - WP18A reviewer (resumed) - case workspace docs review closed
+- Context: Resume the adversarial review of WP18A (six case tabs, compact header, case facts, queue fold docs, Round 15 records tests) after a container restart stopped the previous reviewer while the backend suite ran.
+- Did: Read the previous review fix 8b59c0f and checked its claims against the code (DecisionLane, OverviewPanel lane links, CaseDetail toggleInspector and the ] key, AI investigation inputs). Ran the records tests against the 5e21367 docs (7 fail) and the 8adb164 docs (the 2 new tests fail), then against the branch docs (16 pass). Spot-checked tab order, Alt keys, Response tab count, legacy tab links and queue widths in the docs against the code. decide() and risk.py are unchanged. No forbidden characters in added lines, and no inbound links to renamed headings. No new defects, so no new commit; the branch head stays at 8b59c0f.
+- Tests: backend 13,440 passed, 29 skipped, 5 failed (the known sandbox-only environment tests, 55 of 55 pass with the proxy and AWS variables unset); check_version, check_ci_contract, check_docs (89 pages), build_app_knowledge --check (1000 chunks), strict MkDocs bundle and docs:check all pass.
+- Status: done.
+- Next: The orchestrator merges r16-wp18a. Carry the builder's left_undone items to their owners: retired tab names in Console copy (WP09 BulkCloseDialog; runbooks NextStepCard, AnalystPreview and RunbookRail); ] missing from caseManagerShortcuts (WP02); the "Runbook (before Round 14)" label in FactsRail (WP03); "facts rail" in ui-standard.md (WP16); the CaseDetail.structure test flake (WP03); the case-manager.webp refresh (WP17); the rest of WP18.
+
+### 2026-11-25 19:05Z - orchestrator - WP18A merged; router counts brought to 46
+- Context: the early slice of WP18 for the case workspace docs (six tabs, the compact header, the case facts inspector, the queue's focus mode), after WP02 and WP03 merged.
+- Did: merged review 8b59c0f into claude/round16; the knowledge corpus (1,000 chunks) and manifest were regenerated. AGENTS.md §4 and HANDOFF now count 46 feature routers and name the three Round 16 routers (routes_investigations, routes_case_events, routes_case_usage), so the records tests are green again on the branch.
+- Tests: on the merged tree, the Round 13 and Round 15 records tests 35 passed, with the knowledge and chat knowledge tests earlier 258 passed; build_app_knowledge --check current; check_docs (89 pages) passes.
+- Status: done.
+- Next: the rest of WP18 after WP16; merges of WP10, WP11, WP14, WP15E part 2, WP09 and WP15D as their reviews finish.
+
+### 2026-11-25 15:45Z - WP11 agent - The Explain kit and the case explainers
+- Context: Round 16 SPEC section 4.5 WP11. Every number can be explained on hover or click. Fixes B32 and the Console part of B13. Branch r16-wp11 from 5a4ec90.
+- Did: The Explain kit in webui/src/design-system/explain: ExplainTrigger and ExplainPanel, a separate entry. Hover or focus shows the formula line in a hover card that Escape dismisses. A click, Enter, Space or tap opens a dialog with inputs, steps, rounding, provenance, caveats and Copy calculation. Row-hover mode is mouse-only. Builders in webui/src/lib/explain (risk, decision, triage, sla, stats, cost, rounding, text) print the explain.contract.json vectors. RiskExplain, DecisionExplain and FactExplain bodies are filled, and RiskDerivation moved out of StageTimeline. DecisionCard shows the recorded decision with both auto-close conditions, a policy-changed note and a precedent line. B13: factor sentences read risk_breakdown.inputs and never pair the member count with Volume. B32: the "due in" line floors the time left. The SLA reading counts human status moves, and cases gain First event and Time to detect clocks. Also the B80 caption hunk, Tuning "not recorded" counts (D6) with a Wilson explanation, Cost KPI arithmetic, the auto-close review Wilson explain, riskCopy live weights, the catalog entry feedback.explain, and the subpath paragraphs in design-system.md and the README. Edits in other packages' test files: wp01-stubs.test.tsx (WP09) and OverviewPanel.test.tsx (WP03).
+- Tests: Affected Vitest areas: 1,239 passed. test:strict (run once under heavy load): 8,996 passed and 11 load timeouts in files WP11 does not touch; the two drill-down files that kept timing out pass with one worker. Backend: 13,412 passed, 29 skipped and 6 failed (5 known sandbox environment failures, 1 timing test that passes alone). typecheck, lint, gates, check:types, full build, docs:check and the repository checks pass. Entry chunk 323,607 B (+128 B). Reverting either fix made its regression tests fail.
+- Status: done. Commit e87c2ac on r16-wp11, branch detached.
+- Next: WP03 should use caseFacts.timeLeft or serverSlaReading in triageReads.slaFromServer (B32), show "No priority" when the matrix is off (D9), and state both auto-close conditions in FactsRail autoCloseBarLine (D8). WP10 should emit source, gate, current_policy and policy_changed on the decision span, and weight_basis recorded_at_scoring. WP12 can use explainShare, explainPercentile, explainWilson and activeRiskHelpText. WP14 can use explainCost and recomputeCost. WP15F still owns the CodeBlock truncate part of B80.
+
+### 2026-11-25 19:40Z - WP11 reviewer (resumed) - Explain kit review finished on r16-wp11
+- Context: The earlier WP11 reviewer stopped at a container restart after committing d80d438 and b660962. This pass finished that review: check each review fix by reverting it, run the SPEC 4.1 package gates, and fix what they show.
+- Did: Proved by reverting that every fix in d80d438 and b660962 has a test that fails without it, and reproduced B32 and the Console part of B13 the same way. Added three commits. cf2ef63 adds a test for the changed-policy note on a decision with no recorded gate. 4a85bcc makes the Cost KPI panels say the Console divided the usage summary, instead of "Computed by the server" sitting above a caveat that said the opposite. c6b86e9 moves the Explain kit paragraph in design-system.md out of the barrel list. Checked the Cost panel live in both themes at 1440x900 and 390x844 (keyboard, focus return, no sideways scroll). Shots are in shots/WP11-review/14-*.
+- Tests: Backend 13,413 passed, 29 skipped, 5 sandbox env failures (they pass 55 of 55 with the proxy and AWS variables unset). test:strict at 2 workers: 9,021 passed, 11 failed, 1 skipped across 691 files. The failures were load timeouts in 7 files WP11 does not touch, and those files pass 122 of 122 at 1 worker. typecheck, lint, gates, check:types, the build, check_version, check_ci_contract, check_docs and the knowledge corpus check all pass. The entry is 323,607 B (+128 B). decide() and risk.py are unchanged.
+- Status: done. Branch r16-wp11 at c6b86e9, detached, not pushed.
+- Next: Merge after WP10. WP03 should point slaFromServer at caseFacts.timeLeft (B32) and fix D9 and D8 in the FactsRail. WP15F does the CodeBlock part of B80. WP12 can use explainShare, explainPercentile and explainWilson for its tiles.
+
+### 2026-11-25 19:43Z - orchestrator - WP11 merged (the Explain kit and the case explainers)
+- Context: SPEC §4.8 step 11: the Explain kit (hover for a one-line formula with the real numbers, click or Enter for the inputs, steps, rounding, provenance and Copy calculation), the case explainers (risk, decision, facts), B13 (Console part) and B32. A first reviewer committed its fixes (d80d438, b660962) before the container restart; a resumed reviewer confirmed them by reverting each, and added cf2ef63, 4a85bcc and c6b86e9.
+- Did: merged review c6b86e9 onto claude/round16, which already has WP02 and WP03, with no conflicts; generated files unchanged. Carried to the WP10 integration step: triageReads.slaFromServer must use caseFacts.timeLeft (B32 would return), FactsRail shows No priority when the matrix is off (D9), autoCloseBarLine states both conditions (D8), and the meta strip and inspector explain triggers are mounted.
+- Tests: on the merged tree, 43 changed Console test files with the first-paint check: 754 passed, 1 skipped; typecheck and lint clean; build:app entry 325,263 B.
+- Status: done.
+- Next: WP12 (metrics explained) from this base; the WP11 and WP10 Console integration after WP10 merges.
+
+### 2026-11-25 17:20Z - WP10 builder - Case numbers explained (backend)
+- Context: Round 16 WP10 (SPEC 4.5). B13 and B63, the recorded decision gate, the per-case SLA reading and triage additions, trace detail, one Wilson interval and the forwarding routing total. Orchestrator decisions: RealESClient.get_index_template, sla_reading on metrics.sla_case_reading, inputs at the three compute_risk sites, and events-viewed rows shown as person spans.
+- Did:
+  - pipeline.py hunks: explain_risk at the three compute_risk sites; run_id stamped on apply()'s decision history entry; tool_input.gate on the case_manager DECISION row.
+  - routes_triage.py: B63 decision span with recorded decision, gate pairing by run id, current_policy, policy_changed and failed-run routing; recorded-weight risk calculation; round_half_up; triage auto_close_policy, sla and asset_cidr (settings:read only) on execution prefs; trace span kinds, bounded detail, exact cost basis, rows_total, truncated and lifetime usage window.
+  - New engine/sla_reading.py and engine/stats.py; one-call Wilson hunks in threshold_tuner, auto_close_review and agent_improvement.
+  - priority.py: four-band risk chip and weights in force. forwarding.py: routing total.
+  - es/client.py get_index_template (403/404 fail open). Updated three older tests; regenerated openapi.json and api-types.gen.ts.
+- Tests: new WP10 file 38 passed. Regressions proven by reverting pipeline.py (3 fail) and routes_triage.py (5 fail). Full suite 13,495 passed, 29 skipped, 12 failed: 2 router counts (expected red), 5 Round 15 docs tab text tests (docs not in this package), 5 sandbox-only env tests (pass with proxy and AWS variables unset). check:types no drift; typecheck clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done (branch r16-wp10, commit 7881dc7, worktree detached).
+- Next: WP11 and WP14 read the new fields. indices.py could make the cases-mapping 403/404 warning name the template. models.py TraceSpan.kind comment should list person and system. The /rationale route (routes.py) still lacks rows_total and truncated.
+
+### 2026-11-25 20:10Z - WP10 reviewer (resumed) - Case numbers explained: review finished
+- Context: Independent review of Round 16 WP10 on r16-wp10, resumed after a container restart. This covers the builder commit 7881dc7 and the interrupted review commit 2d50b31.
+- Did: Read the diff against SPEC section 4.5 WP10, sections 3.4 to 3.6 and Appendix C (C5, C17, C18, C20). Confirmed decide() and engine/risk.py are unchanged and edits stay in owned files and allowed hunks. Revert-checked B13 (pipeline hunks), B63 and C18 (routes_triage) and both 2d50b31 fixes; each test fails without its fix. Checked Wilson against the old functions up to n=2000. Probed a seeded Demo backend on port 8937: the gate is recorded with demo true and paired by run id, and the recorded weights are read. Fixed one defect in routes_triage._calls_pair_with_their_rows: exact per-call cost now needs one direction per role, so a failed two-call run followed by a one-call run no longer gives the later prompt the earlier run's call; a regression test fails before the fix. Added coverage for the analyst-policy compute_risk site and served the contract rounding vectors through the triage risk chip. Commit 3d4daf4; worktree detached.
+- Tests: backend 13,509 passed, 29 skipped, 12 failed (2 expected router-count, 5 sandbox env, 5 base docs six-tab tests waiting on WP18A); ruff fatal clean. Webui typecheck, lint, gates and check:types pass. test:strict ran once: 9,057 passed, 17 skipped, 10 failed on load timeouts; the 7 files re-run with 2 workers pass 147 of 147. Build clean with entry 325,135 B. check_version, check_ci_contract, check_docs and build_app_knowledge --check pass; no banned characters.
+- Status: done.
+- Next: WP11, WP03 and WP14 read the new triage and trace fields. slaFromServer should read breached and running. WP18A's docs fix the round15 records tests. The routes.py rationale and forwarding fallback gaps go to their owners.
+
+### 2026-11-25 20:01Z - orchestrator - WP10 merged (case numbers explained, backend)
+- Context: SPEC §4.8 step 8: recorded risk inputs at the three compute_risk sites (B13), the recorded decision and its gate on the decision span (B63), the triage read's auto_close_policy, sla and asset_cidr, the trace span kinds and detail, the one Wilson interval in engine/stats.py, the forwarding totals and RealESClient.get_index_template. A first reviewer's fixes were saved as 2d50b31 at the container restart; the resumed reviewer confirmed them and fixed one more (3d4daf4).
+- Did: merged review 3d4daf4 into claude/round16 with no conflicts; generated files unchanged. Next: one small integration package (WP11I) applies the WP10 shapes and the WP11 leftovers on the WP03 case page (the SLA reading of a closed case, B32, D8, D9, the meta strip and inspector explain triggers).
+- Tests: on the merged tree, the WP10 tests with the triage, stages, spine and decide guards, investigation registry, WP15B spine, Elasticsearch mapping, route coverage and records tests: 309 passed; typecheck clean. decide() and engine/risk.py unchanged.
+- Status: done.
+- Next: WP11I; then WP15E part 2, WP14, WP09, WP15D and WP12 as their reviews finish.
+
+### 2026-11-25 19:55Z - WP15E part 2 builder (resumed) - setup, settings and administration fixes
+- Context: Round 16 SPEC 4.5 WP15E part 2, resuming the work-in-progress commit d8828eb after a container restart. Bugs B36, B37, B44, B45, B49, B53, B56, B57, plus three orchestrator additions: read-only SSO for anyone who is not a stored Super admin, the SourceEditor Primary switch through canBePrimary with a confirmed-only toast, and the Demo notice after a real source is added.
+- Did: checked every fix in d8828eb against the SPEC and showed each regression test fails with the base file restored. Added a test and a fix so the Permission check answer uses resourceLabel (B57). Made the badge of an acknowledged checkpoint say Acknowledged, so it matches the footer (B37). Removed an act() warning from the SSO test. Folded everything into one commit, 959ab90 on r16-wp15e2, then detached.
+- Tests: backend 13,521 passed, 29 skipped, 12 failed. The failures are 2 expected-red router-count tests, 5 Round 15 records tests that already fail at the base, and 5 sandbox-only environment tests. test:strict (with 2 workers on a loaded machine): 9,106 passed and 14 failed, all from load timeouts; the 9 failing files pass when rerun with less load. Typecheck, lint, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs and build_app_knowledge --check all pass. The entry is 325,776 B, +641 B over the base.
+- Status: done. Seeded demo screenshots in light and dark at 1440 and 390, plus the Demo source notice at 1440 in both themes.
+- Next: the orchestrator should stop the stale earlier WP15E2 demo that still holds ports 8839 and 5839 (process ids 17631, 17675, 17860, 18606 and 18607, running from a deleted worktree). Also: the settings-sections-meta.ts customization blurb, and docs/administration/settings.md and customization.md, should name Branding as the one organization theme (WP18 or the meta owner).
+
+### 2026-11-25 21:20Z - WP15E part 2 reviewer - adversarial review of setup, settings and administration fixes
+- Context: Round 16 SPEC 4.5 WP15E part 2 (B36, B37, B44, B45, B49, B53, B56, B57) plus the three orchestrator additions (read-only SSO, the canBePrimary Primary switch with a toast for confirmed saves only, the Demo source notice), built as 959ab90 on r16-wp15e2 from 6a03347.
+- Did: read the diff against the SPEC and the bug-hunt notes. Checked that decide() and risk.py are unchanged and that the edits stay within owned files and allowed hunks. Put the base code back for every fix and saw each regression test fail. Ran the seeded demo on 8939/5939 in both themes at 1440 and 390, signing in as Admin and as a new SOC manager for SSO. Found and fixed one defect (b414d60): every proposal rationale was labelled "Why the agent drafted this", even automation and tuner items. The agent is now named only for created_by "agent"; the others read "Why it was drafted". Added a test that fails first and completed the Round 14 fixture with created_by.
+- Tests: backend 13,521 passed, 29 skipped, 12 failed. The failures are the 2 expected-red router-count tests, 5 Round 15 records tests that fail at the base, and 5 sandbox-only environment tests. test:strict 706 of 706 files, 9,136 passed, 1 skipped. Typecheck, lint, gates, check:types, build (entry 325,776 B, budget 330,104 B), docs:check, check_version, check_ci_contract, check_docs and build_app_knowledge --check all pass. The character scan is clean.
+- Status: done; r16-wp15e2 at b414d60, HEAD detached, demo stopped.
+- Next: the WP18 items listed in left_undone: the ROADMAP section I board Back guard is now closed by B44; the DashboardBuilder comment that says Back cannot be paused; the settings-sections-meta customization blurb; the B45 Help Center wording. The routes_prefs PUT /api/prefs/org guard needs an owner.
+
+### 2026-11-25 20:57Z - orchestrator - WP15E part 2 merged (setup, settings and administration fixes)
+- Context: SPEC §4.8 step 11: B36, B37, B44, B45, B49, B53, B56 and B57, with the three orchestrator additions (read-only SSO for a viewer who is not a Super admin, the source editor's Primary switch through canBePrimary, the Demo note after a real-source add). The builder was stopped by the container restart and resumed from its saved work.
+- Did: merged review b414d60 into claude/round16 with no conflicts; generated files unchanged. Carried to WP16: the DashboardBuilder Back and Forward sentence, the settings-sections-meta customization blurb, the PUT /api/prefs/org guard for the B45 validator.
+- Tests: on the merged tree, the WP15E part 2 backend tests with route coverage and the Demo source tests 48 passed; its 15 Console test files 130 passed; typecheck clean.
+- Status: done.
+- Next: WP15D, WP14 and WP09 after their reviews; WP12 and WP11I are building.
+
+### 2026-11-25 20:45Z - WP09 builder (resumed) - AI run Console and one stream per page
+- Context: Round 16 SPEC section 4.5 WP09. Resumed from the work-in-progress commit d8ca23e after a container restart. Base 3f64fa0.
+- Did: Finished the investigation store, chip, popover, mark, band line, non-blocking Reinvestigate dialog, close and bulk-close notes, Activity "Investigation finished" heading and the navigation AI count. Turned the useEventStream multiplexer into a closure. Moved the store out of the entry chunk behind an entry-safe count (investigations/count.ts, loaded after first paint like the chat activity observer). Fixed five defects found on the way: an expiry re-read loop, a poll spin during a slow read, late reads bringing ended runs back, a quick run never shown as yours, and a finish toast lost on reload. Added tests: investigations, AiRunChip, ReinvestigateDialog, CloseDialogs.airun, NavSidebar.ai, CaseActivityFeed.narration, and more store cases. Bulk-close copy now names the Activity tab.
+- Tests: pytest gave 13,550 passed, 29 skipped, 12 failed. Those are 2 expected router-count tests, 5 sandbox-only environment tests and 5 test_docs_round15_records failures; the last five fail on the base tree too and WP09 changes none of their files. test:strict gave 705 files, 9,171 passed, 1 skipped, zero stderr. typecheck, lint, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs and build_app_knowledge --check pass. Entry is 328,842 B against a base of 325,135 B (+3,707 B; multiplexer +2,313 B), within budget.
+- Status: done. Committed d700fa3 on r16-wp09, then detached.
+- Next: WP16 should add W to caseManagerShortcuts (CaseManager.tsx); disable Reinvestigate in Take action while a run is in flight (CaseDetail.tsx); dim the verdict chip during a run (CaseHeaderMeta.tsx); look at the status words truncating beside the AI mark and chip at 1440; and add the AI signals to ui-standard.md. Bulk close cannot be shown in Demo (bulk is off there).
+
+### 2026-11-25 22:10Z - WP09 reviewer - AI run Console and one stream per page, review
+- Context: Independent adversarial review of r16-wp09 (d700fa3, base 3f64fa0) against Round 16 SPEC section 4.5 WP09, the ai-investigating research copy and Appendix C (C27, C30, C32, C38).
+- Did: Read the whole diff. Confirmed the package edits only its own files, changes no backend, leaves decide() and engine/risk.py untouched, renders untrusted values as text, and has clean copy. Fixed four defects in 8b19ca5, each with a test that fails without its fix:
+  - a stream for a new topic set that failed before it opened, while the old stream served, was never retried;
+  - a read sent before a frame could drop the run that frame announced, or turn a running run back to queued;
+  - the poll-spin test did not detect the spin;
+  - a 409 investigation_running showed no chip on a page without a stream.
+  Spot-checked the builder's regression tests by reverting each fix: the late-read and quick-run tests fail, and the expiry-loop test hangs. The reload-toast proof is inconclusive. Checked the live seeded Demo in both themes at 1440 by 900 and 390 by 844: one EventSource per page, the 202, finish toast, tint, Inbox item, both 409 toasts, chip keyboard and focus, and the error state.
+- Tests:
+  - pytest: 13,550 passed, 29 skipped, 12 failed, the same 12 the builder reported.
+  - test:strict: 9,173 passed, 1 skipped, 2 failed. Both failures are timing flakes in CaseDetail.structure and Chat.earlier, which pass when run alone.
+  - typecheck, lint, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - Entry chunk: 328,857 B, within budget.
+- Status: done. r16-wp09 at 8b19ca5, worktree detached.
+- Next: WP16 should:
+  - add W to caseManagerShortcuts;
+  - disable Reinvestigate in Take action during a run;
+  - dim the verdict chip during a run;
+  - fix the header meta row, whose status words vanish entirely while the chip shows (pass compact to AiRunChip on a narrow row, or shorten the verdict chip);
+  - add the AI note to the Case Manager bulk Acknowledge confirm;
+  - mock api.prefs.getUser in CaseDetail.structure.test.tsx;
+  - add the AI signals to ui-standard.md.
+
+### 2026-11-25 21:49Z - orchestrator - WP09 merged (the AI run Console, one event stream per page)
+- Context: SPEC §4.8 step 11, the operator's first ask: show when the AI is investigating. The header chip and popover (steps, origin, time against the cap), the queue row mark, the band line for runs on new events, the navigation count, a non-blocking Reinvestigate that closes on the 202, the close dialog warnings, the finish toast and Inbox item, and one multiplexed EventSource per page. The builder resumed from its saved work after the container restart.
+- Did: merged review 8b19ca5 into claude/round16 with no conflicts; generated files unchanged. Carried to WP16: W in the Case Manager shortcuts, Reinvestigate disabled during a run, the verdict chip dimmed during a run, the status words giving way to the chip in the header meta row, the bulk Acknowledge note, the AI signal wording in ui-standard.
+- Tests: on the merged tree, the WP09 test files with the first-paint check 128 passed, 1 skipped; the investigations, case detail, Case Manager and lib tests 1,019 passed; typecheck and lint clean; build:app entry 329,627 B (inside the 330,104 B budget).
+- Status: done.
+- Next: WP15D, WP14, WP11I and WP12 as their reviews finish; then WP15F and WP16.
+
+### 2026-11-25 21:20Z - WP15D builder - Demo Mode correctness (resumed after a restart)
+- Context: Finish WP15D (SPEC 4.5) from the work-in-progress commit 29391e9, on top of base 3f64fa0 (WP08 merged).
+- Did: B34, rule Test and preview reads the Demo sources in Demo Mode. B35 with B47 and B65, the Demo knowledge corpus is seeded after every seeded case and review exists; six seeded automatic false positive closes carry an analyst confirmation, so no single rule holds nearly all of the precedent class. B48 with B69, one simulated Demo ledger row per seeded case with a cost; demo.md says Demo spend is simulated. B61, seeded analyst closes record the classified disposition in history and in their audit row. B62, seeded risk comes from compute_risk and explain_risk over each case's own inputs, and risk_score equals the breakdown total. B41, Demo chat ranks open cases by risk for "need attention first" questions. Carry-forwards: the seeded HITL automation passes fetch=, and every seeded case keeps its own Demo rows before it is saved (tuner noise included), plus the trigger reason built from those rows, so no case says its events aged out and severity is what the rows assert. Golden set: the users question expects the honest answer, and new entries cover IPs and B41. Knowledge corpus regenerated.
+- Tests: new test_round16_wp15d_demo.py, 11 passed; every regression fails on the base. Full backend suite: 13,563 passed, 29 skipped, 12 failed (2 router counts expected red, 5 Round 15 docs records already red after WP03, 5 sandbox-only env tests). The version, CI-contract and docs check scripts, the knowledge check and the fatal ruff check pass. The scan, gate scripts and screenshots predate two final cleanups (noqa comments and one round() call); after them only ruff and the new test file were re-run.
+- Status: done; commit ec612e8 on r16-wp15d, branch detached.
+- Next: WP18 writes the CHANGELOG and records. The WP16 reviewer should note: honest seeded risk tops out near 50 for IP cases, so critical bands now come from the source severity of each case's events; the risk window is the span of the case's own events rather than a per-case Random. Report to the WP08 owner that seeded user cases stay low risk without a Demo asset map in _demo_prefs.
+
+### 2026-11-25 22:00Z - WP15D reviewer - Demo Mode correctness review
+- Context: Independent adversarial review of WP15D (SPEC 4.5; B34, B35 with B47 and B65, B41, B48 with B69, B61, the B62 hunk of B13, and the two carry-forwards) on r16-wp15d at ec612e8, base 3f64fa0.
+- Did: Checked the diff against the SPEC, Appendix A and C and the bug-hunt details. decide() and risk.py are byte-identical, and edits stay inside the owned files and allowed hunks. The seeded random stream is unchanged against the base generator for seeds 1337 and 42. Reverted each fix and saw its regression test fail. Probed five seeds through TestClient and a live uvicorn app (live mode, after the simulator opened new cases): no agent-health alert, no aged_out events, every costed case reconciles with its Demo ledger rows, Confirmed threats counts the analyst true-positive closes (18), and the asset factor matches the impact chip with a non-empty asset map. Found and fixed one defect: the analyst confirmations added to six historical automatic false-positive closes could land on the case the disagreeing seeded review labels a true positive. On the default seed 1337 one case read as both. seed_demo_auto_close_reviews now skips analyst-confirmed closes for the disagreeing pick. New regression test test_b35_no_seeded_review_contradicts_an_analyst_label (commit 1f9002b).
+- Tests: test_round16_wp15d_demo.py 12 passed. Demo, review, golden set and Demo chat files pass. Full backend suite: 13,605 collected, 13 failed; pytest's count line was not captured. The 13 are the builder's 12 (2 router counts, 5 Round 15 docs records, 5 sandbox env tests) and one timing flake that passes alone. check_version, check_ci_contract, check_docs and build_app_knowledge --check pass, and so does fatal ruff. Webui typecheck, gates, check:types and lint are clean. test:strict: 9,072 passed and 5 failed, all load timeouts that changed set on rerun; no webui file differs from the base.
+- Status: done; r16-wp15d at 1f9002b, worktree detached.
+- Next: WP16 should note three things. Honest seeded risk tops out near 50 for IP cases and near 30 for user and host cases. Severity now comes from each case's own Demo rows (31 critical on seed 1337), so the queue shows "Critical, Risk 17" pairs. The Demo users-with-most-cases question now gives the honest "no user ranked" answer. A Demo asset map in _demo_prefs (WP08) would raise user and host risk.
+
+### 2026-11-25 22:04Z - orchestrator - WP15D merged (Demo Mode correctness)
+- Context: SPEC §4.8 step 8 (after WP08): B34, B35 with B47 and B65, B41, B48 with B69, B61 and the B62 Demo hunk, plus the carry-forwards (the Demo seeding automation passes fetch=, every seeded case keeps its own events, every costed seeded case has a ledger row). The builder resumed from its saved work after the container restart.
+- Did: merged review 1f9002b into claude/round16; the knowledge corpus (1,001 chunks) and manifest were regenerated. The seeded Demo now cross-checks: no aged-out events, every costed case reconciles with its usage, no agent-health banner on a fresh Demo, and Demo Mode never reads a tenant source. A Demo asset map (so seeded user and host cases carry asset impact) stays a backlog item.
+- Tests: on the merged tree, the WP15D tests with every Demo test file, the chat golden set, the spine guards and the knowledge tests: 2,845 passed.
+- Status: done.
+- Next: WP14, WP11I and WP12 after their reviews; then WP15F and WP16.
+
+### 2026-11-25 20:45Z - WP14 builder (resumed) - Case records reachable: Console
+- Context: Round 16 SPEC 4.5 WP14 (research data-visibility R2 to R8, R11, R13, R15; B30, B31). Resumed from the interrupted work-in-progress commit 6076328 on r16-wp14, based on 848a328.
+- Did: checked each part against the SPEC and finished it. The case events table, usage popover, all-fields sheet, findings More and Cites N events, waiting reason and hold reason, and notifications list fill the WP01 stubs. JsonTree moved to soc/components with search, Copy and Download. TraceTimeline gained Details, person and system kinds, AI-only step counts and filter helpers. History shows reasons, resolutions and attached events; grading shows the full record; threat context lists providers with both reputation readings; the Why panel names the lifetime retrieval markers. B30: screenshot rows are worded and deleted screenshots are listed. B31: files over the limit are reported. New in this session: the usage formula shows the result to the ledger's 8 decimals, and a narrow events table stacks the date over the time. One test-only mock in EvidencePanel.baseline.test.tsx (WP03's test). Seeded Demo screenshots in both themes at 1440 by 900 and 390 by 844; the trace Details shot uses a WP10-shaped fixture.
+- Tests: typecheck, lint, gates, check:types and build clean; entry chunk 325,176 B, +41 B (the shared JsonTree chunk in the preload map). Each B30 and B31 test fails with its fix reverted. The strict webui run was cut short by machine load; the 20 files that failed under load pass on rerun with no stderr. Backend: 13,485 passed, 29 skipped, 13 failed: 2 expected router counts, 5 round 15 docs records tests (no docs changed in WP14), 5 sandbox environment tests, 1 timing test that passes alone. No backend change.
+- Status: done; commit db4a8a8 on r16-wp14, worktree detached.
+- Next: WP16 mounts NotificationsSent in FactsRail, switches InvestigationPanel to TRACE_FILTERS, filterSpans and traceCountsText, links the SignalProfile event count to the events table, and switches usageFormula to the WP11 Explain kit (keeping the 8-decimal result). Rerun npm run test:strict when the machine is quiet.
+
+### 2026-11-25 22:10Z - WP11I agent - Case numbers explained on the case page
+- Context: Round 16 integration package WP11I (SPEC D8, D9, 4.4 WP03, 4.5 WP10 and WP11). It puts the WP10 triage and decision shapes and the WP11 leftovers onto the WP03 case page. Branch r16-wp11i from 6d39130.
+- Did:
+  - SLA: caseFacts.serverSlaReading is the one formatter (triageReads.slaFromServer calls it). It reads breached, running and clocks through shownSlaClock (lib/explain/sla.ts). A closed case with a late response reads the late response, not SLA met. A stopped breached clock reports how late it was (elapsed minus target). The due-in line floors the time left (B32). A clock that is never due reads "not due". The inspector shows the server's SLA reading for ended cases.
+  - D9: the inspector says No priority while the matrix is off.
+  - D8: the policy line states both auto-close conditions (compareWithPolicy, comparisonSentence) and opens a new explainPolicyToday explanation.
+  - New explain triggers: the meta strip's SLA, the SLA's priority and the Console's own SLA reading; the inspector's AI verdict line, policy line and time to detect (new lib/explain/times.ts).
+  - WP10 shapes read defensively: run_failed and gate_source in readDecision, so a failed run shows no policy as if it had decided (DecisionCard and explainDecision); the asset_cidr object reaches the risk explanation as today's configuration; partial risk inputs read not recorded instead of crashing the inspector.
+- Tests: new wp11i.case-page.test.tsx, 17 tests that all fail on base sources and pass after. Related suites 714 of 714. test:strict: 9,228 passed, 1 skipped, 1 known WP03 load flake (CaseDetail.structure Alt+5 and Alt+6, passes alone). typecheck, lint, gates, check:types, build:app (entry 325,263 B, unchanged), check_version, check_ci_contract, check_docs and the knowledge check pass. Spine guards and explain contract: 29 passed. No backend change.
+- Status: done (branch r16-wp11i, commit 55573b2, worktree detached). Live check on the seeded Demo at 1440x900 and 390x844 in both themes: every trigger opened its line and panel, Enter and Escape worked, focus returned to the trigger, no sideways scroll.
+- Next: WP16 fixes the CaseDetail.structure mock (api.prefs.getUser) and picks one wording for the remaining "Runbook (before Round 14)" labels (FactsRail included). WP15D's seeded risk inputs will let the Demo show recorded risk arithmetic. WP17 can reuse the screenshots.
+
+### 2026-11-25 22:40Z - WP14 reviewer - Case records reachable: Console, independent review
+- Context: Adversarial review of WP14 (Round 16 SPEC 4.5; [dv] R2 to R8, R11, R13, R15; B30, B31) on r16-wp14 at db4a8a8, base 848a328.
+- Did: Checked the diff against the SPEC, ownership and the non-negotiables. Reverted the B30 and B31 fixes once: 6 tests fail. Ran seeded Demo on 8938 and 5938 in both themes at 1440x900 and 390x844, using routed fixtures where Demo has no data. Fixed 7 defects in commit 2bc834d, each with a test proven to fail without its fix:
+  - the closed All fields sheet read useAuth and broke the inspector without an auth provider (2 case-surfaces specs);
+  - the event and All fields sheets lost keyboard focus on close;
+  - a Flex call read as Batch;
+  - a cheap call read $0.0000 beside its formula;
+  - a row whose rates do not give its cost now says so;
+  - Open in Logs could carry a rule Logs refuses, which voided the link;
+  - 2 AskAiChip.hosts cases failed and the stubs spec printed an act warning (test-only fixes).
+- Tests: typecheck, lint, gates, check:types and build are clean; entry 325,176 B (+41 B over base). Records suites 36 of 36. Strict run under load: the WP14 failures are fixed, and the other failures pass on rerun. Backend: 13,485 passed, 29 skipped, 13 failed (2 router counts, 5 round 15 docs records, 5 sandbox, 1 timing that passes alone). Check scripts pass. decide() and risk.py are untouched.
+- Status: done; r16-wp14 at 2bc834d, worktree detached.
+- Next: WP16 mounts NotificationsSent, TRACE_FILTERS, filterSpans and traceCountsText, links SignalProfile's count to the events table, and switches usageFormula to the WP11 kit, keeping the 8-decimal amounts, the Flex label and the mismatch line. Rerun npm run test:strict on a quiet machine.
+
+### 2026-11-25 23:40Z - WP11I reviewer - SLA line keeps the running clock; stopped clocks worded truly
+- Context: adversarial review of the Round 16 integration package WP11I (branch r16-wp11i, builder commit 55573b2 on 6d39130). It puts the WP10 triage and decision shapes and the WP11 leftovers onto the WP03 case page.
+- Did:
+  - Read the diff against SPEC WP03, WP10 and WP11 and explainability D8 and D9. Reverted each builder fix and saw its tests fail (13 of 17).
+  - Live check on the seeded Demo in both themes at 1440x900 and 390x844: every trigger opens on hover, Enter and click; Escape returns focus; no sideways scroll; the triage error and decision loading states read correctly. After closing a breached case, the inspector reads "Resolution overdue by 20h".
+  - Fixed 3 defects in webui/src/lib/explain/sla.ts. Tests are in casedetail/__tests__/wp11i.review.test.ts and fail on the old sla.ts.
+    - An open case answered late kept "Response overdue" and lost its resolution countdown. A running current clock now stays the line, and its explanation names the earlier breach that the SLA metrics count.
+    - A response clock stopped by the close now reads "closed with no human response", not "answered".
+    - Time under a minute reads in seconds, not "0m".
+- Tests: new review tests 4 of 4. Related suites 91 of 91. test:strict 9,212 passed, 18 skipped, 5 load flakes; the 5 pass alone. Backend 13,677 passed, 29 skipped, 5 known sandbox env failures. Spine guards and explain contract 29 passed. typecheck, lint, gates, check:types, build (entry 325,263 B), check_version, check_ci_contract, check_docs and the knowledge check all pass. decide() and risk.py are unchanged.
+- Status: done; r16-wp11i at e2f3954, worktree detached.
+- Next:
+  - WP16: fix the CaseDetail.structure api.prefs.getUser mock; pick one wording for "Runbook (before Round 14)" in FactsRail, audit/events.ts and caseActivityText.ts.
+  - WP15D: seed recorded risk inputs (B62) so the recorded-arithmetic and asset-range paths show live.
+
+### 2026-11-25 22:37Z - orchestrator - WP11I and WP14 merged
+- Context: WP11I (the WP10 shapes and WP11 leftovers on the WP03 case page: the SLA reading of closed and late cases, B32, D8, D9, the meta strip and inspector explain triggers) and SPEC §4.8 step 11 WP14 (case records reachable: the events table, the usage popover, All fields, findings, the waiting reason, notifications, trace details, history, grading, threat context providers; B30, B31). WP14's builder resumed from its saved work after the container restart.
+- Did: merged WP11I review e2f3954 and WP14 review 2bc834d into claude/round16 with no conflicts; generated files unchanged. Carried to WP16: InvestigationPanel uses TRACE_FILTERS, filterSpans and traceCountsText; FactsRail mounts NotificationsSent; SignalProfile's count opens the events table; usageFormula moves to the Explain kit keeping exactMoney, the Flex or Batch tier and the mismatch line; caseActivityText learns the status audit row; one wording for the "Runbook (before Round 14)" labels; the CaseDetail.structure test mock.
+- Tests: on the merged tree, the case page, explain, investigations and first-paint suites 806 passed, 1 skipped; the WP14 test files with the case detail suites 680 passed, 1 skipped; typecheck and lint clean; build:app entry 329,668 B (inside the 330,104 B budget).
+- Status: done.
+- Next: WP12 after its review; then WP15F (accessibility) and WP16 (integration and the cross-cutting review).
+
+### 2026-11-25 22:40Z - WP12 builder - Metrics explained 
+- Context: Round 16 SPEC WP12 ([expl] R8, R9, R11, D10; [be] R2 layer 3; B29, B64, B66, B67) plus the WP06, WP15C and WP11 carry-forwards: you can check dashboard numbers against the cases behind them.
+- Did: added GET /api/metrics/explain (mtta, mttr, dwell, mttd, active_risk_index, fp_rate, sla_attainment). It uses the same population and the same code as the figure, returns up to 200 rows centred on the median, needs cases:read for the rows, checks object scope per row, and answers 503 on an unreadable store. engine/metrics gained lifecycle_samples, mttr_by_decider, mttr_lifecycle, agreement None when nothing is graded, and the agreement population counts. All-time metrics payloads now carry generated_at and case_population. In the Console: KPI tile hover arithmetic and the drill-down "Show the calculation"; preview cards on tiles with no trend series; timing explain panels with a lazy "Show all N" samples sheet and the MTTR split by who closed the case; Analytics MTTR is the lifecycle p50 and says "resolved or closed"; Agreement names its population; Alert reduction shows its arithmetic line; dashboard widgets explain their figures; the LIVE tick reads metrics at most once per 30 s. Fixed B29 (Source column, facet and CSV use source_name, else source_id), B64 (partial coverage share), B66 (Respond and MTTD copy) and B67 (Closed and Resolved labels). Regenerated openapi.json and api-types.gen.ts.
+- Tests: backend 13,650 passed, 29 skipped, 5 sandbox-env failures (55 of 55 pass with proxy and AWS vars unset). Console test:strict 9,230 passed, 1 skipped, 2 load-related timeouts outside WP12 that pass alone. The two overview.trends act warnings and analytics-consolidation are fixed and their files pass. Lint 0, typecheck clean, design gates pass, build clean, entry 325,314 B against the 330,104 B budget, docs/version/CI/knowledge checks pass. decide() and risk.py are unchanged.
+- Status: done (commit cbaa793 on r16-wp12; branch detached).
+- Next: WP16 or its owner should change the kpi-bindings.ts 'SLA breached' copy to 'Open cases past their response target.'. The active_risk_index and sla_attainment explain data is served but not yet wired in risk.tsx, ActiveRiskIndex.tsx or the SLA tile. WP18 can document the hover line and panel in docs/analyst/explainable-numbers.md.
+
+### 2026-11-25 23:40Z - WP12 reviewer - Metrics explained: independent review and fixes
+- Context: Adversarial review of Round 16 WP12 (r16-wp12 at cbaa793 from 6d89ce6) against SPEC §4.5 WP12, §3, §4.1, §4.10 and Appendix A and C, with the WP06, WP15C and WP11 carry-forwards.
+- Did: Confirmed B29, B64, B66 and B67 and the LIVE 30 s cadence by reverting each fix and seeing its test fail. On the seeded Demo, GET /api/metrics/explain matched posture and GET /api/metrics for every metric and window. Checked both themes at 1440x900 and 390x844 (keyboard, focus return, loading, error, axe). Fixed six defects in d17b0cb, each with a test: (1) rank lines for a list of more than 200 cases now use the ranks of all samples from samples_offset (they had printed a different p50 and p90 than the figure); (2) the drill-down "Show the calculation" scrolls in a bounded, keyboard-reachable area, so the case list stays reachable (it had dropped to 12 px at 1440, 0 px on a phone); (3) a count of one takes a singular noun; (4) the Analytics all-time MTTR names its own window source; (5) the Analytics "Updated" stamp uses the server read time (generated_at); (6) the samples sheet is wide enough on a desktop for every column. decide() and risk.py unchanged.
+- Tests: backend 13,650 passed, 29 skipped, 5 sandbox-environment failures (the four files pass 55 of 55 with the proxy and AWS variables unset); ruff fatal clean; test:strict 707 files, 9,239 passed, 1 skipped, zero stderr; lint 0, typecheck clean, gates pass, check:types no drift, build clean, entry 325,314 B (budget 330,104 B); docs:check, check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done (d17b0cb on r16-wp12; worktree detached).
+- Next: kpi-bindings.ts 'SLA breached' copy belongs to WP16 or the file's owner. The Console does not yet use the active_risk_index or sla_attainment explain data (ActiveRiskIndex.tsx and dashboard/widgets/risk.tsx are not WP12 files; the Analytics Posture Attainment tile could read the route in a follow-up). WP18 documents the hover line, the panel and Show all.
+
+### 2026-11-25 23:35Z - orchestrator - WP12 merged (metrics explained); full suites on the merged tree
+- Context: SPEC §4.8 step 11: GET /api/metrics/explain for MTTA, MTTR, dwell, MTTD, the Active risk index, the AI-verdict false positive rate and SLA attainment, the KPI hover arithmetic and drill-down calculation, the timing panels with a samples sheet, the MTTR split by decider, the LIVE cadence, B29, B64, B66 and B67.
+- Did: merged review d17b0cb into claude/round16 with no conflicts; generated files unchanged. Carried to WP16: the Active risk index and SLA attainment explanations in the Console and the kpi-bindings SLA breached sentence.
+- Tests: before this merge, on the quiet machine, the full suites on claude/round16 (6b567a2): npm run test:strict 728 files, 9,422 passed, 1 skipped, exit 0 with zero stderr; backend 13,700 passed, 29 skipped, 5 failed (the known sandbox-only environment tests). After the merge: the WP12 Console test files with the first-paint check 246 passed, 1 skipped; its backend tests with route coverage 53 passed; typecheck and lint clean; build:app entry 329,722 B (inside the 330,104 B budget).
+- Status: done.
+- Next: WP15F (accessibility) and WP16 (integration: backend, Console and records, then the cross-cutting review) from this base.
+
+### 2026-11-26 00:35Z - WP16R (records part of WP16) - rollback lane plants, ui-standard consolidation, API path count
+- Context: SPEC 4.6 WP16 records items: the 3.7 rollback lane plants, consolidating docs/development/ui-standard.md against the merged code, and the docs/reference/api.md path count.
+- Did: in scripts/rollback_lane.py, release N plants a case with recorded risk inputs, its rated ledger row, an MFA-locked account and the What's new marker. N-1 reads each one, then rewrites the case, the account and the preferences. N then asserts four things: the case reads not recorded with its score unchanged, the ledger rates are kept, the lockout counter is reset, and the marker survives. The expectation follows whether N-1 defines each field, so the self-forward scenario must keep everything. Added 12 offline tests in scripts/test_rollback_lane.py. In ui-standard.md, fixed the stale sign-in contrast, facts rail, queue notice and Delete wording, the Standup grant and the version example. Added AI investigation signals, Explainable numbers and a What's new bullet. Set api.md to 307 paths.
+- Tests: the full lane passed on a local PostgreSQL 16 with pgvector, pinned and self-forward. The lane unit tests pass (31 OK), and the plant tests fail when the plants are reverted. Backend pytest: 13,750 collected, 5 known sandbox-only env failures (55 of 55 pass with the proxy and AWS variables unset). check_version, check_ci_contract, check_docs, build_app_knowledge --check, check:types and ruff fatal are all green.
+- Status: done; commit c8ab2f8 on r16-wp16r, not pushed.
+- Next: WP18 writes the rollback losses into known-limitations.md and the rollback docs (lane proven: inputs and lockout counters lost on rewrite, rates and markers kept). Re-count api.md paths if WP16B changes routes. Consider a docs test that pins the api.md count.
+
+### 2026-11-26 01:40Z - WP16R reviewer - rollback lane plants and ui-standard consolidation reviewed
+- Context: independent review of WP16R (records part of SPEC 4.6 WP16): the SPEC 3.7 rollback lane plants, the ui-standard.md consolidation and the api.md path count, commit c8ab2f8 on r16-wp16r.
+- Did: re-ran the full N to N-1 lane on a temporary PostgreSQL 16 cluster with pgvector; it passed both the pinned and self-forward scenarios. Proved the new lane tests catch regressions with two mutations. Confirmed the 307-path count against openapi.json and the live app. Checked every new or changed ui-standard claim against the merged code, then fixed six that the code contradicts: the sign-in increased-contrast overclaim, the "header and rail" wording, the hold-off timing, the drawer and rail count, the finished note's verdict, and the What's new hero default. Commit 4f1ba4f.
+- Tests: backend pytest 13716 passed, 29 skipped, 5 sandbox-only env failures (55 of 55 with the proxy and AWS variables unset). test:strict 731 files, 9433 passed, 18 skipped. typecheck, lint, gates, check:types and build clean. check_version, check_ci_contract, check_docs, build_app_knowledge --check and ruff fatal all pass. Lane unit tests 106 OK.
+- Status: done; r16-wp16r at 4f1ba4f, not pushed, worktree detached.
+- Next: WP18 writes the proven rollback losses (inputs and lockout counters lost on rewrite; rates and markers kept) into known-limitations.md and the rollback docs, and adds a docs test pinning the api.md path count. Re-count api.md if WP16B changes routes.
+
+### 2026-11-26 01:23Z - orchestrator - WP16R merged (integration records)
+- Context: the records part of SPEC §4.6 WP16, built in parallel with WP16B, WP16C and WP15F: the §3.7 rollback lane plants, the ui-standard consolidation against the merged code and the api.md path count.
+- Did: merged review 4f1ba4f into claude/round16 with no conflicts; the knowledge corpus is unchanged. The rollback lane plants a case with recorded risk inputs, its rated ledger row, an MFA-locked account and the What's new marker, and the full lane passed both scenarios on a private PostgreSQL 16 with pgvector. Carried to WP18: the proven rollback losses and the two documentation-only losses (route gating, the server-side forced password change) in known-limitations.md, and a test that keeps the api.md path count (307) in sync with openapi.json.
+- Tests: on the merged tree, the rollback lane unit tests 31 passed, 12 skipped (with the backend requirements installed, as the CI lane does); check_docs (89 pages) passes.
+- Status: done.
+- Next: WP16B, WP15F and WP16C after their reviews; then the cross-cutting review of the integrated tree.
+
+### 2026-11-26 00:55Z - WP16B (backend integration) - Round 16 WP16 backend items
+- Context: SPEC 4.6 WP16, backend half; 15 items from build/wp16-backend.md, on branch r16-wp16b from 3a47a55.
+- Did:
+  - Reset and chat: the cases reset clears the shared metric caches (engine/reset.py). The all-time chat noise funnel stamps population.generated_at.
+  - SSO: role values must be built-in roles, so a custom role answers 422.
+  - Investigate page: POST /api/investigate is a manual run with requested_by.
+  - Case write lock: the auto-close review, precedent ratification, analyst-policy close and candidate rebuild re-read the case under the case lock, inside the signature lock.
+  - Investigation gate: new would_wait read; a background job run waiting for the headroom announces itself as queued.
+  - Additive fields: /rationale gains rows_total and truncated; the /forwarding fallback gains its routing keys.
+  - Cost text: cost figures in audit text are hidden without cost:view (new api/cost_text.py).
+  - PUT /api/prefs/org validates the full Preferences (B45).
+  - Small fixes: the cases template log names the template, the audit context docstring is reworded, the TraceSpan.kind comment is complete, the host.docker.internal hint is used.
+  - Item 14: a deadline drop under load is by design; the 20,000-case starters test now raises the deadline and keeps its speed bound.
+  - Item 15 skipped: it moves 20 of 42 seeded risk scores and trims 2 cases.
+  - Regenerated openapi.json and api-types.gen.ts.
+- Tests: backend 13,738 passed, 29 skipped, 5 sandbox-only failures, which pass with the proxy and AWS variables unset. The new file has 22 tests, each proved failing by reverting its source file. Ruff fatal clean; webui typecheck and check:types clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done; commit abe1f65 on r16-wp16b (worktree detached).
+- Next: WP16C may show the rationale truncated flag. WP18 records the SSO restriction, the cost-text rule and the item 15 skip.
+
+### 2026-11-26 02:25Z - WP16B reviewer - Round 16 WP16 backend items reviewed
+- Context: independent review of r16-wp16b (abe1f65) against SPEC 4.6 WP16 and the 15 backend items.
+- Did: checked all 15 items. All 22 builder tests fail when their source files are put back to 3a47a55. decide() and risk.py are unchanged. Fixed three defects in the cost-text rule (item 11):
+  - Tool output and other rows' text are no longer rewritten. Before, log evidence such as `$1` or `$5000` read "(amount hidden)" for a viewer without cost:view. New helper `withhold_row_cost_text` in api/cost_text.py, used by the timeline and the trace.
+  - The case activity feed (routes_cases_collab) follows cost:view.
+  - Chat's case rationale (chat_tools/cases.py) follows cost:view.
+  - Added a lock test for the precedent ratification save, regenerated openapi.json and api-types.gen.ts, and replaced an em dash in the activity docstring.
+  - Commits 167dcb6, 15e4add and 234f559 on r16-wp16b; worktree detached.
+- Tests: backend 13,744 passed, 29 skipped, 5 sandbox-only failures, which pass 55 of 55 with the proxy and AWS variables unset. The WP16B test file has 28 tests; each new one fails before its fix.
+  - webui typecheck, lint, gates, check:types and build: clean.
+  - test:strict: 9,433 passed, 0 failed, but the gate exited 1 on stderr from AgentEffectiveness.fold.test.tsx. That warning is already on 3a47a55; this branch changes no Console source.
+  - check_version, check_ci_contract, check_docs, build_app_knowledge --check, ruff fatal: pass.
+- Status: done.
+- Next: a Console package fixes the AgentEffectiveness.fold.test.tsx act() warning before the integrated test:strict. WP18 records the SSO built-in-roles rule and the narrower cost-text rule. Case.error and GET /api/audit still show spend text without cost:view; that is a follow-up.
+
+### 2026-11-26 02:11Z - orchestrator - WP16B merged (integration backend items)
+- Context: the backend part of SPEC §4.6 WP16: fifteen carried items (reset cache invalidation, the noise funnel stamp, SSO role values restricted to built-in roles for 0.2.0, a manual Investigate run, the per-case lock for four more writers, would_wait for queued frames, rationale and forwarding totals, the template log line, the TraceSpan comment, cost text withheld from viewers without cost:view, the org prefs validator, the base URL hint, a timing test made reliable; the Demo asset map skipped because it moves 20 of 42 seeded risk scores).
+- Did: merged review 234f559 into claude/round16 with no conflicts; generated files unchanged. The review narrowed the cost-text rule to the spend rows only (evidence is never rewritten) and extended it to the activity feed and chat's case rationale. Carried to the cross-cutting fix stage: the AgentEffectiveness.fold act() stderr that fails test:strict, the budget refusal figure in Case.error, a deleted case brought back by the precedent candidate save, and the audit log's cost text for an auditor without cost:view.
+- Tests: on the merged tree, the WP16B tests with route coverage, spine and decide guards, the investigation registry and WP10 tests: 181 passed; fatal ruff clean; typecheck clean.
+- Status: done.
+- Next: WP15F and WP16C after their reviews, then the entry trim and the cross-cutting review.
+
+### 2026-11-26 00:55Z - WP15F (sub-agent) - Accessibility fixes B71 to B81
+- Context: Round 16 SPEC 4.5 WP15F, on base 3a47a55 (claude/round16 with every feature package merged). Fixes for the 11 confirmed keyboard, focus, naming and reflow bugs.
+- Did:
+  - Skip links (shell and setup wizard) move focus in code through the new `webui/src/soc/skip-link.ts`; the hash never changes (B71).
+  - The phone navigation sheet returns focus to "Open navigation", or to `#socMain` after a destination (B73).
+  - Audit table layout follows the measured list width (816 and 992 px); rows cannot widen the page; phone times wrap at the space (B72, B79). `useElementWidth` moved to `soc/hooks`, is re-exported from the composer, and accepts an element.
+  - DataTable sticky first column sets `scroll-padding-inline-start` to its measured edge (B74).
+  - 17 unnamed popovers named; new guard `popover-names.guard.test.ts` (B75).
+  - cmdk separator is `aria-hidden` (B76).
+  - Runbooks focus the editor heading or the row just left on a view switch (B77).
+  - CodeBlock is a focusable named region only while it overflows, and its caption wraps; `Table` `scrollLabel` used by AutoCloseReviewModule and PersonSheet (one scroller) (B78, B80).
+  - Coarse-pointer 16 px text fields in theme.css `@layer base` (B81).
+- Tests:
+  - Each bug's regression test failed before its fix.
+  - Backend: 13716 passed, 29 skipped, 5 sandbox-only failures.
+  - Webui: 9492 passed, 1 skipped / 742 files. The one-time full run hit an act() stderr warning in a new test; I fixed the test and reran only that file (3 clean runs), not the full suite.
+  - lint, gates, check:types, build and docs:check clean.
+  - Entry chunk 330,052 B against base 329,722 B (+330 B, 52 B under the 330,104 B budget).
+  - Seeded Demo axe sweep, 30 routes at 1440 and 390 in light and dark: zero serious or critical.
+- Status: done; committed 1e87ff3 on r16-wp15f, worktree detached.
+- Next:
+  - WP16: watch the 52 B entry headroom.
+  - Add the sticky-column 2.4.11 line to ui-standard.md.
+  - Fix ConfirmProvider focus after Cancel in ConfirmDialog.tsx.
+  - B81 still needs the maintainer's iOS device check (M6).
+
+### 2026-11-26 02:58Z - WP15F reviewer (sub-agent) - Accessibility package review and two B77 fixes
+- Context: Round 16 SPEC 4.5 WP15F, an independent adversarial review of r16-wp15f (1e87ff3 on base 3a47a55).
+- Did:
+  - Checked B71 to B81 against the SPEC and the bug hunt. All eleven contracts are met, and the edits stay inside the owned files and the allowed hunks.
+  - Proved the regressions by restoring the base sources: the B71/B73 tests had 4 failures and the rest had 27, all from the package's own tests.
+  - Seeded Demo live checks (light and dark, 1440 and 390) for every bug, plus the empty and error states. The axe sweep over 34 routes and the overlays found 0 serious or critical.
+  - Fixed B77 on phones: going back from a runbook now focuses the runbook's row again. The phone list rows have no id attribute, so the row link is found by its address.
+  - Fixed B77 when the library could not be read: going back now focuses the library heading, not the page body.
+  - Made the CodeBlock scroll-region test honest about axe in jsdom.
+  - Commit e761b80 on r16-wp15f; the worktree is detached.
+- Tests:
+  - Both new regression tests fail without their fix.
+  - test:strict: 742 files, 9494 passed, 1 skipped, no stderr.
+  - Backend: 13716 passed, 29 skipped, 5 sandbox-only failures.
+  - Lint, gates, check:types, build, docs:check and the version, CI and docs checks are clean.
+  - Entry chunk 330,052 B (52 B under budget); the fixes add nothing to it.
+- Status: done.
+- Next:
+  - WP16: only 52 B of entry headroom is left after WP16C merges.
+  - ConfirmProvider: restore focus after Cancel (ConfirmDialog.tsx is not WP15F's).
+  - ui-standard.md: add the C43 sticky-column line.
+  - B81 still needs the maintainer's iOS check (M6).
+
+### 2026-11-26 02:50Z - orchestrator - WP15F merged (accessibility fixes)
+- Context: SPEC §4.8 step 12: B71 to B81 (skip links that move focus in code, the phone navigation focus return, the Audit table layout from its measured width, sticky first column scroll padding, a name on every popover with a source guard, the cmdk separator, runbook view focus, CodeBlock and table scroll regions, wrapping captions, 16 px text fields on coarse pointers).
+- Did: merged review e761b80 into claude/round16 with no conflicts; generated files unchanged. The seeded Demo axe sweep over 34 routes, both themes, 1440 and 390, found no serious or critical results. Carried: the ConfirmProvider focus return after Cancel and the sticky-column line in ui-standard (cross-cutting fix stage); B81's iOS device check (maintainer, SPEC M6).
+- Tests: on the merged tree, the WP15F test files with the first-paint check 142 passed, 1 skipped; typecheck, lint and design gates clean; build:app entry 330,052 B (52 B inside the 330,104 B budget).
+- Status: done.
+- Next: WP16C after its review, then the entry trim and the cross-cutting review.
+
+### 2026-11-26 02:05Z - WP16C builder - Console integration (SPEC 4.6 WP16, items 1 to 24)
+- Context: the Console part of WP16 Integration, run alongside WP16B, WP16R and WP15F, in its own worktree on r16-wp16c from 3a47a55.
+- Did: Case Manager shortcuts list ] and W. Take action keeps Reinvestigate unavailable during a queued or running AI run and says why. The header dims the previous verdict with a hover note and fits the run chip to the strip (time and ring, then ring alone), so the status words stay whole at both sizes. The queue mark keeps the ring alone in a narrow queue. Bulk Acknowledge and Set status confirm dialogs note a running AI run. There is one Back below xl (first content 207 px). The AI lane uses the trace kit; the facts rail uses NotificationsSent; the Signal event count opens the Evidence events table. The usage formula uses the Explain kit. Status audit rows read in plain words, and "Older runbook" wording replaces "before Round 14" in the Console, the audit table, backend event_categories.json and the docs. Retired tab names are fixed, and RunbookRail and OverviewNextStep are deleted. Login goes back to the password step after five wrong codes. Add to case Sources lines use the case number. MetricExplain makes the Active risk index and SLA attainment read GET /api/metrics/explain, with the risk weights in force. SLA breached, the DashboardBuilder comment and the Appearance copy are fixed; console map and knowledge corpus regenerated. Boot memoizes the routed page (net -10 B entry). Unused keyframes and a stale comment are removed and the grep baseline lowered. The Help Center banner has no long dashes, and the bundled build has no version provider (no versions.json request; the bundle check enforces it).
+- Tests: lint 0/0; gates pass; check:types no drift; full build clean, entry 329,949 B of 330,104 B; test:strict 9,478 passed, 1 skipped, 1 load-time flake in dashboards-routes (passes alone twice); pytest about 13,716 passed, 29 skipped, 5 sandbox-only failures; docs script tests 18 OK; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done (commit fe60b2c, worktree detached).
+- Next: when merging, regenerate the knowledge corpus after WP16R's merge (both changed generated files). The orchestrator may lengthen the 1 s board-title wait in dashboards-routes. Item 14 (Chat.earlier flake) was hardened but not reproduced.
+
+### 2026-11-26 03:35Z - WP16C reviewer - adversarial review of the Console integration (SPEC 4.6 WP16)
+- Context: independent review of r16-wp16c (fe60b2c, from 3a47a55) against wp16-console.md items 1 to 24 and the SPEC, in its own worktree.
+- Did: checked every item in the diff. decide() and engine/risk.py are unchanged, and no added line has a long dash, U+00A0 or a Cf character. Re-proved the regression tests by putting back the base sources (36 tests failed: 11, 21 and 4 in three batches). Checked live on the seeded Demo in both themes at 1440x900 and 390x844, with a run held as running and with real runs: Take action, R, W, the verdict hover, the queue ring, the event count link, the risk and SLA explanations and the bundled Help Center config. Geometry measured 72/92/119/207. Fixed three defects in 122822f: the "AI finished" chip squeezed the header status words to "E" at 390 and "Esc..." at 1440 (now measured, mark alone below 56rem, spacing keyed on the chip with CSS :has); Settings > Knowledge named the retired Threat context tab (copy fixed, and a source guard added for retired case tab names); the risk explanation now says the gauge shows the nearest whole number.
+- Tests: typecheck, lint 0/0, gates, check:types and gen:console-map with no change. Entry 329,949 of 330,104 B. test:strict: 9,483 passed, 1 skipped, 0 failed, but the gate failed on one act() warning in AgentEffectiveness.fold, which passes alone twice. pytest: 13,716 passed, 29 skipped, 5 sandbox-only failures. check_version, check_ci_contract, check_docs, build_app_knowledge --check and the docs script tests pass.
+- Status: done (r16-wp16c at 122822f, worktree detached).
+- Next: decide who owns the AgentEffectiveness.fold act() warning under load and the dashboards-routes 1 s title wait. Both can fail the strict gate on a busy machine. The status words also truncate beside a long verdict or a long owner name with no AI chip at all (WP03 design), for the orchestrator to decide. Regenerate the knowledge corpus after merging WP16R.
+
+### 2026-11-26 03:33Z - orchestrator - WP16C merged (integration Console items); the entry is 175 B over budget
+- Context: the Console part of SPEC §4.6 WP16: 24 carried items (the AI run signals on the case page and in Case Manager, one Back on a phone, the trace kit in the AI lane, NotificationsSent, the Signal event count link, the usage formula on the Explain kit, plain status audit rows, "Older runbook", retired tab names, the Login second-factor step, the Active risk index and SLA attainment explanations, dashboard and settings copy, the Help Center banner and version provider, unused keyframes).
+- Did: merged review 122822f into claude/round16 with no conflicts; generated files unchanged. With WP15F's +330 B and WP16C's +227 B (each inside the budget alone), the merged entry is 330,279 B, 175 B over the 330,104 B budget, so bundle-first-paint fails on this commit. The next package (WP16P) trims the entry first, then takes the post-integration items (the ConfirmProvider focus, the AgentEffectiveness.fold act() stderr, cost text in the audit log and Case.error, a deleted case revived by the precedent save, the rationale truncation in the Console, the verdict casing in the close notice, the sticky-column line in ui-standard).
+- Tests: on the merged tree, the WP16C test files 664 passed; typecheck, lint and design gates clean; bundle-first-paint fails only on the entry budget.
+- Status: done, with the entry budget open.
+- Next: WP16P (entry trim and post-integration fixes) and, in parallel, the cross-cutting review finders.
+
+
+### 2026-11-26 12:00Z - XFB sub-agent - Cross-cutting review backend fixes (spine and security)
+- Context: package XFB of Round 16. Fix the confirmed backend findings of the cross-cutting review of the integrated tree (brief xcut-fix-backend.md).
+- Did:
+  - The cross-source link write, threshold automation and the notifier now hold the case write lock from their re-read to their save. They never hold it during a send.
+  - ThresholdAutomation.run and NotificationService.notify gained a case_lock keyword. The pipeline and the Demo HITL seed pass the shared lock.
+  - The link write takes the case lock alone. It no longer waits for a run on the linked case.
+  - The event-detection re-entry and the Demo event batch pass known_case_id. The D10 re-read now covers the drain and detection triggers, so a close made during the gate wait mints no second case. handle_clusters is unchanged.
+  - The analyst-policy close carries notifications_sent and the three cross-source link fields.
+  - GET /api/standup returns cost null without cost:view.
+  - decide() and risk.py are untouched; no model call was added.
+  - Commit 0b4cd6d on r16-xfb.
+- Tests:
+  - New test_round16_xfb_crosscut.py (14 tests). Extended the carry test and the B08 stub.
+  - 12 tests fail with the app changes reverted. The two guards were proven by partial reverts.
+  - Full backend suite: 13,758 passed, 29 skipped, 5 sandbox-only environment failures. Those pass with the proxy and AWS variables unset.
+  - ruff fatal clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done.
+- Next: the records package amends the SPEC lock wording for B09, WP08 (_reenter_detections passes known_case_id; the re-read covers drain and detection) and WP15B (the policy builder carries notifications_sent and the links). It also adds the CHANGELOG Fixed lines.
+
+### 2026-11-26 15:30Z - XFB review sub-agent - Adversarial review of the cross-cutting backend fixes
+- Context: independent review of package XFB (r16-xfb from 9a94df2) against the cross-cutting brief, the skeptics' corrected fixes and the Round 16 SPEC (B08, B09, WP08 D10 and the case lock, D11).
+- Did:
+  - Checked the lock design. Automation takes the case lock inside the signature lock. The notifier, the link write and the Demo seed take it alone. No writer holds it during a send. No path waits for a signature lock or the review store lock while it holds a case lock. Every save under a signature lock re-reads under the case lock, so moving the link write is safe.
+  - Re-proved all regressions by reverting each fix and wiring line one at a time.
+  - Fixed the drift in the generated API types: the standup docstring is the OpenAPI description. Regenerated openapi.json and api-types.gen.ts.
+  - Corrected two stale link-lock comments (ingest, poller) and the CaseLocks lock-order note.
+  - Made the policy carry assertion check a non-empty record.
+  - decide() and risk.py are untouched; no model call was added.
+  - Commits b56b587 and 375e2c4 on r16-xfb.
+- Tests:
+  - Spine modules pass.
+  - Full backend suite: 13,758 passed, 29 skipped, 5 sandbox-only failures. Those pass with the proxy and AWS variables unset.
+  - ruff fatal clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - check:types, typecheck and gates pass.
+- Status: done.
+- Next: the records package amends the SPEC lock wording for B09, section 2, Appendix C C10 and the WP08 case-lock and re-entry bullets. It also writes the CHANGELOG Fixed lines from this report.
+
+### 2026-11-26 06:20Z - orchestrator - XFB merged into the Round 16 branch
+- Context: cross-cutting review of the integrated tree, backend fix package XFB (spine and security findings).
+- Did: merged r16-xfb (0b4cd6d, b56b587, 375e2c4) into claude/round16 as 5514f23. decide() and risk.py unchanged.
+- Tests: the package's whole backend suite (13,758 passed, 29 skipped, 5 sandbox-only environment failures); the reviewer re-proved 11 regressions by single reverts; check:types clean after the regeneration.
+- Status: done.
+- Next: merge WP16P, XFDEMO, XFNUM, XFSIGN, XFCM, WP17A, WP18B and WP18C as their reviews finish; then the docs fix package, the full gates, WP17B screenshots, WP19.
+
+
+### 2026-11-26 05:50Z - WP18B sub-agent - Round 16 repository records
+- Context: SPEC 4.7 WP18, the repository records half (WP18C writes the Help Center pages at the same time). Branch r16-wp18b from 9a94df2 (WP16C merged).
+- Did: CHANGELOG [Unreleased] gained a Round 16 section (Added, Changed, Fixed, Removed, Performance, Security, Upgrade notes), merged and de-duplicated from every package's text with bug ids, using the latest behaviour where a later package changed it. AGENTS.md: §4 layout for every Round 16 module, router, Console folder, script and LICENSE; §5 contract wording for 0.2.0 and the recorded inputs and gate; §10 Round 16 bullet, 0.2.0 release topology, the What's new process rule, the cases index bootstrap exception, the baseline placeholder sentence and the backlog pointer. HANDOFF: the full Round 16 text, the repository line, 0.2.0 and the six tabs. ROADMAP: 0.2.0 baseline, backlog K from SPEC §7, B44, B09 and two Round 15 items closed, a progress entry. USAGE: /docs/0.2/ and the 0.2.0 sample, AI run tracking, case records, explainable numbers, What's new, the sign-in page, Demo cost and Reinvestigate. testing.md: the baseline sentence and five browser-matrix rows. ENVIRONMENT, RUNBOOK and TROUBLESHOOTING: refresh-token wording, in-process knowledge ranking, event_loop and case_population. README, INSTALL, DEPLOY, SECURITY, DEMO and COMPATIBILITY: the Round 16 facts that were missing or wrong (for example, the shipped Elasticsearch client now reads index templates, and SSO accepts built-in roles only). SPEC §8.1 to §8.3: contract resolutions, per-package notes, the dv §3 field checklist and known limitations, with the WP16P, closing-gate and cross-cutting placeholders. Dated amendments in the Round 14 SPEC (D3) and the Round 15 SPEC (§2.8). The es/indices.py docstring names the three additive bootstrap exceptions.
+- Tests: full backend suite 13,743 passed, 29 skipped, 6 failed: 5 sandbox-only env tests (55 of 55 with the proxy and AWS variables unset) and 1 chat starter load timeout that passes alone. Records, knowledge, version and changelog tests pass. check_docs (89 pages), build_app_knowledge --check (1,001 chunks), check_version, check_ci_contract, docs bundle and docs:check pass. Banned-character scan 0.
+- Status: done; commit dd1ab4d on r16-wp18b, worktree detached.
+- Next: the orchestrator appends this entry. WP16P fills §8.1 Entry bundle, and the closing gates and the cross-cutting review fill §8.4 and §8.5. The orchestrator replaces "Round 16 figures are recorded after its closing gates." in AGENTS §10 and testing.md. WP19 moves the CHANGELOG Round 16 section under the dated [0.2.0] heading.
+
+### 2026-11-26 07:20Z - WP18B reviewer - adversarial review of the Round 16 repository records
+- Context: SPEC 4.7 WP18, the repository records half (WP18B), builder commit dd1ab4d on r16-wp18b from 9a94df2. Checked against the SPEC, carry.md, the WP18 notes and the code.
+- Did: fixed seven defects in 646a3de. (1) The Round 14 SPEC D3 amendment split the accepted-defaults table; it now follows the table. (2) CHANGELOG and AGENTS said a new account gets the What's new welcome; the code stamps it seen (D7). (3) The CHANGELOG intro said three Elasticsearch mappings grow; only the cases mapping is new, and the audit upgrade now runs on the shipped client. (4) USAGE: the What's new section had split the In-app inbox section from its route table; it now follows that section. (5) ROADMAP 0.1 history no longer calls 0.1.13 a live candidate. (6) SPEC 8.1 now gives WP04's entry saving as 5,544 B, like 8.2. (7) The DEMO navigation list now names the current pages. Added backend/tests/test_round16_wp18b_records.py (8 tests); 7 fail on the builder's files. Confirmed: all 81 bug ids in the CHANGELOG, the package and router counts, every 8.2 commit hash, the AGENTS 4 paths, the indices.py docstring and the placeholders.
+- Tests: new records file 8 passed; records and knowledge filter exit 0; full backend suite 13,751 passed, 29 skipped, 6 failed (the 5 sandbox-only tests, 55 of 55 with the proxy and AWS variables unset, and one SQLite "database is locked" under load that passes 31 of 31 alone). check_version, check_ci_contract, check_docs (89 pages), build_app_knowledge --check (1,001 chunks), build_release_notes --check and the banned-character scan pass. decide() and risk.py unchanged. Webui gates not run: no Console or Help Center file changed.
+- Status: done; commit 646a3de on r16-wp18b, worktree detached.
+- Next: the orchestrator appends this entry and the builder's. WP16P, the closing gates and the cross-cutting review fill SPEC 8.1 Entry bundle, 8.4 and 8.5, replace the Round 16 baseline sentence and prune the open-items bullet in 8.3. WP17 refreshes the 0.1.13 screenshot captions in README and INSTALL. WP19 moves the CHANGELOG Round 16 section under [0.2.0].
+
+### 2026-11-26 06:40Z - orchestrator - WP18B merged into the Round 16 branch
+- Context: WP18 repository records (CHANGELOG Round 16, AGENTS, HANDOFF, ROADMAP, USAGE, testing.md, SPEC section 8.1 to 8.3, amendments).
+- Did: merged r16-wp18b (dd1ab4d, 646a3de) cleanly. The SPEC section 8.1 Entry bundle item and section 8.4 and 8.5 stay placeholders until WP16P and the closing gates.
+- Tests: on the merged tree, the records, docs and knowledge tests 740 passed, 1 skipped; build_app_knowledge --check and check_docs pass.
+- Status: done.
+- Next: WP16P (its section 8.1 text merges with this one), the fix packages, WP18C, the docs fix package.
+
+
+### 2026-11-26 06:20Z - WP16P (WP16 integration, last part) - entry budget and post-integration fixes
+- Context: SPEC 4.6 WP16 "Budget" and the 12 post-integration items, on r16-wp16p from 9a94df2.
+- Did:
+  - Entry budget:
+    - The merged entry was 330,279 B, 175 B over budget. Per-file deltas against 3cfd5c0 come from the source map.
+    - The agent-step narration moved from useEventStream.ts to lib/agentSteps.ts, which only the lazy case activity feed imports (-461 B).
+    - Final entry 330,068 B, and PRE_REVAMP_ENTRY_BYTES is set to it. The record is in Round 16 SPEC 8.1 "Entry bundle"; Round 15 8.1 points to it, and test_docs_round12_records reads Round 16.
+    - A source guard keeps the Explain kit and the narration off first paint.
+  - Fixes:
+    - Confirm focus returns to the control that asked, or the menu trigger, or #socMain.
+    - The AI run note writes the verdict in lower case.
+    - GET /api/audit and Case.error follow cost:view for spend figures.
+    - A deleted case is never saved back by a precedent candidate.
+    - The AI investigation tab notes a rationale built from only the newest records.
+    - The header meta strip gives way in order: owner name, then verdict words, then status words. AiVerdictChip gains an optional wordsClassName.
+    - ui-standard records the C43 sticky-column rule, and a docs test pins the api.md path count.
+    - AgentEffectiveness.fold and dashboards-routes waits are hardened. Item 6 needed no change.
+- Tests:
+  - Backend 13,751 passed, 29 skipped, 5 sandbox-only failures (55 of 55 pass with the proxy and AWS variables unset).
+  - test:strict at load 15: 9,513 passed, 25 failed (21 timeouts). The 18 failing files then passed alone: 300 of 300, zero stderr.
+  - lint, typecheck, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs, build_app_knowledge --check and ruff fatal pass.
+  - Each fix's test fails on the base source.
+- Status: done; commit 7a31bda on r16-wp16p, worktree detached.
+- Next:
+  - The audit_export job still writes spend text for an exporter without cost:view.
+  - Round 16 SPEC 8.1 will need a merge with WP18B's 8.1 text.
+  - WP18 records the cost-text rule for the audit log and Case.error.
+
+### 2026-11-26 05:40Z - XFDEMO agent - Demo storyline from the case's own cluster, paced Demo runs
+- Context: Round 16 cross-cutting review, two seeded Demo findings (demo-storyline-from-precedents, demo-run-under-hold-off), per the corrected fixes in the XFDEMO brief.
+- Did:
+  - The Demo provider now reads an investigation prompt's storyline only from the case's own cluster block: the render_cluster heading through the sample events. New constant CLUSTER_CONTEXT_HEADING in agents/prompts.py, shared by render_cluster and the resolver; SAMPLE_EVENTS_HEADING is a prefix constant held by a test. A retrieved precedent, memory or runbook can no longer turn a case into another storyline.
+  - New DEMO_INVESTIGATION_STEP_DELAY_S (2 s, read at call time). It pauses each router, investigator and formatter answer of a manual or job run in Demo Mode, so a run takes about 8 s and the AI working signals show. Automatic, drain and detection runs, calls outside a run, and chat, report and runbook prompts never wait. conftest sets the delay to 0.
+  - New tests in backend/tests/test_round16_xfdemo.py.
+  - No model call, no new ledger row, KV untouched; decide() and risk.py unchanged.
+- Tests:
+  - XFDEMO file 22 passed; both fixes proved by reverting (6 and 7 tests fail).
+  - Full backend suite: 13,766 passed, 29 skipped, 5 sandbox-only environment failures (55 of 55 pass with proxy and AWS variables unset).
+  - ruff fatal clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - Seeded Demo with Playwright at 1440 by 900, light and dark: chip with clock 0:00 to 0:07, queue row mark, navigation count 1, popover, then AI finished. A close during the run returned in 0.03 s.
+- Status: done. Committed on r16-xfdemo as 0eb619b; worktree detached.
+- Next:
+  - WP18: add the CHANGELOG Fixed lines and the demo.md sentence.
+  - SPEC 5.3 capture list: screenshot 1's band line needs the live Demo.
+  - The popover holds on "Looking up evidence" for most of a Demo run, because all model calls sit in the evidence phase.
+
+### 2026-11-26 05:30Z - XFNUM builder - every printed number gives its printed result
+- Context: cross-cutting review package XFNUM, ten confirmed numbers and explainability findings (xcut-fix-numbers.md, skeptic corrected fixes), on r16-xfnum from 9a94df2.
+- Did:
+  - Backend, shift_report.sla_aging: uses the shared metrics.sla_case_reading rule (breached over target, at risk from 0.8, no target means not counted). The invented 120-minute target is gone, and warn_fraction defaults to SLA_AT_RISK_FRACTION.
+  - Backend, priority: urgency and derived severity band the shown risk integer, rounded half up, and return display.
+  - Backend, metrics: the dwell population names a person's first response, and avg_risk_case_count is added to GET /api/metrics.
+  - Console, risk explanation: the Velocity step uses the recorded count and window. The Total step and the hover line print a division only when the stored factors give the score.
+  - Console, triage explanation: prints the shown integer and half-open ranges.
+  - Console, noise Detailed headline: names its inputs and is explained, withheld under partial coverage.
+  - Console, copy: dwell says by a person; Open cases says not limited by the time range; an unchecked indicator reads Not checked.
+  - Console, new explanations: Average risk, Incident yield, Escalation rate, Containment, the Posture SLA strip, dashboard strip cells and the Team activity median.
+  - Tests: a property test over the 77 seeded Demo cases, and band-edge backend tests.
+- Tests: targeted backend and Vitest files pass. Revert proofs failed as expected (26 backend tests, 48 property tests). typecheck, lint, gates, check:types, check_version, check_ci_contract, check_docs and the knowledge check pass. The full pytest run did not finish before the report, and test:strict and the entry measurement were not run.
+- Status: done, with the full-suite gates open (commit 90fc872, worktree detached).
+- Next: run the full backend suite, test:strict and build:app on the merged tree, and check that the entry is not above the base (330,279 B at 9a94df2). Set Standup.report.api.ts warn_fraction 0.75 to 0.8. Amend the Round 13 SPEC-chat "three quarters" note. Add avg_risk_case_count to types.ts.
+
+### 2026-11-26 06:45Z - XFSIGN agent - Sign-in failure sentences, organization default Appearance name, related cases by number
+- Context: cross-cutting review findings login-raw-error, signin-system-theme-mislabel and cluster-related-internal-ids (brief xcut-fix-signin.md), on branch r16-xfsign from 9a94df2.
+- Did: Login.tsx now has a failText helper. The sign-in page never renders the server's text: a 401 reads "The username or password is not correct." or "That code is not correct. Try again."; a failed fetch, proxy page or 5xx reads "Could not reach the server. Try again."; a 429 reads "Too many attempts. Try again in a minute."; anything else reads "Sign in failed. Try again.". The setup and forced-change steps keep a 400 password rule. A single sign-on start failure uses the existing fallback sentence. The first Appearance button is named "Use the organization default theme" while Branding sets a light or dark default; the theme control is inlined. threat_context carries case_number on related rows, with one bounded, fail-open store read. ClusterFormationDiagram lists related cases by case number as links that open the case. Tests were added to the sign-in suites, the diagram test and test_threat_context.py.
+- Tests: the regressions failed before the fix (Vitest 15, backend 3, diagram 1). Backend: 13,747 passed, 29 skipped, 5 sandbox environment failures. test:strict: 9,537 passed, 4 failed (the bundle budget was already red at the base; 3 load timeouts pass alone). Lint, gates, check:types, the full build, check_version, check_ci_contract, check_docs and the knowledge check pass. Entry with build:app: 330,279 B before, 330,261 B after.
+- Status: done; commit 4b20fa2 on r16-xfsign, branch detached.
+- Next: WP18 writes the CHANGELOG and first-run.md lines from the report. WP16 updates the ui-standard Identity surfaces Errors and Appearance bullets and the WP04 SPEC Appearance amendment, then regenerates the knowledge corpus. The MfaSetupCard raw code errors during mandated enrollment are left for that file's owner.
+
+### 2026-11-26 05:50Z - WP17A sub-agent - What's new notes content for 0.2.0 and the 0.1.1 entry
+- Context: Round 16 SPEC 4.7 WP17, notes half; [wn] section 6 backfill plan. Branch r16-wp17a from 9a94df2.
+- Did: filled docs/releases/notes/0.2.0.json with 12 dated updates from 2026-08-05 to this release, newest first. The newest update keeps id 0.2.0.2026-12 and a null date. It holds 11 highlights: the AI indicator, the clearer Case Manager, the six tabs (Alt+2, Alt+4 and Alt+5 changed, Chat on Alt+6), explainable numbers, What's new and Communication, the sign-in page, case records, the repository step, the access fixes, the bug fixes and the license. Added four updates the backfill table had missed (22 Aug, 9 Sep, 11 Nov, 13 Nov). Checked every wording, page, permission and help anchor against the merged code and Help Center. Added docs/releases/notes/0.1.1.json without screenshots. Copied 11 reused screenshots into docs/assets/releases/0.2.0/. Regenerated the release notes outputs and the knowledge corpus, rewording two auto-close phrases to keep chat's golden recall. Wrote the WP17B capture plan (wp17-captures.md in the round16 build scratchpad).
+- Tests: build_release_notes --check, check_version, check_docs, check_ci_contract, build_app_knowledge --check, docs bundle and typecheck pass. Knowledge, docs records, release guard and What's new backend tests pass, and the What's new Vitest files pass (92 passed). Full backend run: 13,778 collected, 5 sandbox-only failures plus 1 security test that passes alone. test:strict under load: 10 timeouts in 7 files, all passing when rerun at 2 workers.
+- Status: done, commit d97cd71 on r16-wp17a (detached).
+- Next: WP17B captures the newest update's light and dark images and sets featured per the plan, keeping case-tabs inside the first five. WP07's owner should fix the generator intro ("Settings, Appearance" should be "Settings, Account, Appearance") and the page keeping the selected release when the link has no v.
+
+### 2026-11-26 05:55Z - WP18C (sub-agent) - Help Center pages for Round 16 and Explainable numbers
+- Context: SPEC 4.7 WP18, Help Center half (6.1), from build/helpcenter-parts.md and carry.md, checked against the merged code at 9a94df2.
+- Did:
+  - New docs/analyst/explainable-numbers.md with a mkdocs nav line: hover line, panel, Copy calculation (exact builder text), risk factors and weights, a worked example (12 events, 300 s, 2 rule types, reputation 40 gives 39.11, shown 39, Medium), bands, the decision gate, SLA clocks and default targets, cost rates, rounding, provenance and "not recorded".
+  - Case Manager: AI run chip, popover, queue mark, nav count, queue notice; close during a run; Reinvestigate that does not wait; keys ], W, ?; Hide the queue; every record of a case.
+  - Updated cases, investigation, collaboration, overview, analytics, the KPI glossary (SLA clock, MTTR median, Show all), dashboards, chat, first-run (sign-in, What's new, Demo sources), quickstart, getting-started index (keyboard).
+  - Updated authentication (refresh honesty, SSO linking, Super admin rule, built-in roles), users-rbac and permissions (read grants, cost text rule), customization and settings (one theme default, Back guard, Demo jobs), notifications (Communication), models-spend (local endpoints).
+  - Updated deterministic-decisions (recorded gate and inputs), state-audit-cost (rate fields), api (AI runs, case records, explained numbers, 0.2 refusals and deprecations; path count line left to WP16P), configuration, security, health-backup.
+  - Updated upgrades (0.2.0 notes, audit.id widening and its pre-step, rolling back from 0.2.0), known-limitations (process-local runs, Chat sixth tab, 500-event push look-back, rollback losses including the two documentation-only ones, column widening, SSO custom roles, cost text, Demo asset map; v0.1.1 rehearsal "Recorded at release preparation."), channels, index, approvals, runbooks, audit-log, sources.
+  - Regenerated the knowledge corpus. Moved and reworded new text so the app-help retrieval and chat golden-set tests stay green.
+- Tests:
+  - Docs, records, knowledge, version and changelog subset: 995 passed, 1 skipped.
+  - Full backend suite, once. The 13 golden-set failures were fixed in the docs; the rerun of the golden set, knowledge tests and starters test gave 816 passed. The 5 sandbox-only environment failures pass with proxy and AWS variables unset.
+  - check_docs (90 pages), build_app_knowledge --check, check_version, check_ci_contract, the MkDocs strict docs:bundle and docs:check all clean.
+  - Banned character scan: 0.
+- Status: done. Commit c58dddf on r16-wp18c, detached.
+- Next: WP19 records the v0.1.1 rehearsal result and the audit.id widening timings in known-limitations and upgrades. WP17 refreshes the screenshots and alt text that still show 0.1.13.
+
+### 2026-11-26 07:40Z - orchestrator - WP16P, XFDEMO, XFNUM, XFSIGN, WP17A and WP18C merged
+- Context: a second container restart (2026-11-26) stopped the reviews of WP16P, WP17A, WP18C, XFDEMO, XFNUM and XFSIGN at their final full-suite gates, and the XFCM build at its package gates. Each review had finished reading, revert-proofing and its live checks.
+- Did: saved each branch's uncommitted work as a commit and named it from the reviewer's own record (WP16P review: the precedent acknowledgement test and the accurate PrecedentCaseGone text; XFSIGN review: the rate-limit sentence without a duration and a branding-aware test wait). Merged r16-wp16p (SPEC 8.1 conflict resolved: WP16P's Entry bundle item replaces the placeholder in WP18B's text), r16-xfdemo, r16-xfnum, r16-xfsign, r16-wp17a and r16-wp18c (knowledge manifest regenerated, 1,079 chunks). Started the XFCM review from its saved build, and the docs and records follow-up XFD with the audit export fix XFB2.
+- Tests: on the merged tree, check_docs (90 pages), build_app_knowledge --check, check_version, build_release_notes --check and check_ci_contract pass; the records tests pass; the whole backend suite and test:strict run once on the integrated tree next.
+- Status: in progress.
+- Next: merge XFCM, XFD and XFB2; the full gates; WP17B screenshots; WP19.
+
+
+### 2026-11-26 07:50Z - XFCM reviewer - Case Manager and AI signal fixes reviewed, three live defects fixed
+- Context: independent review and gatekeeping of XFCM, the cross-cutting review's Case Manager and AI signal findings. The builder stopped at a container restart and left a WIP commit.
+- Did: renamed the WIP commit to 9fd0944 with a real message. Reviewed the diff against the brief and the SPEC; edits stay in the files the brief names and decide() and risk.py are untouched. Reverted each fix once and saw its regression test fail. Checked the seeded Demo live with a temporary 4 s pace (reverted) at 1440 by 900 with the navigation open and collapsed, and at 390 by 844, in both themes. Fixed three defects in 0399c5c: (1) at the 340px default queue "AI working" ran under the owner monogram, so the severity word and its dot now give way below a 30rem queue while a run shows, and the ui-standard Queue row mark item says so; (2) the trace stayed still for most of a run because no frames arrive while the investigator works and the poll ran only without a live stream, so it now polls every 5 s for as long as the run is under way; (3) at a run's end the trace blanked to a skeleton, and it now stays and is re-read quietly.
+- Tests: the 12 package Vitest files, 352 passed; test_round16_investigation_registry.py, 38 passed; typecheck, lint (0/0), gates, check:types and build:app all clean, with the entry at 330,068 B, exactly the baseline; check_docs, build_app_knowledge --check and check_version pass.
+- Status: done. The branch r16-xfcm is at 0399c5c and the worktree is detached.
+- Next: merge XFCM. WP18/XFD records the SPEC §8.3 known limitation and the §6.4 copy amendment, and applies the Help Center text in the report to docs/analyst/case-manager.md and docs/analyst/cases.md.
+
+### 2026-11-26 00:00Z - XFB2 sub-agent - Audit log export follows cost:view for spend text
+- Context: Round 16 follow-up XFB2. The audit_export job (audit:export) wrote the spend figure in the timeout, decision, runbook AI and budget refusal rows' result_summary for an exporter without cost:view, while GET /api/audit withholds it (api/cost_text.py).
+- Did: JobRunner._audit_log_export in backend/app/engine/jobs.py checks the actor's live cost:view (through _permission_alive with a one-grant copy of the job) before the read and again at every page boundary. Once withheld, a figure stays withheld for the rest of the file. backend/app/engine/audit_export.py takes show_cost in write_export, csv_line and jsonl_line, and adds a new pure helper, withheld_cost, built on withhold_row_cost_text. Only those rows' result_summary changes, in CSV and JSON Lines. Tool output, other rows and the stored rows stay as recorded. The admin data export, decide(), engine/risk.py and the Console are unchanged. Regression tests are in backend/tests/test_audit_export.py.
+- Tests: test_audit_export.py passed in full (183). The related audit, export, jobs, spine-guard and cost_text modules: 1511 passed, 16 skipped. With the fix reverted, the 7 without-grant cases fail. Ruff fatal is clean. The whole suite and test:strict are left to the orchestrator.
+- Status: done. Branch r16-xfb2 at fbe055b, worktree detached.
+- Next: merge r16-xfb2. Add the CHANGELOG Security line and the audit-log.md sentences from the report.
+
+### 2026-11-26 08:10Z - XFB2 reviewer - Audit export cost text review
+- Context: Independent review of package XFB2 (r16-xfb2 at fbe055b from 5f00529). The audit_export job now withholds the spend figure in the timeout, decision, runbook AI and budget refusal rows from an exporter without cost:view, as GET /api/audit does.
+- Did: Read the diff against the brief, api/cost_text.py and routes_audit._withhold_cost. Checked that _permission_alive answers cost:view as has_permission does (sign-in off, RBAC off, super admin, custom roles, denies). Confirmed the narrow rule in CSV and JSON Lines and that the stored rows never change. Did two revert proofs (whole fix; page-boundary recheck only). Added test_the_admin_data_export_keeps_spend_figures_as_stored, which pins that the data_export_archive job keeps the figures while the same person's audit export and audit log page hide them. Corrected the audit_export module docstring (JSON Lines exception, both withheld forms). Commit 436cb4b; worktree detached.
+- Tests: 22 audit, export, jobs, spend and spine modules: 1512 passed, 16 skipped. Reverting jobs.py: 7 failed, 4 passed. Disabling only the page recheck: 2 failed. Ruff fatal clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass. decide() and risk.py unchanged.
+- Status: done. No defect confirmed in the builder's code.
+- Next: Merge r16-xfb2. Add the builder's CHANGELOG Security line and audit-log.md sentences. In a Console package, change the export dialog's "Each stored record unchanged, one per line" (AuditExport.tsx lines 136 and 575). The cost text rule owner should decide whether replay job rows (spend_usd=, bound_usd=) belong in COST_TEXT_ACTIONS.
+
+### 2026-11-26 08:40Z - orchestrator - XFCM and XFB2 merged; integrated suites run
+- Context: the cross-cutting fix packages for the Case Manager and AI signals (XFCM) and the audit export spend text (XFB2).
+- Did: merged r16-xfcm (9fd0944, 0399c5c) and r16-xfb2 (fbe055b, 436cb4b) cleanly. Updated the posture format test to the plain dwell wording XFNUM shipped (the same two claims, unhyphenated, plus "by a person").
+- Tests: before these merges, the whole backend suite on the integrated tree (proxy and AWS variables unset, as CI runs) gave 13,859 passed, 29 skipped, 5 failed: two Round 13 shift report tests and one chat starter test pinned the old Standup SLA rules XFNUM replaced with the shared reading, one Help Center tool test is affected by the new docs, and one investigation registry test is timing-dependent under load (passes alone 3 of 3). Package XFINT fixes the five. npm run test:strict on the same tree: 9,670 passed, 1 failed (the dwell wording, fixed here), 1 skipped, 752 files. After the merges, the 13 changed test files pass (364 tests).
+- Status: in progress.
+- Next: merge XFD and XFINT; rerun both suites and every gate on the integrated tree; the final records pass; WP17B screenshots; WP19.
+
+
+### 2026-11-26 07:58Z - XFD builder - docs and records follow-up after the cross-cutting review
+- Context: Round 16 package XFD on base 5f00529. Part 1 is the 11 confirmed docs findings of the cross-cutting review. Part 2 is the records of WP16P, WP17A, WP18C, XFB, XFDEMO, XFNUM and XFSIGN.
+- Did:
+  - Checked the 11 docs findings. WP18B/WP18C had already fixed risk-assigned-weights and the keyboard table, and part of six more.
+  - Fixed the rest: the glossary velocity floor; /docs/0.2/ captions; neutral case-manager and help-center alt text (images left to WP17B); the read-gate sentences in permissions and authentication; the automatic audit mapping upgrade in upgrades, DEPLOY and both troubleshooting pages; the DEMO Communication inbox heading; USAGE Branding theme default; the AGENTS Response tab; the investigate route's 409 codes in api.md.
+  - CHANGELOG Round 16 and the Help Center pages (demo, first-run, explainable-numbers, kpi-glossary, case-manager, investigation, audit-log, permissions) for the post-WP18B packages.
+  - ui-standard sign-in and hover notes, a Round 13 SPEC-chat 0.8 amendment, and the AGENTS entry baseline (330,068 B).
+  - SPEC: dated amendments (B09 in section 2, 4.4 and C10; WP08 case lock and _reenter_detections; the analyst-policy builder; WP04 Appearance); 8.1 second-restart bullet; 8.2 lines; 8.3 pruned and extended; 8.5 written (50 findings, 46 judged, 40 confirmed, 6 refuted).
+  - Corpus regenerated (1084 chunks). New test_round16_xfd_records.py has 18 checks that all fail on the base docs.
+- Tests: xfd 18 passed. The docs, records, knowledge, version and changelog selection gave 1031 passed, 1 skipped and 1 pre-existing failure (help tool data_export link, also on 5f00529, owned by XFINT). check_docs, build_app_knowledge --check, build_release_notes --check, check_version and docs:check all pass. The docs Vitest files gave 39 passed.
+- Status: done, commit fe3a803 on r16-xfd, detached.
+- Next:
+  - XFINT: fix the help-tool ranking and regenerate the corpus after merging.
+  - WP17B: recapture help-center, case-manager and install-02 images, then drop the '0.1.13' sentences in README:170, INSTALL:5, first-run:12 and quickstart:254.
+  - WP17B: repoint explain-numbers.help to analyst/explainable-numbers/.
+  - Code owners: MfaSetupCard raw err.message, Standup.report.api.ts warn_fraction 0.75, types.ts avg_risk_case_count and StandupResponse.cost, the stale ThreatContextPanel onNavigate comment, and the audit_export spend text (XFB2).
+  - Add the XFCM records after its merge.
+
+### 2026-11-26 08:25Z - XFD reviewer - docs and records follow-up review
+- Context: Independent review of Round 16 package XFD (fe3a803 on 5f00529). XFD is the docs and records follow-up after the cross-cutting review.
+- Did:
+  - Checked the diff against the brief, the 11 docs findings, the fix-package reports and the SPEC.
+  - Verified against the code and the verdict files: the SPEC amendments, the 8.1 to 8.3 edits, the 8.5 counts (50/46/40/6 and per dimension) and the refuted reasons. Re-ran the copied risk calculation through the Console builder.
+  - Fixed four defects on r16-xfd (d9eb718):
+    - The Demo page and the CHANGELOG named an "Investigate page". They now name Reinvestigate, and Run investigation on Entity investigation. SPEC 8.3 matches.
+    - The cost:view paragraph in permissions.md now names the Standup summary's AI cost.
+    - The audit fallback warning lists now include "Audit index mappings could not be read" (upgrades, DEPLOY, both troubleshooting pages).
+    - The ui-standard sign-in errors bullet now names the setup and forced-change sentences.
+  - Recorded the fixes in the XFD line of SPEC 8.2, added four code-first checks to test_round16_xfd_records.py and regenerated the corpus (1084 chunks).
+- Tests:
+  - XFD records: 22 passed. All 18 of the builder's checks fail on the base docs, and the 4 new ones fail on fe3a803's docs.
+  - The docs, records, knowledge, version and changelog selection: 1035 passed, 1 skipped, 1 failed. The failure (test_app_help_tool_keeps_a_destination_the_console_labels_confirm) is pre-existing and owned by XFINT.
+  - check_docs, build_app_knowledge --check, build_release_notes --check, check_version and docs:check all pass. The docs Vitest files: 39 passed.
+- Status: done; r16-xfd at d9eb718, worktree detached.
+- Next:
+  - XFINT: fix the help-tool ranking and regenerate the corpus after the merges.
+  - WP17B: recapture the help-center, case-manager and install-02 images, remove the "from 0.1.13" sentences, and repoint explain-numbers.help to the explainable-numbers page.
+  - XFB2: the audit_export spend text.
+  - XFCM records after its merge.
+
+### 2026-11-26 09:20Z - orchestrator - XFD merged into the Round 16 branch
+- Context: the docs and records follow-up after the cross-cutting review (11 docs findings; records for the packages merged after WP18B; SPEC section 8.5).
+- Did: merged r16-xfd (fe3a803, d9eb718) cleanly. Queued the review leftovers for one final package: the XFCM records, the audit export dialog sentence, the replay job rows whose spend text is not withheld, the Console type and wording gaps, the release notes generator's settings path, and the README, INSTALL, first-run and quickstart 0.1.13 sentences with the docs screenshots.
+- Tests: on the merged tree, build_app_knowledge --check (1,084 chunks), check_docs (90 pages) and build_release_notes --check pass; the records, docs and Help Center tests 487 passed, 1 skipped.
+- Status: done.
+- Next: merge XFINT; the final package; WP17B, WP16X and the docs screenshot refresh; the full gates; WP19.
+
+
+### 2026-11-26 08:17Z - XFINT agent - integrated-tree failures: shared SLA reading, Jobs help section, settled audit count
+- Context: package XFINT. The whole backend suite on the integrated Round 16 tree 3242f16 showed 5 failures where XFNUM, WP18C and WP08 meet.
+- Did: (1) test_round13_polish_pb1.py and test_chat_starters_engine.py now expect the shared per-case SLA reading (metrics.sla_case_reading: at risk from 80 percent, breached only past the target). The pb1 fixture keeps seven at-risk cases and adds two below the cut. The my-cases case m2 opens 125 minutes ago. A new test pins a case exactly at its target as at risk. Both tests check GET /api/cases/{id}/triage for the same cases. No code change. (2) "Kill the export job" linked Data export because three Help Center sections tied within 1 percent. I added a Jobs section to docs/analyst/analytics.md (Cancel, Stopping..., no force kill), which now ranks first and links only Analytics > Jobs. I regenerated the knowledge corpus (1080 chunks) and moved the golden answer to the new passage. (3) test_round16_investigation_registry.py waits for the tracked background writers before each audit count, so a late runbook lookup row is not counted and the 409 is still proved to write no row.
+- Tests: 5 edited modules 956 passed; related set 1978 tests passed; each fix shown to fail before it (the pre-XFNUM shift_report for the SLA tests, the 3242f16 corpus for the help test, a scratch probe with a delayed write for the registry test); fixed registry test 8 of 8 passes under CPU load; check_version, check_ci_contract, check_docs, build_app_knowledge --check and the spine guards pass. Whole suite and test:strict left to the orchestrator.
+- Status: done (branch r16-xfint, 6f110eb).
+- Next: the app_help.py _destinations docstring still uses "Kill the export job" as its example of the cross-page rule. The Analytics page intro lists only Metrics, Agent effectiveness, Cost and Team activity, and leaves out Models, Baseline and Jobs. Rerun the whole suite on the merged tree.
+
+### 2026-11-26 09:20Z - XFINT reviewer - shared SLA reading, Jobs help section and settled audit count verified; cancelled-export wording fixed
+- Context: independent adversarial review of package XFINT (branch r16-xfint, 6f110eb from 3242f16), which fixed the five failures the whole backend suite showed on the integrated Round 16 tree.
+- Did: checked the diff against the brief and the SPEC. Confirmed the test changes follow the shared rule in metrics.sla_case_reading (at risk from 0.8, breached only past the target). The pre-XFNUM shift_report makes the 3 SLA tests fail; they pass on the branch. Confirmed the help misroute came from a near tie (9.217 / 9.212 / 9.164) on the 3242f16 corpus and that the new Jobs section wins clearly (15.6 against 9.2). Reproduced the registry flake with a delayed lookup write plus a slow request (14 != 12 without the settle). With a planted late writer left by the refused request, the settled test fails (17 != 16), so the settle strengthens the proof. Fixed one defect (51628b7): docs/analyst/analytics.md, section Jobs, no longer says finished work "is kept" in a way that suggests a cancelled export keeps a partial file. It now says finished work is not undone, but a cancelled export leaves no file to download, matching Settings > Data export. Regenerated the corpus (1080 chunks). Added test_the_jobs_section_never_promises_a_partial_export_after_cancel and rewrote the confirm-labels test docstring to match how it passes today.
+- Tests: whole backend suite 13,866 passed, 29 skipped, 0 failed. Knowledge, golden and docs modules 893 passed. Every revert check failed as expected. Registry test 4 of 4 under CPU load. check_version, check_ci_contract, check_docs, build_app_knowledge --check and build_release_notes --check pass. case_manager.py and risk.py are untouched. 0 banned characters on added lines.
+- Status: done (r16-xfint at 51628b7, HEAD detached).
+- Next: app_help.py _destinations docstring still uses "Kill the export job" as its cross-page example. The Analytics page intro does not name Models, Baseline or Jobs. The Console EMPTY_SLA_AGING fallback still says warn_fraction 0.75. "Cancel the export" still ranks Data export first (aliases kill, stop, abort to cancel would help). Re-run the whole suite on the merged tree because XFD also regenerated the corpus.
+
+### 2026-11-26 10:05Z - orchestrator - XFINT merged into the Round 16 branch
+- Context: the five failures of the whole backend suite on the integrated tree.
+- Did: merged r16-xfint (6f110eb, 51628b7); resolved the knowledge manifest by regenerating the corpus on the merged tree (1,085 chunks).
+- Tests: test_app_knowledge, test_chat_golden_set, test_chat_tools_knowledge and test_round16_xfd_records on the merged tree: 838 passed; build_app_knowledge --check passes.
+- Status: done.
+- Next: XFR, XFUI2, WP17B, WP16X; then the whole backend suite, test:strict and every gate on the integrated tree.
+
+
+### 2026-11-26 09:30Z - WP16X sub-agent - WP16 browser checks on the integrated tree
+- Context: SPEC 4.6 WP16 and 5.4 browser checks on claude/round16 at 08db702, seeded Demo, Playwright 1.63 Chromium at 1440 by 900 and 390 by 844 in light, dark and system.
+- Did: ran the nine checks and wrote docs/research/2026-11-round16/acceptance/wp16-browser-checks.md with every number. Case Manager geometry 72, 92, 119, 207 at both sizes for a normal and a review case. One EventSource open per tab at every reading; the switch overlap is 12 to 16 ms. Sign-in: no timer, frame or animation callbacks after it settles (only the Vite dev ping). Remember me shows only its label. What's new shows once for an absent or older marker and defers on a deep link; a new account never sees it. AI chip: "AI working 0:00" to "0:07", then "AI finished"; the popover, queue mark, navigation count, close warning and finished note, and the Inbox item all appear. Three risk scores recomputed by hand match. 90 of 90 docs 0.1 pages redirect with the hash kept. 94 screenshots are in the build scratchpad, none in docs. No product code changed.
+- Tests: axe sweep of 54 page rows plus 12 sign-in rows; no overflow and zero console errors anywhere. One serious axe node: the Response tab's active phase caption (PhaseTabs.tsx) is 4.22:1 in light at both sizes. check_docs, check_version, build_app_knowledge --check and test_docs_* (77 passed) pass.
+- Status: done with one FAIL (check 8) for routing. Commit 5318fa2 on r16-wp16x, worktree detached.
+- Next: the runbooks owner raises the active phase caption's contrast. A Case Manager package looks at the outcome badge clipped in the meta strip. AI queued cannot be seen in the seeded Demo because it bypasses the gate; WP19 confirms it on a stamped build.
+
+### 2026-11-26 10:15Z - WP16X reviewer - independent rerun of the WP16 browser checks
+- Context: adversarial review of WP16X (r16-wp16x at 5318fa2, from 08db702). The package only adds the receipt docs/research/2026-11-round16/acceptance/wp16-browser-checks.md.
+- Did: reran all nine checks in a fresh seeded Demo (9074/6074) with my own probes, at 1440 by 900 and 390 by 844, light and dark. Geometry 72/92/119/207 for the first row and CASE-000034 (pending review); one stream open at every reading, at both the page and network level; no timers, frame callbacks or animations on sign-in, and Remember me shows its label only; What's new once, deferred on a deep link, never for a new account; AI chip 0:00 to 0:07 then AI finished, with popover, queue mark, nav count, close warning and Inbox item; risk recomputed without importing the engine (49.1783, 12.1477, 29.0986) and matching the Console; 90/90 doc stubs keep the hash; the same single axe FAIL (Response tab phase caption 4.22:1 in light); no overflow, no console errors. Fixed the receipt's stream overlap claim: measured 9 to 46 ms, once 924 ms, not only 12 to 16 ms. Added the two-requests-per-stream note and a review rerun table. Commit 326cd29.
+- Tests: check_docs (90 pages), check_version, check_ci_contract, build_app_knowledge --check (1,079 chunks), test_docs_* plus the decide, spine and version guards (181 passed); banned character scan clean; decide() and risk.py untouched.
+- Status: done. The check 8 FAIL and the clipped meta-strip badge stand for routing; product code unchanged.
+- Next: the PhaseTabs caption contrast and the CaseHeaderMeta outcome item go to their owners; measure-case-manager.mjs should dismiss What's new so it runs on its own; WP19 confirms AI queued on a stamped build.
+
+### 2026-11-26 09:50Z - XFUI2 (sub-agent) - Phase caption contrast, outcome badge give-way, measure script welcome
+- Context: fix what the WP16 browser checks (WP16X) found on the integrated tree: the Response tab phase caption at 4.22:1 in light, the case header outcome badge cut by its own item at 390 and 768, and the measure script hanging on the What's new welcome.
+- Did: PhaseTabs.tsx raises the selected tab's caption to the foreground ink (PHASE_CAPTION_INK). The contrast gate gets bar 6, text on a selected fill (foreground on --accent and --panel-accent, both themes), wired into design-gates.test.ts, and a new render test (phase-tabs-contrast.test.tsx) measures each caption's ink from theme.css. In CaseHeaderMeta.tsx (outcome item only), META_OUTCOME makes the Analyst tag go first: hidden below a 36rem pane, and below 64rem while the AI run chip shows, with an sr-only word kept. The badge words then truncate with an ellipsis inside the whole border, at the 20px chip height, and the item's hover title holds the whole outcome. The item keeps min-w-14 and shrink 1 (the XFCM priority). Two ui-standard.md lines say this. measure-case-manager.mjs presses Got it when the welcome shows.
+- Tests: the new phase caption test failed with the fix reverted (4.239 below 4.5) and passes with it. 4 new CaseHeaderMeta tests failed with the markup reverted and 14 of 14 pass with it. design-gates 16 passed. Neighbouring files: 660 tests, then 43, 197 and 28 (1 skipped) passed. typecheck, lint, gates (182 contrast axes), check:types and build:app are clean; entry 330,122 B against a 331,092 B budget. check_version, check_ci_contract, check_docs, build_app_knowledge --check and the spine guards pass. Seeded Demo at 1440x900, 768x1024 and 390x844, light and dark: axe 0 serious or critical on the Response tab and the case header, no overflow, no console errors. The measure script gives 72, 92, 119 and 207 on its own, while the original timed out.
+- Status: done; committed be6f00b on r16-xfui2, detached.
+- Next: merge r16-xfui2. If the badge owner agrees, give OutcomeBadge a wordsClassName prop in badges.tsx so the strip no longer needs the [&>*] descendant classes.
+
+### 2026-11-26 10:40Z - XFUI2 review (sub-agent) - Adversarial review of XFUI2, Analyst tag give-way fix
+- Context: independent review of XFUI2 (be6f00b on f309c9c): the Response tab phase caption contrast, the case header outcome badge clipped by its own item, and the measure script hanging on the What's new welcome.
+- Did: Read the diff against the brief and SPEC 4.1. Proved both regression suites fail with their fixes reverted. Checked decide() and risk.py are untouched and the added lines are free of forbidden characters. Ran the seeded Demo on 9076 and 6076 at 1440x900, 768x1024 and 390x844 in light and dark, with axe, overflow, console, keyboard, empty-state and AI run chip checks. The measure script runs on its own from an older marker; the original times out. Found one defect: a long case number from an operator template leaves the outcome item short on a 36rem or wider pane. There the badge words shrank to an ellipsis beside a whole Analyst tag, and at the item's 56px floor the tag itself was cut. Fixed in CaseHeaderMeta.tsx: META_OUTCOME.item is one clipped 20px line that wraps, so the tag drops whole first and is still read. Added a regression test and a ui-standard line, and restored the space in `const sla =`. Commit f910caa on r16-xfui2, detached.
+- Tests: the new test fails with the old item classes and 15 of 15 pass with the fix. 52 files and 648 tests passed, then 154 more, and the bundle test passed 28 with 1 skipped. typecheck, lint, gates (182 contrast axes) and check:types are clean. Entry 330,122 B against a 331,092 B budget. The docs records and spine guards passed 67. check_version, check_ci_contract, check_docs and build_app_knowledge --check pass. Live axe found 0 serious or critical issues, with no overflow and no console errors.
+- Status: done.
+- Next: merge r16-xfui2. Pre-existing items for other owners: a long case number can make the meta strip scroll (the id never shrinks); at the 36rem edge the verdict can shrink to 0px while it stays in the DOM; the phase tab focus ring is clipped above and below by the tab list's overflow.
+
+### 2026-11-26 10:40Z - orchestrator - WP16X and XFUI2 merged
+- Context: the WP16 browser checks on the integrated tree and the fixes for what they found.
+- Did: merged r16-wp16x (the receipt docs/research/2026-11-round16/acceptance/wp16-browser-checks.md; 8 of 9 checks passed on 08db702, the ninth an axe contrast failure on the Response tab) and r16-xfui2 (be6f00b, f910caa: the selected phase caption in foreground ink with a new contrast-gate bar for text on a selected fill, the case header outcome badge that gives way whole with an ellipsis, the measure script that closes the What's new welcome). Queued a last polish package for the review's pre-existing notes: a zero-width verdict item that keeps its focusable explain trigger, a long operator case number that makes the header strip scroll, the phase tab focus ring clipped by its list, and the Help Center knowledge leftovers.
+- Tests: the packages' affected tests and static gates pass; the whole backend suite runs on the integrated tree now.
+- Status: in progress.
+- Next: XFR, WP17B, the polish package and the docs screenshot refresh; then the closing gates.
+
+
+### 2026-11-26 09:40Z - WP17B (subagent) - release screenshots for 0.2.0 and What's new images
+- Context: SPEC WP17, screenshots half. Capture the SPEC 5.3 screenshot list in light and dark from the seeded Demo, wire the newest What's new update (0.2.0.2026-12) per the WP17A capture plan, and record every capture.
+- Did:
+  - Captured 76 WebP files into docs/assets/releases/0.2.0/: Chromium at 1440 by 900 and 390 by 844, device scale 2, each at most 250 KB. Themes were set with the top-bar toggle and checked by luminance and by eye.
+  - docs/releases/notes/0.2.0.json: seven featured highlights with light and dark images, alt text and captions (ai-working, case-workspace, repository-identity moved to third, case-tabs, explain-numbers, whats-new, sign-in). case-records got a non-featured image, and explain-numbers.help now points to analyst/explainable-numbers/. No update id changed.
+  - Regenerated release-notes.gen.json, docs/releases/whats-new.md and the app knowledge corpus.
+  - Wrote docs/research/2026-11-round16/acceptance/screenshots.md: every capture with its item, bytes and pixels, the method, the live checks, the limitations and the findings.
+- Tests:
+  - All pass: build_release_notes --check, check_version, test_build_release_notes (16), build_app_knowledge --check (1079 chunks), check_docs (90 pages), check_ci_contract, docs:check, typecheck, build:app with bundle-first-paint (28 passed, 1 skipped), and the What's new Vitest files (71).
+  - Knowledge, notes and What's new backend tests: 237 passed, 1 failed. The failure (test_app_help_tool_keeps_a_destination_the_console_labels_confirm) also fails at base 08db702.
+  - Live in both themes: the welcome showed once for an upgraded account with its images loaded, Got it cleared it, and the What's new page loaded all 18 figures.
+- Status: done on r16-wp17b, 1058f85.
+- Next:
+  - Decide whether the 60 review-only captures (about 6 MB) should leave the Help Center bundle; that needs a mkdocs.yml exclude_docs entry.
+  - Look at the Demo mismatch between the Brief's Decision lane, which reads stored settings, and the server's decision reading, which uses the sandbox policy.
+  - The SPEC 5.3 refresh of docs/assets/screenshots/ is still open.
+
+### 2026-11-26 09:55Z - WP17B review (subagent) - release screenshots and What's new images checked
+- Context: Independent review of WP17B (r16-wp17b, 1058f85 on 08db702), the screenshots half of SPEC WP17: the SPEC 5.3 captures, the newest What's new update's images, and acceptance/screenshots.md.
+- Did:
+  - Read the diff against SPEC 4.7, 4.10 and 5.3 and the WP17A capture plan. The edits stay within the notes, the generated outputs, the new release assets and the acceptance record.
+  - decide(), engine/risk.py, docs/assets/screenshots/ and WP17A's older-update copies are untouched, and no update id changed.
+  - Looked at all 76 images in both themes: each covers its item, each theme matches its name, and none shows a secret, real email or real name. No file carries EXIF, XMP or ICC metadata.
+  - Cross-checked the acceptance table against the files: 76 rows, 0 mismatches.
+  - Live seeded Demo checks: an upgraded Admin saw the welcome once per theme with the right-theme hero, and Got it cleared it. The What's new page rendered 0.2.0 (66 highlights, 18 figures, none broken) and 0.1.1 (9) at 1440 by 900 and 390 by 844, with no overflow and no console errors.
+  - No defects confirmed, so no commit.
+- Tests:
+  - All pass: build_release_notes --check, check_version, test_build_release_notes (16), build_app_knowledge --check (1079 chunks), check_docs (90 pages), check_ci_contract, the spine and version guards, the What's new Vitest files (71), typecheck, check:types, gates, lint, the full docs and app build, bundle-first-paint (28 passed, 1 skipped) and docs:check.
+  - test_app_help_tool_keeps_a_destination_the_console_labels_confirm fails, but also with the 08db702 corpus, so it predates this package.
+- Status: done; r16-wp17b unchanged at 1058f85, worktree detached.
+- Next:
+  - The mkdocs.yml owner decides whether the 60 review-only captures (about 6.0 MiB) leave the Help Center bundle and Console image.
+  - The refresh of docs/assets/screenshots/ and a recapture after XFUI2, XFINT and XFR land are still open.
+
+### 2026-11-26 11:15Z - orchestrator - WP17B merged; whole backend suite green on the integrated tree
+- Context: the release screenshots and the What's new images (SPEC WP17, section 5.3), and the closing backend run.
+- Did: merged r16-wp17b (1058f85; its review found nothing to fix); regenerated the knowledge corpus on the merged tree (1,085 chunks).
+- Tests: the whole backend suite on the integrated tree at 7fb4d1c (every backend change of the round; proxy and AWS variables unset, as CI runs): 13,901 passed, 29 skipped, 0 failed, in 30 min 49 s. After the WP17B merge: test_app_knowledge, test_chat_golden_set and the release notes and What's new tests 829 passed; build_app_knowledge --check and build_release_notes --check pass.
+- Status: in progress.
+- Next: the docs screenshot refresh (and the 60 review-only captures moved out of the Help Center bundle), XFR, XFUI3; then test:strict and every gate once more; SPEC section 8.4; the pull request into Testing.
+
+
+### 2026-11-26 09:40Z - XFR builder - Round 16 final follow-ups and records
+- Context: package XFR on f309c9c. Seven code items from the XFD and XFB2 review leftovers, plus the XFCM, XFB2 and XFR records.
+- Did: The audit export menu and dialog say the file hides AI spend for a viewer without cost:view. The replay experiment's spend row (spend_usd, bound_usd) joins the narrow rule in api/cost_text.py for GET /api/audit, the record read and the export; docstrings in routes_audit and audit_export are updated. The two-factor card shows a fixed sentence per status. The Standup empty SLA block uses 0.8, pinned to metrics.py. types.ts declares avg_risk_case_count and StandupResponse.cost, and Metrics.tsx drops its local cast. ThreatContextPanel comments are fixed. The What's new generator intro names Settings, Account, Appearance, and whats-new.md is regenerated. Records: CHANGELOG (XFCM, XFB2, XFR); case-manager.md, cases.md, audit-log.md, permissions.md, known-limitations.md; SPEC 6.4, 8 intro, 8.2, 8.3 and 8.5; corpus regenerated.
+- Tests: test_round16_xfr 13 passed. The audit, replay, spine, standup and MFA modules are green. The docs and records modules ran 907 passed and 1 failed; the failure (test_app_knowledge, owned by XFINT) also fails on the base corpus. Vitest: 55 files, 786 passed; each fix was reverted once to prove its test fails. typecheck, lint, gates and check:types are clean. build:app entry is 330,781 B (+659 B), inside 331,092 B. check_version, check_ci_contract, check_docs, build_app_knowledge --check and build_release_notes --check pass. Live check in the seeded Demo, both themes, desktop and phone.
+- Status: done, committed 50e15ea on r16-xfr, HEAD detached.
+- Next: the replay cancel message is in no audit row, so it was left in the job record (deviation in SPEC 8.2). WP17B: the notes highlight already says Settings, Account, Appearance, so no notes change is needed. XFINT still owns the app_knowledge failure. Merge, then run the closing gates.
+
+### 2026-11-26 10:45Z - XFR reviewer - adversarial review of the Round 16 final follow-ups
+- Context: independent review of XFR (50e15ea on f309c9c), the last follow-up package before the release screenshots and the closing gates.
+- Did:
+  - Checked the seven code items and the XFCM, XFB2 and XFR records against the brief and the SPEC.
+  - Reverted each fix once, and each regression test failed.
+  - Confirmed decide() and risk.py are untouched, and that the replay cancel message reaches no audit row.
+  - Ran the seeded Demo in both themes at desktop and phone size: the two-factor fixed sentences, the export menu, and the export dialog with Demo Mode off, both with and without cost:view.
+  - Fixed three defects in f078539, each with a regression test that failed before the fix:
+    - MfaSetupCard now says "Two-factor is already off for this account." when the account's two-factor was turned off elsewhere. It used to say the code was wrong.
+    - CHANGELOG and USAGE.md now name Settings, Account, Appearance for the What's new switch.
+    - The CHANGELOG says the AI run signals once, in the Added entry.
+  - SPEC 8.2's XFR line records the review fixes.
+- Tests: full backend suite run once: 13,905 passed, 29 skipped, 9 failed, all known (4 owned by XFINT, 5 sandbox-only environment tests). test:strict run once: 755 files, 9,734 passed, 1 skipped. Gates passed: typecheck, lint, gates, check:types, build:app (entry 330,859 B against a 331,092 B budget), check_version, check_ci_contract, check_docs, build_app_knowledge --check and build_release_notes --check.
+- Status: done, f078539 on r16-xfr, HEAD detached.
+- Next: merge r16-xfr. XFINT still owns the app_knowledge, chat starters and pb1 SLA failures. Then run the closing gates.
+
+### 2026-11-26 10:45Z - orchestrator - XFR merged
+- Context: the last follow-up package before the closing gates (XFR, reviewed independently).
+- Did: merged r16-xfr (build 50e15ea, review f078539). Took the incoming knowledge manifest, regenerated the corpus (1,085 chunks) and the release notes outputs, and checked both with --check.
+- Tests: on the merged tree, the XFR, records, docs, knowledge, golden set, What's new, release notes, audit export and read, and the Round 13 SLA and chat starter modules: 1,437 passed, 2 skipped, 0 failed. The XFR Console tests (8 files, 133 passed) and tsc pass.
+- Status: done.
+- Next: XFUI3 and WP17C after their reviews, then the closing gates.
+
+
+### 2026-11-26 10:55Z - WP17C sub-agent - docs screenshots refreshed for 0.2.0, review captures moved out of the Help Center
+- Context: SPEC WP17 docs screenshots half (4.7, 5.3 refresh list), the XFD 0.1.13 sentences, the 60 review-only release captures, and the WP17B Demo Decision lane finding.
+- Did: Recaptured 15 docs screenshots at 2880 by 1800 WebP, same names and themes. Twelve came from the seeded Demo, with amber highlights on users-rbac and users-add-user. install-02a, install-02 and install-07 came from a fresh first run on a throwaway local PostgreSQL, so the top bar shows Enable updates as on Compose; it was removed afterwards. Updated alt text and captions in README, INSTALL, first-run and quickstart. Removed the four 0.1.13 sentences. Fixed two INSTALL lines the new images contradicted: Continue is always shown, and the seeded-admin note names the Demo credentials hint. Moved the 60 review-only captures from docs/assets/releases/0.2.0/ to docs/research/2026-11-round16/acceptance/screenshots/ and updated screenshots.md. The Help Center bundle went from 24,532,194 to 18,046,412 bytes (341 to 281 files). Confirmed the Demo Decision lane finding live and wrote it as one Demo limitation sentence in demo.md. Added test_round16_wp17c_records.py (7 checks) and regenerated the corpus (1085 chunks).
+- Tests: the new checks pass, and 6 of 7 fail on the base docs. A selection of docs, records, knowledge, golden, release-notes, What's new and spine-guard tests: 969 passed. All pass: the docs bundle and release notes script tests (14 and 16), build_release_notes --check, check_docs (90 pages), check_version, check_ci_contract, build_app_knowledge --check, docs:check and ruff fatal. No banned characters were added. decide() and risk.py are untouched.
+- Status: done, r16-wp17c at 2a4637a, worktree detached.
+- Next: WP18 or XFR records the CHANGELOG line and the Demo limitation (known-limitations.md, SPEC 8.3). The setup-wizard screenshots install-01, 01b and 03 to 06 are 0.1.13 captures whose content still matches 0.2.0; the pages no longer date them. The seeded Demo Admin sees the What's new welcome on first sign-in because the startup-seeded account gets no creation stamp; it is worth a look by the What's new owner.
+
+### 2026-11-26 11:20Z - WP17C reviewer - docs screenshots review, two stale sign-in images recaptured
+- Context: Independent review of WP17C (docs screenshots refresh, 0.1.13 sentences, review captures moved out of the Help Center, Demo Decision lane limitation) on r16-wp17c from 817bb7f.
+- Did:
+  - Checked every refreshed image against its 0.1.13 capture: size, theme, content, privacy, alt text and captions.
+  - Confirmed in code the Demo limitation: CaseDetail reads the tenant settings; the triage route reads the Demo's own snapshot.
+  - Confirmed the 60 moved captures are unreferenced.
+  - Found install-01-create-admin and install-01b-secure-account still showing the retired sign-in chrome (gradient Light mode pill, grid backdrop), though Login.tsx draws them and the pages no longer date their images. Captured both again from a fresh first run (auth on, no account yet), light, 2880 by 1800 WebP. The What's new copy keeps the old capture.
+  - Added two checks to test_round16_wp17c_records.py: refreshed screenshots are new 2880 by 1800 captures under 250 KB, and the What's new copies keep the pre-refresh bytes.
+  - Clarified one sentence in acceptance/screenshots.md.
+- Tests:
+  - Records test 9 passed. Revert proofs: my image check fails on the old files, and the builder's checks fail 6 of 7 on the base docs.
+  - Docs, records, knowledge and spine-guard selection: 381 passed. Docs bundle script tests 14 OK; release notes script tests 16 OK.
+  - These all pass: build_release_notes --check, check_docs (90 pages), check_version, check_ci_contract, build_app_knowledge --check (1085 chunks), docs:bundle and docs:check (18,018,912 B, 281 files), and ruff fatal. No banned characters in the added lines.
+  - decide() and risk.py untouched.
+- Status: done, r16-wp17c at b8aa699, worktree detached.
+- Next:
+  - WP18 or XFR records the CHANGELOG line and the Demo limitation in known-limitations.md.
+  - The What's new owner decides whether the startup-seeded Demo Admin should start with the welcome marked seen.
+  - The wizard screenshots install-03 to 06 and 04a to 04d are 0.1.13 captures whose layout still matches 0.2.0.
+
+### 2026-11-26 11:00Z - orchestrator - WP17C merged
+- Context: the docs screenshots half of WP17, reviewed independently.
+- Did: merged r16-wp17c (build 2a4637a, review b8aa699). Took the incoming knowledge manifest and regenerated the corpus (1,085 chunks). Every image the notes and docs reference under docs/assets/releases/0.2.0/ is present.
+- Tests: the WP17C, XFR, XFD and WP18B records, Help Center, hidden characters, release notes content, What's new and distribution contract modules: 109 passed. Corpus and release notes --check pass.
+- Status: done.
+- Next: XFUI3 after its review; then an acceptance pass of every operator ask on the integrated tree, its fixes, the records and the closing gates.
+
+
+### 2026-11-26 11:20Z - XFUI3 (sub-agent) - Meta strip give-way, case number ellipsis, phase tab focus room, knowledge leftovers
+- Context: package XFUI3, the last Round 16 polish from the XFUI2 and XFINT reviews: a verdict item that shrank to 0px with a focusable trigger, a long case number that made the meta strip scroll, a phase tab focus ring clipped by its list, and Help Center leftovers (Analytics intro, cancel aliases, the GitHub Pages path).
+- Did:
+  - CaseHeaderMeta.tsx: the verdict has a 5rem floor and hides below 40rem, or below 48rem while the AI run chip shows (measured in the seeded Demo beside the longest status words).
+  - CaseHeaderMeta.tsx: a case number over 9 characters ends in a middle ellipsis, keeps its last 6 characters, takes at most 20 characters of room, and keeps its whole value in the title and for screen readers. It gives way after the verdict words and before the status (weights 1e18, 1e12, 1e6, 1).
+  - CaseHeaderMeta.tsx: the run-room classes are written whole for Tailwind.
+  - PhaseTabs.tsx: 4px padding with a matching negative margin and scroll padding; a focused tab scrolls itself into view; the fade sits on the list edge.
+  - Docs: ui-standard and case-manager.md describe the give-way. analytics.md names the 7 Analytics pages. channels.md names the Pages source as a GitHub setting.
+  - Knowledge: cancel expands to stop, kill and abort; kill and abort expand to cancel. The app_help docstring example is updated and the corpus regenerated (1,086 chunks).
+- Tests:
+  - Every new regression test failed on the base code first: 12 + 5 + 3 + 3.
+  - Vitest: 96 files, 1,470 passed, 1 skipped.
+  - typecheck, lint, gates, check:types and build:app are clean; entry 330,122 B against a 331,092 B budget.
+  - Backend docs, knowledge, golden and records modules: 1,700 passed, then 864 passed after the corpus regeneration.
+  - check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - Seeded Demo at 1440 by 900, 768 by 1024 and 390 by 844, light and dark: no strip overflow, no focusable box of no size, the phase ring has 4px of room, axe 0 serious or critical, no console errors.
+- Status: done; r16-xfui3 at 5d8e1a7, HEAD detached.
+- Next:
+  - Merge r16-xfui3.
+  - XFR owner: add the CHANGELOG lines and the SPEC 8.2 line from this report.
+  - Rerun the whole suite and test:strict on the integrated tree.
+
+### 2026-11-26 12:40Z - XFUI3 review (sub-agent) - Default case numbers whole, Analytics layout scope, abandon alias
+- Context:
+  - Adversarial review of XFUI3 (5d8e1a7 on 7b30d8c): meta strip give-way, the case number middle ellipsis, phase tab focus room, the Analytics intro, the cancel aliases and the channels.md path.
+- Did:
+  - Read the diff against the brief and SPEC sections 3, 4.1 and 4.10. decide() and risk.py are untouched.
+  - Reverted each fix once; its tests failed.
+  - Swept pane widths in the seeded Demo (private Vite cache, ports 9077 and 6077) for 8 cases, a 40-character number and a real AI run. No overflow, no focusable box of no size, nothing cut. axe 0 serious or critical at 1440x900, 768x1024 and 390x844 in both themes. Phase rings have 4px of room and no ancestor scrolls sideways.
+  - Fixed three defects, each with a test that fails without the fix:
+    - The default template's numbers ("CASE-000046") were cut to "CA…000046" on phone-width strips and beside the AI run chip. The case number floor is now 12ch and numbers of 12 characters or fewer never split; a long number floors at "CASE-…000041".
+    - analytics.md's layout section claimed the shared time range for all seven Analytics pages. It now names Metrics, Agent effectiveness and Cost, and says Team activity has its own range.
+    - "Cancel a runbook run" was sent to Analytics > Jobs. abandon is now an alias of cancel, so it cites Case Manager > Work the runbook again.
+  - Updated ui-standard and regenerated the corpus (1,086 chunks).
+- Tests:
+  - Vitest: 91 files, 1,278 passed; bundle-first-paint 28 passed, 1 skipped.
+  - typecheck, lint, gates and check:types clean.
+  - build:app entry 330,122 B against a 331,092 B budget.
+  - Backend knowledge, golden, docs and records modules: exit 0.
+  - check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - Banned-character scan: 0.
+- Status: done; r16-xfui3 at 5d835f1, HEAD detached. Demo and Vite stopped.
+- Next:
+  - Merge r16-xfui3.
+  - XFR owner: add the CHANGELOG and SPEC 8.2 lines from this report.
+  - Run the whole backend suite and test:strict on the integrated tree.
+
+### 2026-11-26 12:15Z - orchestrator - XFUI3 merged; acceptance pass under way
+- Context: the last polish package of the round (XFUI3, reviewed independently), and an acceptance pass that checks each operator ask from the operator view on the integrated tree.
+- Did: merged r16-xfui3 (build 5d8e1a7, review 5d835f1), took the incoming knowledge manifest and regenerated the corpus (1,086 chunks). Started the acceptance workflow on 9343312: eight checkers (AI signals, Case Manager, sign-in, explainable numbers, records, What's new, regressions, accessibility and phone), each gap then judged by an independent skeptic.
+- Tests: on the merged tree, the XFUI3, XFD, WP17C and XFR records, app knowledge, golden set, Help Center, Round 15 records, spine guards and chat knowledge modules: 901 passed. The case detail, runbook run, close and structure Console tests: 741 passed; tsc clean.
+- Status: in progress.
+- Next: fix packages for the confirmed acceptance gaps, each reviewed; then the records, the closing gates and the pull request into Testing.
+
+
+### 2026-11-26 13:00Z - FXB sub-agent - AI run signals: acceptance fixes
+- Context: Acceptance fix package FXB (ai-signals gaps), on base 39743bd after the XFUI3 merge. All seven gaps were confirmed in code and live in the seeded Demo before fixing.
+- Did:
+  - The queue row name says "AI investigation running" or "AI investigation waiting" with no elapsed time (aiRunText.ts, QueueRow hunk).
+  - The header chip below 30rem keeps its mark with the word "AI" (AiRunChip compact, CaseHeaderMeta run-fit comments).
+  - "AI stopped", in the neutral tint with an alert mark, for failed or cancelled runs; the popover is titled "AI investigation stopped".
+  - A warning toast when a run replaced the close on screen (ReinvestigateDialog).
+  - No finish toast while a close or status dialog's run note covers the case (holdRunNotice in announce.ts, registered by AiRunCloseNotice).
+  - The finished note reads "The AI investigation finished with the verdict Needs human review. Check it before you close."
+  - The end of a run is announced once: noteRunEnd and runEndSaid in announce.ts; the chip waits and skips an end that was already said.
+  - Docs: ui-standard.md AI run lines, case-manager.md AI run sections; knowledge corpus regenerated.
+- Tests:
+  - Touched vitest set: 320 passed.
+  - Backend knowledge and records tests: 856 passed.
+  - typecheck, lint, gates, check:types, build:app: clean.
+  - Entry chunk 330,859 B, within the 331,092 B budget.
+  - check_docs, build_app_knowledge --check, check_version, check_ci_contract: passed.
+  - Nine revert proofs, each failing its test.
+- Status: done; commit 4072720 on r16-fxb, worktree detached.
+- Next: Change the CHANGELOG phrase "shows the ring alone on a phone" and the test that pins it (backend/tests/test_round16_xfr.py:242) together. FXA1: the Brief People row still reads "Closed as false positive by Admin" after a run reopened the case. Update the SPEC WP09 Tests line about the row name.
+
+### 2026-11-26 14:20Z - FXB reviewer - AI run signals: review fixes
+- Context: Independent adversarial review of acceptance fix package FXB (r16-fxb at 4072720, base 39743bd). Checked against the brief, SPEC 4.1 and WP09, and ui-standard. Checked live in the seeded Demo with real Reinvestigate runs at 1440x900 and 390x844 in both themes, including reduced motion.
+- Did:
+  - Confirmed all seven gap fixes, in code and live.
+  - Reverted 8 of the builder's fixes one at a time; each made its tests fail.
+  - Fixed three defects (01d1ddb):
+    - The replaced-close warning now follows the server's replaced close: a person's close made at or after the run was queued (replacedCloseBy). It no longer fires for a closed case that is reinvestigated, or for a close by the AI or the system. Confirmed live before and after.
+    - The close dialog note for a run that failed or was cancelled says it stopped or could not finish and that the case was not changed. It never says finished.
+    - The page never overwrites a dialog note's 'said' end mark with 'pending', so the end is said once whatever the tree order.
+  - Updated the AI run lines in ui-standard.md and case-manager.md; regenerated the knowledge corpus (1088 chunks).
+- Tests:
+  - Touched Vitest set: 254 passed.
+  - Full test:strict: 9,779 passed, 1 skipped, 1 failed. The failure is a 5 s timeout under load in the Account page test, which passes alone.
+  - Full pytest: about 13,930 passed, 29 skipped, 6 failed. Five are the known sandbox environment failures and one is a starters test that timed out under load; all six pass on rerun.
+  - typecheck, lint, gates, check:types and the full build: clean. Entry chunk 330,859 B, inside the 331,092 B budget.
+  - check_docs, build_app_knowledge --check, check_version, check_ci_contract: passed.
+  - New regression tests: 3 of 3 fail when their fix is reverted.
+- Status: done; r16-fxb at 01d1ddb, worktree detached.
+- Next: The orchestrator changes the CHANGELOG phrase "shows the ring alone on a phone" and backend/tests/test_round16_xfr.py:242 together. Update the SPEC WP09 Tests line and the WP01 aiRunAccessibleText signature. FXA1 owns the Brief People row that still says "Closed as ... by Admin" after a run reopened the case.
+
+### 2026-11-26 14:25Z - orchestrator - FXB merged
+- Context: the acceptance fix package for the AI run signals (FXB), reviewed independently.
+- Did: merged r16-fxb (build 4072720, review 01d1ddb) cleanly. The knowledge corpus is current (1,088 chunks).
+- Tests: on the merged tree, the investigations, case detail AI run and case detail Console tests: 678 passed; tsc clean.
+- Status: done.
+- Next: FXA1, FXA2, FXC, FXD1, FXD2 and FXE as their reviews finish.
+
+
+### 2026-11-26 12:58Z - FXA1 agent - Case page lanes, tabs, facts and history
+- Context: Round 16 acceptance fix package FXA1. Eleven case-manager, records and ai-signals gaps on base 39743bd. Each was confirmed in code and in the seeded Demo before fixing.
+- Did:
+  - Added decisionWords in webui/src/soc/components/caseActivityText.ts. It is one mapping from the DECISION record and the decide() rationale templates to plain sentences, used by DecisionLane and CaseHistory.
+  - History shows the reason each automatic decision recorded, and long notes get Show more.
+  - Brief: the AI lane is renamed Assessment, a person-settled lane keeps the name Decision, and the People lane names the latest status change or runbook step a person made.
+  - Added triggerSentenceText for severity ranges with equal ends, in EvidencePanel and ClusterFormationDiagram.
+  - Underline TabsList keeps the selected tab in view and fades its edges; this is in ui/tabs.tsx.
+  - Moved the CaseEvents column breakpoints.
+  - FactsRail Outcome reads "Not classified yet".
+  - CaseDetail reads the case before Reopen acts and dismisses the close notice once the case reopens.
+  - Updated docs/analyst/case-manager.md, docs/analyst/cases.md and docs/getting-started/quickstart.md, test_docs_round15_records.py, and the knowledge corpus.
+- Tests:
+  - Touched Vitest suites pass: 760 + 463 + 20.
+  - Revert proof: 25 new or changed tests fail on base sources.
+  - typecheck, lint, gates and check:types are clean; build:app entry is 330,859 B (budget 331,092 B).
+  - Knowledge, golden set and docs records tests pass; check_docs, knowledge --check, check_version and check_ci_contract pass.
+- Status: done; committed on r16-fxa1 (ef74ad6), branch detached.
+- Next:
+  - The orchestrator updates ui-standard.md "Case tab bodies" (Assessment lane, decision wording, People lane, Not classified yet, History reason and Show more, tab overflow, Events columns).
+  - Recapture docs/assets/screenshots/case-manager.webp and its alt text in README.md and quickstart.md.
+  - Run the full suites on the integrated tree.
+
+### 2026-11-26 14:40Z - FXA1 reviewer - Case page lanes, tabs, facts and history review
+- Context: Adversarial review of Round 16 acceptance fix package FXA1 (r16-fxa1 at ef74ad6, base 39743bd).
+- Did:
+  - Checked the 11 fixes against the brief, the SPEC and ui-standard.md.
+  - Ran the revert proof: 20 tests fail on the base sources.
+  - Checked the seeded Demo (9081/6081) in both themes at 1440x900 and 390x844: lanes, inspector, Events, History, phone tab strip, keyboard focus and the close-then-replace flow.
+  - Fixed 4 defects in commit 59198e8, each with a test that fails before its fix:
+    - ui/tabs.tsx no longer pulls a swiped tab list back to the selected tab when a label or count changes.
+    - NoiseLineage.tsx reads an equal-end severity range as one value.
+    - The close notice's Reopen says "This case was already reopened." when a person reopened the case.
+    - The Activity tab count reads "1 message".
+  - Added a case-manager.md sentence and regenerated the knowledge corpus (1088 chunks).
+- Tests:
+  - Touched Vitest suites pass (840 passed and 1 skipped; 464; 41).
+  - typecheck, lint, gates and check:types are clean; build:app entry is 330,859 B (budget 331,092 B).
+  - Knowledge, docs, version and CI contract checks pass.
+  - Full backend suite under load: only the 5 known sandbox-only environment failures, plus 2 chat-starters tests that pass when run again; the unreached tail passed when run separately.
+  - test:strict: 9,780 passed, 6 timeouts under load; those 5 files pass with one worker.
+- Status: done; r16-fxa1 at 59198e8, HEAD detached.
+- Next:
+  - The orchestrator updates ui-standard.md "Case tab bodies": the Assessment lane name, the decision line wording with its reason, the People lane last action, "Not classified yet", the History reason and Show more, the tab overflow behaviour and the Events join points.
+  - WP17 recaptures case-manager.webp and its alt text.
+  - Run the full suites on the integrated tree.
+
+### 2026-11-26 14:45Z - orchestrator - FXA1 merged
+- Context: the acceptance fix package for the case page lanes, tabs, facts and history (FXA1), reviewed independently.
+- Did: merged r16-fxa1 (build ef74ad6, review 59198e8). Took the incoming knowledge manifest and regenerated the corpus (1,090 chunks).
+- Tests: on the merged tree, the case detail, case page, ui, components and investigations Console tests: 3,558 passed; tsc clean. The knowledge, golden set, XFUI3, XFD and XFR records and Help Center modules: 860 passed.
+- Status: done.
+- Next: FXC, FXA2, FXD1, FXD2 and FXE as their reviews finish; the ui-standard Case tab bodies lines and the case-manager screenshot go to the records pass and WP17D.
+
+
+### 2026-11-26 12:55Z - FXC (sign-in polish) - acceptance gaps fixed
+- Context: Round 16 acceptance fix package FXC. Fix the 13 sign-in gaps from the operator acceptance pass, plus the D6 dialog wording and the "Log out" wording, on base 39743bd.
+- Did: confirmed every gap on base and in the seeded Demo.
+  - Login.tsx: column top aligned from sm (max(4rem,18dvh)); forced-change errors under the fields; heading [outline:none]; wide logo kept at 40px tall; forced change trims and maps a 400 to fixed sentences; Verify and Set password stay enabled with empty-submit sentences; 44px phone targets; -mr-2 on Back and Use; 16px rhythm; SSO labels wrap. "Forgot password?" and the recovery disclosure now use LINK_BUTTON, which saves entry bytes.
+  - MfaSetupCard pendingToken mode: QR stacked and centred, secret wraps, LoginTextInput code field, full-width 44px button.
+  - RememberMeControls: dialog "Stay signed in on this device?" with no duration (D6 as amended); full focus ring on the box; dead duration helpers removed.
+  - ui/alert.tsx: icon top 13px, no text shift.
+  - loginParts.tsx: 44px reveal toggle on phones.
+  - AppShell: "Sign out" in the neutral colour.
+  - routes.py sso_providers: returns the stored display name.
+  - Docs: ui-standard sign-in lines, first-run.md, authentication.md; knowledge corpus regenerated.
+- Tests: new login.fxc.test.tsx (15), appshell.sign-out.test.tsx (2), an alert icon test, Remember me ring and no-duration tests, and a backend SSO name test. All were proven to fail before the fix. Updated tests that pinned the old dialog text, the outline-0 heading, raw forced-change text and h-11 SSO buttons. Touched Vitest and pytest files, lint, gates, check:types, build:app (entry 330,928 B of 331,092 B), check_docs and knowledge --check all pass.
+- Status: done; commit c83cc6f on r16-fxc, worktree detached.
+- Next: orchestrator to apply the BrandingEditor preview logo change, fix the stale docs/USAGE.md Remember me sentence, and add the D6 amendment and the column change to the SPEC.
+
+### 2026-11-26 14:35Z - FXC review - sign-in polish reviewed, two defects fixed
+- Context: independent review of Round 16 package FXC (13 sign-in gaps from the acceptance pass, the D6 dialog item, "Sign out") on r16-fxc, built from 39743bd.
+- Did:
+  - Checked the diff against the brief, SPEC WP04, D6 and ui-standard; decide() and risk.py are unchanged.
+  - Proved the builder's regression tests by reverting the fixes: 24 Vitest tests and the SSO backend test fail without them.
+  - Checked every gap live in the seeded Demo in light, dark and system at 1440x900 and 390x844: the second factor, forced change, mandated setup (completed end to end), the SSO error and buttons, wide and square logos, focus rings, the loading shell and Sign out. Shots are in shots/FXC-review.
+  - Fixed two defects in d7aa6d4:
+    - A refused code in the mandated two-factor setup showed in the card's alert above the QR code, off screen on a phone, and pushed the field down. It now shows under the code field as the page's field error. FieldError is shared from loginParts.tsx.
+    - The setup now uses the page's 16px rhythm instead of the Settings card's 20px.
+  - Updated the ui-standard mandated-setup line.
+- Tests: 2 new regression tests fail before the fix. Touched Vitest files and the 14 targeted backend files pass. Entry 331,046 B of 331,092 B. lint, gates, check:types, check_version, check_ci_contract, check_docs and build_app_knowledge --check pass. test:strict: 13 failures in 8 Overview, Case Manager, Runbooks, dashboards and chat files while the shared machine was overloaded; all 8 pass when rerun at normal load. The whole backend suite was stopped at 3% (0 failures so far) because of machine load.
+- Status: done; r16-fxc at d7aa6d4, worktree detached.
+- Next: orchestrator merges FXC, applies the builder's left-undone items (BrandingEditor preview logo, docs/USAGE.md Remember me sentence, SPEC D6 and column amendments), and runs the whole backend suite and test:strict on the integrated tree.
+
+### 2026-11-26 14:50Z - orchestrator - FXC merged
+- Context: the acceptance fix package for the sign-in page (FXC), reviewed independently. It also carries the orchestrator decision that the Remember me warning dialog states no duration (amends SPEC D6), and Sign out in the account menu.
+- Did: merged r16-fxc (build c83cc6f, review d7aa6d4). Took the incoming knowledge manifest and regenerated the corpus (1,091 chunks).
+- Tests: on the merged tree, the sign-in, auth, two-factor card, ui primitives and shell Console tests: 251 passed; tsc clean; bundle-first-paint passes with dist present.
+- Status: done.
+- Next: FXA2, FXD1, FXD2 and FXE; then WP17D captures; the records pass; the closing gates.
+
+
+### 2026-11-26 12:00Z - FXA2 build agent - Trace, usage and step records
+- Context: Round 16 acceptance fix package FXA2: ten gaps in the AI investigation trace, the case usage sheet, runbook step records and the seeded Demo records.
+- Did: routes_triage `_decision_span` now has cost_basis None, and the timeline docstring says code made the decision. routes_case_usage adds an additive `runbook` total (surface runbook, never chat), with `CaseUsageTotals.runbook` in models.py and types.ts. demo_generator adds `demo_investigation_audit_rows` and `seed_demo_investigation_audit` (investigator PROMPT, one read-only es_query TOOL_CALL and the VERDICT per seeded ledger row, on one run id), hooked into state.py in 3 lines. The notification seed now writes `type`. TraceTimeline leaves out case.events_viewed, uses the shared actor labels, shows "No model call. Code made this decision." on the decision step and takes a countsText prop. InvestigationPanel filters the viewed rows and shows "N of M steps" while filtered. The usage sheet shows Runbook AI help, a build line, the price source and a runbook footer line. StepParts shows the confirmed AI draft line and a Show the AI draft toggle. Updated three Help Center pages and regenerated the knowledge corpus (1087 chunks) and the OpenAPI types.
+- Tests: new backend file 5 passed (5 fail on base); related backend 949 passed, 2 skipped; Console 19 new specs pass (16 fail on base); related Console 2,500 passed / 214 files; typecheck, lint, gates, check:types, build:app (entry 330,859 B, delta 0), check_docs, knowledge check, check_version, check_ci_contract all pass.
+- Status: done, committed faafdd6 on r16-fxa2, HEAD detached.
+- Next: the trace still lists the PROMPT row of a runbook AI help call as an Agent step, named after the person who asked, with no cost; fixing it needs a `_span_kind`/`_row_to_span` change outside FXA2. Seeded cases without a ledger row keep 0 AI steps.
+
+### 2026-11-26 15:10Z - FXA2 review agent - Trace, usage and step records review
+- Context: Independent adversarial review of FXA2 (faafdd6 on 39743bd): ten trace, usage, runbook step and seeded Demo record gaps.
+- Did: Checked every gap against the code and the seeded Demo, in both themes at 1440 and 390, with keyboard, loading, error and empty states. Proved the builder's tests fail on base. Fixed four defects:
+  - The price words lost their closing period, so a cached call no longer reads "price., cache kept for 5m".
+  - The decision step always offers Details, so the "No model call" line shows on decisions with no recorded gate (all seeded ones).
+  - A failed trace no longer reads "Loads when opened" beside its error.
+  - The Demo investigation seed names the audit outcome at the write. This fixes the audit outcome guard test that FXA2 broke.
+  Commits 5e405fc and 45b4829 on r16-fxa2; HEAD detached at 45b4829.
+- Tests: full backend 13,970 collected, 6 failed: 5 known sandbox env failures plus the guard test, which is fixed and now green. test:strict 9,784 passed, 1 skipped, 762 files. typecheck, lint, gates, check:types and build:app pass (entry 330,859 B, delta 0). check_version, check_ci_contract, check_docs, the knowledge check and ruff pass.
+- Status: done.
+- Next: The trace still lists a runbook AI help PROMPT row as an Agent step named after the person who asked, with no cost. Fixing it needs routes_triage _span_kind/_row_to_span or engine/runbook_runs.py, outside FXA2.
+
+### 2026-11-26 15:05Z - orchestrator - FXA2 merged
+- Context: the acceptance fix package for the trace, the usage sheet and runbook step records (FXA2), reviewed independently.
+- Did: merged r16-fxa2 (build faafdd6, review 45b4829). Took the incoming knowledge corpus and regenerated it (1,092 chunks).
+- Tests: on the merged tree, the trace, case detail, runbook and case page Console tests: 1,200 passed; tsc and check:types clean. The knowledge, golden set, audit writer outcome, Demo mode and FXA2 backend modules: 935 passed.
+- Status: done.
+- Next: FXD1, FXD2 and FXE; the runbook AI help prompt row in the trace goes to a follow-up.
+
+
+### 2026-11-26 14:21Z - FXD2 builder - Explainable numbers on Standup, Agent effectiveness, Team activity and the explain library
+- Context: Round 16 acceptance fix package FXD2 (branch r16-fxd2 from 39743bd). Eight checker gaps: standup-no-explanations, effectiveness-how-without-numbers, why-investigated-today-settings, percentile-step-rounding, team-median-no-samples, sla-time-left-step, ttd-plural, confidence-source.
+- Did: Standup strip counts and changes, risk chips, queue ages, SLA totals, breached overages and workload counts now have explain triggers. The report gains page-only inputs through shift_snapshot(explain=True): the risk breakdown and age anchor, and the SLA elapsed minutes, start, due and stop. The model aggregate leaves them out. The four Agent effectiveness outcome tiles work both windows and the change from the server figures. The definitions use plain words. Team activity returns up to 200 sorted times around the median (ack_sample_seconds, ack_sample_offset), and the panel works the median. People active names who it counted. The forwarding explainer keeps the routing score to two decimals and returns routing_terms and routing_weight_total. The panel prints the weighted sum and says the reading uses today's settings. In lib/explain: percentile operands now give the printed result, the SLA panel gains Time left (rounded down) and Over by, time to detect reads 1 minute, and the confidence source names the run. The Help Center pages for Analytics (Standup, Agent effectiveness) and Team activity are updated and the knowledge corpus regenerated (1087 chunks). decide() and engine/risk.py are untouched, with no model call and no storage change.
+- Tests: backend 1175 passed over the touched modules plus test_app_knowledge and test_chat_golden_set; test_round16_fxd2 11 passed. Webui 61 files, 816 passed. typecheck, lint (0/0), gates, check:types, build:app (entry 330,859 B within 331,092 B), bundle-first-paint, check_version, check_ci_contract, check_docs (90 pages) and knowledge --check all pass. Every fix was revert-proven. Seeded Demo checked at 1440x900 and 390x844 in light and dark (108 captures, theme confirmed on each).
+- Status: done (commit 931b036, worktree detached).
+- Next: the orchestrator merges, runs the full backend suite and test:strict, adds the CHANGELOG, SPEC 8.2 and explainable-numbers.md lines, and passes the left-undone items to FXD1, FXA1 and FXA2 (percentile operands in metrics-explain/builders.ts, the integer routing score in ingest.py awaiting_reason).
+
+### 2026-11-26 15:10Z - FXD2 reviewer - Independent review of explainable numbers on Standup, Agent effectiveness and Team activity
+- Context: Adversarial review of acceptance fix package FXD2 (branch r16-fxd2, builder commit 931b036 on 39743bd) against the FXD2 brief, the Explain kit contract and the 12 non-negotiables.
+- Did: Checked all eight gaps in code and in the seeded Demo (ports 9086 and 6086), in both themes at 1440x900 and 390x844, and worked every explained figure by hand from the API (routing scores 32.63 and 34.69, cost per case -0.2466, elapsed difference 15.5, team median 420 s, SLA overage and time left, time to detect "1 minute"). Reverted the forwarding, team activity, stats, SLA, decision panel and Standup fixes in turn and saw their tests fail. Fixed three defects in 6d2e7e8, each with a test that fails on the builder's version. The Standup strip explanation no longer calls the "was" figure the count at the start of the window, because the server counts today's open cases that were created before it (Standup.explain.ts and the analytics.md bullet). The queue age works "12d 4h" from its whole minutes and their parts, using one step builder shared with the overage line. Agent effectiveness summaries say "no comparable prior figure" instead of ending on a dash. Knowledge corpus regenerated (1088 chunks). decide() and engine/risk.py are untouched; no model call or storage change.
+- Tests: Targeted backend run (7 files) 948 passed; ruff (CI selection) clean. Webui: 12 files, 235 passed, and bundle-first-paint 28 passed, 1 skipped. typecheck and lint clean; gates, check:types and build:app pass (entry 330,859 B within 331,092 B). check_docs (90 pages), build_app_knowledge --check, check_version and check_ci_contract pass. Whole backend suite and test:strict left to the orchestrator.
+- Status: done (6d2e7e8 on r16-fxd2, worktree detached, Demo stopped).
+- Next: The orchestrator merges, runs the full suites, and passes on the open items: percentile operands in metrics-explain/builders.ts (FXD1), the integer routing score in ingest.py awaiting_reason, and the ComparisonMetric figures.
+
+### 2026-11-26 15:12Z - orchestrator - FXD2 merged
+- Context: the acceptance fix package for explainable numbers on Standup, Agent effectiveness, Team activity and the explain library (FXD2), reviewed independently.
+- Did: merged r16-fxd2 (build 931b036, review 6d2e7e8). Took the incoming knowledge manifest and regenerated the corpus (1,094 chunks); regenerated the OpenAPI types after the auto-merge (no drift).
+- Tests: on the merged tree, the Standup, Agent effectiveness, Team activity, explain library and case explain Console tests: 229 passed; tsc clean. The knowledge, golden set, explain contract and FXD2 backend modules: 883 passed.
+- Status: done.
+- Next: FXD1 and FXE reviews; FXF (entry headroom and leftovers, now with the FXD2 review's remaining explanations).
+
+
+### 2026-11-26 15:10Z - FXE builder - Entity investigation over push sources, Demo chat, Cases bulk bar, What's new
+- Context: Round 16 acceptance fix package FXE (brief fxe.md): six gaps from the operator-view acceptance pass on the integrated tree.
+- Did: POST /api/investigate with no source named now falls back from the default source to the other Demo sources, or to each enabled push source's live-tail ring read through its field mapping. Muted push sources are skipped, suppressed and excluded events are left out, and the first source with matching events builds a single-source case. The no-events detail and the Entity investigation page name the widest window as "the last 365 days" and the page drops the Widen lookback button. Demo chat _AUTO_CLOSE_RE matches the passive "closed by the AI agent". The Cases bulk bar centres on the main column, wraps instead of scrolling, puts the Demo note on its own line, and the page's bottom space follows the bar height. seed_users stamps What's new as seen only when setup is already complete. InlineText code wraps anywhere. The page switch reads "Show What's new after updates". Help Center investigation, cases and notifications pages updated and the corpus regenerated (1087 chunks). Files: backend/app/api/routes.py, engine/demo_chat.py, state.py, webui Cases.tsx, Investigate.tsx, WhatsNew.tsx, whats-new/InlineText.tsx, their tests, test_round16_fxe.py.
+- Tests: test_round16_fxe 20 passed (14 fail when the fixes are reverted); touched backend modules, demo chat, knowledge, golden set, docs and records and spine guards all pass. 29 Console files with 263 tests pass with no stderr (6 regression tests fail when reverted). typecheck, lint, gates, check:types and build:app clean; entry 330,859 B against a 331,092 B budget; check_docs, check_version, check_ci_contract and knowledge --check pass. Live seeded Demo checked in both themes at 1440, 1024 and 390.
+- Status: done; commit f03c999 on r16-fxe, worktree detached.
+- Next: the orchestrator runs the full backend suite and npm run test:strict on the integrated tree, writes the CHANGELOG lines and the SPEC 8.2 line from this report, and decides on the reported follow-ups: the manual trigger sentence still says "in the last now-24h" (engine/case_cluster.py), pull sources other than the primary are still not searched, and the env single-admin is not stamped.
+
+### 2026-11-26 16:20Z - FXE reviewer - Push-ring de-duplication, named-source guard test, docs accuracy
+- Context: Independent adversarial review of acceptance fix package FXE (r16-fxe, f03c999 on 39743bd) against fxe.md and SPEC sections 3, 4.1 and 4.10.
+- Did: Confirmed all six FXE gaps fixed and proved each regression test by reverting (15 backend and 6 Console tests fail without the fixes). Checked the seeded Demo live on ports 9087 and 6087 in both themes at 1440, 1024 and 390: entity investigation across the Demo sources, the 365 day empty answer, the bulk bar centred on the main column without clipping, the What's new code wrap and switch label, and Demo chat. Fixed on top in 4bc214d: entity investigation over a push live-tail ring now de-duplicates by event id, as push ingestion does (a retried delivery made a case read 2 events and scored its risk from 2). The named-source test now names a real, empty pull source, so it pins the fallback guard. investigation.md no longer claims other pull sources are searched, and the corpus is regenerated. whats_new.py docstring and the Investigate header comment updated. decide() and risk.py untouched.
+- Tests: test_round16_fxe 21 passed (2 new review regressions proven). Full backend 13,952 passed, 29 skipped, 5 known sandbox-only env failures. test:strict 760 files, 9,765 passed, 1 skipped. typecheck, lint, gates, check:types clean. build exit 0 with entry 330,859 B (budget 331,092 B). check_docs, check_version, check_ci_contract and knowledge --check pass.
+- Status: done; r16-fxe at 4bc214d, worktree detached.
+- Next: Orchestrator merges r16-fxe and decides the follow-ups: manual_trigger_reason in engine/case_cluster.py still writes "in the last now-24h" (and routes.py near line 8831 has a similar raw window). Pull sources other than the primary are not searched by entity investigation.
+
+### 2026-11-26 16:20Z - orchestrator - FXE merged
+- Context: the acceptance fix package for entity investigation over push sources, Demo chat, the Cases bulk bar and What's new (FXE), reviewed independently.
+- Did: merged r16-fxe (build f03c999, review 4bc214d). Took the incoming knowledge manifest and regenerated the corpus (1,095 chunks). Release notes are current.
+- Tests: on the merged tree, the Cases, What's new and entity investigation Console tests: 85 passed; tsc and check:types clean. The knowledge, golden set, What's new and FXE backend modules: 863 passed.
+- Status: done.
+- Next: FXD1 after its review; then FXF (entry headroom and leftovers), WP17D (release tracker screenshots), the accessibility sweep, the records and the closing gates.
+
+
+### 2026-11-26 14:30Z - FXD1 builder (subagent) - Explainable numbers on the dashboards
+- Context: Round 16 acceptance fix package FXD1. Nine gaps: noisy-rules-wilson-unexplained, detection-trend-57-vs-56, human-vs-ai-shares, delta-chips-unexplained, cost-totals-unexplained, overview-donut-hover, board-figures-unexplained, overview-kpi-stale-window and socops-sla-widget-contradiction. All were confirmed in code and in the seeded Demo.
+- Did: added dashboard builders to webui/src/lib/explain/builders.ts (change, partition share, close share, row sum, quotient, Wilson lower bound). Added deltaExplain and pending slots to KpiTile and an explainFigure slot to HumanVsAiCard. Explained change chips on Metrics, the dashboard strips and Cost. Explained the Human vs AI shares, the noisy rule FP rate, the auto-close rate, the spend per investigated case, the strip lower bounds, the Cost totals and the donut hover. On a range change the Overview strip now shows old figures muted under "Loading 7 days". The SLA panel's empty state names its population and links to the open breaches. /api/metrics/trends now clips its first bucket to the window (cases and alert hours), so the 7-day total is 56, matching the other panels instead of 57. Updated docs/analyst/explainable-numbers.md (new Dashboard figures section), overview.md and dashboards.md, and regenerated the knowledge corpus and the OpenAPI types.
+- Tests: new backend trends window test, plus new webui builder, board, page and KpiTile suites. Each failed before its fix (reverted once). Touched suites are green when run alone. Typecheck, lint, design gates, check:types, build:app (entry 330,948 B, inside 331,092 B), check_docs, build_app_knowledge --check, check_version and check_ci_contract all pass. Live Demo checks were done in both themes at 1440x900 and 390x844, with every explained figure recomputed from the API.
+- Status: done, committed on r16-fxd1 (dd3c81f), detached.
+- Next: the orchestrator appends the CHANGELOG and SPEC 8.2 lines and runs the full suites. A few Overview and dashboard Vitest cases are timing-sensitive under parallel load; dashboard-provider-requests "row-level scope on (D16)" fails on the base too.
+
+### 2026-11-26 16:40Z - FXD1 reviewer - explainable numbers on the dashboards reviewed and fixed
+- Context: independent adversarial review of FXD1 (builder dd3c81f on r16-fxd1 from 39743bd) against the FXD1 brief and the Round 16 SPEC.
+- Did:
+  - Confirmed the nine dashboard explain gaps live in the seeded Demo, with every figure recomputed from the API: trends clip, noisy Wilson bound, auto-close, per investigated case, Human vs AI, SLA empty state, change chips, strip lower bounds, Cost sums.
+  - Fixed in e95ed6d, each with a regression test:
+    - After a window change, the Overview figures below the strip read muted under "Loading <window>" with no explanation.
+    - Drill-down switcher shows Loading; the flow open-case count is withheld.
+    - Cost row sums are kept across server rounding residue, and a total the 10 listed models do not reach says the list is capped.
+    - Today names the UTC calendar day.
+    - The noisy-rule stored bound is labelled as stored when the counts do not reproduce it.
+    - Duration change wording names both forms; the strip lower-bound caveat no longer repeats its reason; Metrics chip ids carry no doubled underscore.
+  - Updated docs/analyst/overview.md and docs/analyst/explainable-numbers.md; regenerated the knowledge corpus (1,089 chunks).
+- Tests:
+  - Backend pytest: 13,933 passed, 29 skipped, 5 sandbox-only env failures.
+  - webui test:strict: 9,807 passed, 1 skipped / 762 files.
+  - typecheck, lint, design gates, check:types, check_version, check_ci_contract, check_docs (90 pages) and knowledge --check all pass. Entry 330,948 B against a budget of 331,092 B.
+- Status: done; r16-fxd1 at e95ed6d, worktree detached, no demo, Vite or browser processes left.
+- Next:
+  - The orchestrator merges r16-fxd1.
+  - Optional follow-ups outside FXD1's files:
+    - Return wilson_z from /tuning/recommendations.
+    - Return the prior-window counts behind the posture rate chips.
+    - Let explainKpiShare end on the shown figure.
+
+### 2026-11-26 16:45Z - orchestrator - FXD1 merged; every acceptance fix package is in
+- Context: the acceptance fix package for explainable numbers on the dashboards (FXD1), reviewed independently. It is the last of the seven acceptance fix packages (FXA1, FXA2, FXB, FXC, FXD1, FXD2, FXE).
+- Did: merged r16-fxd1 (build dd3c81f, review e95ed6d). Took the incoming knowledge manifest and regenerated the corpus (1,098 chunks); regenerated the OpenAPI types after the auto-merge (no drift).
+- Tests: on the merged tree, the dashboard, Overview, Metrics, Cost, explain library and KPI tile Console tests: 650 passed; tsc clean. The knowledge, golden set, trends and FXD1 backend modules: 839 passed. The stamped entry chunk, built the way CI builds it, is measured for FXF.
+- Status: done.
+- Next: FXF (entry headroom and the reviews' leftovers) and WP17D (release tracker screenshots); then the accessibility sweep, the records and the closing gates.
+
+### 2026-11-26 17:30Z - orchestrator - Whole suites on the integrated tree after the acceptance fixes
+- Context: an early run of both full suites on the integrated tree (39335e5, every acceptance fix package merged) while FXF and WP17D build.
+- Did: ran the whole backend suite and npm run test:strict in a separate verification checkout. The strict gate failed only on stderr output: MfaSetupCard.autostart.test.tsx let the lazy QR code chunk finish loading outside act (exposed after the FXC sign-in changes). Fixed at the test by resolving the enrollment and awaiting the chunk inside one act scope; no product code changed.
+- Tests: backend 13,976 passed, 29 skipped, 0 failed. Vitest 9,919 passed, 18 skipped / 778 files; the strict gate then passes on the two-factor, sign-in and auth test files (14 files, 180 passed, no stderr).
+- Status: done.
+- Next: FXF (the entry chunk measures 331,181 B stamped, 89 B over the 331,092 B budget) and WP17D; then XFREC records, the accessibility sweep and the closing gates.
+
+
+### 2026-11-26 17:45Z - WP17D (Round 16) - release tracker screenshots
+- Context: Communication, What's new showed 66 highlights for 0.2.0 but only 18 had a figure. The acceptance fix packages had also changed the case page, sign-in and explanations under the existing images (brief wp17d.md, SPEC 4.7 WP17 and 5.3).
+- Did: captured from the seeded Demo at 39335e5, in Chromium at 1440 by 900 and DPR 2.
+  - 26 highlights gained light and dark figures, including all fourteen named by the acceptance pass.
+  - ai-working, case-workspace, case-tabs, explain-numbers, case-records, sign-in and whats-new were captured again under the same names and sizes, with updated alt text.
+  - docs/assets/screenshots/case-manager.webp was captured again, and its alt text in README.md and quickstart.md now names the Assessment lane.
+  - Wired the screenshot blocks into docs/releases/notes/0.2.0.json. Regenerated release-notes.gen.json, whats-new.md and the knowledge corpus.
+  - Added a WP17D section to acceptance/screenshots.md: every file with its bytes and size, the 22 text-only highlights with reasons, the checks and the limitations.
+  - Added backend/tests/test_round16_wp17d_records.py.
+  - Kept FXF's spots out of every image: the Brief captures show an auto-closed case, and no reopened case, Branding preview or FXF explain panel appears.
+- Tests:
+  - WP17D, release notes, whats_new and WP17C records: 39 passed. All 6 WP17D tests fail on the base files.
+  - test_app_knowledge plus the records group was green; chat golden set 590 passed; other docs and records tests 178 passed.
+  - test_build_release_notes 17 OK. build_release_notes --check, check_version, check_docs (90 pages), build_app_knowledge --check (1099 chunks) and npm run docs:check all pass.
+  - What's new Vitest: 73 passed.
+  - Help Center bundle: 18,063,795 B (281 files) before, 22,068,113 B (333 files) after.
+- Status: done, committed 2c147cc on r16-wp17d, worktree detached.
+- Next:
+  - FXF may later change the Decision lane routing sentence or the People row after a reopen. No WP17D image shows either.
+  - The highlight text of cyber-defence-center and agent-health-bell is unchanged. Agent health in the bell shows only when the agent is degraded, so it stays text only.
+
+### 2026-11-26 18:55Z - WP17D review (Round 16) - release tracker screenshots
+- Context: an independent review of WP17D (2c147cc on 39335e5) against SPEC 4.7 WP17, 5.3 and the brief.
+- Did:
+  - Checked every new and replaced image by eye and by luminance, size, bytes and chunks. Read each alt text and caption against its image, and checked privacy and FXF's spots.
+  - Revert-checked the records test: it fails 6 of 6 on the base files.
+  - Live seeded Demo in both themes at 1440 by 900 and 390 by 844. The welcome works, and the page shows 44 figures, all loaded, with no sideways scroll and no console errors.
+  - Fixed three defects in 0707b0a:
+    - chat-titles was cut through the first question and a list line. Recaptured in light and dark at 2742 by 376.
+    - case-manager.webp showed a queue of one row filtered by a search. Recaptured with the All scope and no search.
+    - The data-export alt text said a disabled button "is off". It now says the button is unavailable.
+  - Regenerated the release notes outputs and updated screenshots.md: new sizes, a bundle of 22,128,003 B in 333 files, and a Review subsection.
+  - Added two regression tests to test_round16_wp17d_records.py.
+- Tests:
+  - Backend suite: 13,979 passed, 29 skipped, and the 5 sandbox-only environment failures, which pass 55 of 55 without the proxy and AWS variables.
+  - Records and release notes group: 263 passed.
+  - test:strict: 9,919 passed and 18 skipped across 778 files.
+  - typecheck, lint, gates, check:types and build are clean.
+  - The entry is 331,135 B, the same as on the base, where it is already over budget; FXF owns that fix.
+  - build_release_notes --check, check_version, check_ci_contract, check_docs (90 pages), build_app_knowledge --check (1,099 chunks) and docs:check all pass.
+- Status: done. Committed 0707b0a on r16-wp17d; the worktree is detached.
+- Next:
+  - FXF owns the entry budget fix.
+  - Settings, Sessions & activity still shows raw audit detail text such as "session_create sid=... new session (unknown /)". This is a Console wording item for a later package.
+
+### 2026-11-26 19:05Z - orchestrator - WP17D merged
+- Context: the release tracker screenshots package (WP17D), so every visible 0.2.0 change on Communication, What's new has a figure; reviewed independently.
+- Did: merged r16-wp17d (build 2c147cc, review 0707b0a) cleanly. Release notes and the knowledge corpus (1,099 chunks) are current.
+- Tests: on the merged tree, the WP17D, WP17C, release notes content, What's new and Help Center records modules pass; the release notes script tests pass.
+- Status: done.
+- Next: FXF after its review; then XFREC records and the A11Y closing sweep; then the closing gates.
+
+
+### 2026-11-26 18:10Z - FXF builder - Entry bundle back under budget and the fix-package leftovers
+- Context: Round 16 package FXF from 39335e5: the stamped entry bundle was 89 B over budget, plus leftovers from the FX package reviews.
+- Did:
+  - Entry bundle: Login.tsx loads MfaSetupCard through retryingLoader when an enrollment starts, with a plain line if the chunk fails. Stamped entry went from 331,181 B to 318,008 B. The baseline stays at 330,068 B.
+  - Trace: runbook AI help is a `runbook_ai` span with its own ledger cost (routes_triage `_cost_key`, `_key_runbook_ai_spend`). The Console shows it as a Runbook actor with a Runbook filter.
+  - Brief People row: says when an AI run replaced a person's close.
+  - decisionWords: one routing sentence, "Sent to an analyst by the case policy."
+  - BrandingEditor: the preview logo uses the sign-in page's classes.
+  - Awaiting reason: stores the routing score with two decimals (ingest `_score_text`); AwaitingReason parses decimals.
+  - Window words: `case_cluster.window_words` gives "in the last 24 hours" in a manual trigger sentence and the no-events refusal.
+  - Additive fields: wilson_z on /api/tuning/recommendations, and numerator and denominator for both windows on the posture rate compare blocks.
+  - Explain panels: Agent effectiveness comparisons, a person's median time to acknowledge, Standup action items and sign-off. Panel gained a `countExplain` slot.
+  - rankLineOverRun uses interpolationOperands. A whole-percent share panel ends on the shown figure.
+  - Docs: ui-standard "Case tab bodies"; the USAGE Remember me sentence.
+  - Live Demo check: found and fixed the Standup action item count claiming done items stay in the list.
+- Tests:
+  - New: test_round16_fxf.py (7 tests); Console tests login.mfa-chunk, TraceTimeline.fxf, BrandingEditor.logo and fxf.explain.
+  - Every new test fails on the base.
+  - Vitest over the tests related to the changed files: all green after the fixes.
+  - Typecheck, lint (0/0), gates, check:types, check_docs, build_app_knowledge --check, check_version and check_ci_contract all pass.
+  - Bundle first-paint test with REQUIRE_DIST_BUILD=1: 30 passed.
+- Status: done. Committed b6d223f on r16-fxf, then detached.
+- Next:
+  - The records package may ratchet PRE_REVAMP_ENTRY_BYTES to the measured entry, and records the FXF CHANGELOG and SPEC 8.2 lines.
+  - The models.py TraceSpan.kind comment should list `runbook_ai`.
+
+### 2026-11-26 19:20Z - FXF reviewer - Independent review of the entry trim and the fix-package leftovers
+- Context: Adversarial review of package FXF (b6d223f on r16-fxf from 39335e5), per the FXF brief and Round 16 SPEC 3.1, 4.1 and 8.1.
+- Did:
+  - Verified the entry trim. Built stamped as CI builds it, the entry is 318,008 B, inside the 331,092 B budget. The baseline was correctly left at 330,068 B, since the ratchet belongs to the records.
+  - Proved every FXF regression test fails on the base (8 backend, 19 Console).
+  - Confirmed decide() and risk.py are byte-identical.
+  - Ran the live seeded Demo (ports 9088 and 6088) in both themes at 1440x900 and 390x844.
+  - Fixed four problems on r16-fxf (eb068ea), each with a test that fails without its fix:
+    - The seven trace filters overflowed a phone pane and scrolled the panel sideways. They now wrap inside the rail (InvestigationPanel).
+    - The Standup sign-off explanation printed the raw window key. It now names the shift in words.
+    - The Brief People row now also notes a replaced close when the person resolved the case through set_status.
+    - Added a mount test for the Agent effectiveness comparison explanations.
+- Tests:
+  - npm run test:strict: 782 files, 9,961 passed, 1 skipped.
+  - Full backend suite: 13,978 passed, 29 skipped, 5 known sandbox-only failures. Those four files pass 55 of 55 with the proxy and AWS variables unset.
+  - typecheck, lint (0/0), gates, check:types, stamped build plus bundle first-paint (30 passed), check_docs, build_app_knowledge --check, check_version and check_ci_contract all pass.
+- Status: done. Committed eb068ea on r16-fxf, then detached.
+- Next:
+  - The records package ratchets PRE_REVAMP_ENTRY_BYTES to the measured entry and records the FXF lines.
+  - The TraceSpan.kind comment in models.py should list runbook_ai.
+
+### 2026-11-26 19:25Z - orchestrator - FXF merged; every code package is in
+- Context: FXF, the last code package (entry bundle headroom and the fix-package reviews' leftovers), reviewed independently.
+- Did: merged r16-fxf (build b6d223f, review eb068ea) cleanly. The knowledge corpus (1,099 chunks), the release notes and the OpenAPI types are current.
+- Tests: built stamped the way CI builds it, the entry chunk is 318,008 B (13,084 B inside the 331,092 B budget); bundle-first-paint with the built dist: 30 passed. The FXF, trace, case detail, sign-in, Standup and Agent effectiveness Console tests: 801 passed; tsc clean. The FXF, engine extraction and app knowledge backend modules: 273 passed.
+- Status: done.
+- Next: XFREC (the records for every package after XFR) and A11Y (the closing accessibility and phone sweep) together; then the closing gates, SPEC 8.4 and the pull request into Testing.
+
+
+### 2026-11-26 00:00Z - XFREC (records sub-agent) - Records for every Round 16 package after XFR and the acceptance pass
+- Context: Round 16 SPEC records were last written by XFR. XFINT, WP16X, XFUI2, WP17B, XFUI3, WP17C, the acceptance pass, FXB, FXA1, FXC, FXA2, FXD2, FXE, FXD1, FXF and WP17D were unrecorded.
+- Did: CHANGELOG Round 16 fold-in: phone chip ring with "AI", row name with no elapsed time, Remember me with no duration, Sign out, decision lane sentence, trace Runbook actor and filter, explain additions, sign-in, Demo and record fixes, screenshots (44 of 66), lazy two-factor card (318,008 B). Removed the stale lower-case verdict line. SPEC: 8.1 amendments (D6, top-aligned column, aiRunAccessibleText(view), phone chip word, fix-package contract changes), 8.2 lines with commits, an A11Y placeholder line and the WP19 line, 8.3 limitations, new 8.6 Acceptance pass. 8.4 left for the closing gates. New acceptance/acceptance-pass.md. wp16-browser-checks.md check 8 note. known-limitations.md mirror. Help Center pages case-manager, investigation and explainable-numbers updated. models.py TraceSpan.kind comment names runbook_ai. AGENTS.md and HANDOFF name the acceptance pass. Knowledge corpus regenerated (1,105 chunks). New test_round16_xfrec_records.py; test_round16_xfr.py follows the phone chip wording.
+- Tests: docs/records/knowledge/version selection 1108 passed, 1 skipped; records and xfr tests 112 passed; app knowledge and chat golden set pass; check_docs (90 pages), build_app_knowledge --check, check_version, build_release_notes --check and docs:check pass; dash scan clean.
+- Status: done; commit 2b2e9c2 on r16-xfrec, HEAD detached.
+- Next: orchestrator writes SPEC 8.4 and the Round 16 figures after the closing gates, records A11Y in 8.2 and 8.6, and owns the PRE_REVAMP_ENTRY_BYTES ratchet and WP19.
+
+### 2026-11-26 21:30Z - XFREC reviewer - Records review: Entity investigation naming, export help, phone targets, demo banner
+- Context: Independent review of XFREC (r16-xfrec at 2b2e9c2, base ba3fc2a), the records for every Round 16 package after XFR and the acceptance pass. I checked it against the brief, SPEC section 8, late-parts.md, acceptance-raw.json, the fix briefs and reports, and the merged code.
+- Did:
+  - Verified every 8.2 build, review and base commit, the 66 acceptance gaps (23 medium, 43 low) and where each went, and the code facts behind the CHANGELOG, SPEC 8.1, 8.3 and 8.6 and known-limitations.md.
+  - Reverted the docs to the base: all 13 builder records tests failed, then passed after restore.
+  - Fixed in 6950a30:
+    - Entity investigation is named as in the Console in four CHANGELOG lines (they said Investigate page or Investigate).
+    - "Abort the export" is no longer claimed to reach Analytics > Jobs; it cites Data export first.
+    - The CHANGELOG lists the sign-in phone targets FXC raised to 44 px instead of "every phone target".
+    - The SLA widget's link is said to open the Standup.
+    - The People lane note sits next to the replaced-close warning, the end-of-run line names the case's own dialogs, and the screenshot refresh says seventeen images.
+    - The run-demo.sh banner's unescaped $0 is escaped.
+  - Five new regression tests in test_round16_xfrec_records.py, each failing before its fix.
+- Tests:
+  - The docs, records, knowledge, version, changelog, release_notes and whats_new selection: green.
+  - The records, xfr, app knowledge, chat golden set and build identity files: 964 collected, exit 0.
+  - check_docs (90 pages), build_app_knowledge --check (1105 chunks), check_version, build_release_notes --check, check_ci_contract and docs:bundle plus docs:check: all pass.
+  - Dash scan clean. decide() and risk.py untouched.
+- Status: done; r16-xfrec at 6950a30, HEAD detached.
+- Next: orchestrator owns the PRE_REVAMP_ENTRY_BYTES ratchet, SPEC 8.4, the A11Y lines in 8.2 and 8.6, and WP19. If A11Y raises the two-factor setup's Copy and Download buttons to 44 px, test_the_sign_in_phone_target_record_matches_the_setup_card fails until that limit is removed from known-limitations.md and SPEC 8.3.
+
+### 2026-11-26 21:00Z - orchestrator - XFREC merged; a container restart recovered
+- Context: XFREC, the records for every package after XFR (CHANGELOG, SPEC 8.1, 8.2, 8.3 and the new 8.6 Acceptance pass, the Help Center limits, the acceptance pass record), reviewed independently. A container restart stopped its first review and the A11Y build; both were resumed (A11Y from a saved work-in-progress commit and its surviving sweep results).
+- Did: merged r16-xfrec (build 2b2e9c2, review 6950a30) cleanly. The knowledge corpus (1,105 chunks) and the release notes are current.
+- Tests: on the merged tree, the XFREC, XFR, XFD, WP18B, WP17C and WP17D records, Help Center, hidden characters, app knowledge and golden set modules: 913 passed. check_docs (90 pages) and check_version pass.
+- Status: done.
+- Next: A11Y after its review; then the entry baseline decision, the closing gates, SPEC 8.4 and the baselines, and the pull request into Testing.
+
+
+### 2026-11-26 21:40Z - A11Y builder - Closing accessibility and phone sweep
+- Context: Package A11Y from the Round 16 build brief. Run axe on every Console surface in both themes at 1440 and 390, fix serious findings and any sideways scroll with regression tests, write the receipt. Extra item from the WP17D review: Sessions & activity showed raw audit detail.
+- Did: Swept 75 surfaces per combination with axe-core 4.12.1 from disk, plus a scrolled pass under the top bar. Fixed four things. NumberField draws a disabled box from muted tokens instead of opacity-50 (the unit read 2.18:1). The case usage call list is a focusable "AI calls" region while it scrolls. theme.css re-points the seven semantic text tints to the panel inks on .glass-surface and .material-surface (top bar chips read 4.49:1 with content scrolled beneath). The Sessions Activity tab shows a plain sentence per known action, never the raw audit detail. Receipt at docs/research/2026-11-round16/acceptance/a11y-closing-sweep.md. Left as moderate or minor: empty table headers in 7 tables, AlertTitle h5 heading order, hover portals outside landmarks.
+- Tests: Each of the four regression tests failed before its fix. typecheck, lint, gates and check:types clean. 52 touched or neighbouring test files, 659 tests pass. build:app stamped: entry 318,008 B, inside the 331,092 B budget and unchanged. After sweep: 0 serious or critical in all four combinations, no sideways scroll, no console errors.
+- Status: done. Commit a34c056 on r16-a11y, branch detached.
+- Next: Merge r16-a11y. The records package can add the CHANGELOG lines and the SPEC 8.2 line, and one sentence in ui-standard.md Materials naming the re-point (then regenerate the corpus).
+
+### 2026-11-26 22:10Z - A11Y reviewer - Independent review of the closing accessibility sweep
+- Context: Adversarial review of package A11Y (r16-a11y at a34c056 from ba3fc2a) against the brief, SPEC 4.1, 4.10 and 5.1 and the non-negotiables.
+- Did: Read the diff. decide() and risk.py are untouched and the diff has no banned characters. Reverted the four builder fixes and all 8 of their tests failed. Re-ran each fix live on the seeded Demo in light and dark at 1440 and 390; all hold. Opened the 13 in-page tabs per combination that the sweep did not open, and axe found three serious runs, all already on the base tree. Fixed them, each with a regression test that failed first: the Sessions Activity table now uses a fixed layout (Where 30%, When 6rem) and fits the 358 px phone panel; the Metrics percentile table passes scrollLabel; the MITRE heatmap chip is bg-background/90 in every engine, so the muted count reads 5.08:1 or more. Added a "Found by the review" section, three test rows and the review gates to acceptance/a11y-closing-sweep.md. Commit 5e5fb08 on r16-a11y.
+- Tests: typecheck, lint, gates and check:types clean. test:strict: 786 files, 9,972 passed, 1 skipped. Backend: 13,986 passed, 29 skipped, and the 5 known sandbox env failures, which pass 55 of 55 with proxy and AWS variables unset. Entry 318,008 B, unchanged. check_version, check_ci_contract, check_docs and build_app_knowledge --check pass. Tab pass after the fixes: 0 serious in all four combinations.
+- Status: done; branch detached.
+- Next: Merge r16-a11y. Records (XFREC or later): the CHANGELOG lines and the SPEC 8.2 line in this report, and one ui-standard.md Materials sentence on the semantic-tint re-point (then regenerate the corpus). Still open: empty-table-header in 7 tables, AlertTitle h5 heading order, and hover portals outside landmarks.
+
+### 2026-11-26 22:40Z - orchestrator - A11Y merged; every Round 16 package is in
+- Context: A11Y, the closing accessibility and phone sweep, reviewed independently. It resumed after a container restart from a saved work-in-progress commit and its surviving sweep results.
+- Did: merged r16-a11y (build a34c056, review 5e5fb08) cleanly. The knowledge corpus (1,105 chunks) and the release notes are current. The build fixed the two serious axe runs found in every theme and width, plus the material chip contrast it found in a scrolled pass. The review opened 13 more in-page tabs per combination and fixed three more serious runs, all already on the base tree (the Sessions activity table at 390 px, the Metrics percentile region, the MITRE heatmap chip).
+- Tests: the review ran the whole backend suite (13,986 passed, 29 skipped, the 5 sandbox-only environment failures) and npm run test:strict (9,972 passed). Entry 318,008 B stamped, unchanged.
+- Status: done. Every Round 16 code and records package is merged.
+- Next: the closing records (the A11Y lines, the entry ratchet), the closing gates once on the final tree, SPEC 8.4 and the baselines, an independent review of the closing records, and the pull request into Testing.
+
+### 2026-11-26 23:10Z - orchestrator - Round 16 closing gates and records
+- Context: every Round 16 package was merged (A11Y last). The closing records and the closing gates, run once on the final tree.
+- Did:
+  - Closing records, part 1: the A11Y lines in SPEC 8.2 and 8.6 and the CHANGELOG, the material's semantic inks in ui-standard.md, and the second entry ratchet: PRE_REVAMP_ENTRY_BYTES 330,068 B to 317,962 B, the final tree measured with build:app (318,008 B stamped), 11,118 B below the Round 15 baseline, recorded in SPEC 8.1 and AGENTS.md.
+  - An independent review of part 1 fixed five wording defects (A11Y counted findings, not runs; the A11Y line's deviations; the AI calls popover; the theme.css re-point named in ui-standard; one comment tense) and added a records test.
+  - The three A11Y leftovers (empty-table-header, heading-order, region) are now in SPEC 8.3 and the Help Center known limitations page.
+  - Part 2: SPEC 8.4, the Round 16 baselines in AGENTS.md and docs/development/testing.md, and a records test that holds them together.
+- Tests (closing gates on 6f8a7d2, in CI's order): ruff fatal clean; check_version, check_ci_contract (3 workflows, 3 Dockerfiles), check_docs (90 pages), build_app_knowledge --check (1,105 chunks) and build_release_notes --check pass; lint 0 errors and 0 warnings; typecheck, gates and check:types pass; npm run test:strict without a build 786 files, 9,955 passed, 19 skipped, zero stderr; stamped npm run build clean (3,622 modules), entry 318,008 B; bundle-first-paint with REQUIRE_DIST_BUILD=1 30 passed; docs:check passes; backend pytest with the proxy and AWS variables unset 14,009 passed, 29 skipped (27 PostgreSQL-only, 2 Elasticsearch-only), 0 failed. decide() is byte-identical to 3cfd5c0 and matches the spine guard digest; risk.py and signatures.py are unchanged. After the later records commits: the docs, records, knowledge and version selection 1,115 passed, 1 skipped; app knowledge and golden set 812 passed; the corpus is 1,106 chunks.
+- Status: done.
+- Next: the pull request from claude/round16 into Testing, CI green on it, then WP19 (the frozen release preparation for 0.2.0).
+
+### 2026-11-27 00:55Z - orchestrator - PR #144 review fixes CDX1 and CDX2
+- Context: PR #144 (claude/round16 into Testing) passed CI on f2d5524. A Codex review left two P2 findings; both were confirmed in the code and fixed, each built and reviewed independently in its own worktree.
+- Did:
+  - CDX1 (build bac2a0b, review d86e2b5): the deferred drain no longer stalls behind candidates that cannot be rebuilt. list_deferred_candidates takes an additive after keyset (Elasticsearch search_after and SQL keyset on created_at and case_id, the base default an offset); the drain reads up to 4 pages a tick of at most 1,000 rows and resumes on the next tick. The review added 4 coverage tests.
+  - CDX2 (build 46587c6, review 08ec2ac): the case events route reads index-qualified members with ElasticConnector.fetch_by_keys (index and id together, inherited by OpenSearch and Wazuh, on the read-only client and data view), so copies of an id in other indices never hide the case's own event. The review added a guard that a key outside the data view reads nothing.
+  - Records: CHANGELOG, SPEC 8.2 lines, 3.5 and the WP13 contract, the WP15B residual risk, SPEC 8.3 and the known limitations page (a long outage costs more per tick; a reinvestigation still reads member events by bare id), AGENTS, SPEC 8.4 and the baselines.
+- Tests: backend suite on fc37505 with the proxy and AWS variables unset: 14,043 passed, 29 skipped, 0 failed; fatal ruff clean; check:types no drift; check_version and build_app_knowledge --check (1,107 chunks) pass; the docs, records, knowledge and version selection 1,115 passed, 1 skipped; app knowledge and golden set 812 passed.
+- Status: done; pushed to claude/round16 for CI.
+- Next: CI on the new head, both review threads answered and resolved; then the frozen release preparation for 0.2.0 (WP19), asking the user before the v0.2.0 tag.

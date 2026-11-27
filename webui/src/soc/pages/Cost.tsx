@@ -63,10 +63,248 @@ import {
   windowCaption,
 } from './analytics-shared';
 import { PageAccess } from './PageAccess';
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainChange, explainRowSum } from '@/lib/explain/builders';
+import { plain } from '@/lib/explain/rounding';
+import type { Explanation } from '@/lib/explain/types';
 
 // --------------------------------------------------------------------------- //
 // Local types + constants
 // --------------------------------------------------------------------------- //
+
+/** The inputs of the Cost KPI arithmetic (the usage summary for the range). */
+export interface CostKpiInputs {
+  totalCost: number;
+  totalTokens: number;
+  callCount: number;
+  currency?: string;
+  caption: string;
+}
+
+function costLine(
+  metric: string,
+  title: string,
+  display: string,
+  expression: string,
+  formula: string,
+  inputs: Explanation['inputs'],
+  caption: string,
+): Explanation {
+  return {
+    metric,
+    title,
+    value: display,
+    display,
+    summary: `${title} = ${expression} = ${display}, ${caption}.`,
+    formula,
+    inputs,
+    steps: [{ label: title, expression, result: display }],
+    rounding: 'Amounts under 1 are shown to 4 decimals, larger ones to 2.',
+    // The tile divides the server's usage summary here, so the note says where it ran
+    // (the generic words would claim the server computed it).
+    provenance: 'server_computed',
+    provenanceNote: 'Computed in the Console from the usage summary for the selected range.',
+    caveats: [],
+  };
+}
+
+/**
+ * The Cost KPI arithmetic with the real numbers (research explainability R13): per call,
+ * per 1K tokens and tokens per call, each the division the tile shows. Null for a tile
+ * whose denominator is 0 (the tile then shows a dash).
+ */
+export function costKpiExplanations({ totalCost, totalTokens, callCount, currency, caption }: CostKpiInputs): {
+  perCall: Explanation | null;
+  perThousand: Explanation | null;
+  tokensPerCall: Explanation | null;
+} {
+  const cost = fmtMoney(totalCost, currency);
+  const calls = `${fmtNumber(callCount)} ${callCount === 1 ? 'call' : 'calls'}`;
+  const tokens = fmtNumber(totalTokens);
+  const inputs: Explanation['inputs'] = [
+    { key: 'total_cost', label: 'Total cost', value: cost, source: 'Usage ledger' },
+    { key: 'calls', label: 'LLM calls', value: fmtNumber(callCount), source: 'Usage ledger' },
+    { key: 'tokens', label: 'Tokens', value: tokens, source: 'Usage ledger' },
+  ];
+  return {
+    perCall:
+      callCount > 0
+        ? costLine('cost_per_call', 'Per call', fmtMoney(totalCost / callCount, currency), `${cost} / ${calls}`, 'total cost / calls', inputs, caption)
+        : null,
+    perThousand:
+      totalTokens > 0
+        ? costLine(
+            'cost_per_1k_tokens',
+            'Per 1K tokens',
+            fmtMoney((totalCost / totalTokens) * 1000, currency),
+            `${cost} / ${tokens} tokens x 1,000`,
+            'total cost / tokens x 1,000',
+            inputs,
+            caption,
+          )
+        : null,
+    tokensPerCall:
+      callCount > 0
+        ? costLine(
+            'tokens_per_call',
+            'Tokens per call',
+            fmtTokens(totalTokens / callCount),
+            `${tokens} tokens / ${calls}`,
+            'tokens / calls',
+            inputs,
+            caption,
+          )
+        : null,
+  };
+}
+
+/** One ledger group of the usage summary (a model, a surface). */
+type UsageGroupRow = { key: string; cost: number; tokens: number; calls: number };
+
+function groupRows(rows: unknown): UsageGroupRow[] {
+  return Array.isArray(rows) ? (rows as UsageGroupRow[]).filter((r) => r && typeof r.key === 'string') : [];
+}
+
+/**
+ * The spend totals explained (FXD1): Total cost, Tokens and LLM calls as the sum of the
+ * model rows the server returned, Today as the sum of today's calls by surface (UTC day),
+ * and the change chip as the second half of the range against the first. Each prints the
+ * arithmetic that gives the figure on the tile.
+ */
+export function costTotalExplanations(input: {
+  data: {
+    total_cost?: number;
+    total_tokens?: number;
+    call_count?: number;
+    today_cost?: number;
+    by_model?: unknown;
+    today_by_surface?: unknown;
+  } | null;
+  currency?: string;
+  caption: string;
+  hourly?: readonly number[];
+  shownDelta?: string;
+}): {
+  total: Explanation | null;
+  tokens: Explanation | null;
+  calls: Explanation | null;
+  today: Explanation | null;
+  change: Explanation | null;
+} {
+  const { data, currency, caption } = input;
+  const models = groupRows(data?.by_model);
+  // Each row at full precision, so the sum reproduces the total; the tile rounds it.
+  const symbol = !currency || currency.toUpperCase() === 'USD' ? '$' : `${currency.toUpperCase()} `;
+  const money = (n: number) => `${symbol}${plain(n, 6)}`;
+  const amountRounding = 'Amounts under 1 are shown to 4 decimals, larger ones to 2.';
+  const total = num(data?.total_cost);
+  const tokens = num(data?.total_tokens);
+  const calls = num(data?.call_count);
+  const today = num(data?.today_cost);
+  const todayRows = groupRows(data?.today_by_surface);
+  // The server rounds each row's spend and the total to 6 decimals on their own, so
+  // their sums can part by half a millionth per row; that residue is said, not hidden.
+  const spendTolerance = (rows: readonly unknown[]) => rows.length * 5e-7;
+  // The summary lists the most expensive models first and at most 10 of them.
+  const modelShortfall = 'The usage summary lists at most 10 models, the most expensive first.';
+  let change: Explanation | null = null;
+  if (input.hourly && input.shownDelta) {
+    const halves = spendHalves(input.hourly);
+    if (halves) {
+      change = explainChange({
+        metric: 'cost_change',
+        title: 'Total cost',
+        shown: input.shownDelta,
+        kind: 'relative',
+        now: halves.second,
+        before: halves.first,
+        words: (n) => fmtMoney(n, currency),
+        term: (n) => plain(n, 6),
+        window: `in the second half of the ${caption}`,
+        beforeWindow: 'in the first half',
+        rounding: 'The change is rounded to a whole percent.',
+        source: 'Spend over time, by hour',
+        provenanceNote: 'Computed in the Console from the hourly spend the server returned for this range.',
+      });
+    }
+  }
+  return {
+    total: data
+      ? explainRowSum({
+          metric: 'cost_total',
+          title: 'Total cost',
+          rows: models.map((r) => ({ label: r.key, value: r.cost })),
+          total,
+          shown: fmtMoney(total, currency),
+          term: money,
+          rowNoun: 'model',
+          window: caption,
+          source: 'Usage summary, by model',
+          rounding: amountRounding,
+          tolerance: spendTolerance(models),
+          shortfall: modelShortfall,
+        })
+      : null,
+    tokens: data
+      ? explainRowSum({
+          metric: 'cost_tokens',
+          title: 'Tokens',
+          rows: models.map((r) => ({ label: r.key, value: r.tokens })),
+          total: tokens,
+          shown: fmtTokens(tokens),
+          term: (n) => fmtNumber(n),
+          rowNoun: 'model',
+          window: caption,
+          source: 'Usage summary, by model',
+          rounding: 'From 1,000 tokens the tile shows thousands (K).',
+          shortfall: modelShortfall,
+        })
+      : null,
+    calls: data
+      ? explainRowSum({
+          metric: 'cost_calls',
+          title: 'LLM calls',
+          rows: models.map((r) => ({ label: r.key, value: r.calls })),
+          total: calls,
+          shown: fmtNumber(calls),
+          term: (n) => fmtNumber(n),
+          rowNoun: 'model',
+          window: caption,
+          source: 'Usage summary, by model',
+          rounding: 'Calls are whole numbers.',
+          shortfall: modelShortfall,
+        })
+      : null,
+    today: data
+      ? explainRowSum({
+          metric: 'cost_today',
+          title: 'Today',
+          rows: todayRows.map((r) => ({ label: tokenLabel(r.key), value: r.cost })),
+          total: today,
+          shown: fmtMoney(today, currency),
+          term: money,
+          rowNoun: 'surface',
+          window: 'today, from midnight UTC',
+          // Today is the calendar day, never the range above (its own window source).
+          windowSource: 'The calendar day in UTC',
+          source: 'Usage summary, today by surface',
+          rounding: amountRounding,
+          tolerance: spendTolerance(todayRows),
+          caveats: ['Today is the calendar day in UTC, not the range above.'],
+        })
+      : null,
+    change,
+  };
+}
+
+/** The spend in the first and the second half of the hourly grid, as `trendDelta` splits it. */
+export function spendHalves(hourly: readonly number[]): { first: number; second: number } | null {
+  if (!Array.isArray(hourly) || hourly.length < 4) return null;
+  const mid = Math.floor(hourly.length / 2);
+  const first = hourly.slice(0, mid).reduce((s, v) => s + v, 0);
+  const second = hourly.slice(mid).reduce((s, v) => s + v, 0);
+  return first > 0 ? { first, second } : null;
+}
 
 /** The page title: the navigation label of `#/cost` (one name per page, D25). */
 const PAGE_TITLE = 'Cost';
@@ -596,6 +834,18 @@ function CostPage(_props: CostProps = {}) {
   const overallAvgCost = callCount > 0 ? totalCost / callCount : NaN;
   const overallCostPerKTok = totalTokens > 0 ? (totalCost / totalTokens) * 1000 : NaN;
   const overallTokensPerCall = callCount > 0 ? totalTokens / callCount : NaN;
+  const kpiExplain = costKpiExplanations({ totalCost, totalTokens, callCount, currency, caption });
+  const deltaLabel =
+    typeof spendDelta === 'number' && spendDelta !== 0 ? `${spendDelta > 0 ? '+' : ''}${spendDelta}%` : undefined;
+  const totalsExplain = costTotalExplanations({
+    data: data ?? null,
+    currency,
+    caption,
+    hourly: timeline?.hourly,
+    shownDelta: deltaLabel,
+  });
+  const slot = (explanation: Explanation | null) =>
+    explanation ? (numeral: React.ReactNode) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger> : undefined;
 
   // ----- Ledger columns -------------------------------------------------- //
   const columns = React.useMemo<DataTableColumn<LedgerRow>[]>(
@@ -701,14 +951,16 @@ function CostPage(_props: CostProps = {}) {
         // Spend is lower-is-better: the arrow tracks the true change (up = rose) and the
         // colour reads red on a rise and green on a fall. Never pre-negate the value.
         delta={
-          typeof spendDelta === 'number' && spendDelta !== 0
+          typeof spendDelta === 'number' && spendDelta !== 0 && deltaLabel
             ? {
                 value: spendDelta,
-                label: `${spendDelta > 0 ? '+' : ''}${spendDelta}%`,
+                label: deltaLabel,
                 period: 'second half of the range against the first',
               }
             : undefined
         }
+        deltaExplain={slot(totalsExplain.change)}
+        explain={slot(totalsExplain.total)}
         goodDirection={goodDown}
         testId="cost-total"
       />
@@ -716,36 +968,57 @@ function CostPage(_props: CostProps = {}) {
         label="Tokens"
         value={fmtTokens(totalTokens)}
         context={`across ${fmtNumber(callCount)} ${callCount === 1 ? 'call' : 'calls'}, ${caption}`}
+        explain={slot(totalsExplain.tokens)}
         testId="cost-tokens"
       />
       <KpiTile
         label="LLM calls"
         value={fmtNumber(callCount)}
         context={caption}
+        explain={slot(totalsExplain.calls)}
         testId="cost-calls"
       />
       <KpiTile
         label="Today"
         value={fmtMoney(num(data?.today_cost), currency)}
         context={demoActive ? 'simulated spend' : 'spend so far today'}
+        explain={slot(totalsExplain.today)}
         testId="cost-today"
       />
       <KpiTile
         label="Per call"
-        value={Number.isFinite(overallAvgCost) ? fmtMoney(overallAvgCost, currency) : DASH}
+        value={
+          Number.isFinite(overallAvgCost) ? (
+            <ExplainTrigger explanation={kpiExplain.perCall}>{fmtMoney(overallAvgCost, currency)}</ExplainTrigger>
+          ) : (
+            DASH
+          )
+        }
         context={`average, ${caption}`}
         breakBefore
         testId="cost-per-call"
       />
       <KpiTile
         label="Per 1K tokens"
-        value={Number.isFinite(overallCostPerKTok) ? fmtMoney(overallCostPerKTok, currency) : DASH}
+        value={
+          Number.isFinite(overallCostPerKTok) ? (
+            <ExplainTrigger explanation={kpiExplain.perThousand}>{fmtMoney(overallCostPerKTok, currency)}</ExplainTrigger>
+          ) : (
+            DASH
+          )
+        }
         context={`average, ${caption}`}
         testId="cost-per-1k"
       />
       <KpiTile
         label="Tokens per call"
-        value={Number.isFinite(overallTokensPerCall) ? fmtTokens(overallTokensPerCall) : DASH}
+        value={
+          Number.isFinite(overallTokensPerCall) ? (
+            <ExplainTrigger explanation={kpiExplain.tokensPerCall}>{fmtTokens(overallTokensPerCall)}</ExplainTrigger>
+          ) : (
+            DASH
+          )
+        }
         context={`prompt and completion, ${caption}`}
         testId="cost-tokens-per-call"
       />

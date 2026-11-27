@@ -22,11 +22,13 @@ import { Button } from '@/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/ui/sheet';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/ui/table';
 import { LoadingState } from '@/design-system';
+import { ExplainTrigger } from '@/design-system/explain';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { pageHash } from '@/soc/router';
 import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
 
+import { explainPersonMedian } from './team-explain';
 import {
   CLOSE_ORDER,
   CLOSE_WORDS,
@@ -153,6 +155,32 @@ function usePersonEvents(username: string | null, window: string): EventsState &
   return { ...state, more, retry };
 }
 
+/**
+ * The Audit log range for a Team window, as absolute UTC instants (B56). Team counts
+ * `[start, end)` and the Audit range end is inclusive, so `to` is the end less 1 ms. The
+ * Audit page never resolves Team's calendar tokens (`today`), so a token is never passed.
+ * Empty when either bound is missing or unreadable: the link then names only the person.
+ */
+function auditRange(start?: string | null, end?: string | null): { from?: string; to?: string } {
+  const from = start ? Date.parse(start) : Number.NaN;
+  const to = end ? Date.parse(end) : Number.NaN;
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return {};
+  return { from: new Date(from).toISOString(), to: new Date(to - 1).toISOString() };
+}
+
+/**
+ * The person's median time to acknowledge, with its explanation on hover and click
+ * (Round 16 FXF); plain words when it was not measured.
+ */
+function PersonMedian({ person, windowLabel }: { person: PersonActivity; windowLabel: string }) {
+  const shown = fmtSeconds(person.median_ack_seconds);
+  // "Last 7 days" reads "last 7 days" in a sentence; a date ("12 Nov") keeps its capital.
+  const caption = /^(Last |Today$|Yesterday$)/.test(windowLabel) ? windowLabel.toLowerCase() : windowLabel;
+  const explanation = shown ? explainPersonMedian(person, shown, caption) : null;
+  if (!shown) return <>not measured</>;
+  return explanation ? <ExplainTrigger explanation={explanation}>{shown}</ExplainTrigger> : <>{shown}</>;
+}
+
 export interface PersonSheetProps {
   person: PersonActivity | null;
   /** The server window token the page reads. */
@@ -160,6 +188,12 @@ export interface PersonSheetProps {
   windowLabel: string;
   timezone: string;
   canViewAudit: boolean;
+  /**
+   * The resolved bounds of the answer shown (`[start, end)`, ISO instants), so "Open in
+   * Audit log" opens on the same window the counts cover (B56). Null when unknown.
+   */
+  windowStart?: string | null;
+  windowEnd?: string | null;
   onOpenChange: (open: boolean) => void;
   /** Where focus goes when the sheet closes (the row that opened it); see `useReturnFocus`. */
   onCloseAutoFocus?: (event: Event) => void;
@@ -171,6 +205,8 @@ export function PersonSheet({
   windowLabel,
   timezone,
   canViewAudit,
+  windowStart,
+  windowEnd,
   onOpenChange,
   onCloseAutoFocus,
 }: PersonSheetProps) {
@@ -216,7 +252,10 @@ export function PersonSheet({
               {canViewAudit && attributable ? (
                 <div className="pt-2">
                   <Button asChild variant="outline" size="sm" className="gap-1.5">
-                    <RouteAnchor href={pageHash('audit', { actor: person.username })} className="">
+                    <RouteAnchor
+                      href={pageHash('audit', { actor: person.username, ...auditRange(windowStart, windowEnd) })}
+                      className=""
+                    >
                       <ScrollText className="size-4" aria-hidden />
                       Open in Audit log
                     </RouteAnchor>
@@ -257,8 +296,7 @@ export function PersonSheet({
                 </p>
               ) : null}
               <p className={NOTE}>
-                Median time to acknowledge:{' '}
-                {fmtSeconds(person.median_ack_seconds) ?? 'not measured'}
+                Median time to acknowledge: <PersonMedian person={person} windowLabel={windowLabel} />
                 {person.ack_samples ? ` (${fmtNumber(person.ack_samples)} ${person.ack_samples === 1 ? 'case' : 'cases'})` : ''}.
               </p>
             </section>
@@ -284,38 +322,36 @@ export function PersonSheet({
               {person.daily.length === 0 ? (
                 <p className={NOTE}>Nothing recorded in this window.</p>
               ) : (
-                <div className="overflow-x-auto">
-                  <Table aria-label={`Work per day, days in ${timezone}`}>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className={FIRST_CELL}>Day</TableHead>
-                        {DAY_COLUMNS.map(([id, header], index) => (
-                          <TableHead
+                <Table aria-label={`Work per day, days in ${timezone}`} scrollLabel={`Work per day, days in ${timezone}`}>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className={FIRST_CELL}>Day</TableHead>
+                      {DAY_COLUMNS.map(([id, header], index) => (
+                        <TableHead
+                          key={id}
+                          className={cn('whitespace-nowrap text-right', index === DAY_COLUMNS.length - 1 && LAST_CELL)}
+                        >
+                          {header}
+                        </TableHead>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {[...person.daily].reverse().map((day) => (
+                      <TableRow key={day.date}>
+                        <TableCell className={cn('whitespace-nowrap', FIRST_CELL)}>{dayLabel(day.date, now)}</TableCell>
+                        {DAY_COLUMNS.map(([id, , kinds], index) => (
+                          <TableCell
                             key={id}
-                            className={cn('whitespace-nowrap text-right', index === DAY_COLUMNS.length - 1 && LAST_CELL)}
+                            className={cn('text-right tabular-nums', index === DAY_COLUMNS.length - 1 && LAST_CELL)}
                           >
-                            {header}
-                          </TableHead>
+                            {fmtNumber(kinds.reduce((sum, k) => sum + (day.counts[k] ?? 0), 0))}
+                          </TableCell>
                         ))}
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {[...person.daily].reverse().map((day) => (
-                        <TableRow key={day.date}>
-                          <TableCell className={cn('whitespace-nowrap', FIRST_CELL)}>{dayLabel(day.date, now)}</TableCell>
-                          {DAY_COLUMNS.map(([id, , kinds], index) => (
-                            <TableCell
-                              key={id}
-                              className={cn('text-right tabular-nums', index === DAY_COLUMNS.length - 1 && LAST_CELL)}
-                            >
-                              {fmtNumber(kinds.reduce((sum, k) => sum + (day.counts[k] ?? 0), 0))}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                    ))}
+                  </TableBody>
+                </Table>
               )}
             </section>
 

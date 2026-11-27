@@ -4,12 +4,14 @@
  * - a single-letter shortcut never fires while a letter-consuming control has focus
  *   (a Select's typeahead, a menu, a radio group): "c" on a filter used to pick
  *   Critical AND open the Close dialog;
- * - the Details sheet opens on its heading (no help tip opening by itself) and closes
- *   back to the Details button, not <body>;
- * - the title row wraps its actions below the title instead of squeezing the title.
+ * - the inspector sheet (a pane too narrow for the column) opens on its heading (no help
+ *   tip opening by itself) and closes back to the "Case facts" toggle, not <body>;
+ * - `]` shows or hides the inspector column, keeps the choice per viewer, and honours
+ *   `shortcutBlocked` like every other case key (Round 16, WP03);
+ * - the title row is one 44px line that never wraps: the title truncates first.
  */
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -65,6 +67,26 @@ async function renderLoaded() {
   await waitFor(() => expect(document.querySelector('[data-case-title]')).toHaveTextContent(/password spray/));
 }
 
+/** A pane narrower than 52rem: the container query hides the probe and the column. */
+async function withNarrowPane(run: () => Promise<void>) {
+  const proto = HTMLElement.prototype as HTMLElement & { checkVisibility?: () => boolean };
+  const original = proto.checkVisibility;
+  proto.checkVisibility = function checkVisibility(this: HTMLElement) {
+    const id = this.getAttribute('data-testid');
+    return id !== 'case-facts-column' && id !== 'case-inspector-probe';
+  };
+  try {
+    await run();
+  } finally {
+    if (original) proto.checkVisibility = original;
+    else delete proto.checkVisibility;
+  }
+}
+
+beforeEach(() => {
+  window.localStorage.clear();
+});
+
 describe('CaseDetail keyboard model', () => {
   it('a letter typed on a Select trigger never also opens a case dialog', async () => {
     await renderLoaded();
@@ -79,18 +101,68 @@ describe('CaseDetail keyboard model', () => {
     expect(await screen.findByTestId('confirm-action-dialog')).toBeInTheDocument();
   });
 
-  it('opens the Details sheet on its heading and closes it back to the Details button', async () => {
-    const user = userEvent.setup();
-    await renderLoaded();
-    const details = screen.getByRole('button', { name: 'Details' });
-    await user.click(details);
-    const heading = await screen.findByRole('heading', { name: 'Case facts' });
-    await waitFor(() => expect(heading).toHaveFocus());
-    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+  it('opens the inspector sheet on its heading at a narrow pane and closes it back to the toggle', async () => {
+    await withNarrowPane(async () => {
+      const user = userEvent.setup();
+      await renderLoaded();
+      const toggle = screen.getByTestId('case-inspector-toggle');
+      expect(toggle).toHaveAccessibleName('Case facts');
+      // The toggle opens a sheet here, so it is not a pressed/unpressed switch.
+      expect(toggle).not.toHaveAttribute('aria-pressed');
+      await user.click(toggle);
+      const heading = await screen.findByRole('heading', { name: 'Case facts' });
+      await waitFor(() => expect(heading).toHaveFocus());
+      expect(document.querySelector('[role="tooltip"]')).toBeNull();
 
-    await user.keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Case facts' })).toBeNull());
-    await waitFor(() => expect(details).toHaveFocus());
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(screen.queryByRole('heading', { name: 'Case facts' })).toBeNull());
+      await waitFor(() => expect(toggle).toHaveFocus());
+    });
+  });
+
+  it('] hides and shows the inspector column, kept for the viewer', async () => {
+    await renderLoaded();
+    const toggle = screen.getByTestId('case-inspector-toggle');
+    expect(screen.getByTestId('case-facts-column')).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(toggle).toHaveAttribute('aria-keyshortcuts', ']');
+
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    fireEvent.keyDown(document.body, { key: ']' });
+    await waitFor(() => expect(screen.queryByTestId('case-facts-column')).toBeNull());
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(window.localStorage.getItem('soc.caseManager.inspector')).toBe('closed');
+    // No sheet: the column fits, so the key toggles the column.
+    expect(screen.queryByRole('heading', { name: 'Case facts' })).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(await screen.findByTestId('case-facts-column')).toBeInTheDocument();
+    expect(window.localStorage.getItem('soc.caseManager.inspector')).toBe('open');
+  });
+
+  it('starts with the column hidden when the viewer hid it', async () => {
+    window.localStorage.setItem('soc.caseManager.inspector', 'closed');
+    await renderLoaded();
+    expect(screen.queryByTestId('case-facts-column')).toBeNull();
+    expect(screen.getByTestId('case-inspector-toggle')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('] typed on a letter-consuming control never toggles the inspector (shortcutBlocked)', async () => {
+    await renderLoaded();
+    const filter = screen.getByRole('combobox', { name: 'Severity filter' });
+    act(() => filter.focus());
+    fireEvent.keyDown(filter, { key: ']' });
+    expect(screen.getByTestId('case-facts-column')).toBeInTheDocument();
+    // Nor in a text field.
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      act(() => input.focus());
+      fireEvent.keyDown(input, { key: ']' });
+      expect(screen.getByTestId('case-facts-column')).toBeInTheDocument();
+    } finally {
+      input.remove();
+    }
   });
 
   it('T opens the tag editor in the facts rail column beside the tabs (D8.2)', async () => {
@@ -105,14 +177,8 @@ describe('CaseDetail keyboard model', () => {
     await waitFor(() => expect(field.closest('[role="dialog"]')).not.toBeNull());
   });
 
-  it('T opens the Details sheet first when the rail column is hidden, then the tag editor (D8.2, [ru] M4)', async () => {
-    const proto = HTMLElement.prototype as HTMLElement & { checkVisibility?: () => boolean };
-    const original = proto.checkVisibility;
-    // A narrow pane: the container query hides the rail column.
-    proto.checkVisibility = function checkVisibility(this: HTMLElement) {
-      return this.getAttribute('data-testid') !== 'case-facts-column';
-    };
-    try {
+  it('T opens the inspector sheet first when the pane has no room for the column, then the tag editor (D8.2, [ru] M4)', async () => {
+    await withNarrowPane(async () => {
       await renderLoaded();
       act(() => (document.activeElement as HTMLElement | null)?.blur());
       fireEvent.keyDown(document.body, { key: 't' });
@@ -120,18 +186,65 @@ describe('CaseDetail keyboard model', () => {
       const field = await screen.findByRole('textbox', { name: 'New tag' });
       // The editor is the one in the sheet, not in the hidden column.
       expect(screen.getByTestId('case-facts-column')).not.toContainElement(field);
+    });
+  });
+
+  it('T opens a hidden column first when it fits, then the tag editor in it', async () => {
+    window.localStorage.setItem('soc.caseManager.inspector', 'closed');
+    await renderLoaded();
+    expect(screen.queryByTestId('case-facts-column')).toBeNull();
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    fireEvent.keyDown(document.body, { key: 't' });
+    const field = await screen.findByRole('textbox', { name: 'New tag' });
+    expect(screen.queryByRole('heading', { name: 'Case facts' })).toBeNull();
+    expect(screen.getByTestId('case-facts-column')).toBeInTheDocument();
+    await waitFor(() => expect(field.closest('[role="dialog"]')).not.toBeNull());
+  });
+
+  it('T opens the tag editor when the viewer folded the Tags and campaign section', async () => {
+    // The section's content is not rendered while it is folded, so the editor needs the
+    // section open first; the viewer asked for the tags, so it stays open afterwards.
+    window.localStorage.setItem('soc.caseManager.inspectorSections', JSON.stringify({ tags: false }));
+    await renderLoaded();
+    const column = screen.getByTestId('case-facts-column');
+    expect(within(column).queryByTestId('case-detail-tags')).toBeNull();
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    fireEvent.keyDown(document.body, { key: 't' });
+    const field = await screen.findByRole('textbox', { name: 'New tag' });
+    await waitFor(() => expect(field.closest('[role="dialog"]')).not.toBeNull());
+    expect(within(column).getByTestId('case-detail-tags')).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem('soc.caseManager.inspectorSections') ?? '{}')).toMatchObject({
+      tags: true,
+    });
+  });
+
+  it('brings the Tags and campaign section into view as the editor opens, so the editor is on screen', async () => {
+    // The section sits low in the inspector, below the column's fold at 1440x900; the
+    // editor is anchored to it and would open, and take focus, out of sight.
+    const proto = Element.prototype as Element & { scrollIntoView?: (arg?: unknown) => void };
+    const original = proto.scrollIntoView;
+    const calls: Array<{ section: string | null; arg: unknown }> = [];
+    proto.scrollIntoView = function scrollIntoView(this: Element, arg?: unknown) {
+      calls.push({ section: this.getAttribute('data-section-id'), arg });
+    };
+    try {
+      await renderLoaded();
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      fireEvent.keyDown(document.body, { key: 't' });
+      await screen.findByRole('textbox', { name: 'New tag' });
+      expect(calls).toContainEqual({ section: 'tags', arg: { block: 'nearest' } });
     } finally {
-      if (original) proto.checkVisibility = original;
-      else delete proto.checkVisibility;
+      if (original) proto.scrollIntoView = original;
+      else delete proto.scrollIntoView;
     }
   });
 
-  it('wraps the actions below a long title instead of squeezing it', async () => {
+  it('keeps the title row one 44px line: the title truncates before the actions wrap', async () => {
     await renderLoaded();
     const row = screen.getByTestId('case-title-row');
-    expect(row).toHaveClass('flex-wrap');
-    // The title cell wraps on its NATURAL width (flex-basis auto), never shrunk below it
-    // to keep the actions beside it.
-    expect(screen.getByTestId('case-title-cell')).toHaveClass('flex-auto', 'min-w-0', 'max-w-full');
+    expect(row).toHaveClass('flex-nowrap', 'h-11');
+    expect(row).not.toHaveClass('flex-wrap');
+    // The title cell takes the room left and may shrink to nothing; the title truncates.
+    expect(screen.getByTestId('case-title-cell')).toHaveClass('min-w-0', 'flex-1');
   });
 });

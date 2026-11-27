@@ -6,10 +6,16 @@ credential. The same mapping definitions are exported to ``deploy/mappings`` so 
 cold deploy can pre-create them if desired.
 
 Bootstrap creates what is missing and never remaps, reindexes or rolls an existing
-index. The one exception is additive and limited to the audit contract (Round 14,
-:func:`extend_audit_mapping`): audit-first writes (SPEC §3.6) cannot succeed while the
-live audit index would date-detect a free string, so on a deployment whose audit
-template or index predates this build, the stored audit template gains the properties
+index. There are three exceptions, each additive and limited to one contract: audit
+(Round 14), config (Round 15) and cases (Round 16), described below. A property that
+already exists is never changed. The shipped client (``es/client.py``) can read a
+template, read a mapping and add to one since Round 16; a template read that answers
+403 or 404 counts as a client that cannot.
+
+The audit exception (Round 14, :func:`extend_audit_mapping`): audit-first writes
+(SPEC §3.6) cannot succeed while the live audit index would date-detect a free string,
+so on a deployment whose audit template or index predates this build, the stored audit
+template gains the properties
 it lacks and every existing audit index gains the properties it lacks plus
 ``date_detection: false``. A property that already exists is never changed, whatever
 its mapping. This needs an Elasticsearch client that can read a template, read a
@@ -17,19 +23,31 @@ mapping and add to one (``get_index_template``, ``get_index_mapping``,
 ``put_index_mapping``); through a client that cannot, bootstrap changes nothing and
 logs a warning naming the operator step (:data:`AUDIT_UPGRADE_STEP`).
 
-Round 15 (SPEC D5.7) adds one more additive mapping, on the config index: the
+The config exception (Round 15, SPEC D5.7) is one more additive mapping: the
 screenshot content field ``case_file_data`` (base64, ``stores.case_files``) is mapped
 ``binary``, stored but never indexed. A fresh install creates the config index with it
 (:data:`CONFIG_MAPPING`); an upgraded one gains it at bootstrap, before the first
 screenshot is written (:func:`extend_config_mapping`). If that cannot be done, or the
 field was already mapped dynamically as text, writes still work and each screenshot's
 base64 is indexed as text (the cost is stated in ``docs/operations/health-backup.md``).
+
+The cases exception (Round 16, SPEC §3.4) adds two properties to the cases contract,
+additively in the same way (:func:`extend_cases_mapping`): ``risk_breakdown.inputs`` is
+stored and never
+indexed (it holds source-controlled rule values, and the cases index date-detects, so a
+value such as ``2026-01-01`` would otherwise map a field as a date and fail every later
+case save), and ``awaiting_reason`` is mapped explicitly as text with a ``keyword``
+sub-field, identical to the dynamic default, so the deferred drain's prefix query works
+on new and old indices alike. When bootstrap cannot give the cases mapping the
+``inputs`` field, the case store leaves it out of the stored document
+(:func:`cases_risk_inputs_storable`), so a case always lands.
 """
 
 from __future__ import annotations
 
 import copy
 import logging
+import weakref
 from typing import Any
 
 from ..constants import (
@@ -78,7 +96,12 @@ CASES_MAPPING = {
         "objection_window_expires_at": {"type": "date"},
         "title": {"type": "text", "fields": {"keyword": {"type": "keyword", "ignore_above": 512}}},
         "summary": {"type": "text"},
-        "risk_breakdown": {"type": "object", "enabled": True},
+        # Round 16 (SPEC §3.4): the recorded score inputs are stored, never indexed.
+        "risk_breakdown": {
+            "type": "object",
+            "enabled": True,
+            "properties": {"inputs": {"type": "object", "enabled": False}},
+        },
         "token_cost": {"type": "float"},
         "error": {"type": "text"},
         "history": {"type": "object", "enabled": False},
@@ -88,6 +111,12 @@ CASES_MAPPING = {
         "retrieval_observation_status": {"type": "keyword"},
         # Feature 3: not queryable, no mapping explosion.
         "trigger_reason": {"type": "object", "enabled": False},
+        # Round 16 (SPEC §3.4, B11): what the dynamic mapping gives it, stated so a new
+        # index matches an old one; the deferred drain asks a prefix of the keyword.
+        "awaiting_reason": {
+            "type": "text",
+            "fields": {"keyword": {"type": "keyword", "ignore_above": 256}},
+        },
     }
 }
 
@@ -428,13 +457,168 @@ async def extend_config_mapping(es: Any, index: str = CONFIG_INDEX) -> str:
     return "added"
 
 
+#: Per management client: whether this process proved the cases mapping holds
+#: ``risk_breakdown.inputs`` as stored and never indexed (:func:`extend_cases_mapping`).
+#: A client bootstrap never saw (the in-memory store of Demo Mode and tests, which maps
+#: nothing) is absent and reads as storable.
+_RISK_INPUTS_STORABLE: "weakref.WeakKeyDictionary[Any, bool]" = weakref.WeakKeyDictionary()
+
+#: The dotted cases properties whose own mapping decides whether ``inputs`` is safe.
+_RISK_INPUTS_PATHS = frozenset({"risk_breakdown", "risk_breakdown.inputs"})
+
+
+def _record_risk_inputs_storable(es: Any, storable: bool) -> None:
+    try:
+        _RISK_INPUTS_STORABLE[es] = bool(storable)
+    except TypeError:  # a client that cannot be weakly referenced: nothing recorded
+        pass
+
+
+def cases_risk_inputs_storable(es: Any) -> bool:
+    """Whether a case document written through ``es`` may carry
+    ``risk_breakdown.inputs`` (Round 16 SPEC §3.4). ``False`` only when this process's
+    bootstrap ran on ``es`` and could not prove the cases mapping stores the field
+    without indexing it; the case store then leaves the field out."""
+    try:
+        return _RISK_INPUTS_STORABLE.get(es, True)
+    except TypeError:
+        return True
+
+
+async def _refresh_cases_template(
+    es: Any, name: str, mapping: dict[str, Any]
+) -> tuple[bool, list[str]]:
+    """Add to the stored cases template the properties it lacks (future indices),
+    keeping everything else it holds. Returns ``(ok, kept)``: ``ok`` is ``False`` when
+    the template could not be read or written; ``kept`` names desired properties the
+    template maps another way. ``NotImplementedError`` (a client without the template
+    API) propagates to the caller."""
+    try:
+        stored = await es.get_index_template(name)
+    except NotImplementedError:
+        raise
+    except Exception as exc:  # noqa: BLE001 (bootstrap never fails on this)
+        logger.warning("Cases template %s could not be read: %s", name, exc)
+        return False, []
+    if not isinstance(stored, dict):
+        # No template to extend (removed by hand): the next index cannot be proven safe.
+        logger.warning("Cases template %s was not found; recorded risk inputs are not stored", name)
+        return False, []
+    body = {k: copy.deepcopy(v) for k, v in stored.items() if k in _TEMPLATE_PUT_KEYS}
+    template = body.setdefault("template", {})
+    mappings = template.setdefault("mappings", {}) if isinstance(template, dict) else None
+    properties = mappings.setdefault("properties", {}) if isinstance(mappings, dict) else None
+    if not isinstance(properties, dict):
+        logger.warning("Cases template %s has an unexpected shape; left as it is", name)
+        return False, []
+    missing, kept = missing_properties(mapping["properties"], properties)
+    if missing:
+        _merge_properties(properties, missing)
+        try:
+            await es.put_index_template(name, body)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cases template %s could not be updated: %s", name, exc)
+            return False, kept
+        logger.info("Updated index template %s: added %s", name, sorted(missing))
+    return True, kept
+
+
+async def extend_cases_mapping(es: Any, base: str = CASES_INDEX,
+                               mapping: dict[str, Any] = CASES_MAPPING) -> str:
+    """Give an upgraded deployment's cases template and indices the Round 16 properties
+    (SPEC §3.4): ``risk_breakdown.inputs`` stored and never indexed, and an explicit
+    ``awaiting_reason``. Purely additive: a property that already exists is left as it
+    is and named in the log. Never fails the boot.
+
+    Returns ``added`` (something was added and every template and index now holds
+    ``inputs`` safely), ``present`` (nothing was missing), ``kept`` (a template or
+    index already maps ``risk_breakdown.inputs`` another way), ``unsupported`` (the
+    client cannot read or extend mappings, or cannot read the cases template, as the
+    shipped client cannot) or ``failed``. Records whether the case
+    store may write ``inputs`` (:func:`cases_risk_inputs_storable`): only ``added`` and
+    ``present`` allow it."""
+    outcome = await _extend_cases_mapping(es, base, mapping)
+    _record_risk_inputs_storable(es, outcome in ("added", "present"))
+    return outcome
+
+
+async def _extend_cases_mapping(es: Any, base: str, mapping: dict[str, Any]) -> str:
+    if getattr(es, "get_index_mapping", None) is None or getattr(es, "put_index_mapping", None) is None:
+        logger.warning("Cases mapping not checked: this client cannot read or extend index mappings")
+        return "unsupported"
+    if getattr(es, "get_index_template", None) is None:
+        # The shipped client reads and extends index mappings, but cannot read a
+        # template, so the next cases index cannot be proven safe either.
+        logger.warning(
+            "Cases mapping not extended: this Elasticsearch client cannot read the cases "
+            "index template, so recorded risk inputs are left out of stored cases. A "
+            "deployment whose cases template and first index were created by this build "
+            "stores them."
+        )
+        return "unsupported"
+    template_name = f"{base}-template"
+    try:
+        template_ok, template_kept = await _refresh_cases_template(es, template_name, mapping)
+    except NotImplementedError as exc:
+        # The management key may not read the template (403), or the cluster has no
+        # such template or no composable template API (404) (Round 16, WP16).
+        logger.warning(
+            "Cases mapping not checked: the cases index template %s cannot be read (%s), "
+            "so recorded risk inputs are left out of stored cases.", template_name, exc,
+        )
+        return "unsupported"
+    try:
+        live = await es.get_index_mapping(f"{base},{base}-*")
+    except NotImplementedError:
+        logger.warning(
+            "Cases mapping not checked: this client cannot read the cases index mappings, "
+            "so recorded risk inputs are left out of stored cases."
+        )
+        return "unsupported"
+    except Exception as exc:  # noqa: BLE001 (never fail the boot)
+        logger.warning("Cases index mappings could not be read: %s", exc)
+        return "failed"
+    failed = not template_ok
+    inputs_kept = bool(_RISK_INPUTS_PATHS.intersection(template_kept))
+    added = False
+    for index_name in sorted(live or {}):
+        entry = live[index_name] if isinstance(live[index_name], dict) else {}
+        mappings = entry.get("mappings") if isinstance(entry.get("mappings"), dict) else {}
+        properties = mappings.get("properties") if isinstance(mappings.get("properties"), dict) else {}
+        missing, kept = missing_properties(mapping["properties"], properties)
+        if missing:
+            try:
+                await es.put_index_mapping(index_name, {"properties": missing})
+            except NotImplementedError:
+                logger.warning("Cases mapping not extended: this client cannot extend index mappings")
+                return "unsupported"
+            except Exception as exc:  # noqa: BLE001 (never fail the boot)
+                logger.warning("Cases index %s mapping could not be extended: %s", index_name, exc)
+                failed = True
+                continue
+            added = True
+            logger.info("Extended cases index %s mapping: added %s", index_name, sorted(missing))
+        if kept:
+            logger.warning(
+                "Cases index %s already maps %s another way; left as it is until the "
+                "index rolls over", index_name, kept,
+            )
+            inputs_kept = inputs_kept or bool(_RISK_INPUTS_PATHS.intersection(kept))
+    if failed:
+        return "failed"
+    if inputs_kept:
+        return "kept"
+    return "added" if added else "present"
+
+
 async def bootstrap_indices(es: BaseESClient | None) -> None:
     """Idempotently create templates, write indices+aliases, and the single-doc
     bookkeeping indices. Safe to call on every start.
 
-    An existing template or index is never replaced, remapped or reindexed; the audit
-    contract alone is extended additively (:func:`extend_audit_mapping`) when its
-    template or write index existed before this start.
+    An existing template or index is never replaced, remapped or reindexed. Three
+    contracts are extended additively when their template or index existed before
+    this start: audit (:func:`extend_audit_mapping`), config
+    (:func:`extend_config_mapping`) and cases (:func:`extend_cases_mapping`).
 
     Guard (Epoch A): this only makes sense for the Elasticsearch OWN-state
     backend. When the suite's state lives in SQL (sqlite/postgres) the caller
@@ -444,6 +628,10 @@ async def bootstrap_indices(es: BaseESClient | None) -> None:
     if es is None or not hasattr(es, "index_template_exists"):
         logger.debug("bootstrap_indices skipped (no ES management client)")
         return
+    # Until the cases mapping is proven to store ``risk_breakdown.inputs`` safely, the
+    # case store leaves it out (Round 16 SPEC §3.4); a bootstrap that fails part way
+    # keeps it that way.
+    _record_risk_inputs_storable(es, False)
     for base, mapping in CONTRACT_INDICES.items():
         template_name = f"{base}-template"
         created_template = False
@@ -463,6 +651,14 @@ async def bootstrap_indices(es: BaseESClient | None) -> None:
             # A template or an index from before this start (an upgrade, or an index
             # created without this template) may lack the Round 14 audit mapping.
             await extend_audit_mapping(es, base, mapping)
+        if base == CASES_INDEX:
+            if created_template and created_index:
+                # Both created from this build's mapping just now.
+                _record_risk_inputs_storable(es, True)
+            else:
+                # A template or an index from before this start may lack the Round 16
+                # cases properties; added before the first case with inputs is written.
+                await extend_cases_mapping(es, base, mapping)
 
     for single in (CONFIG_INDEX, CURSOR_INDEX):
         if not await es.index_exists(single):

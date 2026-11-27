@@ -1,9 +1,9 @@
 blank_issues_enabled: false
 contact_links:
   - name: Stable Help Center
-    url: https://arydestroyer.github.io/Agentic-Kibana/stable/
+    url: https://arydestroyer.github.io/Kavach-AgenticSOC/stable/
     about: Read the versioned operator, administration, deployment, and API guidance.
   - name: Private security reporting
-    url: https://github.com/ARYDESTROYER/Agentic-Kibana/blob/main/SECURITY.md#8-responsible-disclosure
+    url: https://github.com/ARYDESTROYER/Kavach-AgenticSOC/blob/main/SECURITY.md#8-responsible-disclosure
     about: Do not disclose a vulnerability in a public issue. Follow the private reporting process.
 

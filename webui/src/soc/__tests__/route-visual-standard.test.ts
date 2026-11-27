@@ -35,6 +35,7 @@ const PRIMARY_SURFACES = [
   "soc/pages/Standup.tsx",
   "soc/pages/TeamActivity.tsx",
   "soc/pages/Tuning.tsx",
+  "soc/pages/WhatsNew.tsx",
   "soc/pages/Workspace.tsx",
   "soc/components/UnifiedLogsSheet.tsx",
 ] as const;
@@ -71,8 +72,12 @@ describe("Console route visual standard", () => {
     const manager = source("soc/pages/CaseManager.tsx");
     expect(manager).toContain("<PageContainer");
     expect(manager).toContain('variant="fluid"');
-    expect(manager).toContain("w-auto sm:-mx-2");
+    expect(manager).toContain("w-auto -my-2 sm:-mx-2");
     expect(manager).toContain('role="separator"');
+    // Round 16 (WP02): the split workspace owns its frame, as Chat does: no routed page
+    // header, an sr-only h1 (the top bar's breadcrumb shows the name).
+    expect(manager).not.toContain("<PageHeader");
+    expect(manager).toContain('<h1 className="sr-only">Case Manager</h1>');
     // The bleed no longer steps with the old gutter ladder, so it must not re-grow one.
     expect(manager).not.toContain("lg:-mx-4");
     expect(manager).not.toContain("2xl:-mx-8");
@@ -82,13 +87,16 @@ describe("Console route visual standard", () => {
     // These two strings are the whole contract: the bleed widens the board back out of the
     // shell gutter to a constant 16px inset at every width. Tuned independently they drift,
     // and at >=1536px the board overflows `<main class="… overflow-x-hidden">` by 8px/side.
-    // jsdom cannot see either (no layout, no media queries), so the source strings ARE the
-    // proof: no other gate covers this.
+    // Round 16 (WP02): `-my-2` takes 8px of the 24px top and bottom inset back too, so the
+    // board sits on 16px on every side, and the height is the viewport minus the 56px bar
+    // and those two insets (5.5rem), so the frame starts at y = 72 and the page never
+    // scrolls. jsdom cannot see either (no layout, no media queries), so the source strings
+    // ARE the proof: no other gate covers this.
     expect(source("soc/AppShell.tsx")).toContain(
       "const CONTENT_INSET = 'mx-auto w-full min-w-0 px-4 py-6 sm:px-6';",
     );
     expect(source("soc/pages/CaseManager.tsx")).toContain(
-      'className="h-[calc(100dvh-7rem)] min-h-0 w-auto sm:-mx-2 xl:min-h-[600px]"',
+      'className="h-[calc(100dvh-5.5rem)] min-h-0 w-auto -my-2 sm:-mx-2 xl:min-h-[600px]"',
     );
 
     const home = source("soc/pages/Home.tsx");
@@ -100,21 +108,26 @@ describe("Console route visual standard", () => {
   it("keeps every embedded Case Manager tab on one shared content rail", () => {
     const shared = source("soc/pages/casedetail/shared.tsx");
     expect(shared).toContain("export const CASE_MANAGER_PANEL_PADDING");
-    expect(shared).toContain("px-4 py-4 sm:px-5 sm:py-5 lg:px-6");
+    // Round 16 (SPEC §4.4 WP03): container queries on the case pane, never the viewport,
+    // and 16px above the first content at every width.
+    expect(shared).toContain("'px-4 pt-4 pb-6 @[48rem]/case:px-5 @[64rem]/case:px-6'");
+    expect(shared).not.toMatch(/CASE_MANAGER_PANEL_PADDING =[^;]*\b(sm|lg):/);
 
     for (const file of [
       "soc/pages/casedetail/OverviewPanel.tsx",
+      "soc/pages/casedetail/EvidencePanel.tsx",
       "soc/pages/casedetail/InvestigationPanel.tsx",
       "soc/pages/casedetail/CollaborationPanel.tsx",
       "soc/pages/casedetail/CaseChatPanel.tsx",
+      "soc/pages/CaseDetail.tsx",
     ]) {
       expect(source(file), `${file} must reuse the Case Manager content rail`).toContain(
         "CASE_MANAGER_PANEL_PADDING",
       );
     }
-    // Round 15 (D8.3): the stage timeline and the threat context are SECTIONS of the
-    // Overview and Investigation tabs, which own the rail, so they never add their own
-    // (a second rail would stack 32px gutters inside the tab).
+    // The stage timeline and the threat context are SECTIONS of the Brief and Evidence
+    // tabs, which own the rail, so they never add their own (a second rail would stack
+    // 32px gutters inside the tab).
     for (const file of [
       "soc/pages/casedetail/TimelinePanel.tsx",
       "soc/pages/casedetail/ThreatContextPanel.tsx",

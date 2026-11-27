@@ -1,7 +1,7 @@
 /**
  * Round 15 (SPEC D4.6, D5.12; WP7): screenshots in the case workspace.
  *
- *   - The Collaboration tab's Files section is the lazy gallery, with the tab as its paste
+ *   - The Activity tab's Files section is the lazy gallery, with the tab as its paste
  *     scope and its count ("1 of 20") beside the heading, never a second heading.
  *   - The case thread's live stream carries the screenshot frames: a `case.activity` frame
  *     that names a `file_id` re-reads the Files section and leaves the thread alone; any
@@ -9,7 +9,7 @@
  *   - The close dialog offers "Add screenshots" (the dialog as its paste scope) to a
  *     viewer who holds `cases:comment`, the grant the upload route checks, and not to one
  *     who does not; the server's own `can_upload` and `can_delete` gate the gallery.
- *   - A pasted image anywhere in the Collaboration tab (the thread's composer included)
+ *   - A pasted image anywhere in the Activity tab (the thread's composer included)
  *     is added once; with the close dialog open over the tab, the dialog takes it, and
  *     the tab does not add it a second time.
  */
@@ -213,7 +213,7 @@ async function openCollaboration() {
   render(<CaseDetail caseId="c-files-1" presentation="embedded" onClose={() => undefined} />);
   await waitFor(() => expect(document.querySelector('[data-case-title]')).toHaveTextContent('Phishing link clicked'));
   const user = userEvent.setup();
-  await user.click(screen.getByRole('tab', { name: /Collaboration/ }));
+  await user.click(screen.getByRole('tab', { name: /^Activity/ }));
   return within(await screen.findByTestId('collaboration-files'));
 }
 

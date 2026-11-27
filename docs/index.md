@@ -13,9 +13,9 @@ reference, and release material live in the same searchable portal.
 
 !!! info "Matched to this app"
 
-    **Documentation 0.1** describes **Agentic SOC 0.1.13**. The application bundles this
+    **Documentation 0.2** describes **Agentic SOC 0.2.0**. The application bundles this
     Help Center from the same accepted source and serves it on the application
-    origin under `/docs/0.1/`. Use it as the authority for the behavior and controls
+    origin under `/docs/0.2/`. Use it as the authority for the behavior and controls
     available in the running build. The channel badge identifies whether that build
     is a Testing candidate or a supported Stable release.
 
@@ -29,6 +29,7 @@ Most readers should begin here.
 | Trace one alert through triage | [Work your first case](getting-started/first-case.md) |
 | Work the split-pane queue or select cases in bulk | [Case Manager](analyst/case-manager.md) |
 | Understand a case assessment and decision | [Investigation](analyst/investigation.md) |
+| See how a risk score, decision, SLA or dashboard figure was calculated | [Explainable numbers](analyst/explainable-numbers.md) |
 | Ask a read-only question, resume a saved conversation, or build a report from answers | [Workspace Chat](analyst/chat.md) |
 | Find source evidence | [Logs and search](analyst/logs-search.md) |
 | Coordinate analyst work | [Collaboration](analyst/collaboration.md) |
@@ -36,6 +37,7 @@ Most readers should begin here.
 | Review what waits for a person's approval | [Approvals](automation/approvals.md) |
 | Read posture and performance | [Analytics](analyst/analytics.md) |
 | Monitor long-running work, cancellation, and downloads | [Background jobs](operations/background-jobs.md) |
+| See what changed in each release, with screenshots | [What's new](releases/whats-new.md) |
 
 If this is your first session, [choose a getting-started path](getting-started/index.md).
 The deterministic Demo Mode is the shortest way to explore the workflow without
@@ -144,12 +146,13 @@ does not replace the version-matched Help Center bundled with the application.
 
 Agentic SOC uses one promotion path: feature branches merge into **Testing**, and the
 accepted source tree promotes through a protected pull request to **`main` /
-Stable**. The current source version uses SemVer `0.1.13`; compatible documentation
-uses the major.minor line `0.1`.
+Stable**. The current source version uses SemVer `0.2.0`; compatible documentation
+uses the major.minor line `0.2`. The repository is `ARYDESTROYER/Kavach-AgenticSOC`,
+and the project is licensed under Apache-2.0.
 
 The repository uses default `main` for accepted source and retains `Testing` for
-integration. Version 0.1.13 is Stable only when the exact accepted `main` commit has
-the immutable `v0.1.13` tag and matching signed/public artifacts and every canonical
+integration. Version 0.2.0 is Stable only when the exact accepted `main` commit has
+the immutable `v0.2.0` tag and matching signed/public artifacts and every canonical
 runtime acceptance gate passes. Repository
 protections and the native Pages deployment remain
 administrator-controlled and must be verified independently before treating a
@@ -163,10 +166,11 @@ verification but failed during post-verification cleanup before its GitHub Relea
 or canonical assets were published. Version 0.1.12 completed the entire public,
 signed publication, but canonical v0.1.1 bootstrap failed closed before application
 mutation because matching absent legacy state-schema labels were normalized
-asymmetrically. It is bootstrap-blocked and not an installation source. Version
-0.1.13 remains a candidate until its
-full signed-publication and canonical acceptance evidence exists. Read
-[Agentic SOC 0.1.13](releases/0.1.13.md),
+asymmetrically. It is bootstrap-blocked and not an installation source. The 0.1.13
+candidate was never tagged; its correction is folded into 0.2.0, which remains a
+candidate until its full signed-publication and canonical acceptance evidence exists.
+Read [Agentic SOC 0.2.0](releases/0.2.0.md),
+[the unpublished 0.1.13 candidate](releases/0.1.13.md),
 [the 0.1.12 bootstrap-blocked publication record](releases/0.1.12.md),
 [the 0.1.11 failed-publication record](releases/0.1.11.md),
 [the 0.1.10 failed-publication record](releases/0.1.10.md),

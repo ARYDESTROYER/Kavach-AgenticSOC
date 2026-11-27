@@ -18,6 +18,7 @@
  * HTML and never interpolated into a prompt.
  */
 import { api } from '@/lib/api';
+import { humanizeToken } from '@/lib/format';
 import type { AccountPermissions } from '@/lib/types';
 
 /** A grant/deny map: resource → list of actions (may include the "*" wildcard). */
@@ -161,6 +162,24 @@ export const RESOURCE_ACTIONS: Record<string, string[]> = {
 
 /** Stable, readable ordering of resources for the editor grid + matrix viewer. */
 export const RESOURCE_ORDER: string[] = Object.keys(RESOURCE_ACTIONS);
+
+/**
+ * The display names of the resources whose wire id does not read as words (Round 16
+ * B57). The ids stay the values everywhere; only the visible name changes.
+ */
+export const RESOURCE_LABELS: Readonly<Record<string, string>> = {
+  rag: 'Knowledge corpus',
+  inapp: 'In-app notifications',
+  data_export: 'Data export',
+  system_updates: 'System updates',
+};
+
+/** The visible name of a permission resource, for every list of resources. */
+export function resourceLabel(resource: string): string {
+  return Object.prototype.hasOwnProperty.call(RESOURCE_LABELS, resource)
+    ? RESOURCE_LABELS[resource]
+    : humanizeToken(resource);
+}
 
 /** The retired resource the server still accepts as an alias of `runbooks`. */
 export const RETIRED_RUNBOOK_RESOURCE = 'playbooks';

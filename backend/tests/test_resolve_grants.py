@@ -38,6 +38,7 @@ from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.state import AppState
 from app.stored_text import audit_actor_key
+from tests._auth_helpers import ready_user
 
 T1 = UserRole.ANALYST_TIER1.value
 
@@ -182,6 +183,7 @@ def _setup_restricted_users(c: TestClient) -> None:
             "username": name, "password": f"{name}-pass-12345", "role": T1,
         })
         assert r.status_code == 200, r.text
+        ready_user(c, name, f"{name}-pass-12345")
     r = c.put("/api/users/alice/roles", json={"custom_roles": ["audit_reader"]})
     assert r.status_code == 200, r.text
 
@@ -266,6 +268,7 @@ def test_rbac_off_treats_any_authenticated_user_as_unrestricted(monkeypatch):
         assert c.post("/api/users", json={
             "username": "carol", "password": "carol-pass-12345", "role": T1,
         }).status_code == 200
+        ready_user(c, "carol", "carol-pass-12345")
         _relogin(c, "carol", "carol-pass-12345")
         control, _ = _spy_audits(c, monkeypatch)
         assert c.get("/api/_probe/grants").json()["granted"] == sorted(
@@ -353,6 +356,7 @@ def test_record_chat_tool_denial_keeps_an_email_username_findable_by_actor():
         assert c.post("/api/users", json={
             "username": user, "password": "alice-pass-12345", "role": T1,
         }).status_code == 200
+        ready_user(c, user, "alice-pass-12345")
         _relogin(c, user, "alice-pass-12345")
         assert c.post("/api/_probe/deny").json() == {"written": True}
         rows = c.get("/api/_probe/actor-rows").json()["rows"]

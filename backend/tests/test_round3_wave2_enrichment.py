@@ -565,6 +565,9 @@ async def test_threat_context_non_ip_section_fences(monkeypatch) -> None:
 
 async def test_threat_context_ip_path_unchanged() -> None:
     # The IP branch still uses enrich_ip (legacy shape) — non-IP wiring is additive.
+    # Round 16 (SPEC §4.5 WP13, [dv] R7): the IP row also lists its providers; a
+    # duck-typed enrich_ip(ip) without the ``detail`` keyword still works, and its row
+    # says the provider results were not recorded.
     from app.engine import threat_context as tc
 
     class _FakeEnrich:
@@ -578,7 +581,8 @@ async def test_threat_context_ip_path_unchanged() -> None:
 
     case = _case("case-2", EntityType.IP, "8.8.8.8")
     section = await tc._ioc_section(case, Preferences(), _FakeEnrich())
-    assert section and section[0]["type"] == "ip" and "providers" not in section[0]
+    assert section and section[0]["type"] == "ip" and section[0]["sources"] == {"note": "x"}
+    assert section[0]["providers"] == [] and section[0]["providers_status"] == "not_recorded"
 
 
 async def test_threat_context_unenrichable_entity_is_empty() -> None:

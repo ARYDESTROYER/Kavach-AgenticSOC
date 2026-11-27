@@ -77,6 +77,7 @@ from app.models import (
 from app.stores.base import CaseRepository
 from app.utils import parse_es_timestamp
 from tests.test_chat_tools_support import make_ctx
+from tests._auth_helpers import ready_user
 
 UTC = timezone.utc
 NOW = datetime.now(UTC).replace(microsecond=0)
@@ -558,6 +559,7 @@ def _login_as_tier1(client: TestClient) -> None:
         "username": "tier1", "password": "tier1-pass-1234", "role": "analyst_tier1",
     })
     assert created.status_code == 200, created.text
+    ready_user(client, "tier1", "tier1-pass-1234")
     client.post("/api/auth/logout")
     assert client.post("/api/auth/login", json={"username": "tier1", "password": "tier1-pass-1234"}).status_code == 200
 

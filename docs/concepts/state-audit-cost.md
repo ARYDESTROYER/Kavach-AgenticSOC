@@ -1,11 +1,11 @@
 ---
 title: State, audit, and cost
-description: Understand where Agentic SOC 0.1 stores its own data and how actions and model spend remain reviewable.
+description: Understand where Agentic SOC 0.2 stores its own data and how actions and model spend remain reviewable.
 ---
 
 # State, audit, and cost
 
-This page applies to **Agentic SOC 0.1** and is for operators and administrators planning
+This page applies to **Agentic SOC 0.2** and is for operators and administrators planning
 storage, retention, accountability, and spend controls.
 
 ## Source data and Agentic SOC state are different
@@ -55,8 +55,8 @@ The values use the same non-secret release identity as `GET /api/health/build-in
 as `unknown`. This is record provenance, not proof that an artifact was accepted as Stable.
 
 PostgreSQL and SQLite already store the affected domain records as JSON, so this additive
-metadata requires no SQL migration. It also does not change the source version from
-`0.1.13`.
+metadata requires no SQL migration. It arrived with the 0.1.13 candidate and ships in
+`0.2.0` with no version change of its own.
 
 The repositories enforce the boundary for direct callers as well as the product
 pipeline. Elasticsearch CaseStore checks the document id before applying its defensive
@@ -144,6 +144,24 @@ All model-backed roles use one gateway. The gateway records model, role, input a
 output tokens, cache/batch accounting, outcome, and calculated cost. Candidates that
 never enter model investigation correctly cost `$0`.
 
+Each row written by version 0.2 or later also records the price it was charged, still in
+the same one row per call:
+
+| Field | Meaning |
+| --- | --- |
+| `input_rate_per_million` | US dollars per million input tokens |
+| `output_rate_per_million` | US dollars per million output tokens |
+| `cache_read_rate_per_million` | US dollars per million cache read tokens |
+| `cache_write_rate_per_million` | US dollars per million cache write tokens |
+| `cache_write_ttl` | The cache-write lifetime the rate is for, `5m` or `1h` |
+| `price_basis` | Where the rates came from: `catalog` (the price catalog), `overlay` (an operator price override), `custom` (a self-hosted model, free), `mock` (the mock provider) or `demo_simulated` (Demo Mode) |
+
+The rates are the undiscounted ones; the row's `batch` flag applies the half price of a
+Batch or Flex call. A row written before these fields existed leaves them out, and the
+Console reads its rate as "not recorded". `GET /api/cases/{case_id}/usage` (`cases:read`
+and `cost:view`) returns a case's rows with lifetime totals, so the investigation cost can
+be checked call by call; see [Explainable numbers](../analyst/explainable-numbers.md#cost).
+
 The default daily budget performs a preflight check and can block new provider calls.
 When blocked, the case routes to human review. The check is not an atomic spend
 reservation, so already-running calls can finish above the configured amount.
@@ -161,7 +179,7 @@ recorded in the usage ledger. See
 
 Persisted configuration stores secret presence, not secret values. Environment
 variables provide the durable boot-time secret path. Values entered through the UI
-or runtime secret endpoints are memory-only in Agentic SOC 0.1 and disappear on restart.
+or runtime secret endpoints are memory-only in Agentic SOC 0.2 and disappear on restart.
 
 Do not include `.env`, access tokens, API keys, or raw notification credentials in
 backups, support bundles, screenshots, or audit annotations.
@@ -176,7 +194,7 @@ After onboarding or an incident exercise:
 4. verify a model call appears once in Cost; and
 5. compare the provider invoice with the Agentic SOC ledger.
 
-## Agentic SOC 0.1 boundaries
+## Agentic SOC 0.2 boundaries
 
 SQL setup uses idempotent schema creation rather than an ordered migration ledger.
 Backup, restore, forward-upgrade, interrupted-migration, and downgrade guarantees

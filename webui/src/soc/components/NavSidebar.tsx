@@ -51,6 +51,14 @@
  * (`aria-describedby` "nav-activity-<id>", the rail tooltip, the flyout line). Never
  * `aria-busy` on a nav control. Titles in that text are prompt- or model-derived and
  * render as text only (#9). Every other label is a static, in-repository string.
+ *
+ * AI INVESTIGATIONS (Round 16 SPEC §4.5 WP09, S8): the Case Manager item also carries how
+ * many cases the AI is investigating now, a separate numeric badge with its own hidden
+ * text ("AI investigating 2 cases", joined to the item's description). The number lives
+ * in the entry-safe `investigations/count.ts`; the investigation store, loaded after first
+ * paint, keeps it from the low-volume `investigations` topic. Only a viewer who may read
+ * cases loads it. The ring turns while either the case chat or the AI is working; a chat
+ * answer that waits, failed or is unread keeps its own mark beside the count.
  */
 import * as React from 'react';
 import { ChevronRight, PanelLeftClose, PanelLeftOpen, Shield, type LucideIcon } from 'lucide-react';
@@ -60,6 +68,7 @@ import '@/styles/nav.css';
 import { useAuth } from '../auth';
 import { ActivityGlyph, BrandActivityRing } from '../chat-activity/glyph';
 import { useChatActivity } from '../chat-activity/store';
+import { useAiCaseCount } from '../investigations/count';
 import {
   NAV_FOOTER_ITEMS,
   NAV_GROUPS,
@@ -145,8 +154,21 @@ function useNavActivity(): NavActivity {
   return React.useMemo(() => ({ chat: workspace, case_manager: caseChat }), [workspace, caseChat]);
 }
 
-/** The hidden descriptions the chat destinations point at (one per destination). */
-function ActivityDescriptions({ activity }: { activity: NavActivity }) {
+/** The nav item that carries the AI investigation count. */
+const AI_ITEM = 'case_manager';
+const AI_DESCRIPTION_ID = `nav-ai-${AI_ITEM}`;
+
+/** "AI investigating 2 cases" ('' at 0). */
+export const aiCountText = (count: number) =>
+  count > 0 ? `AI investigating ${count.toLocaleString()} case${count === 1 ? '' : 's'}` : '';
+
+/** How many cases the AI investigates now; 0 (and no subscription) without `cases:read`. */
+function useNavAiCount(): number {
+  return useAiCaseCount(useAuth().hasPermission('cases', 'read'));
+}
+
+/** The hidden descriptions the chat destinations and the AI count point at. */
+function ActivityDescriptions({ activity, aiCount }: { activity: NavActivity; aiCount: number }) {
   return (
     <>
       {Object.entries(activity).map(([id, own]) =>
@@ -156,6 +178,11 @@ function ActivityDescriptions({ activity }: { activity: NavActivity }) {
           </span>
         ) : null,
       )}
+      {aiCount > 0 ? (
+        <span id={AI_DESCRIPTION_ID} className="sr-only">
+          {aiCountText(aiCount)}
+        </span>
+      ) : null}
     </>
   );
 }
@@ -300,6 +327,8 @@ interface RowProps {
   shown?: boolean;
   flyoutOpen: boolean;
   activity: NavActivity;
+  /** Cases the AI investigates now (shown on the Case Manager item only). */
+  aiCount: number;
   reducedMotion: boolean;
   /** The rail's interaction layer (tooltip, flyout); null in the sheet and until it loads. */
   rail: Rail;
@@ -316,6 +345,7 @@ const Row = React.memo(function Row({
   shown: onShow = open,
   flyoutOpen,
   activity,
+  aiCount,
   reducedMotion,
   rail,
   go,
@@ -332,6 +362,13 @@ const Row = React.memo(function Row({
   const shown = grouped && onShow;
   const trigger = grouped && collapsed;
   const own = activity[item.id];
+  // The AI count rides the Case Manager item beside its case chat state; the ring turns
+  // while either is working. A chat answer that waits, failed or is unread keeps its own
+  // mark (the count still shows), so the glyph never hides what the chat needs.
+  const ai = item.id === AI_ITEM ? aiCount : 0;
+  const glyph = own?.status && own.status !== 'running' ? own.status : ai > 0 ? 'running' : own?.status ?? null;
+  const stateText = [activityText(own, reducedMotion), aiCountText(ai)].filter(Boolean).join('. ');
+  const described = [describedBy(item.id, own), ai > 0 ? AI_DESCRIPTION_ID : null].filter(Boolean).join(' ') || undefined;
   const ref = React.useRef<HTMLAnchorElement>(null);
 
   // A layout effect: a child's runs before its parent's in the same commit, so the icon is
@@ -408,13 +445,13 @@ const Row = React.memo(function Row({
           onClick={(event) => followLink(event, () => go(target))}
           // A plain icon's tooltip handlers are on in both states (`rowHandlers`): its
           // `collapsed` is deferred, so a focus landing before that render still gets one.
-          {...rail?.rowHandlers(item.id, item.label, activityText(own, reducedMotion), trigger)}
+          {...rail?.rowHandlers(item.id, item.label, stateText, trigger)}
           aria-current={trail && !((reachable || flyoutOpen) && current) ? 'page' : undefined}
           aria-haspopup={trigger ? 'true' : undefined}
           aria-expanded={trigger ? flyoutOpen : undefined}
           aria-controls={trigger ? `nav-fly-${item.id}` : undefined}
-          aria-describedby={describedBy(item.id, own)}
-          title={!collapsed && own?.text ? activityText(own, reducedMotion) : undefined}
+          aria-describedby={described}
+          title={!collapsed && stateText ? stateText : undefined}
           data-active-trail={trail || undefined}
           data-testid={`nav-${item.id}`}
           data-nav-rail-focus={sheet ? undefined : ''}
@@ -429,9 +466,18 @@ const Row = React.memo(function Row({
           <span className={cn('relative ml-1 flex w-10 shrink-0 items-center justify-center', sheet ? 'h-11' : 'h-9')}>
             <Icon className={cn('h-[1.125rem] w-[1.125rem]', trail && 'text-primary')} aria-hidden />
             {/* The rail badge (top right of the icon); the drawer shows the trailing glyph. */}
-            {own?.status && !sheet ? (
+            {glyph && !sheet ? (
               <span className="nav-railmark absolute right-1 top-0.5">
-                <ActivityGlyph status={own.status} className="block" />
+                <ActivityGlyph status={glyph} className="block" />
+              </span>
+            ) : null}
+            {ai > 0 && !sheet ? (
+              <span
+                aria-hidden
+                data-testid="nav-ai-count-rail"
+                className="nav-railmark absolute -bottom-0.5 right-0 min-w-4 rounded-full bg-primary px-1 text-center text-2xs font-semibold leading-4 text-primary-foreground tabular-nums"
+              >
+                {ai > 9 ? '9+' : ai}
               </span>
             ) : null}
           </span>
@@ -443,7 +489,16 @@ const Row = React.memo(function Row({
             )}
           >
             <span className="truncate">{item.label}</span>
-            {own?.status ? <ActivityGlyph status={own.status} className="ml-auto" /> : null}
+            {ai > 0 ? (
+              <span
+                aria-hidden
+                data-testid="nav-ai-count"
+                className="ml-auto rounded-full bg-primary/10 px-1.5 text-2xs font-semibold leading-4 text-primary tabular-nums"
+              >
+                {ai.toLocaleString()}
+              </span>
+            ) : null}
+            {glyph ? <ActivityGlyph status={glyph} className={ai > 0 ? undefined : 'ml-auto'} /> : null}
           </span>
         </a>
         {grouped ? (
@@ -537,6 +592,7 @@ interface SurfaceProps {
 function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: SurfaceProps) {
   const { groups, footer } = useDestinations();
   const activity = useNavActivity();
+  const aiCount = useNavAiCount();
   const collapsed = useNavState((s) => s.collapsed);
   // ONE CHANGE PER FRAME (§4.8.3, the 4x CPU frame budget). A toggle restyles the panel
   // (its state attribute drives the morph in `styles/nav.css`) and moves the page (the
@@ -642,6 +698,7 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
       shown={!panelCollapsed && openGroups.has(dest.item.id)}
       flyoutOpen={flyout === dest.item.id}
       activity={activity}
+      aiCount={aiCount}
       reducedMotion={reducedMotion}
       rail={rail}
       go={go}
@@ -724,7 +781,7 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
           {rail ? (
             <rail.RailLayers destinations={everything} page={page} activity={activity} reducedMotion={reducedMotion} go={go} />
           ) : null}
-          <ActivityDescriptions activity={activity} />
+          <ActivityDescriptions activity={activity} aiCount={aiCount} />
         </nav>
       </aside>
     </div>
@@ -738,6 +795,7 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
 function NavSheet({ page, onNavigate, logoUrl, productName, reducedMotion }: SurfaceProps) {
   const { groups, footer } = useDestinations();
   const activity = useNavActivity();
+  const aiCount = useNavAiCount();
   const product = productName || 'Agentic SOC';
   // The current page's group opens with the sheet (so its one current-page marker is
   // rendered and focus can land on it), and the groups then stay still for this open and
@@ -774,6 +832,7 @@ function NavSheet({ page, onNavigate, logoUrl, productName, reducedMotion }: Sur
       open={openGroups.has(dest.item.id)}
       flyoutOpen={false}
       activity={activity}
+      aiCount={aiCount}
       reducedMotion={reducedMotion}
       rail={null}
       go={onNavigate}
@@ -786,7 +845,7 @@ function NavSheet({ page, onNavigate, logoUrl, productName, reducedMotion }: Sur
         {/* pr-12 keeps a long product name clear of the Sheet's close button. */}
         <div className="flex h-14 shrink-0 items-center border-b border-border pl-3.5 pr-12">
           <Brand product={product} logoUrl={logoUrl} go={onNavigate} sheet />
-          <ActivityDescriptions activity={activity} />
+          <ActivityDescriptions activity={activity} aiCount={aiCount} />
         </div>
         <DestinationList groups={groups} footer={footer} row={row} scrollClassName="px-2 py-2" />
       </nav>

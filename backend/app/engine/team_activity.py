@@ -884,6 +884,23 @@ def _median(values: list[float]) -> float | None:
     return float(statistics.median(values)) if values else None
 
 
+#: How many sorted times around the median the team summary lists (Round 16 FXD2).
+ACK_SAMPLE_LIMIT = 200
+
+
+def _median_run(values: list[float]) -> tuple[list[float], int]:
+    """The sorted times around the median, at most :data:`ACK_SAMPLE_LIMIT` of them, and
+    the 0-based rank of the first one listed (Round 16 FXD2). The run always holds the one
+    or two middle times the median is taken from, so the median can be recomputed from
+    the list. Times are seconds to the millisecond, the precision they are measured in."""
+    ordered = sorted(values)
+    n = len(ordered)
+    if n <= ACK_SAMPLE_LIMIT:
+        return [round(v, 3) for v in ordered], 0
+    start = max(0, min(n - ACK_SAMPLE_LIMIT, (n - 1) // 2 - (ACK_SAMPLE_LIMIT // 2 - 1)))
+    return [round(v, 3) for v in ordered[start:start + ACK_SAMPLE_LIMIT]], start
+
+
 @dataclass
 class _Tally:
     counts: Counter = field(default_factory=Counter)
@@ -1164,6 +1181,7 @@ class TeamActivityFold:
             1 for p in people
             if p["kind"] != KIND_UNATTRIBUTED and any(p["counts"].values())
         )
+        ack_run, ack_offset = _median_run(self._team.ack_seconds) if ack_measured else ([], 0)
         team = {
             "people_active": active,
             "counts": _counts_view(self._team.counts, ALL_KINDS),
@@ -1176,6 +1194,10 @@ class TeamActivityFold:
             "median_ack_seconds": _median(self._team.ack_seconds) if ack_measured else None,
             "ack_samples": len(self._team.ack_seconds) if ack_measured else 0,
             "ack_status": ack_status,
+            # Round 16 (FXD2): the sorted times around the median and the rank of the
+            # first, so the median's explanation can be recomputed. Numbers only.
+            "ack_sample_seconds": ack_run,
+            "ack_sample_offset": ack_offset,
             "reviews": _reviews_view(self._team, measured),
         }
         return {

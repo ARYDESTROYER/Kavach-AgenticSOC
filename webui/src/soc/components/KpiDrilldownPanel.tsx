@@ -122,6 +122,9 @@ import { EmptyState } from './EmptyState';
 import type { KpiBreakdownRow } from './KpiTile';
 import { LoadError } from './LoadError';
 import { MetricTrendBody, type MetricTrendSeries } from './MetricHoverTrend';
+import { ExplainPanel } from '@/design-system/explain';
+import { summaryWithoutHint } from '@/lib/explain/text';
+import type { Explanation } from '@/lib/explain/types';
 
 /**
  * How many rows one panel page reads. Mirrors the dashboard's own case-sample bound AND
@@ -201,9 +204,10 @@ export interface DrilldownTargetContext {
   /** The severity band selected, or null for "all severities". */
   band: string | null;
   /**
-   * The detection source selected, or null for "all sources". No destination can honour
-   * it today — the case list has no server-side source filter — so it is carried here
-   * precisely so the hand-off DISCLOSES it as dropped instead of losing it in silence.
+   * The source selected (the case's `source_name`, else its `source_id`), or null for
+   * "all sources". No destination can honour it today (the case list has no server-side
+   * source filter), so it is carried here precisely so the hand-off DISCLOSES it as
+   * dropped instead of losing it in silence.
    */
   source: string | null;
   /** The single status selected, or null for "all statuses". */
@@ -219,7 +223,7 @@ export interface DrilldownTargetContext {
 /** Human names for the context keys, for the "not carried" disclosure. */
 const CONTEXT_LABEL: Record<keyof DrilldownTargetContext, string> = {
   band: 'severity',
-  source: 'detection source',
+  source: 'source',
   status: 'status',
   windowHours: 'time range',
   search: 'search text',
@@ -296,6 +300,12 @@ export interface KpiDrilldownSpec {
   partitionCaption?: string;
   /** The tile's honest server trend, restated here so touch/keyboard can reach it. */
   trend?: MetricTrendSeries;
+  /**
+   * Round 16 (WP12): how the numeral is calculated, with its real numbers (formula,
+   * numerator, denominator, window). Its one-line summary sits under the population
+   * sentence; "Show the calculation" opens the full arithmetic.
+   */
+  explanation?: Explanation | null;
   /** The full-list drill-through, when one exists for this population. */
   target?: DrilldownTarget;
   /**
@@ -370,6 +380,52 @@ export interface KpiDrilldownMetric {
   label: string;
   /** The tile's rendered numeral, verbatim — never recomputed here. */
   value: React.ReactNode;
+}
+
+/**
+ * The numeral's calculation in the drill-down (Round 16 WP12): the one-line formula with
+ * the real numbers, then the full arithmetic (inputs, steps, rounding, provenance) on
+ * request. Every value is a text node (#9).
+ */
+function DrilldownCalculation({ explanation }: { explanation: Explanation }) {
+  const [open, setOpen] = React.useState(false);
+  const regionId = React.useId();
+  return (
+    <div className="mt-1.5 max-w-4xl text-sm" data-testid="kpi-drilldown-calculation">
+      <p className="tabular-nums text-foreground" data-testid="kpi-drilldown-formula">
+        {summaryWithoutHint(explanation.summary)}{' '}
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={regionId}
+          onClick={() => setOpen((value) => !value)}
+          className="rounded-sm font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {open ? 'Hide the calculation' : 'Show the calculation'}
+        </button>
+      </p>
+      {/* The calculation sits in the panel's fixed identity band, so it scrolls in its own
+          bounded port: unbounded, it grew the band past the dialog's fixed height and left
+          the evidence list a 12px sliver (0px on a phone) until it was hidden again. The
+          port takes the keyboard like the evidence port (WCAG 2.1.1). */}
+      {/* eslint-disable jsx-a11y/no-noninteractive-tabindex -- a SCROLLABLE region is the
+          documented exception: WCAG 2.1.1 requires a container that scrolls to be
+          keyboard-operable, and an accessible name is how that is done. */}
+      {open ? (
+        <div
+          id={regionId}
+          role="group"
+          tabIndex={0}
+          aria-label={`How ${explanation.title ?? 'this figure'} is calculated, scrollable`}
+          data-testid="kpi-drilldown-calculation-panel"
+          className="mt-2 max-h-[min(30dvh,22rem)] max-w-xl overflow-y-auto overscroll-contain rounded-md border border-border/70 p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ExplainPanel explanation={explanation} />
+        </div>
+      ) : null}
+      {/* eslint-enable jsx-a11y/no-noninteractive-tabindex */}
+    </div>
+  );
 }
 
 /**
@@ -517,11 +573,15 @@ interface DrilldownStat {
  * the rule's name, never as a live, attacker-authored link. The risk score stays a number.
  */
 export function drilldownCsv(rows: readonly Case[]): string {
+  // `source_name` (Round 16 B29) is the log source a case came from, the "Source" column
+  // the panel shows; it sits before `detection_source` (detection, anomaly or rule, set
+  // only for an event-feed detection) so no existing column moves past it.
   const header = [
     'case_id',
     'case_number',
     'created_at',
     'title',
+    'source_name',
     'detection_source',
     'severity_band',
     'risk_score',
@@ -536,6 +596,7 @@ export function drilldownCsv(rows: readonly Case[]): string {
         c.case_number ?? '',
         c.created_at ?? '',
         displayTitle(c),
+        caseSource(c),
         c.detection_source ?? '',
         c.severity_band ?? '',
         typeof c.risk_score === 'number' ? c.risk_score : '',
@@ -547,6 +608,16 @@ export function drilldownCsv(rows: readonly Case[]): string {
     );
   }
   return `${lines.join('\r\n')}\r\n`;
+}
+
+/**
+ * The source a case came from, as the case detail facts rail names it (Round 16 B29):
+ * its `source_name`, else its `source_id`, else "". The "Source" column, its facet and the
+ * CSV all read this; `detection_source` is a different field (how an event-feed case was
+ * detected) and is shown only as "Detected by" when a row has one.
+ */
+export function caseSource(c: Case): string {
+  return firstNonBlank(c.source_name, c.source_id);
 }
 
 /** Free-text haystack — the same fields the Cases list searches. */
@@ -853,7 +924,7 @@ export function KpiDrilldownPanel({
       });
       setStatusUniverse((prev) => mergeTokens(prev, fresh.map((c) => c.status)));
       setBandUniverse((prev) => mergeTokens(prev, fresh.map(bandOf)));
-      setSourceUniverse((prev) => mergeTokens(prev, fresh.map((c) => c.detection_source)));
+      setSourceUniverse((prev) => mergeTokens(prev, fresh.map(caseSource)));
       setTotal(typeof res.total === 'number' ? res.total : null);
       setSortableFields(Array.isArray(res.sortable_fields) ? res.sortable_fields : null);
       setAppliedSort(
@@ -971,7 +1042,7 @@ export function KpiDrilldownPanel({
     const filtered = population.filter((c) => {
       if (status !== ANY && (c.status || '') !== status) return false;
       if (band !== ANY && bandOf(c) !== band) return false;
-      if (source !== ANY && (c.detection_source || '').trim() !== source) return false;
+      if (source !== ANY && caseSource(c) !== source) return false;
       if (q && !haystack(c).includes(q)) return false;
       return true;
     });
@@ -1016,14 +1087,14 @@ export function KpiDrilldownPanel({
   }, [visible, spec.title]);
 
   /**
-   * Detection-source facet options, from the rows read.
+   * Source facet options, from the rows read: each case's `source_name`, else its
+   * `source_id` (Round 16 B29; the same value as the "Source" column and the CSV).
    *
    * There is no server-side source narrowing on the case list, so unlike `status_group`
    * this cannot be pushed into the store: the menu can only offer what the pages read
    * actually contain, and selecting one narrows those same rows. That is the same
    * contract the severity and status facets already carry, and the footer already states
-   * it. `detection_source` is the PRODUCT's word (detection | anomaly | rule); it is not
-   * a vendor "sensor" and must never be relabelled as one.
+   * it. A source name is operator-configured text, shown as it is (#9).
    */
   const sourceFacets = React.useMemo(
     () => [...sourceUniverse].sort((a, b) => a.localeCompare(b)),
@@ -1392,6 +1463,7 @@ export function KpiDrilldownPanel({
               </>
             ) : null}
           </p>
+          {spec.explanation ? <DrilldownCalculation explanation={spec.explanation} /> : null}
         </div>
         <div className="-ml-2.5 flex shrink-0 items-center gap-1 sm:ml-0" data-testid="kpi-drilldown-actions">
           {/* Exports the LISTED rows, which is why the label says so rather than
@@ -1565,7 +1637,7 @@ export function KpiDrilldownPanel({
             </SelectContent>
           </Select>
 
-          {/* Detection source. Offered only when the rows read actually carry one, because
+          {/* Source. Offered only when the rows read actually carry one, because
               unlike `status_group` there is no server-side source narrowing to push this
               into — the menu can only describe the pages that were read, and an empty menu
               would invite a filter that could never match. */}
@@ -1573,7 +1645,7 @@ export function KpiDrilldownPanel({
             <Select value={source} onValueChange={setSource}>
               <SelectTrigger
                 className="h-8 w-auto min-w-36 rounded-md text-sm"
-                aria-label={`Filter ${casesNoun(spec.title)} by detection source`}
+                aria-label={`Filter ${casesNoun(spec.title)} by source`}
                 data-testid="kpi-drilldown-source"
               >
                 <SelectValue placeholder="Source" />
@@ -1582,7 +1654,7 @@ export function KpiDrilldownPanel({
                 <SelectItem value={ANY}>All sources</SelectItem>
                 {sourceFacets.map((s) => (
                   <SelectItem key={s} value={s}>
-                    {humanizeToken(s)}
+                    {s}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -1822,6 +1894,7 @@ export function KpiDrilldownPanel({
                   const id = displayId(c);
                   const title = displayTitle(c);
                   const owner = (c.assignee || '').trim();
+                  const sourceName = caseSource(c);
                   const detectionSource = (c.detection_source || '').trim();
                   return (
                     <tr
@@ -1858,8 +1931,13 @@ export function KpiDrilldownPanel({
                           {title}
                         </span>
                       </td>
-                      <td className="px-2 py-1.5 align-top text-xs text-muted-foreground">
-                        {detectionSource ? humanizeToken(detectionSource) : DASH}
+                      <td className="px-2 py-1.5 align-top text-xs text-muted-foreground" data-testid="kpi-drilldown-source-cell">
+                        <span className="block max-w-56 truncate" title={sourceName || undefined}>
+                          {sourceName || DASH}
+                        </span>
+                        {detectionSource ? (
+                          <span className="block">{`Detected by ${humanizeToken(detectionSource).toLowerCase()}`}</span>
+                        ) : null}
                       </td>
                       <td className="px-2 py-1.5 align-top">
                         <SeverityBadge

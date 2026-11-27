@@ -5,6 +5,8 @@
  * asset that carries ONLY a criticality must still render the asset card (not the empty
  * state that would silently drop the classification).
  */
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
@@ -192,7 +194,10 @@ describe('ThreatContextPanel: the flat sections layout', () => {
 
     expect(within(ioc).getByText('198.51.100.45')).toBeInTheDocument();
     expect(within(ioc).getByText('AbuseIPDB')).toBeInTheDocument();
-    expect(within(ioc).getByText('100%')).toBeInTheDocument();
+    // The fused reputation score, labelled as such, with no percent sign.
+    expect(within(ioc).getByText('Reputation')).toBeInTheDocument();
+    expect(within(ioc).getByText('100')).toBeInTheDocument();
+    expect(within(ioc).queryByText('100%')).toBeNull();
     expect(within(ioc).getByText('Malicious')).toBeInTheDocument();
 
     const criticalityRow = screen.getByText('Criticality').parentElement;
@@ -201,7 +206,7 @@ describe('ThreatContextPanel: the flat sections layout', () => {
     expect(screen.getByText('Internal asset')).toBeInTheDocument();
     expect(screen.getByText('No')).toBeInTheDocument();
     // Every part of the section, clustering included, is a part heading (h3) under the
-    // Investigation tab's Threat context h2, so none reads as a sibling section.
+    // Evidence tab's Threat context h2, so none reads as a sibling section.
     expect(screen.getByRole('heading', { level: 3, name: 'How this case was clustered' })).toHaveClass('text-sm');
     expect(screen.getByRole('heading', { level: 3, name: 'Asset context' })).toBeInTheDocument();
     expect(container.querySelectorAll('h1, h2')).toHaveLength(0);
@@ -222,5 +227,25 @@ describe('ThreatContextPanel: the flat sections layout', () => {
       />,
     );
     expect(await axe(container)).toHaveNoViolations();
+  });
+});
+
+describe('ThreatContextPanel: related cases open without a callback', () => {
+  it('links each related case to Case Manager itself, so onNavigate is not needed', () => {
+    render(<ThreatContextPanel c={CASE} panel={BACKEND_REAL_PANEL} loading={false} error={null} onRetry={vi.fn()} />);
+    const list = screen.getByTestId('cluster-related-cases');
+    expect(within(list).getByRole('link', { name: 'Open case c-prior' })).toHaveAttribute(
+      'href',
+      '#/case_manager?caseId=c-prior',
+    );
+  });
+
+  it('says so in its own comments, and never that the list lives on the Overview tab', () => {
+    const source = readFileSync(path.resolve(__dirname, '../ThreatContextPanel.tsx'), 'utf8');
+    expect(source).not.toMatch(/Overview tab/);
+    expect(source).not.toMatch(/facts rail/);
+    const doc = source.slice(source.lastIndexOf('/**', source.indexOf('onNavigate?: Navigate;')));
+    expect(doc).toMatch(/ClusterFormationDiagram/);
+    expect(doc).toMatch(/needs no navigation callback/);
   });
 });

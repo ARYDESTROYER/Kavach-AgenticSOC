@@ -19,7 +19,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 import { TooltipProvider } from '@/ui/tooltip';
 import type { Preferences, SuppressionRuleConfig } from '@/lib/types';
 
-import { CasePolicySection } from '../case-policy';
+import { CasePolicySection, slaTargetError, slaTimezoneError } from '../case-policy';
 
 function renderSection(prefs: Partial<Preferences> = {}) {
   const update = vi.fn<[Partial<Preferences>], void>();
@@ -142,5 +142,44 @@ describe('CasePolicySection — mounts the orphaned G6 editors', () => {
     renderSection({ sla: { enabled: false } } as Partial<Preferences>);
     const p1 = document.querySelector('[data-sla-level="P1"]') as HTMLElement;
     expect(within(p1).getByLabelText(/Respond/)).toBeDisabled();
+  });
+
+  it('says inline when a tier responds later than it resolves, as the save would refuse', () => {
+    renderSection({
+      sla: { enabled: true, targets: { P1: { response_minutes: 600, resolve_minutes: 240 } } },
+    } as Partial<Preferences>);
+    const p1 = document.querySelector('[data-sla-level="P1"]') as HTMLElement;
+    const alert = within(p1).getByRole('alert');
+    expect(alert).toHaveTextContent('Respond must not be later than resolve.');
+    // The message is tied to the Respond field, so a screen reader reads it with it.
+    const respond = within(p1).getByLabelText(/Respond/);
+    expect(respond.getAttribute('aria-describedby') ?? '').toContain(alert.id);
+    const p2 = document.querySelector('[data-sla-level="P2"]') as HTMLElement;
+    expect(within(p2).queryByRole('alert')).toBeNull();
+  });
+
+  it('says inline when the SLA timezone is not one the clock can use', () => {
+    const { unmount } = renderSection({ sla: { enabled: true, timezone: 'Mars/Olympus' } } as Partial<Preferences>);
+    expect(screen.getByLabelText(/^Timezone/)).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent('Unknown time zone.');
+    unmount();
+    for (const ok of ['UTC', 'Asia/Kolkata', '+05:30']) {
+      const view = renderSection({ sla: { enabled: true, timezone: ok } } as Partial<Preferences>);
+      expect(screen.getByLabelText(/^Timezone/)).not.toHaveAttribute('aria-invalid');
+      view.unmount();
+    }
+  });
+});
+
+describe('slaTimezoneError and slaTargetError', () => {
+  it('accept what the server accepts and refuse the rest', () => {
+    expect(slaTimezoneError('UTC')).toBeUndefined();
+    expect(slaTimezoneError('z')).toBeUndefined();
+    expect(slaTimezoneError('-03:00')).toBeUndefined();
+    expect(slaTimezoneError('+99:00')).toBe('Use an offset between -23:59 and +23:59.');
+    expect(slaTimezoneError('Asia/Kolkatta')).toMatch(/^Unknown time zone/);
+    expect(slaTargetError(30, 240)).toBeUndefined();
+    expect(slaTargetError(240, 240)).toBeUndefined();
+    expect(slaTargetError(600, 240)).toBe('Respond must not be later than resolve.');
   });
 });

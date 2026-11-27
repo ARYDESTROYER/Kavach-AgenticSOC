@@ -152,6 +152,18 @@ def coerce_float(value: Any, default: float = 0.0) -> float:
     return default
 
 
+def round_half_up(x: float) -> int:
+    """Round to the nearest integer, a half always going up (toward +infinity).
+
+    ``floor(x + 0.5)``: 80.5 shows as 81 and 47.5 as 48, where Python's ``round``
+    (half to even) gives 80 for 80.5. The Console rounds a displayed score the
+    same way (``webui/src/lib/explain/explain.contract.json``), so the integer a
+    person reads is the integer the server reports."""
+    import math
+
+    return int(math.floor(float(x) + 0.5))
+
+
 def truncate(text: str | None, limit: int = 500) -> str:
     if not text:
         return ""
@@ -309,13 +321,24 @@ def millis_to_iso_utc(millis: int) -> str:
     ``count_new_scans`` / ``count_created_since`` idiom), which is only correct when
     both bounds are normalised to this exact spelling first — hence this helper.
     Built by exact integer arithmetic rather than ``fromtimestamp(ms / 1000.0)`` so a
-    float rounding error can never shift the bound by a microsecond."""
-    return (
-        datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=int(millis))
-    ).isoformat()
+    float rounding error can never shift the bound by a microsecond.
+
+    Total (Round 16 B02): an instant outside the representable datetime range (a
+    window such as ``now-999999d`` meant as "all time") clamps to the first or last
+    representable instant instead of raising. A clamped bound still sorts correctly
+    against every stored ``YYYY-...`` value and covers every representable instant,
+    so a window built from it stays exact."""
+    try:
+        return (
+            datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=int(millis))
+        ).isoformat()
+    except (OverflowError, ValueError):
+        edge = datetime.min if int(millis) < 0 else datetime.max
+        return edge.replace(tzinfo=timezone.utc).isoformat()
 
 
 def relative_to_iso_utc_strict(expr: Any, now: datetime | None = None) -> str | None:
-    """:func:`relative_to_millis_strict` rendered as :func:`millis_to_iso_utc`."""
+    """:func:`relative_to_millis_strict` rendered as :func:`millis_to_iso_utc`, which
+    clamps an out-of-range instant to the representable range (Round 16 B02)."""
     millis = relative_to_millis_strict(expr, now=now)
     return None if millis is None else millis_to_iso_utc(millis)

@@ -30,7 +30,7 @@ const { caseActionExec, caseFeedback, getCase, toastMock } = vi.hoisted(() => ({
   caseActionExec: vi.fn(),
   caseFeedback: vi.fn(),
   getCase: vi.fn(),
-  toastMock: { error: vi.fn(), warning: vi.fn(), success: vi.fn(), message: vi.fn() },
+  toastMock: { error: vi.fn(), warning: vi.fn(), success: vi.fn(), message: vi.fn(), dismiss: vi.fn() },
 }));
 
 vi.mock('sonner', () => ({ toast: toastMock, Toaster: () => null }));
@@ -167,6 +167,8 @@ describe('CaseDetail: feedback-into-close (two separate POSTs, #3)', () => {
 
   it('confirms the close with the recorded outcome and offers Reopen (not "Undo"), which posts the reopen verb', async () => {
     getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'needs_human' });
+    // Reopen reads the case first (FXA1): it is still closed here.
+    const closed = { ...BASE_CASE, verdict: 'needs_human', status: 'closed', disposition: 'false_positive' };
     caseActionExec
       .mockResolvedValueOnce({ ...BASE_CASE, verdict: 'needs_human', status: 'closed', disposition: 'false_positive' })
       .mockResolvedValueOnce({ ...BASE_CASE, verdict: 'needs_human', status: 'open', disposition: 'false_positive' });
@@ -192,12 +194,73 @@ describe('CaseDetail: feedback-into-close (two separate POSTs, #3)', () => {
     expect(options?.action?.label).not.toBe('Undo');
     expect(options?.description).toMatch(/keeps this outcome on record until you close the case again/i);
 
+    getCase.mockResolvedValue(closed);
     options!.action!.onClick();
     await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(2));
     expect(caseActionExec.mock.calls[1][1]).toMatchObject({ action: 'reopen' });
     await waitFor(() =>
       expect(toastMock.success).toHaveBeenLastCalledWith('Reopened. The recorded outcome stays until you close it again.'),
     );
+  });
+
+  it('never reopens a case an AI run already reopened, and drops the stale confirmation (FXA1)', async () => {
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'needs_human' });
+    caseActionExec.mockResolvedValueOnce({ ...BASE_CASE, verdict: 'needs_human', status: 'closed', disposition: 'false_positive' });
+    caseFeedback.mockResolvedValue(null);
+    toastMock.success.mockReset();
+    toastMock.success.mockReturnValue('close-toast');
+    toastMock.message.mockReset();
+    toastMock.dismiss.mockReset();
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/False positive/i);
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
+    const [, options] = toastMock.success.mock.calls[0] as [string, { action?: { onClick: () => void } }];
+
+    // The run that was under way finished and replaced the close (D10): the case is open.
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'needs_human', status: 'needs_human', disposition: 'false_positive' });
+    options!.action!.onClick();
+    await waitFor(() => expect(toastMock.message).toHaveBeenCalledWith('The AI investigation already reopened this case.'));
+    // No reopen was posted, so no false reason was written.
+    expect(caseActionExec).toHaveBeenCalledTimes(1);
+    expect(toastMock.success).not.toHaveBeenCalledWith('Reopened. The recorded outcome stays until you close it again.');
+    // The case on screen is the one read, and the close confirmation leaves.
+    await waitFor(() => expect(toastMock.dismiss).toHaveBeenCalledWith('close-toast'));
+    toastMock.success.mockReset();
+  });
+
+  it('never credits the AI with a reopen a person made elsewhere (FXA1 review)', async () => {
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'needs_human' });
+    caseActionExec.mockResolvedValueOnce({ ...BASE_CASE, verdict: 'needs_human', status: 'closed', disposition: 'false_positive' });
+    caseFeedback.mockResolvedValue(null);
+    toastMock.success.mockReset();
+    toastMock.success.mockReturnValue('close-toast');
+    toastMock.message.mockReset();
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/False positive/i);
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
+    const [, options] = toastMock.success.mock.calls[0] as [string, { action?: { onClick: () => void } }];
+
+    // A teammate (or this person in another tab) reopened it: the analyst is the decider.
+    getCase.mockResolvedValue({
+      ...BASE_CASE,
+      verdict: 'needs_human',
+      status: 'open',
+      decision_by: 'analyst',
+      disposition: 'false_positive',
+    });
+    options!.action!.onClick();
+    await waitFor(() => expect(toastMock.message).toHaveBeenCalledWith('This case was already reopened.'));
+    expect(toastMock.message).not.toHaveBeenCalledWith('The AI investigation already reopened this case.');
+    expect(caseActionExec).toHaveBeenCalledTimes(1);
+    toastMock.success.mockReset();
   });
 
   it('posts NO grade when an analyst settles a Needs-human case without grading it (Agreement stays honest)', async () => {

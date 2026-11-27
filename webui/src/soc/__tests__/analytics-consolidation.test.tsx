@@ -396,14 +396,25 @@ describe('Metrics Operational tab (§4.9.4)', () => {
     expect(closed).toHaveTextContent('5');
     expect(closed).toHaveTextContent('3 active, all time');
     expect(within(strip).getByTestId('kpi-total')).toHaveTextContent('Every case in the store');
-    expect(within(strip).getByTestId('kpi-mttr')).toHaveTextContent('5 closed, all time');
+    // `resolved_count` counts resolved AND closed cases, so the line says both (WP12).
+    expect(within(strip).getByTestId('kpi-mttr')).toHaveTextContent('5 resolved or closed, all time');
     expect(within(strip).getByTestId('kpi-agreement')).toHaveTextContent('all time');
     expect(within(strip).getByTestId('kpi-risk')).toHaveTextContent('0 to 100, all time');
     // Figures inform; they do not navigate (SPEC §3.3: only links navigate). The only
-    // controls on the strip are the "About …" help tips.
+    // controls on the strip are the "About …" help tips (Agreement rate names its own
+    // population since WP12, D10) and an explain trigger on a figure that has one.
     expect(within(strip).queryByRole('link')).toBeNull();
     const buttons = within(strip).queryAllByRole('button');
-    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(['About Needs human', 'About MTTR']);
+    // Average risk carries its help and its explanation (numbers review): the explain
+    // trigger is named by its text, ", explain".
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'About Needs human',
+      'About MTTR',
+      'About Agreement rate',
+      'About Average risk',
+      null,
+    ]);
+    expect(within(strip).getByRole('button', { name: /, explain$/ })).toBeInTheDocument();
   });
 
   it('shows a dash, not a count, when the open-by-verdict read is refused', async () => {

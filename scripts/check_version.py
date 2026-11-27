@@ -8,6 +8,7 @@ before backend or web dependencies are installed.
 from __future__ import annotations
 
 import ast
+import datetime as _dt
 import hashlib
 import json
 import os
@@ -18,6 +19,25 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+#: The GitHub Release body is this marker followed by the release page
+#: (``scripts/release_asset_state.py`` ``canonical_release_body``). GitHub accepts
+#: 125,000 characters; the release records keep a margin below that.
+RELEASE_COMMIT_MARKER = "<!-- agentic-soc-release-commit:{sha} -->\n\n"
+RELEASE_BODY_MAX_CHARACTERS = 100_000
+#: The only body an empty ``[Unreleased]`` section may have on a release ref.
+EMPTY_UNRELEASED_BODY = "No changes yet."
+#: Every shipping image declares the project license.
+LICENSE_LABEL = 'org.opencontainers.image.licenses="Apache-2.0"'
+SHIPPING_DOCKERFILES = ("backend/Dockerfile", "webui/Dockerfile", "updater/Dockerfile")
+#: The curated What's new notes of each release, ``<VERSION>.json`` (schema 1), which
+#: ``scripts/build_release_notes.py`` validates in full and renders. This gate checks
+#: only what a release must carry: the notes exist for ``VERSION`` on every ref, and on
+#: a release ref they read ``released``, carry the date of the dated CHANGELOG heading,
+#: and give every update a date (an update that already had one keeps it).
+RELEASE_NOTES_DIR = "docs/releases/notes"
+RELEASE_NOTES_SCHEMA = 1
+RELEASE_NOTES_STATUSES = ("released", "testing")
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\."
     r"(0|[1-9]\d*)\."
@@ -70,6 +90,168 @@ def _executable_lines(source: str) -> list[str]:
         line for line in source.splitlines() if not line.lstrip().startswith("#")
     )
     return _logical_lines(code)
+
+
+def _is_release_context(source_ref: str, base_ref: str) -> bool:
+    """``main``, a ``v*`` tag, or a pull request into ``main``.
+
+    GitHub sets ``GITHUB_BASE_REF`` on ``pull_request`` events only, so a pull request
+    into ``main`` is recognised without a workflow change.
+    """
+    return (
+        source_ref == "refs/heads/main"
+        or source_ref.startswith("refs/tags/v")
+        or base_ref == "main"
+    )
+
+
+def _unreleased_body(changelog_source: str) -> str | None:
+    """The text between ``## [Unreleased]`` and the next ``## `` heading, stripped."""
+    match = re.search(
+        r"^## \[Unreleased\]\s*$\n(?P<body>.*?)(?=^## |\Z)",
+        changelog_source,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group("body").strip() if match else None
+
+
+def _changelog_release_date(version: str, changelog_source: str) -> str | None:
+    """The date of the dated ``## [<version>] - YYYY-MM-DD`` heading, when there is one."""
+    match = re.search(
+        rf"^## \[{re.escape(version)}\] - (\d{{4}}-\d{{2}}-\d{{2}})$",
+        changelog_source,
+        re.MULTILINE,
+    )
+    return match.group(1) if match else None
+
+
+def _is_iso_date(value: object) -> bool:
+    """A ``YYYY-MM-DD`` string that names a real calendar day."""
+    if not isinstance(value, str) or not ISO_DATE.fullmatch(value):
+        return False
+    try:
+        _dt.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _release_notes_path(version: str) -> str:
+    return f"{RELEASE_NOTES_DIR}/{version}.json"
+
+
+def _load_release_notes(version: str) -> tuple[dict | None, list[str]]:
+    """The curated notes of ``version`` and what every ref requires of them.
+
+    Every ref: the file exists, is a JSON object of schema 1, names ``VERSION`` (so
+    its ``version`` equals the file name) and has a known status. The full schema is
+    the generator's job (``scripts/build_release_notes.py --check``).
+    """
+    relative = _release_notes_path(version)
+    path = ROOT / relative
+    if not path.is_file():
+        return None, [
+            f"{relative}: missing the curated release notes for {version!r} that "
+            "scripts/build_release_notes.py reads"
+        ]
+    try:
+        notes = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, [f"{relative}: not valid JSON ({exc})"]
+    if not isinstance(notes, dict):
+        return None, [f"{relative}: must be a JSON object"]
+    failures: list[str] = []
+    schema = notes.get("schema")
+    if type(schema) is not int or schema != RELEASE_NOTES_SCHEMA:
+        failures.append(
+            f"{relative}: schema must be {RELEASE_NOTES_SCHEMA}, found {schema!r}"
+        )
+    named = notes.get("version")
+    if named != version:
+        failures.append(
+            f"{relative}: names version {named!r}; the file name and VERSION are "
+            f"{version!r}"
+        )
+    status = notes.get("status")
+    if status not in RELEASE_NOTES_STATUSES:
+        failures.append(
+            f"{relative}: status must be one of {list(RELEASE_NOTES_STATUSES)}, "
+            f"found {status!r}"
+        )
+    return notes, failures
+
+
+def _release_notes_release_failures(
+    version: str, notes: dict, changelog_source: str
+) -> list[str]:
+    """On a release ref the notes read ``released``, dated like the CHANGELOG heading.
+
+    The testing skeleton (status ``testing``, no date, the newest update undated)
+    passes on ``Testing``; the frozen release preparation dates it.
+    """
+    relative = _release_notes_path(version)
+    failures: list[str] = []
+    status = notes.get("status")
+    if status != "released":
+        failures.append(
+            f"{relative}: on a release ref the notes must have status 'released', "
+            f"found {status!r}; the frozen release preparation sets it"
+        )
+    date = notes.get("date")
+    heading_date = _changelog_release_date(version, changelog_source)
+    if not _is_iso_date(date):
+        failures.append(
+            f"{relative}: on a release ref the notes need the release date "
+            f"(YYYY-MM-DD), found {date!r}"
+        )
+    elif heading_date is not None and date != heading_date:
+        failures.append(
+            f"{relative}: the notes date {date} does not match the dated CHANGELOG.md "
+            f"heading for {version!r} ({heading_date})"
+        )
+    updates = notes.get("updates")
+    if not isinstance(updates, list) or not updates:
+        failures.append(f"{relative}: updates must be a non-empty list, newest first")
+        return failures
+    for index, update in enumerate(updates):
+        update = update if isinstance(update, dict) else {}
+        if not _is_iso_date(update.get("date")):
+            failures.append(
+                f"{relative}: updates[{index}] ({update.get('id')!r}) is undated; on a "
+                "release ref every update carries its date"
+            )
+    return failures
+
+
+def _release_guard_failures(
+    version: str, changelog_source: str, notes: dict | None = None
+) -> list[str]:
+    """The records a release ref must carry, beyond what every ref carries.
+
+    ``notes`` is ``None`` when the every-ref notes check already failed to read them.
+    """
+    failures: list[str] = []
+    if notes is not None:
+        failures.extend(_release_notes_release_failures(version, notes, changelog_source))
+    body = _unreleased_body(changelog_source)
+    if body is not None and body != EMPTY_UNRELEASED_BODY:
+        failures.append(
+            "CHANGELOG.md: on a release ref the [Unreleased] section must read exactly "
+            f"{EMPTY_UNRELEASED_BODY!r}; move its notes under the dated {version!r} "
+            "heading in the frozen release preparation"
+        )
+    release_page = ROOT / f"docs/releases/{version}.md"
+    if release_page.is_file():
+        release_body = RELEASE_COMMIT_MARKER.format(sha="0" * 40) + release_page.read_text(
+            encoding="utf-8"
+        )
+        if len(release_body) > RELEASE_BODY_MAX_CHARACTERS:
+            failures.append(
+                f"docs/releases/{version}.md: the GitHub Release body would be "
+                f"{len(release_body):,} characters; keep it at most "
+                f"{RELEASE_BODY_MAX_CHARACTERS:,}"
+            )
+    return failures
 
 
 def main() -> int:
@@ -203,6 +385,10 @@ def main() -> int:
         ):
             if marker not in source:
                 failures.append(f"{relative}: missing release metadata marker {marker!r}")
+    for relative in SHIPPING_DOCKERFILES:
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        if LICENSE_LABEL not in source:
+            failures.append(f"{relative}: missing license label {LICENSE_LABEL!r}")
 
     web_docker_source = (ROOT / "webui/Dockerfile").read_text(encoding="utf-8")
     for marker in (
@@ -629,7 +815,9 @@ def main() -> int:
         "TLSOC_DOCS_SITE_URL",
         f'product_version: "{version}"',
         f'docs_version: "{docs_version}"',
-        "provider: mike",
+        # The published site lists its versions through Mike; only the Console's bundled
+        # Help Center empties the variable (one installed line, no versions.json).
+        "provider: !ENV [TLSOC_DOCS_VERSION_PROVIDER, mike]",
         "default: stable",
     ):
         if marker not in mkdocs_source:
@@ -661,6 +849,12 @@ def main() -> int:
         failures.append(
             f"CHANGELOG.md: missing dated canonical release heading for {version!r}"
         )
+
+    release_notes, release_notes_failures = _load_release_notes(version)
+    failures.extend(release_notes_failures)
+
+    if _is_release_context(source_ref, os.getenv("GITHUB_BASE_REF", "").strip()):
+        failures.extend(_release_guard_failures(version, changelog_source, release_notes))
 
     release_page = ROOT / f"docs/releases/{version}.md"
     if not release_page.is_file():

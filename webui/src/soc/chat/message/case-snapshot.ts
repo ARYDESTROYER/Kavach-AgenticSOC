@@ -175,9 +175,14 @@ const SOURCE_TITLE_CHARS = 120;
 /** The most room the "Sources:" list may take; further sources stay in chat. */
 const SOURCES_MAX_CHARS = 2400;
 
-/** "[C2] Case case-0042 · Suspicious login" (as the answer's Sources list names it). */
-export function sourceLine(citation: Pick<ChatCitation, 'id' | 'kind' | 'title' | 'case_id' | 'technique'>): string {
-  const target = citation.kind === 'case' ? citation.case_id : citation.kind === 'mitre' ? citation.technique : null;
+/** "[C2] Case CASE-000042 · Suspicious login" (as the answer's Sources list names it). */
+export function sourceLine(
+  citation: Pick<ChatCitation, 'id' | 'kind' | 'title' | 'case_id' | 'case_number' | 'technique'>,
+): string {
+  // A case reads by its display number (`CASE-000043`) when the citation carries one
+  // (B42), as the chat shows it; an older transcript's case keeps its id.
+  const caseRef = (citation.case_number || '').trim() || citation.case_id;
+  const target = citation.kind === 'case' ? caseRef : citation.kind === 'mitre' ? citation.technique : null;
   const title = cut(citation.title.replace(/\s+/g, ' ').trim(), SOURCE_TITLE_CHARS);
   return `[${citation.id}] ${CITATION_KIND_LABEL[citation.kind] ?? 'Source'}${target ? ` ${target}` : ''} · ${title}`;
 }

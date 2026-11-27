@@ -849,9 +849,20 @@ REGRESSIONS_R2 = [
       params=(P("case_stats", status_group="terminal", window="last_week", metrics="re:auto_closed"),),
       figures=(Fig("**{n} cases** opened last week were closed automatically", "last_week", _AI_CLOSED,
                    zero="No closed case matched last week"),)),
-    G("Which users had the most cases this quarter?", tools=("search_cases", "case_stats"),
+    # Round 16 (B62): a seeded case's risk is computed from its own inputs, and only an
+    # IP has a reputation factor, so the highest-risk Demo cases are IP cases. The users
+    # question then says honestly that no user is on them; the IPs question counts each
+    # candidate's cases exactly.
+    G("Which users had the most cases this quarter?", tools=("search_cases",),
+      params=(P("search_cases", window="this_quarter", sort_field="risk_score"),),
+      forbid=(P("log_stats"),), contains=("is recorded against a user", "is not ranked here")),
+    G("Which IPs had the most cases this quarter?", tools=("search_cases", "case_stats"),
       params=(P("search_cases", window="this_quarter"), P("case_stats", window="this_quarter", entity="re:.")),
       forbid=(P("log_stats"),), contains=("(exact)",)),
+    # Round 16 (B41): what needs attention first is the open work, riskiest first.
+    G("Which of the cases opened in the last 24 hours need attention first?", tools=("search_cases",),
+      params=(P("search_cases", status_group="active", sort_field="risk_score", window="now-24h"),),
+      absent=(", closed)", ", resolved)")),
     # R2-9: the automation-rate trend is its own measure.
     G("What's the automation rate trend by month?", tools=("case_stats",),
       params=(P("case_stats", bucket="month", metrics="re:auto_closed"),),
@@ -1090,8 +1101,12 @@ OUT_OF_SCOPE = [
     # for the bot activity is a case, not code. A change answer quotes only a passage and a
     # console page about the change, or none: never one that merely shares a word with it.
     # (Its console pointer and passage are not "unrelated" here, unlike a refused request.)
+    # Round 16 XFINT: the analyst guide's Analytics page gained a Jobs section that says how
+    # to stop a running job, so the passage quoted is that section, not the Background jobs
+    # list of job kinds it quoted before.
     G("Kill the export job", kind="product_help", tools=("app_help",), max_lookups=1,
-      contains=(_CANT_CHANGE, "**Analytics › Jobs**", "**Background jobs › Work that uses the job system**"),
+      contains=(_CANT_CHANGE, "**Analytics › Jobs**", "**Analytics and standup › Jobs**",
+                "To stop a job that is still running, choose **Cancel** on its row."),
       absent=_UNRELATED_HELP),
     G("Create a case for the bot activity", kind="product_help", tools=("app_help",), max_lookups=1,
       contains=(_CANT_CHANGE,), absent=_UNRELATED_HELP),
@@ -2736,9 +2751,10 @@ def test_a_case_closed_after_its_card_was_made_is_answered_as_closed(starter_cli
 #: The analyst the signed-in Demo app logs in as, and how many open cases it owns there.
 _ME, _MY_OPEN = "Admin", 3
 #: Ages (minutes) of the open cases the signed-in Demo app adds close to their response
-#: target: a case with no priority has a 120-minute target, and "close" is the last
-#: quarter of it (Round 13 polish).
-_NEAR_AGES = (91, 95, 98, 101, 104, 107, 110)
+#: target: risk 50 on an unmapped host projects to P3, a 120-minute target (Round 16
+#: B60), and "close" is the posture "at risk" rule: at least 0.8 of it, so from 96
+#: minutes (Round 16 numbers review; it was the last quarter before).
+_NEAR_AGES = (97, 99, 101, 103, 105, 107, 109)
 
 
 def _near_target_cases(numbered: list[Any]) -> list[Any]:
@@ -2756,7 +2772,7 @@ def _near_target_cases(numbered: list[Any]) -> list[Any]:
         out.append(Case(
             case_id=f"golden-near-{i}", cluster_signature=f"golden-near-{i}",
             source_surface=SourceSurface.INVESTIGATE, entity=Entity(type=EntityType.HOST, value=f"ws-near-{i}"),
-            status=CaseStatus.OPEN, verdict=Verdict.NEEDS_HUMAN, risk_score=20.0, created_at=created,
+            status=CaseStatus.OPEN, verdict=Verdict.NEEDS_HUMAN, risk_score=50.0, created_at=created,
             updated_at=created, assignee="dsingh" if i % 2 else "", case_number=f"CASE-{last + 1 + i:06d}",
             rule_ids=["demo_near_target"], title=f"host:ws-near-{i} \u00b7 demo_near_target",
         ))

@@ -25,6 +25,7 @@ from app.rbac.policy import DEFAULT_MATRIX, can, effective_matrix, resolve_matri
 from app.state import AppState
 from app.stores.memory import EsKVStore
 from app.stores.users import UserStore
+from tests._auth_helpers import ready_user
 
 
 # --------------------------------------------------------------------------- #
@@ -256,6 +257,7 @@ def test_rbac_denies_low_role_and_allows_admin() -> None:
             "username": "tier1", "password": "tier1-pass-1", "role": UserRole.ANALYST_TIER1.value,
         })
         assert r.status_code == 200
+        ready_user(c, "tier1", "tier1-pass-1")
         assert r.json()["user"]["must_change_password"] is True
         # New tier1 user logs in → cannot manage users (403) but can read cases.
         c.cookies.clear()
@@ -324,6 +326,7 @@ def test_disabled_user_cannot_login_and_sessions_invalidated() -> None:
         c.post("/api/users", json={
             "username": "victim", "password": "victim-pass-1", "role": UserRole.ANALYST_TIER2.value,
         })
+        ready_user(c, "victim", "victim-pass-1")
         # Disable the user.
         assert c.put("/api/users/victim", json={"active": False}).status_code == 200
         c.cookies.clear()

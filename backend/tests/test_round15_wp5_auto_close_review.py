@@ -60,6 +60,7 @@ from app.stores.auto_close_review import (
     ReviewLedgerUnavailable,
 )
 from tests.conftest import mount_moved_routers
+from tests._auth_helpers import ready_user
 
 APP = Path(__file__).resolve().parents[1] / "app"
 NOW = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
@@ -161,6 +162,12 @@ class _Bus:
 
     def publish(self, topic: str, event: str, payload: dict[str, Any], **_kw: Any) -> str:
         self.frames.append((topic, event, payload))
+        return "1"
+
+    def publish_many(self, topics: Any, event: str, payload: dict[str, Any], **_kw: Any) -> str:
+        # Round 16 (SPEC §4.3 WP01): one event on several topics; recorded per topic.
+        for topic in topics:
+            self.frames.append((topic, event, payload))
         return "1"
 
 
@@ -576,6 +583,7 @@ def env():
             r = c.post("/api/users", json={"username": name, "password": f"{name}-password-1", "role": role},
                        headers=admin)
             assert r.status_code in (200, 201), r.text
+            ready_user(c, name, f"{name}-password-1")
         heads = {"admin": admin}
         for name in ("t1", "t2", "boss", "aud"):
             heads[name] = _login(c, name, f"{name}-password-1")
@@ -696,13 +704,16 @@ def test_a_recorded_review_tells_open_queues_it_is_completed(env, monkeypatch) -
     _put(c, state, case)
     review_id = _sample(c, state, case)
     frames: list[tuple[str, str, dict[str, Any]]] = []
-    original = state.event_bus.publish
+    original = state.event_bus.publish_many
 
-    def record(topic: str, event: str, payload: Any, **kw: Any) -> Any:
-        frames.append((topic, event, dict(payload) if isinstance(payload, dict) else payload))
-        return original(topic, event, payload, **kw)
+    def record(topics: Any, event: str, payload: Any, **kw: Any) -> Any:
+        # Round 16 (SPEC §4.3 WP01): one event on both topics; recorded per topic.
+        topics = list(topics)
+        for topic in topics:
+            frames.append((topic, event, dict(payload) if isinstance(payload, dict) else payload))
+        return original(topics, event, payload, **kw)
 
-    monkeypatch.setattr(state.event_bus, "publish", record)
+    monkeypatch.setattr(state.event_bus, "publish_many", record)
     r = c.post("/api/cases/case-rv-frame/review", headers=h["t2"], json={"classification": "false_positive"})
     assert r.status_code == 200, r.text
     want = {"case_id": "case-rv-frame", "review_id": review_id, "state": "completed"}
@@ -925,6 +936,7 @@ def test_a_repeated_disagreement_on_an_unsampled_case_notifies_once(env) -> None
     made = c.post("/api/users", headers=h["admin"],
                   json={"username": "t1b", "password": "t1b-password-1", "role": "analyst_tier1"})
     assert made.status_code in (200, 201), made.text
+    ready_user(c, "t1b", "t1b-password-1")
     t1b = _login(c, "t1b", "t1b-password-1")
     assert c.post("/api/cases/case-rv-flood/review", headers=t1b,
                   json={"classification": "false_positive"}).json()["agrees"] is True

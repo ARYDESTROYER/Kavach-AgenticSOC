@@ -20,7 +20,7 @@
     },
     {
       "id": "notifications",
-      "label": "Notifications"
+      "label": "Communication"
     },
     {
       "id": "platform",
@@ -108,7 +108,7 @@
       ],
       "page": "standup",
       "opts": {},
-      "requires": null,
+      "requires": "metrics:view",
       "blurb": "",
       "keywords": [
         "shift",
@@ -486,7 +486,7 @@
       ],
       "page": "models",
       "opts": {},
-      "requires": null,
+      "requires": "models:read",
       "blurb": "",
       "keywords": [
         "llm",
@@ -540,7 +540,7 @@
       "kind": "page",
       "label": "Inbox",
       "crumb": [
-        "Notifications",
+        "Communication",
         "Inbox"
       ],
       "page": "inbox",
@@ -551,6 +551,28 @@
         "notifications",
         "alerts",
         "mentions"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:whats_new",
+      "kind": "page",
+      "label": "What's new",
+      "crumb": [
+        "Communication",
+        "What's new"
+      ],
+      "page": "whats_new",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "what's new",
+        "release notes",
+        "changelog",
+        "new features",
+        "release tracker",
+        "what changed"
       ],
       "owned_keys": []
     },
@@ -753,7 +775,7 @@
         "section": "customization"
       },
       "requires": null,
-      "blurb": "Your theme, saved views, and the organization terminology and defaults.",
+      "blurb": "Your theme, saved views, and the organization terminology.",
       "keywords": [
         "theme",
         "dark mode",
@@ -770,7 +792,9 @@
         "reduce transparency",
         "transparency",
         "frosted glass",
-        "blur"
+        "blur",
+        "what's new",
+        "release notes"
       ],
       "owned_keys": []
     },

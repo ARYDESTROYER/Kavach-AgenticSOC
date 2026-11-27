@@ -132,6 +132,7 @@ export const DemoIndicator: React.FC<DemoIndicatorProps> = ({ onNavigate, announ
       </TooltipProvider>
       <PopoverContent
         align="end"
+        aria-label="Demo mode"
         className="w-[min(22rem,calc(100vw-2rem))] space-y-3 text-xs leading-relaxed"
       >
         <div>

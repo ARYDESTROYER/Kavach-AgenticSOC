@@ -62,12 +62,46 @@ digests, a verified backup, and recent built-in-super-admin reauthentication. Af
 successful installation, the same-origin Console manifest must still exactly match a
 healthy backend build before the new document activates.
 
+## Version 0.2
+
+The current release line is documentation version **0.2**. The current source version
+is product version **0.2.0**. The work built on `Testing` after 0.1.12 is a new
+capability set, so under the rules in "Semantic versioning before 1.0" below it is a
+MINOR release with its own documentation line. The never-tagged 0.1.13 candidate is
+folded into 0.2.0. Version 0.2.0 is Stable only when its exact accepted `main` commit
+is immutably tagged `v0.2.0` and its complete signed and public artifact set, updater
+runtime and canonical deployment acceptance verify. Until then, the last verified
+installable Stable release is v0.1.1.
+
+| Surface | Canonical value |
+| --- | --- |
+| Product | Agentic SOC |
+| Operator interface | Agentic SOC Console |
+| Backend service/API | Agentic SOC API |
+| Repository and update trust root | `ARYDESTROYER/Kavach-AgenticSOC` |
+| Image namespace | `ghcr.io/arydestroyer/kavach-agenticsoc/{backend,webui,updater}` |
+| License | Apache-2.0 |
+| SemVer package and image version | `0.2.0` |
+| Git release tag | `v0.2.0` only from the exact verified `main` commit; absent before publication and immutable afterward |
+| Documentation selector and URL line | `0.2` and `/0.2/`; `/docs/0.1/` pages redirect to the same page of `/docs/0.2/` |
+| Plan source range | `>=0.1.1,<0.3.0` |
+| Integration branch/channel | `Testing` |
+| Stable branch/channel | `main` / Stable |
+
+The repository was renamed from `ARYDESTROYER/Agentic-Kibana`. Releases from 0.2.0 on
+are signed under the new name. Set
+`AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env` before you
+bootstrap; the bootstrap refuses a missing line, the former name in any letter case,
+and the new name in the wrong letter case, because the signing identity is
+case-sensitive. Artifacts of v0.1.12 and earlier stay valid under the former identity.
+
 ## Version 0.1 nomenclature
 
-The first standardized release line is documentation version **0.1**. The current
-source version is product version **0.1.13**. It carries the accepted application
-scope through 0.1.12 and corrects the legacy identity comparison that blocked the
-published v0.1.12 release during canonical v0.1.1 preflight. The immutable
+The first standardized release line is documentation version **0.1**. It is kept
+here as history. Its last tagged version is 0.1.12; the 0.1.13 candidate was never
+tagged and is folded into 0.2.0. The 0.1.13 candidate carried the accepted
+application scope through 0.1.12 and corrected the legacy identity comparison that
+blocked the published v0.1.12 release during canonical v0.1.1 preflight. The immutable
 `v0.1.4` publication attempt produced documentation but no application artifacts.
 The immutable `v0.1.5` workflow built and signed candidate image digests but stopped
 before publishing the canonical signed plan, GitHub Release, or Stable tags. Both are
@@ -101,28 +135,14 @@ cleanup and published the complete signed/public release, but canonical v0.1.1
 bootstrap stopped before application mutation because both legacy application
 images omit the state-schema label and the supervisor compared one normalized
 absence with one raw absence. It is immutable, bootstrap-blocked, and superseded.
-Version 0.1.13 normalizes matching absent legacy labels symmetrically while mixed
-labels and every unmanaged later identity remain blocked. It is Stable only when its
-exact accepted `main` commit is immutably
-tagged `v0.1.13` and its complete signed/public artifact set plus updater runtime and
-canonical deployment acceptance verify. If that evidence is incomplete, use a
-previously verified supported Stable release.
-
-| Surface | Canonical value |
-| --- | --- |
-| Product | Agentic SOC |
-| Operator interface | Agentic SOC Console |
-| Backend service/API | Agentic SOC API |
-| SemVer package and image version | `0.1.13` |
-| Git release tag | `v0.1.13` only from the exact verified `main` commit; absent before publication and immutable afterward |
-| Documentation selector and URL line | `0.1` and `/0.1/` |
-| Integration branch/channel | `Testing` |
-| Stable branch/channel | `main` / Stable |
+The 0.1.13 candidate normalized matching absent legacy labels symmetrically while
+mixed labels and every unmanaged later identity remain blocked. It was never tagged,
+and that correction ships in 0.2.0.
 
 Patch releases remain within the same documentation line. For example, app
 versions `0.1.1`, `0.1.2`, `0.1.3`, `0.1.4`, `0.1.5`, `0.1.6`, `0.1.7`, `0.1.8`, `0.1.9`, `0.1.10`, `0.1.11`, `0.1.12`, and `0.1.13` use the `0.1` documentation rather than
 creating new selector entries. A new minor release creates a new documentation
-line such as `0.2`.
+line, as 0.2.0 does with `0.2`.
 
 ## Promotion procedure
 
@@ -144,8 +164,9 @@ Every release starts with a candidate commit on `Testing`:
 The Documentation workflow validates `Testing` and `main`, but publication is gated
 on the exact annotated `vX.Y.Z` tag. Its tag must match `VERSION` and resolve to the
 current `origin/main` commit. Configure the `github-pages` environment to admit the
-`v*` release-tag pattern, and keep **Settings → Pages → Source** set to **GitHub
-Actions**. A `main` push alone must never move the public Stable aliases.
+`v*` release-tag pattern. In the GitHub repository's own settings, on its Pages page,
+keep the build and deployment source set to **GitHub Actions**; this is a GitHub setting,
+not a Console one. A `main` push alone must never move the public Stable aliases.
 
 Use an annotated tag and verify it before pushing:
 
@@ -191,17 +212,61 @@ As part of the final frozen release-preparation change:
 1. move the accepted entries out of `[Unreleased]` under `[X.Y.Z]` with the release
    date;
 2. open a new, empty `[Unreleased]` section above it;
-3. promote and verify that exact prepared tree on `main`; and
-4. tag that exact verified commit immediately.
+3. set `docs/releases/notes/X.Y.Z.json` to `"status": "released"`, give it the
+   date of the `[X.Y.Z]` heading, give that date to each update that has none yet
+   (updates that already have a date keep it), then run
+   `scripts/build_release_notes.py`;
+4. promote and verify that exact prepared tree on `main`; and
+5. tag that exact verified commit immediately.
 
 If promotion is abandoned, revert the prepared release heading rather than leaving
-a Testing snapshot that reads as though it were published. Never keep multiple
+a Testing snapshot that reads as though it were published.
+
+Every update that reaches users adds an entry to the curated What's new notes, with
+screenshots of what changed, so the Console's **Communication → What's new** page and
+the Help Center's [What's new](whats-new.md) track every release. On every ref,
+`scripts/check_version.py` requires the curated What's new notes
+`docs/releases/notes/X.Y.Z.json` (schema 1, naming the `VERSION`); on `Testing` they
+may read `"status": "testing"` with no date. On `main`, on a `v*` tag and on a pull
+request into `main`, it requires the `[Unreleased]` body to read exactly
+`No changes yet.`, the GitHub Release body (the release-commit marker plus
+`docs/releases/X.Y.Z.md`) to stay at most 100,000 characters, and the notes to read
+`"status": "released"` with the date of the dated `[X.Y.Z]` heading and a date on
+every update. A release can therefore not ship with its notes left under
+`[Unreleased]` or its What's new still marked Testing. Never keep multiple
 top-level `[Unreleased]` sections as a dated work log; the development journal and
 Development snapshot headings hold that history.
 
 If a Stable defect is found, fix it through `Testing`, exercise the same gate, and
 promote a patch release. Emergency timing may shorten review windows, but it does
 not reverse the direction of promotion.
+
+### First publication to a new image namespace
+
+GitHub creates a container package as private the first time it is pushed, and a
+linked package does not inherit the repository's visibility. The first release under
+a new repository name therefore stops at the release workflow's step "Prove anonymous
+pullability and exact OCI release labels", before any plan, attestation or Release
+exists. This is a designed pause, not a burnt tag. To continue:
+
+1. Set `ghcr.io/arydestroyer/kavach-agenticsoc/backend`, `/webui` and `/updater` to
+   **Public**. This cannot be undone.
+2. Under each package's **Actions access**, confirm the repository has write access.
+3. Re-run the failed release workflow.
+4. The Documentation workflow waits at most 2 hours for the signed release. If that
+   wait expired meanwhile, run the Documentation workflow by `workflow_dispatch` on the
+   release tag.
+
+### Dependency updates follow the promotion direction
+
+Every block of `.github/dependabot.yml` sets `target-branch: Testing`, so version
+updates are reviewed on `Testing` and reach `main` only through promotion. Dependabot
+reads that file from the default branch, so the setting takes effect once `main`
+carries it. Dependabot **security** updates ignore `target-branch` and always open
+against the default branch; forward-port each merged security update to `Testing`
+before the next promotion, so a tree-replacement promotion cannot revert it. The
+backend and Web image blocks ignore minor and major updates of the `python` base
+image, because the shipping images pin Python 3.11.
 
 ## Release gate
 
@@ -251,8 +316,8 @@ is not a Console acceptance receipt.
 
 ## Build and badge provenance
 
-SemVer and channel are independent. The 0.1.13 Testing candidate and its accepted
-Stable build can both report version `0.1.13`; the channel says where that build sits in
+SemVer and channel are independent. The 0.2.0 Testing candidate and its accepted
+Stable build can both report version `0.2.0`; the channel says where that build sits in
 the acceptance lifecycle. Stamp the mutable provenance fields explicitly; keep or
 override the Dockerfile's canonical source URL as appropriate:
 
@@ -374,4 +439,5 @@ upgrade comparison, or future-work preview; they never replace installed help
 silently.
 
 See [Documentation versions](documentation-versions.md) for URL, alias, and
-maintenance rules, and [Agentic SOC 0.1](0.1.md) for this release line.
+maintenance rules, [Agentic SOC 0.2](0.2.md) for the current release line, and
+[Agentic SOC 0.1](0.1.md) for the previous one.

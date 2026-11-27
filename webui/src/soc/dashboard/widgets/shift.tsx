@@ -26,7 +26,11 @@ import { AlertTriangle, CheckCircle2, Clock3 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { DASH, caseLabel, fmtDuration, fmtNumber, fmtOverage, humanizeToken } from '@/lib/format';
 import { Badge } from '@/ui/badge';
+import type { Explanation } from '@/lib/explain/types';
 import { RiskBadge, StatusBadge } from '@/soc/components/badges';
+import { EmptyState } from '@/soc/components/EmptyState';
+import { slaAttainmentInitial } from '@/soc/components/metrics-explain/builders';
+import { MetricExplain } from '@/soc/components/metrics-explain/MetricExplain';
 import type { PostureResponse } from '@/soc/pages/Metrics.posture.api';
 import {
   normalizeReport,
@@ -38,7 +42,17 @@ import {
 import { useDashboardData, useDashboardRequest } from '../DashboardDataProvider';
 import type { DashboardRequest } from './requests';
 import { BarRow, CaseNumberLink, PanelList, PanelListItem, PanelRow, PanelTable, panelFit, type PanelColumn } from './panel-table';
-import { WidgetShell, countOf, optionInt, requestState, resolveTitle, staleOf, type WidgetProps, type WidgetState } from './common';
+import {
+  WidgetExit,
+  WidgetShell,
+  countOf,
+  optionInt,
+  requestState,
+  resolveTitle,
+  staleOf,
+  type WidgetProps,
+  type WidgetState,
+} from './common';
 
 // --------------------------------------------------------------------------- //
 // Shared bits
@@ -394,10 +408,43 @@ export function slaClockText(row: { state: string; elapsed_minutes: number; targ
   return `${fmtDuration(Math.max(0, row.target_minutes - row.elapsed_minutes))} left`;
 }
 
+/**
+ * The SLA attainment's hover line before its counts are read (FXD1): the share and how
+ * many cases opened in the window were scored against a target.
+ */
+export function slaAttainmentHover(shown: string, phrase: string, evaluated: unknown): Explanation {
+  const base = slaAttainmentInitial(shown, `the ${phrase}`);
+  if (typeof evaluated !== 'number' || !Number.isFinite(evaluated)) return base;
+  return {
+    ...base,
+    summary: `${shown} of the ${countOf(evaluated, 'case')} opened in the ${phrase} and scored against a target met them. Select it for the counts.`,
+    inputs: [{ key: 'scored', label: 'Scored cases', value: fmtNumber(evaluated), source: 'Server count' }, ...base.inputs],
+  };
+}
+
+/**
+ * The empty SLA panel's words (FXD1), for the population it really counts: the cases
+ * OPENED in the window. Open cases from earlier can still be past their target (the
+ * strip's SLA breached counts them), so the panel names them and links to them.
+ */
+export function slaEmptyText(phrase: string, openBreached: number | null): { title: string; description?: string } {
+  return {
+    title: `No case opened in the ${phrase} breached or came close to a target`,
+    description:
+      openBreached && openBreached > 0
+        ? `${countOf(openBreached, 'open case')} from earlier ${openBreached === 1 ? 'is' : 'are'} past the response target.`
+        : undefined,
+  };
+}
+
 export function SlaBreachesWidget(props: WidgetProps) {
   const title = resolveTitle(props, 'SLA breaches and at risk');
-  const { windowInfo, retry } = useDashboardData();
+  const { windowInfo, retry, can, objectScoped } = useDashboardData();
   const answer = useDashboardRequest({ key: 'posture' });
+  // The open breaches of any arrival date (the strip's SLA breached), read only where the
+  // viewer may read cases and no row-level scope applies.
+  const shiftAllowed = can('cases', 'read') && objectScoped === false;
+  const shiftAnswer = useDashboardRequest({ key: 'shift', window: 'all' }, { enabled: shiftAllowed });
   const posture = answer.data;
   const onRetry = () => retry(POSTURE_REQ);
   let state = requestState(answer, onRetry);
@@ -406,8 +453,21 @@ export function SlaBreachesWidget(props: WidgetProps) {
     state = { kind: 'unavailable', title: 'No SLA policy is turned on', description: sla.reason || undefined };
   }
   const rows = sla?.breaching ?? [];
+  let emptyNode: React.ReactNode = null;
   if (!state && sla?.enabled && rows.length === 0) {
-    state = { kind: 'empty', title: `No case breached or came close to a target in the ${windowInfo.phrase}` };
+    const breached = shiftAllowed ? (shiftAnswer.data as { sla_aging?: { totals?: { breached?: unknown } } } | null)?.sla_aging?.totals?.breached : null;
+    const openBreached = typeof breached === 'number' && Number.isFinite(breached) ? breached : null;
+    const words = slaEmptyText(windowInfo.phrase, openBreached);
+    emptyNode = (
+      <EmptyState
+        state="no-data"
+        compact
+        title={words.title}
+        description={words.description}
+        action={openBreached ? <WidgetExit target={{ label: 'View the open breaches', page: 'standup' }} /> : undefined}
+        data-widget-state="empty"
+      />
+    );
   }
   const total = sla ? slaBreachTotal(sla) : 0;
   const notes = [
@@ -422,12 +482,36 @@ export function SlaBreachesWidget(props: WidgetProps) {
         ? `${Math.round(sla.attainment_pct * 10) / 10}% met`
         : 'attainment not measured'
       : null;
+  // The attainment explains itself (FXD1): hover names how many cases were scored, and
+  // opening it reads the met and scored counts (metric=sla_attainment).
+  const attainmentNode =
+    attainment && sla?.enabled && typeof sla.attainment_pct === 'number' ? (
+      <MetricExplain
+        metric="sla_attainment"
+        title="SLA attainment"
+        windowHours={windowInfo.hours}
+        initial={slaAttainmentHover(`${Math.round(sla.attainment_pct * 10) / 10}%`, windowInfo.phrase, sla.evaluated)}
+      >
+        {attainment}
+      </MetricExplain>
+    ) : (
+      attainment
+    );
   return (
     <WidgetShell
       title={title}
-      caption={attainment ? `${windowInfo.label} · ${attainment}` : windowInfo.label}
+      caption={
+        attainmentNode ? (
+          <>
+            {windowInfo.label} · {attainmentNode}
+          </>
+        ) : (
+          windowInfo.label
+        )
+      }
       exit={{ label: 'View in Standup', page: 'standup' }}
       state={state}
+      emptyMessage={emptyNode ?? undefined}
       stale={staleOf(answer, onRetry)}
       footer={notes.length ? notes.join(' ') : undefined}
     >

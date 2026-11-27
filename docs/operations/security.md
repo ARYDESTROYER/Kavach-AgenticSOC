@@ -1,6 +1,6 @@
 ---
 title: Security hardening
-description: Apply least privilege, authentication, transport, prompt-safety, and operational controls to Agentic SOC 0.1.
+description: Apply least privilege, authentication, transport, prompt-safety, and operational controls to Agentic SOC 0.2.
 ---
 
 # Security hardening
@@ -41,7 +41,7 @@ privileged accounts, short session policy, and session revocation during respons
 Validate OIDC issuer, redirect URI, verified-email behavior, and client-secret storage.
 
 Rate limiting is optional and process-local. It is not a replacement for an ingress
-gateway or provider quota. CSRF support requires a client token exchange that the 0.1
+gateway or provider quota. CSRF support requires a client token exchange that the 0.2
 web UI does not automatically complete; test it before enabling.
 
 ## Session lifetimes
@@ -161,7 +161,7 @@ test restoring both state and secrets.
 
 ## Current limitations
 
-Version 0.1 does not claim multi-tenant isolation, complete high availability, a
+Version 0.2 does not claim multi-tenant isolation, complete high availability, a
 database migration framework, an integrated secret manager, or certification for every
 advertised source protocol. Review [Known limitations](../releases/known-limitations.md)
 and perform an environment-specific security assessment.

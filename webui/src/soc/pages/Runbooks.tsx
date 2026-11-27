@@ -490,6 +490,43 @@ export default function Runbooks(_props: RunbooksProps = {}) {
     return () => ctrl.abort();
   }, [canCases, tick, inLibrary]);
 
+  // Focus on a view switch (B77), as Dashboards does: the library and a runbook share this
+  // route, so the link that was used goes with the view it lived in. An open asks the editor
+  // to land on its heading once it shows; a return lands on the row of the runbook just left,
+  // else the library heading. The first view (a fresh load, a link from another page) moves
+  // nothing, and focus still on a control is left there.
+  const viewKey = openId ?? '';
+  const shownView = React.useRef<string | null>(null);
+  // Kept for the whole view, so a render before the lazy editor arrives cannot lose it.
+  const switchedTo = React.useRef<string | null>(null);
+  if (shownView.current !== null && shownView.current !== viewKey) switchedTo.current = viewKey;
+  const switched = viewKey !== '' && switchedTo.current === viewKey;
+  const lastOpen = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    shownView.current = viewKey;
+    if (viewKey) {
+      lastOpen.current = viewKey;
+      return;
+    }
+    const left = lastOpen.current;
+    // Wait while the first read of the library runs; a library that could not be read still
+    // shows its heading, which then takes focus.
+    if (!left || (!library && libraryState === 'loading')) return;
+    lastOpen.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    // The table's title link carries the id; a phone lists the runbooks as rows whose one
+    // link is found by its address instead.
+    const links = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="runbooks-library"] a[href]'));
+    const leftHref = pageHash('runbooks', { id: left });
+    const row =
+      links.find((el) => el.getAttribute('data-runbook-link') === left) ??
+      links.find((el) => el.getAttribute('href') === leftHref);
+    const target = row ?? document.querySelector<HTMLElement>('[data-testid="runbooks-library"] h1');
+    if (target && !row && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+    target?.focus();
+  }, [viewKey, library, libraryState]);
+
   const openRunbook = React.useCallback(
     (id: string, detail?: RunbookDetail, edits?: RunbookCarriedEdits) => {
       handoff.current = detail ? { id, detail, edits: edits ?? null } : null;
@@ -522,6 +559,7 @@ export default function Runbooks(_props: RunbooksProps = {}) {
             recentRules={recentRules}
             onOpenRunbook={openRunbook}
             onBackToLibrary={backToLibrary}
+            landOnHeading={switched}
           />
         </React.Suspense>
       </PageContainer>

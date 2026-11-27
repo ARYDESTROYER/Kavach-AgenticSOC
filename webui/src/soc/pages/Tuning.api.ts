@@ -184,6 +184,8 @@ export interface TuningRecommendationsResponse {
   cadence: string;
   fp_rate_target: number;
   min_samples: number;
+  /** The z of the Wilson lower bound behind every `fp_rate` (absent from an older server: 1.96). */
+  wilson_z?: number;
   auto_apply_confirmed: boolean;
   window_cases: number;
   rule_noise: RuleNoise[];

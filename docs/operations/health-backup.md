@@ -44,6 +44,27 @@ corpus counts, source names, provider names, or detection posture. The
 corpus-versus-source-history reconciliation and the last projection outcome. Both are
 read-only and never trigger a projection or an embedding spend.
 
+`/api/diagnostics/health` also carries two measurement blocks:
+
+- `case_population` says when the case figures in the response were read: `read_at`,
+  `age_seconds`, and `stale`, true while the last reading is shown and a new one is
+  read. The all-time case figures are read at most once a minute.
+- `event_loop` measures how late the backend's event loop runs a 100 ms timer:
+  `worst_ms` and `p99_ms` over the last `window_seconds` (60), the `samples` measured,
+  whether the timer is `running`, and a `reason` when there is no value yet. It is a
+  measurement, never an alert. Sustained values of hundreds of milliseconds mean
+  CPU-bound work is delaying chat streams, live updates and receivers.
+
+It also reports the SQL schema migration (`state` of `ok`, `failed` or `not_applicable`,
+with the statements to run when it failed); see
+[Upgrades](upgrades.md#the-audit-id-column).
+
+On PostgreSQL and SQLite, knowledge search ranks chunks from an in-memory copy of their
+embeddings, rebuilt when the corpus changes and at least once a minute. The results are
+the same as a full exact search, near ties included. With the pgvector extension
+installed, a corpus too large for memory (more than 25 million stored numbers) is ranked
+in the database. Without pgvector, search still works the same way.
+
 A degradation raised by a genuinely empty corpus resolves automatically once the
 underlying cause clears; see [background jobs](background-jobs.md) for the explicit
 rebuild and [troubleshooting](troubleshooting.md) for the diagnosis order.
@@ -117,7 +138,7 @@ download re-verifies size/SHA-256. Download and independently retain an export n
 for recovery or evidence; an Inbox entry is not a backup.
 
 The desired Storage & retention archive stage is also not a backup mechanism in
-0.1.13. Glacier requires an independent immutable export, manifest, checksums, and a
+0.2.0. Glacier requires an independent immutable export, manifest, checksums, and a
 tested restore path. Never transition an Elasticsearch snapshot-repository prefix to
 Glacier; every repository object must remain directly readable by Elasticsearch.
 
@@ -140,7 +161,7 @@ destinations from the restore environment.
 
 ## Limitations
 
-Agentic SOC 0.1 has no built-in backup scheduler or complete versioned database migration
+Agentic SOC 0.2 has no built-in backup scheduler or complete versioned database migration
 framework. A successful dump is not sufficient evidence; test a full restore and retain
 upstream data long enough to replay after failure.
 

@@ -19,6 +19,7 @@ import {
   parentStageKey,
   ribbonPath,
   stageShare,
+  SHARE_DASH,
 } from '../NoiseFunnel';
 import { NoiseLineageView } from '../NoiseLineage';
 import type { NoiseLineage, NoiseReduction } from '@/lib/types';
@@ -95,7 +96,8 @@ function fixture(overrides: Partial<NoiseReduction> = {}): NoiseReduction {
         label: 'Needs human',
         source: 'cases',
         deterministic: true,
-        total: 5,
+        // overall_pct 96 is 1 - 40 / 1,000: the server's rule, so Detailed reproduces.
+        total: 40,
         by_severity: { high: 3, medium: 2 },
       },
       {
@@ -380,6 +382,45 @@ describe('NoiseFunnel', () => {
     expect(screen.getAllByText('Closed by analyst policy').length).toBeGreaterThan(0);
   });
 
+  it('the Detailed headline names its own inputs and explains them (noise-detailed-headline-irreproducible)', async () => {
+    const user = userEvent.setup();
+    render(
+      <NoiseFunnel
+        data={withStageTotals({ ingested: 167, needs_human: 4, escalated: 7, closed: 2, cases: 38, clustered: 38 })}
+        animate={false}
+        variant="flat"
+      />,
+    );
+    await user.click(screen.getByRole('radio', { name: 'Detailed' }));
+    const inputs = screen.getByTestId('noise-detailed-inputs');
+    expect(inputs).toHaveTextContent(/167 alerts ingested\s*→\s*4 cases needed a human/);
+    expect(inputs).not.toHaveTextContent(/closed by a human/);
+    const trigger = within(screen.getByTestId('noise-detailed-headline')).getByRole('button', { name: /, explain$/ });
+    await user.click(trigger);
+    const panel = await screen.findByRole('dialog');
+    expect(panel).toHaveTextContent('1 - 4 needed a human / 167 alerts ingested = 97.6%');
+    expect(panel).toHaveTextContent('100 x (1 - 4 / 167)');
+    expect(panel).toHaveTextContent('Needs a human stage');
+  });
+
+  it('withholds the Detailed headline under partial coverage', async () => {
+    const user = userEvent.setup();
+    render(
+      <NoiseFunnel
+        data={fixture({ counters: { available: true, since: '2026-07-05T00:00:00Z', incomplete: true } })}
+        animate={false}
+        variant="flat"
+      />,
+    );
+    await user.click(screen.getByRole('radio', { name: 'Detailed' }));
+    const headline = screen.getByTestId('noise-detailed-headline');
+    expect(headline).toHaveTextContent(/Reduced by\s*\u2014/);
+    expect(headline).not.toHaveTextContent('96%');
+    expect(screen.getByTestId('noise-detailed-inputs')).toHaveTextContent('Not measured: partial coverage.');
+    expect(within(headline).queryByRole('button', { name: /, explain$/ })).toBeNull();
+    expect(screen.getByTestId('noise-coverage-warning')).toBeInTheDocument();
+  });
+
   it('restores the exact Testing presentation when toggled to Detailed', async () => {
     const user = userEvent.setup();
     const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
@@ -394,9 +435,8 @@ describe('NoiseFunnel', () => {
       'true',
     );
     expect(detailed).toHaveTextContent(/Reduced by\s*96%/i);
-    expect(detailed).toHaveTextContent(
-      /1,000 events ingested\s*→\s*7 cases closed by a human/i,
-    );
+    // The headline's own inputs: its numerator is the Needs a human stage.
+    expect(detailed).toHaveTextContent(/1,000 alerts ingested\s*→\s*40 cases needed a human/i);
     const legacyBand = within(detailed).getByTestId('noise-flow-band');
     expect(legacyBand).toHaveClass('hidden', 'h-36', 'lg:block', 'lg:h-44');
     const legacySvg = legacyBand.querySelector('svg');
@@ -952,6 +992,43 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
     // The conserved case split below it is still fully measurable.
     expect(shareText(view.container, 'auto_cleared')).toBe('· 63%');
     expect(shareText(view.container, 'closed')).toBe('· 47%');
+  });
+
+  // Round 16 B64: the counters cover part of the window (a fresh install younger than
+  // it, a counter gap) while the case tally covers all of it, so cases can outnumber
+  // the clusters counted. The flow said "Cases opened 56 · 147%"; it now says what the
+  // Detection and data health board says, and never prints a share above 100%.
+  it('says partial coverage instead of a share above 100% when the counters cover part of the window', () => {
+    const data = withStageTotals({ clustered: 38, cases: 56, auto_cleared: 36, escalated: 20 });
+    data.counters = { available: true, since: '2026-07-04T20:30:09Z', incomplete: true };
+    const view = render(<NoiseFunnel data={data} animate={false} variant="flat" />);
+
+    expect(shareText(view.container, 'cases')).toBe(`· ${SHARE_DASH}`);
+    expect(directLabel(view.container, 'cases')).toHaveAttribute(
+      'aria-label',
+      'Cases opened: 56 cases, not measured: partial coverage.',
+    );
+    expect(view.container.textContent).not.toMatch(/14[0-9]%/);
+    // Both totals come from the counters, so this share still stands.
+    expect(shareText(view.container, 'clustered')).toBe('· 4%');
+  });
+
+  it('never prints a reduction share above 100%', () => {
+    expect(stageShare('cases', 56, 38, { countersIncomplete: true })).toMatchObject({
+      pct: null,
+      text: SHARE_DASH,
+      sentence: 'not measured: partial coverage',
+    });
+    expect(stageShare('cases', 56, 38)).toMatchObject({
+      pct: null,
+      text: SHARE_DASH,
+      sentence: 'share unavailable, more than the clusters counted in this window',
+    });
+    expect(stageShare('closed', 9, 7).pct).toBeNull();
+    // A stage equal to its parent is a real 100%; an incomplete counter window leaves
+    // the case split below Cases opened alone (both sides are case tallies).
+    expect(stageShare('cases', 38, 38)).toMatchObject({ pct: 100, text: '100%' });
+    expect(stageShare('auto_cleared', 25, 40, { countersIncomplete: true })).toMatchObject({ text: '63%' });
   });
 
   it('derives parent-relative shares without ever inventing a percentage', () => {

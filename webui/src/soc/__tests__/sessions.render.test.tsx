@@ -54,7 +54,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { AuthProvider } from '../auth';
 import { TooltipProvider } from '@/ui/tooltip';
-import Sessions, { activityRows, sessionActionLabel } from '../pages/Sessions';
+import Sessions, { activityRows, activitySentence, sessionActionLabel } from '../pages/Sessions';
 
 function renderSessions() {
   return render(
@@ -190,7 +190,98 @@ describe('Sessions activity rows', () => {
     sessionsList.mockResolvedValue({ sessions: [] });
     renderSessions();
     fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
-    expect(await screen.findByText('Signed in with a password')).toBeInTheDocument();
+    expect(await screen.findByText('You signed in.')).toBeInTheDocument();
+    expect(screen.queryByText('No recent activity.')).not.toBeInTheDocument();
+  });
+
+  it('shows a plain sentence per known event and never the raw audit detail', async () => {
+    // The audit rows' own summaries are internal records: an event this list knows reads
+    // as a sentence, and one it does not know shows its name alone.
+    activity.mockResolvedValue({
+      activity: [
+        { ...record, id: 'a-1', event_label: 'Signed in', result_summary: 'login ok' },
+        {
+          ...record,
+          id: 'a-2',
+          action: 'session.created',
+          event_label: 'Session started',
+          result_summary: 'session_create sid=3970e7b9… new session (unknown /)',
+        },
+        { ...record, id: 'a-3', action: 'session.refreshed', event_label: 'Session renewed', result_summary: 'refresh_rotate sid=1a2b3c4d… rotated from 5e6f7a8b' },
+        { ...record, id: 'a-4', action: 'case.closed', event_label: 'Case closed', result_summary: 'closed demo-0001 as fp' },
+      ],
+    });
+    sessionsList.mockResolvedValue({ sessions: [] });
+    renderSessions();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    const table = await screen.findByRole('table', { name: 'Recent account activity' });
+    expect(within(table).getByText('You signed in.')).toBeInTheDocument();
+    expect(within(table).getByText('A new session started.')).toBeInTheDocument();
+    expect(within(table).getByText('A session was renewed.')).toBeInTheDocument();
+    expect(within(table).getByText('Case closed')).toBeInTheDocument();
+    const text = table.textContent ?? '';
+    for (const raw of ['login ok', 'session_create', 'sid=', 'refresh_rotate', 'closed demo-0001 as fp']) {
+      expect(text).not.toContain(raw);
+    }
+    expect(activitySentence('session.revoked')).toBe('A session was signed out.');
+    expect(activitySentence('case.closed')).toBeNull();
+    expect(activitySentence('toString')).toBeNull();
+    expect(activitySentence(undefined)).toBeNull();
+  });
+
+  it('fits a phone panel without scrolling sideways, so it needs no focusable scroller', async () => {
+    // At 390 by 844 the Settings panel gives the table 358 px. The list holds nothing a
+    // keyboard can focus, so a table wider than that is a scroll region no keyboard can
+    // reach (axe scrollable-region-focusable, serious) and it cuts off the When column.
+    // A fixed layout truncates or wraps text instead of widening the table, and its
+    // planned minimum width stays inside the panel.
+    activity.mockResolvedValue({
+      activity: [
+        { ...record, id: 'a-1', action: 'user.preferences_updated', event_label: 'Personal preferences changed' },
+        { ...record, id: 'a-2', ts: new Date(Date.now() - 300 * 86_400_000).toISOString() },
+      ],
+    });
+    sessionsList.mockResolvedValue({ sessions: [] });
+    renderSessions();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    const table = await screen.findByRole('table', { name: 'Recent account activity' });
+    expect(table).toHaveClass('table-fixed');
+    const min = table.style.minWidth;
+    const rem = /^calc\((.+)\)$/.exec(min)?.[1] ?? min;
+    // Each term is `<n>rem` or `<k> * <n>rem` (DataTable's planned minimum).
+    const px = rem.split('+').reduce((sum, term) => {
+      const m = /^\s*(?:(\d+)\s*\*\s*)?([\d.]+)rem\s*$/.exec(term);
+      if (!m) throw new Error(`Unexpected minimum width term "${term}" in "${min}".`);
+      return sum + Number(m[1] ?? 1) * Number(m[2]) * 16;
+    }, 0);
+    expect(px).toBeGreaterThan(0);
+    expect(px).toBeLessThanOrEqual(358);
+    // The sentence wraps on a narrow screen instead of being cut short.
+    const sentence = within(table).getByText('Your personal preferences changed.');
+    expect(sentence).not.toHaveClass('truncate');
+    expect(within(table).getByText('10mo ago')).toBeInTheDocument();
+  });
+
+  it('names each event the way the Audit log does, never the raw event id', async () => {
+    activity.mockResolvedValue({ activity: [{ ...record, event_label: 'Signed in' }] });
+    sessionsList.mockResolvedValue({ sessions: [] });
+    renderSessions();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    expect(await screen.findByText('Signed in')).toBeInTheDocument();
+    expect(screen.queryByText('Auth.login')).not.toBeInTheDocument();
+    expect(activityRows({ activity: [{ ...record, event_label: 'Signed in' }] })[0].event_label).toBe(
+      'Signed in',
+    );
+  });
+
+  it('says the activity could not be loaded when the read fails, never "No recent activity."', async () => {
+    // The server answers 503 audit_unavailable instead of an empty list, so an empty
+    // table here would claim something the server never said.
+    activity.mockRejectedValue(new Error('The audit log cannot be read right now.'));
+    sessionsList.mockResolvedValue({ sessions: [] });
+    renderSessions();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    expect(await screen.findByText('Activity could not be loaded. Use Refresh to try again.')).toBeInTheDocument();
     expect(screen.queryByText('No recent activity.')).not.toBeInTheDocument();
   });
 });

@@ -36,12 +36,13 @@ from ..audit.changes import diff_changes
 from ..audit.context import audit_context
 from ..audit.prefs_write import audited_prefs_write
 from ..audit.write import audited_write
-from ..config import BrandingConfig, CustomizationConfig
+from ..config import BrandingConfig, CustomizationConfig, Preferences
 from ..constants import ActionType
 from ..models import (
     DASHBOARDS_HIDDEN_PREF_KEY,
     DISMISSED_INTROS_PREF_KEY,
     MAX_CHAT_PROMPTS,
+    WHATS_NEW_SEEN_PREF_KEY,
     ChatPrompt,
     ColumnState,
     SavedView,
@@ -227,8 +228,12 @@ async def prefs_user_put(
 
 
 #: The personal preference keys whose changes are audited (SPEC §3.5): set by the
-#: Round 14 Dashboards library (Hide, Unhide) and notices (dismissed intros).
-_AUDITED_MISC_KEYS: tuple[str, ...] = (DASHBOARDS_HIDDEN_PREF_KEY, DISMISSED_INTROS_PREF_KEY)
+#: Round 14 Dashboards library (Hide, Unhide) and notices (dismissed intros). Round 16
+#: (SPEC D7): the What's new acknowledgement (``whats_new_seen``) is audited the same
+#: way, one row per person per update; the personal switch ``whats_new_auto`` is not.
+_AUDITED_MISC_KEYS: tuple[str, ...] = (
+    DASHBOARDS_HIDDEN_PREF_KEY, DISMISSED_INTROS_PREF_KEY, WHATS_NEW_SEEN_PREF_KEY,
+)
 
 
 def _audited_misc_changes(stored: Any, misc: dict[str, Any] | None) -> list[Any]:
@@ -288,11 +293,21 @@ async def prefs_org_put(
     _admin=Depends(require_admin),  # ADMIN-ONLY: org defaults are an admin surface
 ) -> dict[str, Any]:
     """Replace the ORG customization defaults (admin-only). Validated/bounded by
-    CustomizationConfig. All free-text is plain data (#9)."""
+    CustomizationConfig. All free-text is plain data (#9).
+
+    Round 16 (WP16): the new settings are validated as a whole ``Preferences``, so its
+    after-validators run on this write as on every other: a legacy
+    ``customization.default_theme`` other than ``system`` is moved into Branding (B45)
+    and is never stored here."""
     def _apply(current):
         if current.read_only_settings_mode:
             raise HTTPException(status_code=403, detail="settings are read-only")
-        return current.model_copy(update={"customization": body})
+        merged = current.model_dump(mode="json")
+        merged["customization"] = body.model_dump(mode="json")
+        try:
+            return Preferences.model_validate(merged)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=422, detail=f"Invalid settings: {exc}") from exc
 
     _before, prefs = await audited_prefs_write(
         state, transform=_apply, actor=current_username(request) or "admin",

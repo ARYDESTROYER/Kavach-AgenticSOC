@@ -50,11 +50,12 @@ from pydantic import BaseModel, Field
 from ..audit.changes import diff_changes
 from ..audit.context import audit_context
 from ..audit.write import audited_write
-from ..auth.passwords import hash_password
+from ..auth.passwords import ahash_password
 from ..constants import ActionType, UserRole
 from ..models import AuditChange, AuditTarget
 from ..stored_text import username_problem
 from ..state import AppState
+from ..whats_new import stamp_new_account
 from .deps import get_state
 
 logger = logging.getLogger("tlsoc.api.setup")
@@ -185,11 +186,13 @@ async def setup_account(
     #    because the operator is choosing this credential right now. The caller has not
     #    signed in, so the row's context never reads a credential the request carries.
     display = (body.display_name or "").strip()
+    # Round 16 (B18): the PBKDF2 work runs off the event loop, under a semaphore.
+    password_hash = await ahash_password(body.password)
 
     async def _create():
         created = await state.users.create_if_absent(
             username=uname,
-            password_hash=hash_password(body.password),
+            password_hash=password_hash,
             role=UserRole.SUPER_ADMIN.value,
             active=True,
             must_change_password=False,
@@ -225,6 +228,9 @@ async def setup_account(
         result_summary=f"OOBE first super_admin '{uname}' created",
         tool_input={"method": "first_run_setup"},
     )
+
+    # Round 16 (SPEC D7): a new account starts with What's new marked seen (best effort).
+    await stamp_new_account(state, created.username)
 
     # The demo Admin/Admin@123 hint no longer applies once a real admin is created.
     state._seeded_default_admin = False

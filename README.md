@@ -7,7 +7,8 @@ cost-metered cases a person can review.**<br>
 The model recommends a verdict. Deterministic code makes the close or escalate decision.
 
 [![CI](https://github.com/ARYDESTROYER/Kavach-AgenticSOC/actions/workflows/ci.yml/badge.svg?branch=Testing)](https://github.com/ARYDESTROYER/Kavach-AgenticSOC/actions/workflows/ci.yml?query=branch%3ATesting)
-[![Version 0.1.13](https://img.shields.io/badge/version-0.1.13-2f81f7)](docs/releases/0.1.13.md)
+[![Version 0.2.0](https://img.shields.io/badge/version-0.2.0-2f81f7)](docs/releases/0.2.0.md)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-2f81f7)](LICENSE)
 [![Docs: Help Center](https://img.shields.io/badge/docs-Help%20Center-0a7ea4)](docs/index.md)
 
 </div>
@@ -76,7 +77,7 @@ What it is not:
   provenance. Per-source field mapping, with a mapping suggestion from a pasted sample.
 - **No skips, no duplicates on pull sources:** a durable cursor per pull source and feed,
   and cases that are idempotent by cluster signature. Receivers have no durable receipt
-  inbox in 0.1, so senders and brokers must retain and retry, and how durable each
+  inbox in 0.2, so senders and brokers must retain and retry, and how durable each
   receiver's checkpoint is depends on the receiver. The
   [source support matrix](docs/sources/support-matrix.md) lists each boundary.
 - **Comprehensive by default:** every enabled event is correlated and risk-scored. Only
@@ -103,6 +104,10 @@ What it is not:
 
 - **Deterministic case authority:** `decide()` compares the verdict, confidence and risk
   score with your `AutoClosePolicy` and chooses Close, Escalate or Needs human.
+- **Every number explains itself:** hover a risk score, verdict, SLA, cost or dashboard
+  figure for its formula with the real numbers, or click it for the inputs, steps, rounding
+  and provenance. Risk scores record their inputs and the decision records the thresholds
+  it compared, so the arithmetic reproduces what was stored.
 - **Append-only audit log:** a searchable page with three scopes, a record inspector and an
   audited CSV or JSON Lines export.
 - **Metered AI spend:** one model gateway writes one usage and cost record for every call.
@@ -114,10 +119,14 @@ What it is not:
 
 ### Work as a team
 
-- **Case Manager:** an Active, Mine, Review and All queue beside the full case, with
-  Overview, Runbook, Investigation, Collaboration and Chat tabs, a close dialog that records
-  the disposition and the actions taken, screenshots on the case, and bulk actions that run
-  as background jobs.
+- **Case Manager:** an Active, Mine, Review and All queue beside the full case, with a
+  compact header, Brief, Evidence, AI investigation, Response, Activity and Chat tabs, the
+  case facts beside every tab, a close dialog that records the disposition and the actions
+  taken, screenshots on the case, and bulk actions that run as background jobs. While the AI
+  investigates a case, the header, the queue row and the navigation show it, and the close
+  dialogs say that the run's result will replace a close made now.
+- **What's new:** a short welcome after each update and a release tracker with notes and
+  screenshots, under the Communication group with the Inbox.
 - **Auto-close review:** a small random sample of the cases the AI agent closed goes to a
   person to classify (on by default, about 5% and at most 10 a day); the answer is kept as
   independent ground truth and never changes the case unless the reviewer reopens it.
@@ -154,20 +163,20 @@ What it is not:
   fails (a database restore stays a manual step). A stack built from source is upgraded
   manually.
 - **A complete Console:** first-run setup, light and dark themes (dark by default), and a
-  version-matched Help Center that works offline at `/docs/0.1/`.
+  version-matched Help Center that works offline at `/docs/0.2/`.
 
 ## Screenshots
 
-All images are real captures of version 0.1.13 (Testing). The product views use synthetic
-Demo Mode data; the setup screens in [Installation](#installation) come from a fresh
-install. The captures use the light theme except where noted; a new Console opens in the
+All images are real captures of the Console. The product views show version 0.2.0 with
+synthetic Demo Mode data; the setup screens in [Installation](#installation) come from a
+fresh install. The captures use the light theme except where noted; a new Console opens in the
 dark theme by default. Select a thumbnail to open it full size.
 
 <table>
   <tr>
     <td width="33%" valign="top">
-      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with an escalated true-positive case open on its Investigation tab: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the Decision card below it, labelled Code, records that code routed the case to a person."></a><br>
-      <sub><b>Case Manager.</b> The advisory AI assessment, which only recommends, sits above the decision card (Code).</sub>
+      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with a false-positive case the AI closed automatically, open on its Brief tab: the Evidence lane, the Assessment lane, labelled AI, with the model's reading, and the Decision lane, labelled Code, which records that the case policy closed it."></a><br>
+      <sub><b>Case Manager.</b> On the Brief tab, the AI's advisory reading (AI) sits above the code's decision (Code).</sub>
     </td>
     <td width="33%" valign="top">
       <a href="docs/assets/screenshots/workspace-chat.webp"><img src="docs/assets/screenshots/workspace-chat.webp" width="280" alt="Workspace Chat at the end of an answer about new cases, showing a new-cases-by-severity table with top rules, the answer's lookups, time and simulated cost, and three suggested follow-up questions."></a><br>
@@ -198,8 +207,8 @@ dark theme by default. Select a thumbnail to open it full size.
       <sub><b>Settings, Models.</b> One model per agent role.</sub>
     </td>
     <td width="33%" valign="top">
-      <a href="docs/assets/screenshots/help-center.webp"><img src="docs/assets/screenshots/help-center.webp" width="280" alt="Bundled Help Center home page with the Matched to this app note, which says documentation 0.1 describes Agentic SOC 0.1.13 and is served under /docs/0.1/, above a table of guides by goal."></a><br>
-      <sub><b>Help Center.</b> Bundled with the Console at <code>/docs/0.1/</code> and matched to the installed version.</sub>
+      <a href="docs/assets/screenshots/help-center.webp"><img src="docs/assets/screenshots/help-center.webp" width="280" alt="Bundled Help Center home page with the Matched to this app note, which names the documentation line and the running version, above a table of guides by goal."></a><br>
+      <sub><b>Help Center.</b> Bundled with the Console at <code>/docs/0.2/</code> and matched to the installed version.</sub>
     </td>
     <td width="33%" valign="top">
       <a href="docs/assets/screenshots/hero-overview-dark.webp"><img src="docs/assets/screenshots/hero-overview-dark.webp" width="280" alt="Agentic SOC Cyber Defence Center dashboard in dark mode with case KPIs, a noise reduction flow and a human versus AI chart."></a><br>
@@ -273,7 +282,7 @@ source-derived data.
 | Service | Role |
 | --- | --- |
 | `tlsoc-webui` | nginx on host port 8080. Serves the Console and the `/docs` Help Center and proxies `/api/` to the backend. |
-| `tlsoc-backend` | FastAPI on port 8088 (also published for API clients and HTTP push senders). Runs connectors, receivers, engines and agents. One replica in 0.1. |
+| `tlsoc-backend` | FastAPI on port 8088 (also published for API clients and HTTP push senders). Runs connectors, receivers, engines and agents. One replica in 0.2. |
 | `tlsoc-postgres` | `pgvector/pgvector:pg16`, not published. All application state, on the `tlsoc-pgdata` volume. |
 | `tlsoc-redis` | `redis:7-alpine`, not published. Cache only, no persistence. |
 | `agentic-soc-updater` | Private update supervisor: read-only filesystem, all capabilities dropped. The only service that mounts the Docker socket; it applies signed releases that an administrator approves. |
@@ -375,7 +384,7 @@ internet access and takes a few minutes.
 
 4. Explore. You land on the **Cyber Defence Center** with synthetic cases and a
    **Demo mode** badge in the header. Open **Case Manager**, ask a suggested question in
-   **Workspace → Chat**, or open a case's **Runbook** tab.
+   **Workspace → Chat**, or open a case's **Response** tab.
 
 5. Stop both services with <kbd>Ctrl</kbd>+<kbd>C</kbd>. Demo state is held in memory and
    is discarded.
@@ -386,11 +395,11 @@ internet access and takes a few minutes.
 > deployment that turns on authentication without setting `TLSOC_AUTH_ADMIN_PASSWORD`
 > seeds this same account, so always set it (see [Installation](#installation)).
 
-Check the API from a second terminal. This is the real output from a demo run of 0.1.13:
+Check the API from a second terminal. This is the real output from a demo run of 0.2.0:
 
 ```console
 $ curl -s http://127.0.0.1:8088/api/health/live
-{"status":"ok","service":"tlsoc-agentic-triage","version":"0.1.13"}
+{"status":"ok","service":"tlsoc-agentic-triage","version":"0.2.0"}
 ```
 
 The `service` value is a compatibility identifier, not a product name.
@@ -502,7 +511,7 @@ else has a working default.
 | Operator settings | The state store | Yes | Sources and feeds, field mapping, models per role, `AutoClosePolicy`, budgets, automation, enrichment, notifications, users and roles, branding, retention |
 
 > [!WARNING]
-> **In version 0.1, secrets you type in the Console are kept in backend memory only.** A
+> **In version 0.2, secrets you type in the Console are kept in backend memory only.** A
 > provider key entered in the setup wizard or a source credential saved in a source editor
 > is lost when the backend restarts and must be entered again. Put every secret you need to
 > keep in `.env`.
@@ -614,18 +623,21 @@ check and how to run it locally.
 | **Testing** | `Testing` | Integrated candidates for acceptance testing. May contain changes that have not passed release acceptance. |
 | **Stable** | `main`, plus an immutable annotated `vX.Y.Z` tag | Accepted releases with signed, digest-pinned images and versioned documentation. |
 
-- The current source version is **0.1.13** (documentation line 0.1). The Console header
-  always shows the running version and channel, for example `v0.1.13 · Testing`.
+- The current source version is **0.2.0** (documentation line 0.2). The Console header
+  always shows the running version and channel, for example `v0.2.0 · Testing`.
 - A tag is installable only when its signed GitHub Release, public digest-pinned images and
-  canonical runtime acceptance all exist. Until 0.1.13 passes that gate, `v0.1.1` remains
+  canonical runtime acceptance all exist. Until 0.2.0 passes that gate, `v0.1.1` remains
   the last Stable tag verified as installable.
+- The repository is `ARYDESTROYER/Kavach-AgenticSOC`, and releases from 0.2.0 on are signed
+  under that name. Before you bootstrap supervised updates, set
+  `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env`.
 - The tags `v0.1.4` to `v0.1.12` are immutable historical records and are not installation
   sources. The [release pages](docs/releases/) explain each one.
 
-Known limits of 0.1: one backend replica; HTTP push has no durable receipt inbox, so senders
+Known limits of 0.2: one backend replica; HTTP push has no durable receipt inbox, so senders
 must retry; secrets entered in the Console are held in memory; several queue connectors
 still need transport-level validation. See [Release channels](docs/releases/channels.md),
-the [0.1.13 release notes](docs/releases/0.1.13.md), [Known limitations](docs/releases/known-limitations.md)
+the [0.2.0 release notes](docs/releases/0.2.0.md), [Known limitations](docs/releases/known-limitations.md)
 and [CHANGELOG.md](CHANGELOG.md).
 
 ## Roadmap
@@ -646,9 +658,24 @@ QRadar, Google Chronicle, CrowdStrike, SentinelOne and Microsoft Defender.
 
 ## License
 
-This repository does not publish a license file. Source availability does not grant
-permission to use, modify or redistribute the code. An explicit license must be added before
-the project is represented as open source.
+Agentic SOC is licensed under the [Apache License, Version 2.0](LICENSE). You may use,
+modify and redistribute it under those terms. Each shipping image carries the license text
+at `/usr/share/doc/agentic-soc/LICENSE` and the label
+`org.opencontainers.image.licenses="Apache-2.0"`.
+
+### Third-party notices
+
+Some bundled material keeps its own license:
+
+- The Console bundles the Inter and JetBrains Mono fonts (`@fontsource-variable/inter`,
+  `@fontsource/jetbrains-mono`) under the SIL Open Font License 1.1.
+- `backend/app/agents/chat_role_lookalikes.py` holds data derived from the Unicode
+  `confusables.txt` of UTS #39. Unicode data is © Unicode, Inc. and used under the
+  [Unicode License](https://www.unicode.org/terms_of_use.html).
+- `backend/app/threat/` bundles a compact subset of MITRE ATT&CK, © The MITRE Corporation,
+  under the ATT&CK [Terms of Use](https://attack.mitre.org/resources/legal-and-branding/terms-of-use/).
+
+Other dependencies are installed by the package managers under their own licenses.
 
 ## Acknowledgements
 

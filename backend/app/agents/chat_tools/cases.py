@@ -935,9 +935,11 @@ class GetCaseTool(ChatTool):
         )
         citation = None
         try:
+            # Round 16 (B42): the display number travels for the Sources chip; the
+            # internal id stays the navigation target.
             citation = Citation(
                 id=citation_id("C", 1, ctx), kind="case", title=case.title or case.case_id,
-                case_id=case.case_id, untrusted=True,
+                case_id=case.case_id, case_number=(case.case_number or None), untrusted=True,
             )
         except Exception:  # noqa: BLE001 — an unusual case id simply is not citable
             citation = None
@@ -962,6 +964,7 @@ class GetCaseTool(ChatTool):
         projected; the engine fences the whole observation. The runbook's selection
         reason and match explanation are never projected: they quote rule names and
         other values that come from logs (#9)."""
+        from ...api.cost_text import withhold_cost_text
         from ...engine.case_rationale import build_rationale
 
         try:
@@ -994,7 +997,13 @@ class GetCaseTool(ChatTool):
             "knowledge_sources": dict(knowledge_sources.most_common(5)),
             "reasoning": opt_text(data.get("reasoning"), 600),
             # Engine-authored by case_manager (verdict enum, numbers, policy values).
-            "decision_rationale": opt_text(data.get("decision_rationale"), 400),
+            # Its spend figure follows cost:view, as the rationale route's does
+            # (Round 16, WP16: ``api.cost_text``).
+            "decision_rationale": opt_text(
+                data.get("decision_rationale") if ctx.has("cost", "view")
+                else withhold_cost_text(data.get("decision_rationale")),
+                400,
+            ),
             "persona": opt_text(persona, 60),
             # Round 14: set only when the runbook's guidance reached the investigator.
             "runbook": opt_text(runbook.get("id"), 64),
@@ -1473,7 +1482,9 @@ class ShiftReportTool(ChatTool):
                  "title": display(q.get("title") or q.get("case_id")),
                  "severity": q.get("severity_band") if q.get("severity_band") in ("critical", "high", "medium", "low", "info") else None,
                  "verdict": verdict_semantic(q.get("verdict")), "status": q.get("status"),
-                 "risk": finite(q.get("risk_score"))}
+                 "risk": finite(q.get("risk_score")),
+                 # The creation time every case list carries (Round 16 B39).
+                 "created_at": iso_or_none(q.get("created_at"))}
                 for q in queue[:min(limit, _CASE_LIST_MAX)] if q.get("case_id")
             ]},
             provenance="code", untrusted_labels=True, total=len(queue), truncated=len(queue) > limit,

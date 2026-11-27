@@ -110,6 +110,18 @@ describe('Boot gate — must-change-password on reload (finding 0)', () => {
   });
 });
 
+describe('Boot gate: the hand-off spinner reveals late (sign-in hand-off)', () => {
+  it('marks the boot spinner for the 300ms delayed reveal, on the canvas', async () => {
+    // A pending session check holds the boot gate on its spinner.
+    meMock.mockImplementation(() => new Promise(() => undefined));
+    render(<App />);
+    const spinner = await screen.findByRole('status', { name: 'Starting console…' });
+    // `login-delayed-reveal` (theme.css) keeps a fast load from flashing a spinner
+    // between the sign-in page and the Console; the shared canvas avoids a colour jump.
+    expect(spinner).toHaveClass('login-delayed-reveal', 'bg-canvas', 'min-h-dvh');
+  });
+});
+
 describe('Boot gate — failed /api/auth/me (finding 1)', () => {
   it('shows a retry gate instead of failing open into the console', async () => {
     meMock.mockRejectedValue(new Error('network down'));

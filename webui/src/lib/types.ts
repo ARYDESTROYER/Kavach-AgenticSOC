@@ -277,6 +277,8 @@ export interface ActivityEvent {
   ts?: string;
   /** The action type (e.g. "AUTH_EVENT" / "USER_MGMT" / "SESSION") — plain text. */
   action?: string;
+  /** The friendly event name the Audit log shows (e.g. "Signed in"), when the server sends it. */
+  event_label?: string;
   /** A short human-readable summary of the event (UNTRUSTED — plain text). */
   detail?: string;
   /** The actor (usually the user themselves) — plain text. */
@@ -303,9 +305,8 @@ export interface ActivityResponse {
 }
 
 /**
- * POST /api/auth/refresh / POST /api/auth/reauth — the step-up / rotation result.
- * The new session cookie is set HttpOnly server-side; the body carries only
- * non-secret confirmation (no token is returned to JS).
+ * POST /api/auth/reauth: the step-up result. The body carries only non-secret
+ * confirmation (no token is returned to JS).
  */
 export interface ReauthResult {
   ok: boolean;
@@ -3340,6 +3341,11 @@ export interface ChatCitation {
   /** `/docs/<major.minor>/<path>/#anchor` (validated). */
   doc?: string | null;
   case_id?: string | null;
+  /**
+   * Round 16 (B42): the case's display number (`CASE-000043`) for a case citation.
+   * Display text only; navigation uses `case_id`. Absent on older transcripts.
+   */
+  case_number?: string | null;
   /** `T1234` or `T1234.001`. */
   technique?: string | null;
   snippet?: string | null;
@@ -3882,6 +3888,11 @@ export interface StandupResponse {
   window_hours?: number;
   summary?: string;
   aggregate?: Record<string, unknown>;
+  /**
+   * The summary's AI spend in USD. It follows `cost:view` (Round 16): without the grant
+   * the key stays and reads `null`. Absent when the Standup is turned off.
+   */
+  cost?: number | null;
   [key: string]: unknown;
 }
 
@@ -4077,6 +4088,12 @@ export interface Metrics {
   playbook_usage: Record<string, number>;
   /** Mean normalised risk score (0..100). */
   avg_risk_score: number;
+  /**
+   * How many scored cases `avg_risk_score` divides by (Round 16, additive). The server
+   * does not send the sum, so Average risk explains itself as the mean over this count.
+   * Optional so an older backend reads as unknown.
+   */
+  avg_risk_case_count?: number;
   /**
    * Active Risk Index (Round-7; additive) — the canonical top-right instrument on the
    * Cyber Defence Center. The mean deterministic `risk_score` over NON-TERMINAL
@@ -6232,6 +6249,257 @@ export interface SuppressionRuleConfig {
 export interface UserPrefs {
   /** Per-user saved custom dashboards (dashboard id → layout). */
   dashboards?: Record<string, DashboardLayout>;
+}
+
+// --------------------------------------------------------------------------- //
+// Round 16 contracts (SPEC §4.3 WP01), mirrored from `backend/app/models.py`.
+// Type-only: zero runtime bytes. Every string a case, source or person controls is
+// rendered as a text node (#9).
+// --------------------------------------------------------------------------- //
+
+/** How the velocity factor was found: `rate`, or 0 below 3 events. */
+export type RiskVelocityRule = 'below_min_events' | 'rate';
+/** Where the reputation input came from. */
+export type RiskReputationSource = 'enrichment' | 'not_ip_entity' | 'enrichment_off' | 'not_looked_up';
+/** How the asset policy matched the entity (the matched range is never stored). */
+export type RiskAssetMatch = 'network' | 'exact' | 'none';
+
+/** The five risk weights in force when a score was computed. */
+export interface RiskWeightsSnapshot {
+  volume: number;
+  velocity: number;
+  reputation: number;
+  diversity: number;
+  asset_criticality: number;
+}
+
+/** The reference points at which a factor reaches full score. */
+export interface RiskReferences {
+  volume: number;
+  velocity: number;
+  diversity: number;
+}
+
+/**
+ * What one risk score was computed from (backend `RiskInputs`, recorded beside
+ * `compute_risk`). `rule_values` are source-controlled strings (at most 50, each at
+ * most 256 characters); `rule_type_count` is the count the diversity factor used.
+ */
+export interface RiskInputs {
+  event_count: number;
+  span_seconds: number;
+  effective_window_seconds: number;
+  rate_per_minute: number | null;
+  velocity_rule: RiskVelocityRule;
+  rule_values: string[];
+  rule_type_count: number;
+  reputation_input: number;
+  reputation_source: RiskReputationSource;
+  asset_value: number;
+  asset_match: RiskAssetMatch;
+  weights: RiskWeightsSnapshot;
+  total_weight: number;
+  zero_weight_fallback: boolean;
+  refs: RiskReferences;
+  scored_at: string;
+  inputs_version: number;
+}
+
+/**
+ * A case's stored risk factors (each rounded to 2 decimals) and total. `inputs` is
+ * absent on every score computed before the inputs were recorded ("not recorded").
+ */
+export interface RiskBreakdown {
+  volume?: number;
+  velocity?: number;
+  reputation?: number;
+  diversity?: number;
+  asset_criticality?: number;
+  total?: number;
+  inputs?: RiskInputs | null;
+}
+
+/** Additive `Case` field mirrored from backend `Case.risk_breakdown`. */
+export interface Case {
+  risk_breakdown?: RiskBreakdown | null;
+}
+
+export type InvestigationState = 'queued' | 'running' | 'finished';
+export type InvestigationPhase = 'queued' | 'triage' | 'specialist' | 'evidence' | 'verdict' | 'decision';
+export type InvestigationTrigger = 'automatic' | 'manual' | 'job' | 'drain' | 'detection';
+export type InvestigationOutcome =
+  | 'decided'
+  | 'routed_to_person'
+  | 'closed_by_policy'
+  | 'unchanged'
+  | 'cancelled'
+  | 'failed';
+
+/**
+ * One AI investigation run (backend `InvestigationView`). Ids, enums, ISO timestamps and
+ * integers only. `requested_by_you` and `requested_by` come only from the caller-scoped
+ * route; `requested_by` only for a holder of `users:manage`.
+ */
+export interface InvestigationView {
+  run_id: string;
+  case_id: string | null;
+  state: InvestigationState;
+  phase: InvestigationPhase;
+  trigger: InvestigationTrigger;
+  queued_at: string;
+  started_at: string | null;
+  deadline_at: string | null;
+  time_cap_seconds: number;
+  finished_at: string | null;
+  outcome: InvestigationOutcome | null;
+  status_after: string | null;
+  verdict_after: string | null;
+  requested_by_you?: boolean;
+  requested_by?: string | null;
+}
+
+/** The investigation gate's use. */
+export interface InvestigationSlots {
+  in_use: number;
+  cap: number;
+}
+
+/** `GET /api/investigations/active` (memory only; another replica's runs are not seen). */
+export interface InvestigationsActive {
+  items: InvestigationView[];
+  recent: InvestigationView[];
+  new_runs: number;
+  slots: InvestigationSlots;
+  process_local: boolean;
+  generated_at: string;
+}
+
+/** The `case.investigation` SSE frame: a view without the viewer fields, plus two counts. */
+export type InvestigationFrame = Omit<InvestigationView, 'requested_by_you' | 'requested_by'> & {
+  active: number;
+  new_runs: number;
+};
+
+/** How a trace span's cost and latency were found. */
+export type TraceSpanCostBasis = 'exact' | 'split';
+
+/**
+ * The bounded audit record behind one trace span (backend `TraceSpanDetail`). The texts
+ * can carry fenced UNTRUSTED log data: render them in `CodeBlock` or as text (#9).
+ */
+export interface TraceSpanDetail {
+  tool_input: unknown;
+  query_text: string | null;
+  tool_output_summary: string | null;
+  prompt_excerpt: string | null;
+  result_summary: string | null;
+  outcome: string | null;
+  run_id: string | null;
+  app_version: string | null;
+  build_sha: string | null;
+  truncated: boolean;
+}
+
+/** Where a ledger row's rates came from. */
+export type UsagePriceBasis = 'catalog' | 'overlay' | 'custom' | 'mock' | 'demo_simulated';
+
+/** One ledger row of a case (backend `UsageDoc`); the rate fields are absent on older rows. */
+export interface CaseUsageRow {
+  app_version?: string | null;
+  build_sha?: string | null;
+  ts: string;
+  surface: string;
+  case_id?: string | null;
+  role: string;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost: number;
+  currency: string;
+  latency_ms: number;
+  outcome: string;
+  pricing_source: string;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  batch: boolean;
+  processing_tier: string;
+  idempotency_key?: string | null;
+  failure_class: string;
+  attempts: number;
+  usage_estimated: boolean;
+  input_rate_per_million?: number | null;
+  output_rate_per_million?: number | null;
+  cache_read_rate_per_million?: number | null;
+  cache_write_rate_per_million?: number | null;
+  cache_write_ttl?: string | null;
+  price_basis?: UsagePriceBasis | string | null;
+}
+
+/** A case's ledger spend split as the Console shows it. */
+export interface CaseUsageTotals {
+  pipeline: number;
+  chat: number;
+  /** Runbook AI help (surface `runbook`); absent from a server before it was split out. */
+  runbook?: number;
+  other: number;
+}
+
+/** `GET /api/cases/{case_id}/usage` (served only with `cost:view`). */
+export interface CaseUsagePage {
+  case_id: string;
+  rows: CaseUsageRow[];
+  returned: number;
+  rows_total: number | null;
+  truncated: boolean;
+  totals: CaseUsageTotals;
+  token_cost: number | null;
+  reconciles: boolean | null;
+}
+
+export type CaseEventsUnavailableReason = 'aged_out' | 'push_source_not_retrievable' | 'source_unavailable';
+
+/**
+ * One raw record behind a case: the `/api/logs` row contract plus where it came from and
+ * which findings cite it. Every value is source-controlled UNTRUSTED data (#9).
+ */
+export interface CaseEventRow {
+  id: string;
+  ts: string;
+  source_ip?: string | null;
+  user?: string | null;
+  host?: string | null;
+  rule?: string | null;
+  severity?: unknown;
+  message?: string | null;
+  _raw?: Record<string, unknown>;
+  index?: string | null;
+  source_id?: string | null;
+  in_evidence?: number[];
+  [key: string]: unknown;
+}
+
+/** `GET /api/cases/{case_id}/events`. */
+export interface CaseEventsPage {
+  case_id: string;
+  available: boolean;
+  reason: CaseEventsUnavailableReason | null;
+  returned: number;
+  expected: number;
+  truncated: boolean;
+  limit: number;
+  next_cursor: string | null;
+  rows: CaseEventRow[];
+}
+
+/**
+ * The What's new keys of `UserPrefs.misc` (normalised on load by the backend):
+ * `whats_new_seen` is the newest release-notes update id seen, `whats_new_auto` the
+ * "Show What's new after updates" switch (absent means on).
+ */
+export interface WhatsNewPrefsMisc {
+  whats_new_seen?: string;
+  whats_new_auto?: boolean;
 }
 
 // --------------------------------------------------------------------------- //

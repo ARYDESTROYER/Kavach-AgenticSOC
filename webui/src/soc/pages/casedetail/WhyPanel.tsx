@@ -8,7 +8,7 @@
  *
  * Round 14 (SPEC §4.10.9): the Published runbook the investigator received is shown as
  * "Runbook" with its version, consulted or selected only; a run from before Round 14
- * keeps its stored procedure id under "Runbook (before Round 14)".
+ * keeps its stored procedure id under "Older runbook".
  *
  * Round 15 (SPEC D8.5): it opens inside the Investigation tab's AI assessment ("Show full
  * assessment evidence"), so it is flat: sections divided by hairlines with plain h3
@@ -64,6 +64,31 @@ function decisionByLabel(decisionBy?: string): { text: string; isHuman: boolean 
   const d = (decisionBy || '').toLowerCase();
   const isHuman = d.includes('human') || d.includes('analyst') || d.includes('operator');
   return { text: decisionBy ? humanizeToken(decisionBy) : 'Automated pipeline', isHuman };
+}
+
+/**
+ * The case's lifetime retrieval markers in words (Round 16 SPEC §4.5 WP14, research
+ * data-visibility R15), so "unavailable" above is explained: whether the case's whole
+ * retrieval history is recorded, and whether any retrieval has completed on it. Null when
+ * the case carries neither marker.
+ */
+export function lifetimeRetrievalLine(c: Pick<Case, 'retrieval_history_status' | 'retrieval_observation_status'>): string | null {
+  const history =
+    c.retrieval_history_status === 'available'
+      ? 'its full retrieval history is recorded'
+      : c.retrieval_history_status === 'unavailable'
+        ? 'its earlier retrieval history was not recorded'
+        : '';
+  const observed =
+    c.retrieval_observation_status === 'measured'
+      ? 'at least one retrieval completed'
+      : c.retrieval_observation_status === 'not_measured'
+        ? 'no retrieval has completed yet'
+        : c.retrieval_observation_status === 'unavailable'
+          ? 'whether a retrieval completed was not recorded'
+          : '';
+  const parts = [history, observed].filter(Boolean);
+  return parts.length ? `Across this case: ${parts.join(', and ')}.` : null;
 }
 
 export const WhyPanel: React.FC<{
@@ -284,7 +309,7 @@ export const WhyPanel: React.FC<{
             ) : procedurePlaybook?.selected_id ? (
               <div className="grid gap-2 py-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-start">
                 <div className="text-xs font-medium text-muted-foreground">
-                  Runbook (before Round 14)
+                  Older runbook
                 </div>
                 <div className="min-w-0">
                   <div className="break-all font-mono text-sm font-semibold text-foreground">
@@ -358,6 +383,11 @@ export const WhyPanel: React.FC<{
           Reference excerpts retrieved through RAG. Runbook passages are identified
           separately; the runbook whose guidance the run received is shown above.
         </p>
+        {lifetimeRetrievalLine(c) ? (
+          <p className="text-xs text-muted-foreground" data-testid="why-lifetime-retrieval">
+            {lifetimeRetrievalLine(c)}
+          </p>
+        ) : null}
         {knowledge.length === 0 ? (
           <EmptyState
             icon={BookOpen}
@@ -612,7 +642,7 @@ export const WhyPanel: React.FC<{
           {!guidance && playbook && playbook.id && playbook.consulted === true ? (
             <WhyBlock>
               <WhyHeading>
-                Runbook consulted (before Round 14)
+                Older runbook consulted
               </WhyHeading>
               <Badge variant="info" className="font-mono">
                 {playbook.id}{playbook.version ? ` · v${playbook.version}` : ''}

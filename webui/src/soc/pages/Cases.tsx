@@ -880,6 +880,9 @@ export default function Cases({
   const [handoffTarget, setHandoffTarget] = React.useState<CaseManagerHandoffTarget | null>(null);
   const handoffTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selected, setSelected] = React.useState<string[]>([]);
+  // The bulk bar's measured height: it can wrap to more than one row, so the bottom space
+  // the page keeps free follows it.
+  const [bulkBarHeight, setBulkBarHeight] = React.useState<number | null>(null);
 
   const [bulkBusy, setBulkBusy] = React.useState(false);
   const [bulkError, setBulkError] = React.useState<string | null>(null);
@@ -1981,8 +1984,14 @@ export default function Cases({
       variant="fluid"
       // Reserve bottom space whenever the fixed bulk bar is showing so it never covers the
       // last table rows or the pager. Keyed to the SAME selection state the bar's own
-      // visibility gate reads, so the padding and the bar are always in lockstep.
+      // visibility gate reads, so the padding and the bar are always in lockstep. A bar
+      // that wrapped to more rows than pb-28 holds raises the space to its height.
       className={cn(selectedCases.length > 0 && 'pb-28')}
+      style={
+        selectedCases.length > 0 && bulkBarHeight && bulkBarHeight + BULK_BAR_CLEARANCE > BULK_BAR_RESERVE
+          ? { paddingBottom: bulkBarHeight + BULK_BAR_CLEARANCE }
+          : undefined
+      }
     >
       <PageHeader
         title={t('cases', 'Cases')}
@@ -2200,6 +2209,7 @@ export default function Cases({
         unavailableReason={
           demoActive ? 'Bulk changes are off in Demo Mode. Open a case to change it.' : null
         }
+        onHeightChange={setBulkBarHeight}
       />
 
       <CaseManagerHandoff target={handoffTarget} />
@@ -2377,6 +2387,42 @@ const BULK_DISPOSITIONS: Array<{ value: string; label: string }> = [
   { value: 'duplicate', label: 'Duplicate' },
 ];
 
+/** The bottom space `pb-28` keeps free under the page while the bulk bar shows (px). */
+const BULK_BAR_RESERVE = 112;
+/** The bar's own `bottom-5` offset plus a little air above the last row (px). */
+const BULK_BAR_CLEARANCE = 40;
+/** The side gutter the bar keeps inside the main column (px, each side). */
+const BULK_BAR_GUTTER = 16;
+
+/**
+ * Where the main column sits (`#socMain`): the bar centres on it and never spans more than
+ * it, so it never covers the navigation rail. `null` until measured (and in tests), when the
+ * bar falls back to centring on the viewport.
+ */
+function useMainColumnFrame(active: boolean): { center: number; width: number } | null {
+  const [frame, setFrame] = React.useState<{ center: number; width: number } | null>(null);
+  React.useLayoutEffect(() => {
+    if (!active || typeof document === 'undefined') return undefined;
+    const main = document.getElementById('socMain');
+    if (!main) return undefined;
+    const measure = () => {
+      const rect = main.getBoundingClientRect();
+      if (!(rect.width > 0)) return;
+      const next = { center: Math.round(rect.left + rect.width / 2), width: Math.round(rect.width) };
+      setFrame((prev) => (prev && prev.center === next.center && prev.width === next.width ? prev : next));
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(main);
+    window.addEventListener('resize', measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [active]);
+  return frame;
+}
+
 const BulkActionBar: React.FC<{
   count: number;
   busy: boolean;
@@ -2393,6 +2439,8 @@ const BulkActionBar: React.FC<{
   unavailableReason?: string | null;
   /** How many selected cases the AI agent closed (left out of Set status and Set disposition, D4.7). */
   agentClosedCount?: number;
+  /** The bar's measured height while it shows (`null` once it hides), for the page's bottom space. */
+  onHeightChange?: (height: number | null) => void;
 }> = ({
   count,
   busy,
@@ -2407,8 +2455,25 @@ const BulkActionBar: React.FC<{
   onClear,
   unavailableReason = null,
   agentClosedCount = 0,
+  onHeightChange,
 }) => {
   const locked = busy || Boolean(unavailableReason);
+  const showing = count > 0;
+  const frame = useMainColumnFrame(showing);
+  // On the Card, never the AnimatePresence child: the bar's height is the Card's.
+  const barRef = React.useRef<HTMLDivElement | null>(null);
+  React.useLayoutEffect(() => {
+    const el = barRef.current;
+    if (!showing || !el || !onHeightChange || typeof ResizeObserver === 'undefined') return undefined;
+    const report = () => onHeightChange(Math.round(el.getBoundingClientRect().height));
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      onHeightChange(null);
+    };
+  }, [showing, onHeightChange]);
   // D4.7: the help text both bulk relabelling menus carry, with the count when it applies.
   const leftOutText = `${AGENT_CLOSED_LEFT_OUT}${
     agentClosedCount
@@ -2469,19 +2534,36 @@ const BulkActionBar: React.FC<{
       animate={{ opacity: 1, x: '-50%', y: 0 }}
       exit={{ opacity: 0, x: '-50%', y: 16 }}
       transition={HOUSE_SPRING}
-      // `w-max` lets the pill hug its content up to the max-w-[94vw] ceiling, so the
-      // Card's `overflow-x-auto` (below) actually engages once the controls exceed the
-      // viewport instead of the wrapper silently stretching.
+      // `w-max` lets the pill hug its content up to its ceiling (never the half-width a
+      // `left: 50%` box would otherwise wrap at, the old wrap glitch #3). Once measured,
+      // the bar centres on the main column and is never wider than it (FXE), so it never
+      // covers the navigation rail; the viewport classes are the unmeasured fallback.
       className="fixed bottom-5 left-1/2 z-50 w-max max-w-[94vw]"
+      style={
+        frame
+          ? { left: frame.center, maxWidth: Math.max(0, frame.width - 2 * BULK_BAR_GUTTER) }
+          : undefined
+      }
+      data-testid="cases-bulk-bar"
     >
       <Card
+        ref={barRef}
         elevation="none"
-        // Single scrollable row, never a wrapped second line (#3): flex-nowrap +
-        // overflow-x-auto scroll the controls horizontally when narrow; [&>*]:shrink-0
-        // keeps every direct child at its natural width so flex-shrink can't squeeze
-        // them before the row starts scrolling.
-        className="flex flex-nowrap items-center gap-2 overflow-x-auto px-3 py-2.5 shadow-elev2 [&>*]:shrink-0"
+        // Every control stays on screen: when the row is wider than the bar's ceiling it
+        // wraps onto a second centred row, never a sideways scroll that hides Close and
+        // Clear (FXE). [&>*]:shrink-0 keeps each control at its natural width.
+        className="flex flex-wrap items-center justify-center gap-2 px-3 py-2.5 shadow-elev2 [&>*]:shrink-0"
       >
+        {unavailableReason ? (
+          // Its own line above the controls, so it never widens the row (FXE).
+          <p
+            role="note"
+            data-testid="cases-bulk-demo-note"
+            className="basis-full text-center text-xs text-muted-foreground"
+          >
+            {unavailableReason}
+          </p>
+        ) : null}
         {/* The one progress cue lives in the count badge, which every role sees: a role
             without Reinvestigate (tier 1, responder) still sees its submit in flight. */}
         <span
@@ -2497,11 +2579,6 @@ const BulkActionBar: React.FC<{
           ) : null}
           {count} selected
         </span>
-        {unavailableReason ? (
-          <span role="note" data-testid="cases-bulk-demo-note" className="text-xs text-muted-foreground">
-            {unavailableReason}
-          </span>
-        ) : null}
 
         {/* cases:write tier — primary CTA of the bar: the single most common bulk
             action, so it gets the filled/primary treatment (matches the "N selected"
@@ -2527,7 +2604,7 @@ const BulkActionBar: React.FC<{
                 Assign
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-60" side="top">
+            <PopoverContent aria-label="Assign" className="w-60" side="top">
               <div className="space-y-2">
                 <label
                   htmlFor="bulk-assignee"
@@ -2567,7 +2644,7 @@ const BulkActionBar: React.FC<{
                 Add tag
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-60" side="top">
+            <PopoverContent aria-label="Add tag" className="w-60" side="top">
               <div className="space-y-2">
                 <label
                   htmlFor="bulk-tag"

@@ -24,6 +24,7 @@ import { LoadingState } from '@/design-system/loading';
 import { Badge } from '@/ui/badge';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
+import { triggerSentenceText } from '@/soc/components/caseActivityText';
 
 export interface NoiseLineageProps {
   data: NoiseLineage | null;
@@ -144,8 +145,10 @@ function LineageRow({ row }: { row: NoiseLineageRow }) {
   const clusterLabel = clustering.cluster_id
     ? `cluster-${clustering.cluster_id.slice(0, 12)}`
     : 'Cluster details unavailable';
+  // The stored trigger sentence, as the case page shows it (equal severity ends read as
+  // one value; the stored sentence is unchanged).
   const correlationSummary =
-    correlation.reason ||
+    triggerSentenceText(correlation.reason) ||
     [
       correlation.group_by ? `Grouped by ${humanizeToken(correlation.group_by)}` : '',
       correlation.window_seconds ? secondsLabel(correlation.window_seconds) : '',

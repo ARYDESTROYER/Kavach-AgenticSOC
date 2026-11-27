@@ -333,7 +333,8 @@ export interface UseChatConversationsOptions {
   limit?: number;
   /**
    * Asked before a delete; resolve `false` to cancel. The host owns the dialog copy
-   * ("Delete conversation? … Its report stays in Reports").
+   * ("Delete conversation?"), which adds "Its report stays in Reports." only when the
+   * thread has a report.
    */
   confirmDelete?: (item: ChatConversationSummary) => Promise<boolean>;
 }

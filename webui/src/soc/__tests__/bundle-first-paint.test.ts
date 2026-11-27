@@ -181,8 +181,43 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * allows) from 336,216 B to the integrated entry, 329,080 B with WP7 merged (WP7 itself
  * measured -4 B), so the 7,136 B the round moved out of first paint cannot be spent
  * unseen. The +1,024 B budget and the 400,000 B ceiling are unchanged.
+ *
+ * Round 16 (its SPEC §3.1 and §4.6 WP16, the one ratchet that item allows). The integrated
+ * tree 9a94df2 measured 330,279 B with `npm run build:app`, 175 B over the 330,104 B budget:
+ * +1,199 B over 329,080 B. Per file, through the source map: useEventStream.ts +2,346 (WP09's
+ * one stream per page), Login.tsx +1,404 with LoginAuthBackdrop.tsx -5,380, ThemeModePill.tsx
+ * -1,350 and ShineButton.tsx -436 (WP04's quiet sign-in), NavSidebar.tsx +958 (the AI count),
+ * router.tsx +651, investigations/count.ts +370, whats-new/WhatsNewGate.tsx +359, Wizard.tsx
+ * +355, sources-primary.ts +311, AppShell.tsx +289, semver.ts +262 with upstream-release.ts
+ * -263, registry.tsx +234, theme.tsx +202, SystemUpdateControl.tsx +161, case-tabs.ts +93,
+ * skip-link.ts +86, main.tsx +72, App.tsx +69, +372 unmapped and +34 of small drift. WP16P
+ * then moved the case page's agent-step narration (agentStepFromFrame, appendAgentStep,
+ * useAgentSteps) out of the shell's event stream module into lib/agentSteps.ts, which only the
+ * lazy case activity feed imports (useEventStream.ts -461), and the confirm provider gained
+ * its focus return (ConfirmDialog.tsx +259; main.tsx -9). Measured with `npm run build:app`:
+ * 330,068 B, 36 B inside the old budget. The baseline was set to it: 988 B above the Round 15
+ * baseline, the round's measured growth, so nothing more can be spent unseen. The +1,024 B
+ * budget and the 400,000 B ceiling are unchanged.
+ *
+ * Round 16 package FXF. The fix packages merged on 39335e5 brought the entry, built stamped
+ * as CI builds it (TLSOC_RELEASE_CHANNEL, TLSOC_BUILD_SHA and TLSOC_BUILD_DATE set, then
+ * `vite build`), to 331,181 B: 89 B over the 331,092 B budget. The sign-in page imported the
+ * two-factor setup card eagerly, so first paint carried the card, its QR encoder, the card
+ * and checkbox primitives and the clipboard helper for a step few sign-ins reach. FXF loads
+ * the card through retryingLoader when an enrollment starts, before the step shows, with a
+ * plain line if the chunk cannot load. Measured the same way: 318,008 B (-13,173 B), per
+ * file MfaSetupCard.tsx -10,094, ui/card.tsx -1,589, lib/clipboard.ts -1,146,
+ * ui/checkbox.tsx -902, Login.tsx +349, registry.tsx +131 and under 10 B of drift elsewhere.
+ * The baseline stayed at 330,068 B until the closing records: the ratchet belongs to the
+ * round's records, not to a fix package.
+ *
+ * Round 16 closing records (its SPEC §8.1 "Entry bundle"). A11Y, the last package, left the
+ * entry unchanged. The final tree 16ea902 measured 317,962 B with `npm run build:app` (318,008 B
+ * stamped as CI builds it), so the baseline is lowered to it: 11,118 B below the Round 15
+ * baseline of 329,080 B, and the 12,106 B that FXF and the round freed below 330,068 B cannot be
+ * spent unseen. The +1,024 B budget and the 400,000 B ceiling are unchanged.
  */
-const PRE_REVAMP_ENTRY_BYTES = 329_080;
+const PRE_REVAMP_ENTRY_BYTES = 317_962;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
 
 function readHtml(): string {
@@ -248,6 +283,34 @@ describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
    * The entry had ballooned to ~537 kB; these assertions lock the shrink so a
    * future eager import of a page / settings section can't silently re-bloat it.
    * -------------------------------------------------------------------------- */
+
+  it('the Explain kit and its builders stay off first paint (Round 16 SPEC §3.1, WP11)', () => {
+    // The kit's hover hint and panel action, and a builder's hover line, are string
+    // literals: their absence proves none of the kit is in the entry chunk.
+    const entry = readEntry();
+    for (const marker of ['Select it for the full calculation.', 'Copy calculation', 'Click for inputs.']) {
+      expect(entry, `entry contains ${marker}`).not.toContain(marker);
+    }
+    const assets = fs.readdirSync(path.join(DIST, 'assets')).filter((f) => f.endsWith('.js'));
+    const kit = assets.find((f) =>
+      fs.readFileSync(path.join(DIST, 'assets', f), 'utf8').includes('Select it for the full calculation.'),
+    );
+    expect(kit, 'the Explain kit must be emitted in some lazy chunk').toBeDefined();
+    expect(entryStaticImports()).not.toContain(kit);
+    expect(readHtml()).not.toMatch(new RegExp(`modulepreload[^>]*${kit}`));
+  });
+
+  it('the two-factor setup card stays off first paint (Round 16, package FXF)', () => {
+    // Its acknowledgment line is a string literal only the card carries. The sign-in page
+    // loads the card for an enrollment step; nearly every sign-in never enrolls.
+    const marker = 'I have saved my recovery codes';
+    expect(readEntry()).not.toContain(marker);
+    const card = fs.readdirSync(path.join(DIST, 'assets')).find((f) => /^MfaSetupCard-[^/]+\.js$/.test(f));
+    expect(card, 'the card is its own lazy chunk').toBeDefined();
+    expect(fs.readFileSync(path.join(DIST, 'assets', card as string), 'utf8')).toContain(marker);
+    expect(entryStaticImports()).not.toContain(card);
+    expect(readHtml()).not.toMatch(new RegExp(`modulepreload[^>]*${card}`));
+  });
 
   it('entry chunk is well under the pre-Coupling-A 537 kB (page bodies are lazy)', () => {
     const html = readHtml();
@@ -374,6 +437,30 @@ describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
     expect(offenders, `unexpected static entry imports: ${offenders.join(', ')}`).toEqual([]);
   });
 
+  it("What's new: the notes, the dialog and the page stay off first paint (Round 16 §3.6)", () => {
+    // The entry carries only the gate (a marker compare, the newest update id and one
+    // import thunk). A notes string, the dialog's title and its test id live in lazy chunks.
+    const entry = readEntry();
+    const notes = readWhatsNewNotes();
+    expect(entry).toContain(JSON.stringify(notes.latest).slice(1, -1));
+    expect(entry).not.toContain(notes.releases[0].summary);
+    expect(entry).not.toContain(notes.releases[0].updates[0].highlights[0].summary);
+    expect(entry).not.toContain('Welcome to Agentic SOC');
+    expect(entry).not.toContain('whats-new-dialog');
+    expect(entry).not.toContain('whats-new-page');
+    const assets = fs.readdirSync(path.join(DIST, 'assets'));
+    const holding = (marker: string) =>
+      assets.filter((f) => f.endsWith('.js') && fs.readFileSync(path.join(DIST, 'assets', f), 'utf8').includes(marker));
+    expect(assets.some((f) => /^WhatsNew-[^/]+\.js$/.test(f)), 'a lazy WhatsNew page chunk').toBe(true);
+    expect(holding('Welcome to Agentic SOC').length, 'the dialog is emitted in a lazy chunk').toBeGreaterThan(0);
+    expect(holding(notes.releases[0].summary).length, 'the notes are emitted in a lazy chunk').toBeGreaterThan(0);
+    const statics = entryStaticImports();
+    for (const name of [...holding('Welcome to Agentic SOC'), ...holding(notes.releases[0].summary)]) {
+      expect(statics, name).not.toContain(name);
+      expect(readHtml()).not.toContain(name);
+    }
+  });
+
   it('the heavy Settings section tree is code-split out of the entry', () => {
     // The Settings renderer tree (BrandingEditor/RolesInner/DangerZone/…) lands in its
     // own chunk (today `settings-dirty-*.js`), NOT the entry. Assert such a chunk exists
@@ -396,6 +483,15 @@ describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
  */
 const SETTINGS_META_MARKERS = ["'analysis bundle'", "'severity weight'"];
 const SETTINGS_META_MARKER = readSettingsMetaMarker();
+
+/** The generated What's new notes (scripts/build_release_notes.py), read from source. */
+function readWhatsNewNotes(): {
+  latest: string;
+  releases: { summary: string; updates: { highlights: { summary: string }[] }[] }[];
+} {
+  const file = path.join(WEBUI_ROOT, 'src', 'soc', 'whats-new', 'release-notes.gen.json');
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
 
 function readSettingsMetaMarker(): string {
   const file = path.join(WEBUI_ROOT, 'src', 'soc', 'pages', 'settings', 'settings-sections-meta.ts');
@@ -461,6 +557,9 @@ describe('first-paint shell keeps the palette and Settings metadata lazy (source
       ['ui', 'command.tsx'],
       ['soc', 'pages', 'settings', 'settings-sections-meta.ts'],
       ['soc', 'pages', 'settings-dirty.ts'],
+      // Round 16 FXF: the sign-in page loads the two-factor setup card for an enrollment
+      // step only.
+      ['soc', 'components', 'MfaSetupCard.tsx'],
     ].map((seg) => path.join(WEBUI_ROOT, 'src', ...seg));
     const reached = lazyOnly
       .filter((file) => files.has(file))
@@ -494,6 +593,48 @@ describe('first-paint shell keeps the palette and Settings metadata lazy (source
     const mark = loader.match(/'__CHUNK_LIST:([^']+)__'/)?.[1];
     expect(mark).toBe('src/soc/components/nav-rail-interactions.tsx');
     expect(fs.existsSync(path.join(WEBUI_ROOT, mark as string))).toBe(true);
+  });
+
+  it("What's new reaches first paint only as the gate: the notes, host, dialog and page are lazy", () => {
+    const { files } = firstPaintGraph();
+    const gate = path.join(WEBUI_ROOT, 'src', 'soc', 'whats-new', 'WhatsNewGate.tsx');
+    expect(files.has(gate), 'the gate is an entry module (App mounts it)').toBe(true);
+    const lazyOnly = ['notes.ts', 'decide.ts', 'WhatsNewHost.tsx', 'WhatsNewDialog.tsx', 'ReleaseFigure.tsx']
+      .map((name) => path.join(WEBUI_ROOT, 'src', 'soc', 'whats-new', name))
+      .concat(path.join(WEBUI_ROOT, 'src', 'soc', 'pages', 'WhatsNew.tsx'));
+    const reached = lazyOnly
+      .filter((file) => files.has(file))
+      .map((file) => `${path.relative(WEBUI_ROOT, file)} (imported by ${files.get(file)})`);
+    expect(reached, "What's new modules on the first-paint graph").toEqual([]);
+    for (const file of files.keys()) {
+      expect(fs.readFileSync(file, 'utf8'), path.relative(WEBUI_ROOT, file)).not.toMatch(/release-notes\.gen\.json/);
+    }
+    // The gate loads the host only through import() of the What's new chunk, the same
+    // thunk the registry route uses.
+    expect(fs.readFileSync(gate, 'utf8')).toMatch(/import\('\.\.\/pages\/WhatsNew'\)/);
+  });
+
+  it('the Explain kit and the case narration helpers stay off the first-paint graph (Round 16 §3.1)', () => {
+    const { files } = firstPaintGraph();
+    const SRC = path.join(WEBUI_ROOT, 'src');
+    const lazyDirs = [path.join(SRC, 'design-system', 'explain'), path.join(SRC, 'lib', 'explain')];
+    const lazyFiles = [path.join(SRC, 'lib', 'agentSteps.ts')];
+    // `lib/format.ts` re-exports the one rounding rule; the bundler binds a re-export at its
+    // importer, so the rounding module rides the lazy chunks that use it (the dist check
+    // above reads the built entry).
+    const reExported = [path.join(SRC, 'lib', 'explain', 'rounding.ts')];
+    const reached = [...files.keys()]
+      .filter((file) => !reExported.includes(file))
+      .filter((file) => lazyFiles.includes(file) || lazyDirs.some((dir) => file.startsWith(`${dir}${path.sep}`)))
+      .map((file) => `${path.relative(WEBUI_ROOT, file)} (imported by ${files.get(file)})`);
+    expect(reached, 'lazy-only modules on the first-paint graph').toEqual([]);
+    // The page's one event stream is a shell module; the case page's agent-step narration
+    // (parsing and buffering `agent.step` frames) is not, so no first-paint module defines it.
+    for (const file of files.keys()) {
+      expect(fs.readFileSync(file, 'utf8'), path.relative(WEBUI_ROOT, file)).not.toMatch(
+        /export function (agentStepFromFrame|appendAgentStep|useAgentSteps)\b/,
+      );
+    }
   });
 
   it('AppShell reaches the command palette only through import()', () => {
@@ -582,10 +723,9 @@ describe('eager login chain does not pull framer-motion (source guard)', () => {
       ['soc', 'pages', 'Login.tsx'],
       ['soc', 'pages', 'Wizard.tsx'],
       ['soc', 'components', 'auth', 'loginParts.tsx'],
-      // The identity accents are statically imported by Login.tsx, so they are on
-      // the eager chain too. They animate with CSS only — this keeps it that way.
-      ['soc', 'components', 'auth', 'ShineButton.tsx'],
-      ['soc', 'components', 'auth', 'ThemeModePill.tsx'],
+      // Statically imported by Login.tsx, so on the eager chain too. The sign-in page
+      // animates with CSS only (theme.css); this keeps it that way.
+      ['soc', 'components', 'auth', 'login.api.ts'],
     ];
     // The `motion` PACKAGE specifier only — local `@/soc/components/motion` /
     // `./components/motion/*` imports start with `@`/`.` and never match.

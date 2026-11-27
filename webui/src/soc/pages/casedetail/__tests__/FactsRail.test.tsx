@@ -1,18 +1,52 @@
 /**
- * FactsRail: the Case Manager's persistent facts column (Round 12, CM-2/CM-6; Round 15,
- * D8.4). It is the ONE home for the facts the Overview used to repeat (triage chips,
+ * FactsRail: the case inspector (Round 12, CM-2/CM-6; Round 15, D8.4; Round 16, SPEC
+ * §4.4 WP03). It is the ONE home for the facts the tabs used to repeat (triage chips,
  * clocks and SLA, tags and campaign, source, primary entity, related cases, the record)
- * plus the signal profile, in eight hairline-divided sections with no icon headings. The
- * owner's one editable home is the header. This is the datum-inventory check: every fact
- * the earlier layout showed is still here.
+ * plus the signal profile, in six collapsible hairline-divided sections whose open state
+ * is kept per viewer; Record starts closed. The owner's one editable home is the header.
+ * This is the datum-inventory check: every fact the earlier layout showed is still here.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 
 import type { Case } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
 import { caseOutcome } from '@/soc/components/outcome';
-import { FactsRail } from '../FactsRail';
+import { FactsRail, INSPECTOR_SECTIONS_KEY } from '../FactsRail';
+
+// The records kit is WP14's: the stubs are mounted here, and their props pinned.
+const recordProps = vi.hoisted(() => ({ usage: null as null | Record<string, unknown>, sheet: null as null | Record<string, unknown>, awaiting: 0 }));
+vi.mock('../records/CaseUsageButton', () => ({
+  CaseUsageButton: (props: Record<string, unknown>) => {
+    recordProps.usage = props;
+    return <span>{`$${Number(props.totalCost).toFixed(4)}`}</span>;
+  },
+}));
+vi.mock('../records/AllFieldsSheet', () => ({
+  AllFieldsSheet: (props: Record<string, unknown>) => {
+    recordProps.sheet = props;
+    return props.open ? <div role="dialog" aria-label="All fields" /> : null;
+  },
+}));
+vi.mock('../records/AwaitingReason', () => ({
+  AwaitingReason: () => {
+    recordProps.awaiting += 1;
+    return <p data-testid="awaiting-reason-stub" />;
+  },
+}));
+
+beforeEach(() => {
+  window.localStorage.clear();
+  recordProps.usage = null;
+  recordProps.sheet = null;
+  recordProps.awaiting = 0;
+});
+
+/** Record starts closed: open it. */
+function openRecord() {
+  fireEvent.click(screen.getByRole('button', { name: 'Record' }));
+  return screen.getByTestId('facts-record');
+}
 
 const NOW = Date.now();
 const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
@@ -73,7 +107,7 @@ function renderRail(c: Case = FULL, extra: Partial<React.ComponentProps<typeof F
         outcome={caseOutcome(c)}
         triage={null}
         slaPolicy={null}
-        fpPolicy={{ enabled: true, min_confidence: 0.9 }}
+        policy={{ enabled: true, min_confidence: 0.9, max_risk_score: 30 }}
         canViewCost
         onCaseChange={vi.fn()}
         onShowRelated={vi.fn()}
@@ -86,13 +120,15 @@ function renderRail(c: Case = FULL, extra: Partial<React.ComponentProps<typeof F
 describe('FactsRail', () => {
   it('carries every fact the earlier Overview and header showed', () => {
     renderRail();
-    const rail = screen.getByRole('complementary', { name: 'Case facts' });
+    const rail = screen.getByRole('region', { name: 'Case facts' });
 
     // Outcome: the analyst's call, who/when, and the AI line with the agreement.
     const outcome = within(rail).getByTestId('facts-outcome');
     expect(within(outcome).getByTestId('facts-outcome-headline')).toHaveTextContent('Closed as false positive');
     expect(outcome).toHaveTextContent(/classified by aryan/i);
-    expect(outcome).toHaveTextContent('AI verdict: Needs human review (75%) · Resolves the AI hand-off');
+    // The AI line opens the decision's explanation (WP11I), so its text is the trigger's.
+    expect(within(outcome).getByTestId('facts-ai-line')).toHaveTextContent('AI verdict: Needs human review (75%)');
+    expect(outcome).toHaveTextContent('· Resolves the AI hand-off');
 
     // Who decided, in the Outcome section (D8.4).
     expect(outcome).toHaveTextContent('Decided byAnalyst');
@@ -102,10 +138,9 @@ describe('FactsRail', () => {
     const profile = within(signal).getByTestId('case-signal-profile');
     expect(within(profile).getByRole('progressbar', { name: 'Risk score: 7/100' })).toBeInTheDocument();
     const triage = within(signal).getByTestId('facts-triage');
-    for (const label of ['Severity', 'Impact', 'Priority', 'Urgency']) {
-      expect(within(triage).getByText(label)).toBeInTheDocument();
-    }
-    expect(triage).toHaveTextContent('P4');
+    expect(within(triage).getByText('Severity')).toBeInTheDocument();
+    // One compact line of priority, impact and urgency.
+    expect(within(signal).getByTestId('facts-priority-line')).toHaveTextContent('Priority P4 · Impact Low · Urgency Medium');
 
     // Tags, with the owner NOT repeated here (its one home is the header).
     expect(within(rail).getByTestId('facts-tags')).toHaveTextContent('No tags');
@@ -127,19 +162,19 @@ describe('FactsRail', () => {
     expect(entity).toHaveTextContent('203.0.113.9');
     expect(entity).toHaveTextContent('Seen by ssh_bruteforce on IBM QRadar SIEM');
 
-    // Related cases jump.
-    expect(within(rail).getByTestId('facts-related')).toHaveTextContent('2 related cases');
+    // Related cases: a link to Evidence, in Source and entity.
+    expect(within(source).getByTestId('facts-related')).toHaveTextContent('2 related cases');
 
-    // The record: decider, cost, build, profile, the procedure of a case investigated
-    // before Round 14 (its stored id under a Console-authored label), classification + AI
-    // history, notifications.
-    const record = within(rail).getByTestId('facts-record');
+    // The record (closed until opened): cost, build, profile, the procedure of a case
+    // investigated before Round 14 (its stored id under a Console-authored label),
+    // classification + AI history, notifications.
+    const record = openRecord();
     for (const text of [
       'CASE-2026-0412',
       'Investigation cost',
       'v0.1.13 · abcdef012345',
       'Network specialist',
-      'Runbook (before Round 14)',
+      'Older runbook',
       'pb-ssh',
       'Classification history',
       'AI verdict history',
@@ -150,9 +185,46 @@ describe('FactsRail', () => {
     }
   });
 
+  it('opens the Evidence events table from the Signal section event count (WP16, research R2)', () => {
+    const onShowEvents = vi.fn();
+    renderRail({ ...FULL, member_event_ids: ['e1', 'e2', 'e3'] } as unknown as Case, { onShowEvents });
+    const line = within(screen.getByTestId('facts-signal')).getByTestId('signal-event-count');
+    expect(line).toHaveTextContent('The case holds 3 events.');
+    fireEvent.click(within(line).getByRole('button', { name: '3 events. Show them on the Evidence tab' }));
+    expect(onShowEvents).toHaveBeenCalledTimes(1);
+    cleanup();
+    // Without a handler the count is plain text; without events there is no line.
+    renderRail({ ...FULL, member_event_ids: ['e1'] } as unknown as Case);
+    expect(screen.getByTestId('signal-event-count')).toHaveTextContent('The case holds 1 event.');
+    expect(within(screen.getByTestId('signal-event-count')).queryByRole('button')).toBeNull();
+    cleanup();
+    renderRail({ ...FULL, member_event_ids: [] } as unknown as Case);
+    expect(screen.queryByTestId('signal-event-count')).toBeNull();
+  });
+
+  it('lists the notifications through the records kit: the newest five, Show all, the channel id (WP16)', () => {
+    const sent = Array.from({ length: 7 }, (_, i) => ({
+      type: 'slack',
+      channel_id: `soc-alerts-${i}`,
+      trigger: 'case_created',
+      ok: i !== 6,
+      detail: i === 6 ? 'webhook answered 500' : undefined,
+      ts: iso(-(7 - i) * 60_000),
+    }));
+    renderRail({ ...FULL, notifications_sent: sent } as unknown as Case);
+    const list = within(openRecord()).getByTestId('facts-notifications');
+    expect(list).toHaveTextContent('Notifications sent (7)');
+    // Newest first, with the channel id and the failed delivery's detail.
+    expect(within(list).getAllByRole('listitem')).toHaveLength(5);
+    expect(within(list).getAllByRole('listitem')[0]).toHaveTextContent('failed (webhook answered 500)');
+    expect(within(list).getByText('soc-alerts-6')).toBeInTheDocument();
+    fireEvent.click(within(list).getByRole('button', { name: 'Show all (7)' }));
+    expect(within(list).getAllByRole('listitem')).toHaveLength(7);
+  });
+
   it('leaves the investigation cost out without cost:view, and when the server withholds it', () => {
     renderRail(FULL, { canViewCost: false });
-    const record = screen.getByTestId('facts-record');
+    const record = openRecord();
     expect(record).toHaveTextContent('Creation build');
     expect(record).not.toHaveTextContent('Investigation cost');
     expect(record).not.toHaveTextContent('$0.0123');
@@ -160,16 +232,19 @@ describe('FactsRail', () => {
 
     // The server answers `token_cost: null` for a viewer without the grant: no empty-value row.
     renderRail({ ...FULL, token_cost: null } as unknown as Case);
+    // The open state is kept per viewer: Record stays open for the next case.
     expect(screen.getByTestId('facts-record')).not.toHaveTextContent('Investigation cost');
     cleanup();
 
     renderRail();
     expect(screen.getByTestId('facts-record')).toHaveTextContent('Investigation cost$0.0123');
+    // The cost is the usage button (WP14's per-call rows), for this case.
+    expect(recordProps.usage).toEqual({ caseId: FULL.case_id, totalCost: 0.0123 });
   });
 
   it('shows the immutable case-creation build or an honest unavailable state (moved from the Overview)', () => {
     renderRail({ ...FULL, app_version: '0.1.13', build_sha: 'abcdef1234567890' } as unknown as Case);
-    expect(screen.getByTestId('facts-record')).toHaveTextContent('Creation buildv0.1.13 · abcdef123456');
+    expect(openRecord()).toHaveTextContent('Creation buildv0.1.13 · abcdef123456');
     cleanup();
     renderRail({ ...FULL, app_version: undefined, build_sha: undefined } as unknown as Case);
     expect(screen.getByTestId('facts-record')).toHaveTextContent('Creation buildUnavailable');
@@ -206,18 +281,72 @@ describe('FactsRail', () => {
     expect(screen.queryByTestId('facts-recorded-disposition')).toBeNull();
   });
 
-  it('has eight sections at most, each a plain heading with no icon (D8.4)', () => {
-    renderRail(FULL, {
-      runbook: { data: null, loading: false, failed: false, onOpenPhase: vi.fn() },
-    });
-    const rail = screen.getByRole('complementary', { name: 'Case facts' });
-    const headings = within(rail)
-      .getAllByRole('heading', { level: 3 })
-      .map((heading) => heading.textContent);
-    expect(headings).toEqual(['Outcome', 'Signal', 'Runbook', 'Times', 'Tags', 'Source', 'Related cases', 'Record']);
-    for (const heading of within(rail).getAllByRole('heading', { level: 3 })) {
-      expect(heading.querySelector('svg')).toBeNull();
+  it('has six sections, each a plain heading that folds it, with Record closed (Round 16)', () => {
+    renderRail(FULL);
+    const rail = screen.getByRole('region', { name: 'Case facts' });
+    const headings = within(rail).getAllByRole('heading', { level: 3 });
+    expect(headings.map((heading) => heading.textContent)).toEqual([
+      'Outcome',
+      'Signal',
+      'Times',
+      'Source and entity',
+      'Tags and campaign',
+      'Record',
+    ]);
+    for (const heading of headings) {
+      // The heading is its disclosure: the words first, then only the chevron.
+      const toggle = within(heading).getByRole('button');
+      expect(toggle.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+      expect(heading.querySelectorAll('svg')).toHaveLength(1);
     }
+    const expanded = headings.map((heading) => within(heading).getByRole('button').getAttribute('aria-expanded'));
+    expect(expanded).toEqual(['true', 'true', 'true', 'true', 'true', 'false']);
+    // The runbook phases and the related-cases section left the inspector.
+    expect(within(rail).queryByTestId('facts-runbook')).toBeNull();
+  });
+
+  it('keeps each section open or closed for the viewer, and survives blocked storage', () => {
+    renderRail();
+    fireEvent.click(screen.getByRole('button', { name: 'Times' }));
+    expect(screen.getByRole('button', { name: 'Times' })).toHaveAttribute('aria-expanded', 'false');
+    expect(JSON.parse(window.localStorage.getItem(INSPECTOR_SECTIONS_KEY) ?? '{}')).toEqual({ times: false });
+    cleanup();
+    renderRail();
+    expect(screen.getByRole('button', { name: 'Times' })).toHaveAttribute('aria-expanded', 'false');
+    cleanup();
+
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    try {
+      renderRail();
+      expect(screen.getByRole('button', { name: 'Times' })).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(screen.getByRole('button', { name: 'Record' }));
+      expect(screen.getByRole('button', { name: 'Record' })).toHaveAttribute('aria-expanded', 'true');
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
+  });
+
+  it('mounts the hold-reason fact in Outcome and "View all fields" in Record', () => {
+    renderRail();
+    expect(within(screen.getByTestId('facts-outcome')).getByTestId('awaiting-reason-stub')).toBeInTheDocument();
+    const record = openRecord();
+    expect(recordProps.sheet).toMatchObject({ caseId: FULL.case_id, open: false });
+    fireEvent.click(within(record).getByRole('button', { name: 'View all fields' }));
+    expect(recordProps.sheet).toMatchObject({ caseId: FULL.case_id, open: true });
+    expect(screen.getByRole('dialog', { name: 'All fields' })).toBeInTheDocument();
+  });
+
+  it('opens the Evidence list from the related-cases link', () => {
+    const onShowRelated = vi.fn();
+    renderRail(FULL, { onShowRelated });
+    fireEvent.click(screen.getByTestId('facts-related'));
+    expect(onShowRelated).toHaveBeenCalledTimes(1);
   });
 
   it('reads the AI confidence against the auto-close bar while no person has settled the case', () => {
@@ -232,7 +361,10 @@ describe('FactsRail', () => {
     renderRail(open);
     const outcome = screen.getByTestId('facts-outcome');
     expect(outcome).toHaveTextContent('AI verdict: False positive (82%)');
-    expect(screen.getByTestId('facts-auto-close-bar')).toHaveTextContent('Auto-close bar 90%');
+    // Both auto-close conditions with the case's numbers (D8), never half of the predicate.
+    expect(screen.getByTestId('facts-auto-close-bar')).toHaveTextContent(
+      "Today's policy routes it to a person: confidence 82% >= 90% (not met); risk 7 <= 30 (met).",
+    );
     cleanup();
 
     // Once an analyst classified the case, the bar no longer reads against it.
@@ -266,8 +398,7 @@ describe('FactsRail', () => {
     expect(within(tags).getByRole('list', { name: 'Tags' })).toHaveTextContent('vpn');
     expect(within(tags).getByRole('button', { name: 'Edit tags' })).toBeInTheDocument();
     expect(screen.getByTestId('facts-campaign')).toHaveTextContent('Part of campaign: Password spray wave');
-    const record = screen.getByTestId('facts-record');
-    expect(record).toHaveTextContent('SAMPLE');
+    expect(openRecord()).toHaveTextContent('SAMPLE');
   });
 
   it('adds the closed time from the status trail for a case that ended', () => {
@@ -276,6 +407,21 @@ describe('FactsRail', () => {
       status_history: [{ from_status: 'investigating', to_status: 'closed', by: 'aryan', at: iso(-30 * 60_000) }],
     } as unknown as Case);
     expect(within(screen.getByTestId('facts-times')).getByText('Closed')).toBeInTheDocument();
+  });
+});
+
+describe('FactsRail: an outcome nobody has settled (FXA1)', () => {
+  it('reads "Not classified yet" over the AI verdict line, never the verdict twice', () => {
+    renderRail({ ...FULL, status: 'needs_human', decision_by: 'system', disposition: 'undetermined', history: [] } as unknown as Case);
+    const outcome = screen.getByTestId('facts-outcome');
+    expect(within(outcome).getByTestId('facts-outcome-headline')).toHaveTextContent(/^Not classified yet$/);
+    expect(within(outcome).getByTestId('facts-ai-line')).toHaveTextContent('AI verdict: Needs human review (75%)');
+    expect(within(outcome).getAllByText(/Needs human review/)).toHaveLength(1);
+  });
+
+  it('keeps the reading of a classification a later AI run kept', () => {
+    renderRail({ ...FULL, status: 'needs_human', decision_by: 'system' } as unknown as Case);
+    expect(screen.getByTestId('facts-outcome-headline')).not.toHaveTextContent('Not classified yet');
   });
 });
 

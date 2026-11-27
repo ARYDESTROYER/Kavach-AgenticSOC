@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "version": "0.1.1",
+  "status": "released",
+  "date": "2026-07-31",
+  "title": "The first Stable release of the 0.1 line",
+  "summary": "Vendor-neutral ingestion, a tiered AI investigation, decisions made by code, an audit trail and a cost ledger.",
+  "docs": "releases/0.1/",
+  "updates": [
+    {
+      "id": "0.1.1.2026-07-31",
+      "date": "2026-07-31",
+      "title": "What the 0.1 line provides",
+      "highlights": [
+        {
+          "id": "ingestion",
+          "kind": "new",
+          "area": "platform",
+          "title": "Pull and push sources, normalised to OCSF",
+          "summary": "Elasticsearch, OpenSearch and Wazuh pull connectors, plus a broad catalog of push, queue and object store receivers. Every record is normalised to OCSF.",
+          "details": [
+            "Durable cursors, so no event is skipped or read twice.",
+            "Correlation and risk scoring by code, and one case per cluster signature."
+          ],
+          "help": "sources/"
+        },
+        {
+          "id": "investigation",
+          "kind": "new",
+          "area": "automation",
+          "title": "A tiered AI investigation",
+          "summary": "A router model and an investigator model look into each case. Every model call goes through one gateway into the cost ledger.",
+          "help": "concepts/architecture/"
+        },
+        {
+          "id": "decisions",
+          "kind": "new",
+          "area": "automation",
+          "title": "Decisions made by code",
+          "summary": "Code closes or escalates a case against the policy you set. Neither the model nor procedure text can override it.",
+          "details": [
+            "A case that needs a human never closes automatically, and closing a true positive automatically is off by default.",
+            "A daily AI budget of 10 US dollars blocks further calls by default. A blocked call sends the case to a person."
+          ],
+          "help": "concepts/deterministic-decisions/"
+        },
+        {
+          "id": "case-manager",
+          "kind": "new",
+          "area": "cases",
+          "title": "Case Manager",
+          "summary": "A split-pane queue beside the case workspace, with traces, rationale, collaboration and feedback.",
+          "details": [
+            "Bulk work is checked against each person's permissions.",
+            "The 0.1 line also brought campaigns, entity baselines, threshold tuning, detection rules and custom dashboards."
+          ],
+          "requires": "cases:read",
+          "open": {"page": "case_manager"},
+          "help": "analyst/case-manager/"
+        },
+        {
+          "id": "security-command-center",
+          "kind": "new",
+          "area": "dashboards",
+          "title": "Security Command Center",
+          "summary": "The landing dashboard showed case KPIs, active risk, noise reduction and response timing, with a live refresh.",
+          "open": {"page": "overview"},
+          "help": "analyst/overview/"
+        },
+        {
+          "id": "workspace-chat",
+          "kind": "new",
+          "area": "chat",
+          "title": "Workspace Chat",
+          "summary": "A personal chat with saved, searchable conversations. Case Manager chat uses the same read-only engine for one case.",
+          "open": {"page": "chat"},
+          "help": "analyst/chat/"
+        },
+        {
+          "id": "access-control",
+          "kind": "new",
+          "area": "security",
+          "title": "Sign-in, roles and single sign-on",
+          "summary": "Local sign-in, sessions, role-based access with custom roles, authenticator codes and single sign-on with OpenID Connect.",
+          "help": "administration/authentication/"
+        },
+        {
+          "id": "state-backends",
+          "kind": "new",
+          "area": "platform",
+          "title": "Your choice of state store",
+          "summary": "PostgreSQL with pgvector, Elasticsearch or SQLite holds the application's own state.",
+          "help": "concepts/state-audit-cost/"
+        },
+        {
+          "id": "demo-mode",
+          "kind": "new",
+          "area": "help",
+          "title": "Demo Mode and the Help Center",
+          "summary": "An isolated Demo Mode with five synthetic sources, and a Help Center that matches the installed version.",
+          "help": "getting-started/demo/"
+        }
+      ]
+    }
+  ]
+}

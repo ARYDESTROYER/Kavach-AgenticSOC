@@ -52,7 +52,6 @@ unless ``prefs.threshold_tuning.auto_apply_confirmed`` is explicitly enabled.
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
@@ -74,6 +73,7 @@ from ..tools.rag import PRECEDENT_RATIFICATION_EVENT
 from ..utils import now_utc
 from .analyst_outcomes import analyst_confirmed_outcome as _analyst_outcome
 from .precedent import is_policy_closed as _is_policy_closed
+from .stats import wilson_interval
 
 logger = logging.getLogger("tlsoc.engine.threshold_tuner")
 
@@ -161,16 +161,10 @@ def wilson_lower_bound(successes: int, n: int, *, z: float = 1.96) -> float:
     ``successes`` FP closes out of ``n`` verdicted closes. The lower bound is the
     conservative FP-rate estimate: with few samples it is pulled well below the naive
     ``successes/n`` so a 3-of-3 (naive 1.0) fluke yields a modest lower bound and does
-    NOT clear a target. Returns 0.0 for ``n <= 0``. Pure + deterministic."""
-    if n <= 0:
-        return 0.0
-    phat = successes / n
-    z2 = z * z
-    denom = 1.0 + z2 / n
-    centre = phat + z2 / (2 * n)
-    margin = z * math.sqrt((phat * (1 - phat) + z2 / (4 * n)) / n)
-    lb = (centre - margin) / denom
-    return max(0.0, min(1.0, lb))
+    NOT clear a target. Returns 0.0 for ``n <= 0``. Pure + deterministic. The one
+    Wilson implementation (``engine/stats.py``, Round 16), unrounded."""
+    interval = wilson_interval(successes, n, z=z)
+    return 0.0 if interval is None else interval[0]
 
 
 def ewma(values: list[float], alpha: float) -> float | None:

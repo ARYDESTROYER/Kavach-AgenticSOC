@@ -16,7 +16,7 @@
  * are text a person typed: text nodes only (#9).
  */
 import * as React from 'react';
-import { ChevronLeft, ChevronRight, Download, ImageOff, Loader2, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Download, ImageOff, Loader2, Trash2 } from 'lucide-react';
 
 import { fetchCaseFileBlob, deleteCaseFile, listCaseFiles } from '@/lib/api-case-files';
 import { cn } from '@/lib/cn';
@@ -97,6 +97,66 @@ interface ThumbProps {
   total: number;
   onOpen: () => void;
   fetcher: typeof fetchCaseFileBlob;
+}
+
+/**
+ * Round 16 B30: the screenshots deleted from the case. Their bytes are gone; the server
+ * keeps their metadata (`deleted[]`), so the caption (or the file name), who added each
+ * and when, and who deleted it and when stay on the case, as the delete dialog says.
+ * Folded by default. Captions, file names and names are typed text: text nodes only (#9).
+ */
+function DeletedScreenshots({ deleted }: { deleted: readonly CaseFileEntry[] }) {
+  const [open, setOpen] = React.useState(false);
+  const listId = React.useId();
+  if (!deleted.length) return null;
+  return (
+    <div className="flex flex-col gap-2" data-testid="case-files-deleted">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={listId}
+        onClick={() => setOpen((value) => !value)}
+        className={cn(
+          'inline-flex w-fit items-center gap-1.5 rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground',
+          focusRing,
+        )}
+      >
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} aria-hidden="true" />
+        {`Deleted screenshots (${deleted.length.toLocaleString('en-US')})`}
+      </button>
+      {open ? (
+        <ul id={listId} aria-label="Deleted screenshots" className="flex flex-col gap-1.5 text-xs">
+          {deleted.map((item) => (
+            <li key={item.id} className="min-w-0">
+              <p className="truncate text-foreground" title={item.caption || item.filename || undefined}>
+                {item.caption.trim() || item.filename || 'Screenshot'}
+              </p>
+              <p className="text-muted-foreground">
+                {`Added by ${item.uploaded_by || 'someone'}`}
+                {item.uploaded_at ? (
+                  <>
+                    {' '}
+                    <time dateTime={item.uploaded_at} title={formatTimestamp(item.uploaded_at)}>
+                      {humanizeAge(item.uploaded_at)}
+                    </time>
+                  </>
+                ) : null}
+                {item.deleted_by ? `, deleted by ${item.deleted_by}` : ', deleted'}
+                {item.deleted_at ? (
+                  <>
+                    {' '}
+                    <time dateTime={item.deleted_at} title={formatTimestamp(item.deleted_at)}>
+                      {humanizeAge(item.deleted_at)}
+                    </time>
+                  </>
+                ) : null}
+              </p>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
 }
 
 function FileThumb({ caseId, entry, index, total, onOpen, fetcher }: ThumbProps) {
@@ -460,6 +520,16 @@ export function CaseFiles({
           <FileDropZone
             onFiles={(picked) => {
               const room = limits ? Math.max(0, limits.max_files - files.length) : picked.length;
+              // Round 16 B31: every file past the room left is reported, never dropped
+              // without a word. The cap stays client-side, so no image the server would
+              // refuse is prepared.
+              const extra = picked.slice(room);
+              if (extra.length && limits) {
+                uploader.skip(
+                  extra,
+                  `not added. This case allows ${limits.max_files.toLocaleString('en-US')} screenshots.`,
+                );
+              }
               void uploader.uploadFiles(picked.slice(0, room), caption).then((added) => {
                 if (added.length) setCaption('');
               });
@@ -521,6 +591,8 @@ export function CaseFiles({
         </ul>
       ) : null}
 
+      <DeletedScreenshots deleted={data?.deleted ?? []} />
+
       <Lightbox
         caseId={caseId}
         files={files}
@@ -546,7 +618,7 @@ export function CaseFiles({
         title="Delete this screenshot?"
         description={
           deleteError ??
-          'The image is removed from the case. Its caption, who added it and when stay in the case history.'
+          'The image is removed from the case. Its caption, who added it and when stay listed under Deleted screenshots.'
         }
         confirmLabel="Delete screenshot"
         destructive

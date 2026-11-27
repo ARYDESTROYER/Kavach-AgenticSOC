@@ -32,6 +32,7 @@ from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.rbac.policy import RESOURCES
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 SA = UserRole.SUPER_ADMIN.value
 MGR = UserRole.SOC_MANAGER.value
@@ -92,6 +93,7 @@ def _role(c: TestClient, body: dict) -> None:
 def _user(c: TestClient, username: str, role: str, custom_roles: list[str]) -> None:
     r = c.post("/api/users", json={"username": username, "password": f"{username}-pass-1234", "role": role})
     assert r.status_code == 200, r.text
+    ready_user(c, username, f"{username}-pass-1234")
     if custom_roles:
         r = c.put(f"/api/users/{username}/roles", json={"custom_roles": custom_roles})
         assert r.status_code == 200, r.text

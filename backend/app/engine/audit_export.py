@@ -49,9 +49,19 @@ submit route and the durable job share:
   ``webui/src/lib/csv-formula.contract.json``, which the Console's own CSV exports read
   too. A lone UTF-16 surrogate, which UTF-8 cannot encode, is written as U+FFFD.
 
-  JSON Lines: each stored row exactly as the store returned it, one JSON object per
-  line, UTF-8 (a row holding a lone surrogate is written with ASCII escapes instead,
-  which is the same JSON value).
+  JSON Lines: each stored row exactly as the store returned it (apart from a withheld
+  spend figure, below), one JSON object per line, UTF-8 (a row holding a lone
+  surrogate is written with ASCII escapes instead, which is the same JSON value).
+
+* **Spend figures.** The file follows ``cost:view`` as ``GET /api/audit`` does
+  (Round 16, :mod:`app.api.cost_text`). For a person without it at run time, the spend
+  figure a timeout, budget refusal, case manager or runbook AI row put into its
+  ``result_summary`` reads ``cost=hidden`` or ``(amount hidden)`` in both formats, and
+  the replay experiment's spend row reads ``spend_usd=hidden bound_usd=hidden``;
+  every other field, and every other row, is written as stored, so evidence such as
+  ``amount=$5000`` is never changed. The job checks the grant before the read and
+  again at every page boundary; once withheld, a figure stays withheld for the rest of
+  the file. The stored rows never change (#2).
 
 Every value is written as stored, never interpreted (#9): ``prompt_excerpt`` and
 ``tool_output_summary`` keep their untrusted-data fences, and the formula defusal only
@@ -76,6 +86,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
+from ..api.cost_text import withhold_row_cost_text
 from ..audit.query import AuditFilters, build_predicate
 from ..models import (
     AUDIT_COUNT_MAX_CAP,
@@ -537,8 +548,12 @@ def csv_cells(record: AuditRecord) -> list[CsvCell]:
     return [values[column] for column in CSV_COLUMNS]
 
 
-def csv_line(doc: Mapping[str, Any], record_id: str | None, *, demo: bool) -> str:
-    """One stored row as a CSV record (the read API's projection of it)."""
+def csv_line(
+    doc: Mapping[str, Any], record_id: str | None, *, demo: bool, show_cost: bool = True
+) -> str:
+    """One stored row as a CSV record (the read API's projection of it). With
+    ``show_cost`` false, the row's spend figure is withheld as ``GET /api/audit``
+    withholds it for a caller without ``cost:view`` (:func:`withheld_cost`)."""
     from ..api.routes_audit import to_record
 
     stored = {k: v for k, v in doc.items() if isinstance(k, str)}
@@ -552,6 +567,10 @@ def csv_line(doc: Mapping[str, Any], record_id: str | None, *, demo: bool) -> st
             "action_type": str(stored.get("action_type") or ""),
             "demo": demo,
         })
+    if not show_cost:
+        text = withhold_row_cost_text(record.action_type, record.result_summary)
+        if text != record.result_summary:
+            record = record.model_copy(update={"result_summary": text})
     cells = csv_cells(record)
     if record_id is None:
         # A row the store could not give an id: exported, with an empty id cell.
@@ -559,8 +578,26 @@ def csv_line(doc: Mapping[str, Any], record_id: str | None, *, demo: bool) -> st
     return csv_record(cells)
 
 
-def jsonl_line(doc: Mapping[str, Any]) -> bytes:
-    """One stored row, unmodified, as one JSON Lines record (UTF-8)."""
+def withheld_cost(doc: Mapping[str, Any]) -> Mapping[str, Any]:
+    """``doc`` as a person without ``cost:view`` reads it: the spend figure a timeout,
+    budget refusal, case manager, runbook AI or replay spend row put into its
+    ``result_summary`` withheld (:func:`app.api.cost_text.withhold_row_cost_text`, the rule
+    ``GET /api/audit`` follows). Every other field, and every other row, is returned as
+    stored; ``doc`` itself is never changed."""
+    summary = doc.get("result_summary")
+    text = withhold_row_cost_text(doc.get("action_type"), summary)
+    if text == summary:
+        return doc
+    out = dict(doc)
+    out["result_summary"] = text
+    return out
+
+
+def jsonl_line(doc: Mapping[str, Any], *, show_cost: bool = True) -> bytes:
+    """One stored row, unmodified, as one JSON Lines record (UTF-8). With
+    ``show_cost`` false, the row's spend figure is withheld (:func:`withheld_cost`)."""
+    if not show_cost:
+        doc = withheld_cost(doc)
     try:
         return (json.dumps(doc, ensure_ascii=False, separators=(",", ":"), default=str) + "\n").encode("utf-8")
     except UnicodeEncodeError:
@@ -680,6 +717,7 @@ async def write_export(
     path: Path,
     checkpoint: Callable[[int], Awaitable[Any]],
     ensure_capacity: Callable[[int], Awaitable[Any]] | None = None,
+    show_cost: Callable[[], bool] | None = None,
 ) -> ExportWritten:
     """Write every row matching ``filters``, oldest first, to ``path``.
 
@@ -692,7 +730,12 @@ async def write_export(
     an export never eats the space the state store and the audit log need. Raises an
     :class:`AuditExportError` for each of those, for an expired snapshot or a store
     that cannot be read, and :class:`AuditExportNoSpace` when the volume is full. The
-    caller deletes the file on any failure."""
+    caller deletes the file on any failure.
+
+    ``show_cost()`` is read for every row: false withholds the row's spend figure, as
+    ``GET /api/audit`` does for a caller without ``cost:view`` (:func:`withheld_cost`).
+    The job passes its actor's live grant, checked at every page boundary; without it
+    the rows are written as stored."""
     if fmt not in EXPORT_FORMATS:
         raise ValueError(f"unknown audit export format {fmt!r}")
     readers = [
@@ -745,10 +788,13 @@ async def write_export(
             if rows > AUDIT_EXPORT_MAX_ROWS:
                 raise AuditExportTooLarge()
             doc = hit.doc if isinstance(hit.doc, Mapping) else {}
+            shown = True if show_cost is None else bool(show_cost())
             if fmt == "csv":
-                chunk.append(_encode_csv(csv_line(doc, _record_id(hit, reader.demo), demo=reader.demo)))
+                chunk.append(_encode_csv(csv_line(
+                    doc, _record_id(hit, reader.demo), demo=reader.demo, show_cost=shown
+                )))
             else:
-                chunk.append(jsonl_line(doc))
+                chunk.append(jsonl_line(doc, show_cost=shown))
             if len(chunk) >= EXPORT_PAGE_SIZE:
                 await emit(b"".join(chunk))
                 chunk = []
@@ -807,6 +853,7 @@ __all__ = [
     "export_filters",
     "submission_cap",
     "export_range",
+    "withheld_cost",
     "export_target",
     "jsonl_line",
     "parse_instant",

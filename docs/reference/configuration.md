@@ -1,11 +1,11 @@
 ---
 title: Configuration reference
-description: Configuration authorities, environment wiring, durable preferences, runtime-only secrets, and state backends in Agentic SOC 0.1.
+description: Configuration authorities, environment wiring, durable preferences, runtime-only secrets, and state backends in Agentic SOC 0.2.
 ---
 
 # Configuration reference
 
-Agentic SOC 0.1 separates credentials and process wiring from validated application
+Agentic SOC 0.2 separates credentials and process wiring from validated application
 preferences. Keep that boundary intact: a secret is never an ordinary setting.
 
 ## Configuration authorities
@@ -48,14 +48,14 @@ rule. The image/build pipeline passes these names directly:
 
 | Variable | Meaning |
 |---|---|
-| `TLSOC_VERSION` | Compose image tag/build argument; must match the code's Semantic Version (`0.1.13`) |
+| `TLSOC_VERSION` | Compose image tag/build argument; must match the code's Semantic Version (`0.2.0`) |
 | `TLSOC_RELEASE_CHANNEL` | `testing` by default; set to `stable` only for the accepted `main`/tag build |
 | `TLSOC_BUILD_SHA` | Exact source commit embedded in `/api/health/build-info`, image metadata, and newly produced operational records. The shipped Compose and demo wrappers derive it from the checkout via `scripts/lib/build-identity.sh`; a value supplied by the supervised bootstrap, or pinned to a non-empty, non-`unknown` value in `.env`, is used unchanged. Only when every source is absent does it remain the literal `unknown` |
 | `TLSOC_BUILD_DATE` | Build timestamp embedded in `/api/health/build-info` and image metadata, derived on the same terms as `TLSOC_BUILD_SHA`. Supply BOTH or neither: a half-stamped pair identifies no reproducible build |
 | `TLSOC_SOURCE_URL` | Dockerfile build argument for the canonical source URL embedded in OCI image metadata; the reference Compose files currently use the Dockerfile's repository default |
 
 The release channel is independent of SemVer: both the accepted Testing candidate and
-its Stable promotion are application `0.1.13`. Promotion changes provenance/channel,
+its Stable promotion are application `0.2.0`. Promotion changes provenance/channel,
 not the source version.
 
 `GET /api/health/build-info` answers two deliberately different questions about the
@@ -108,7 +108,7 @@ touches them. These additive fields do not require a version bump or SQL migrati
 | Audit client address | `TRUSTED_PROXIES` | Proxies whose forwarded address the audit log believes; default `tlsoc-webui`, the bundled Web UI service |
 
 The reference standalone Compose file maps the SSO and notification JSON maps. It
-does **not** map a `TLSOC_CONNECTOR_SECRETS` variable in 0.1. To boot per-source
+does **not** map a `TLSOC_CONNECTOR_SECRETS` variable in 0.2. To boot per-source
 connector secrets from the environment, pass the backend's unprefixed
 `CONNECTOR_SECRETS` explicitly or add a deliberate Compose mapping.
 
@@ -152,7 +152,7 @@ cursors, users/sessions, collaboration, baselines, campaigns, rule versions, and
 knowledge/vector records. Connector credentials and external telemetry remain outside
 that store.
 
-| Value | Connection | 0.1 behavior |
+| Value | Connection | 0.2 behavior |
 |---|---|---|
 | `postgres` | `postgresql+asyncpg://...` | Recommended standalone persistent profile; pgvector backs vector retrieval |
 | `elasticsearch` | `ES_URL` plus `ES_MGMT_API_KEY` | Stores state in dedicated `tlsoc-agent-*` indices; the default when running the backend directly |
@@ -187,7 +187,7 @@ always off.
 This is desired policy, not a cross-provider promise. The status/preview API reports
 the effective state and blockers before any mutation:
 
-| State backend | Effective 0.1.13 behavior |
+| State backend | Effective 0.2.0 behavior |
 |---|---|
 | Elasticsearch | Explicit Apply can install ILM for append-only `tlsoc-agent-audit-*` and `tlsoc-agent-usage-*` only, after the cluster/privilege/tier probe succeeds |
 | PostgreSQL | Advisory; no built-in partitions, tablespace movement, or archive scheduler |
@@ -208,7 +208,7 @@ repository. It is enabled on fresh installations with this configuration:
 {
   "release_updates": {
     "enabled": true,
-    "repository_url": "https://github.com/ARYDESTROYER/Agentic-Kibana",
+    "repository_url": "https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
     "stable_branch": "main",
     "testing_branch": "Testing",
     "check_interval_minutes": 360
@@ -216,7 +216,10 @@ repository. It is enabled on fresh installations with this configuration:
 }
 ```
 
-Only a canonical public `https://github.com/owner/repository` URL is accepted. Branch
+Only a canonical public `https://github.com/owner/repository` URL is accepted. A stored
+value that names the old repository, `ARYDESTROYER/Agentic-Kibana` in any letter case,
+is read as `https://github.com/ARYDESTROYER/Kavach-AgenticSOC`; any other value is kept
+as stored. Branch
 refs are bounded and reject ambiguous Git syntax. The discovery client is pinned to
 `api.github.com`, rejects redirects and oversized/malformed responses, and reads the
 branch head plus root `VERSION`. Stable discovery additionally requires the exact
@@ -258,7 +261,7 @@ Every `Preferences` field has a default. Major blocks include:
 `PUT /api/settings` deep-merges a JSON object and validates the resulting complete
 preferences model. Prefer small section-specific changes and re-read after updating.
 A malformed value is rejected rather than persisted. General preference updates do
-not provide a universal revision history in 0.1; detection rules have their own
+not provide a universal revision history in 0.2; detection rules have their own
 version ledger and rollback endpoints.
 
 ### Chat assistant bounds
@@ -399,8 +402,19 @@ normalised when read (a bad value is removed, never rejected):
 |---|---|
 | `misc.dashboards_hidden` | Built-in dashboard ids the user hid from the Dashboards library (`builtin:<name>`, at most 8; the Cyber Defence Center cannot be hidden) |
 | `misc.dismissed_intros` | Ids of the introductory notes the user dismissed (lower-case ids, at most 50) |
+| `misc.whats_new_seen` | The newest release-notes update id the user has seen in **What's new** (the same id grammar); absent means the account predates the feature, so the welcome shows once |
+| `misc.whats_new_auto` | `false` turns off the **What's new** welcome after updates (**Show What's new after updates**); absent means on |
 
-A change to either list is recorded in the audit log before it is saved. A personal
+A change to `dashboards_hidden`, `dismissed_intros` or `whats_new_seen` is recorded in
+the audit log before it is saved. A new account starts with `whats_new_seen` set to the
+newest update id this build ships, and the setup wizard sets it when it completes. With
+sign-in off, every caller shares one set of preferences, so the marker counts once per
+installation.
+
+The organization's default theme has one home: `branding.default_theme`, edited under
+**Settings → Organization → Branding**. The older `customization.default_theme` is read
+once on load: while Branding is still at its factory default, a non-`system` value is
+copied into Branding, and the older key becomes `system`. A personal
 dashboard (`DashboardLayout`) gains two optional fields: `default_window`, the window
 its time-range picker starts on (`now-24h`, `now-7d`, `now-30d` or `now-90d`; absent means
 the last 24 hours), and `derived_from`, the built-in board it was copied from. A request
@@ -436,6 +450,16 @@ rbac_switch_moved` to a body that would change it, and changing any other `rbac`
 (`roles`, `resources`, `custom_roles`, `denies`, `default_role`) through it needs
 `roles:manage` and a fresh sign-in. See
 [Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access).
+
+### Single sign-on
+
+A `PUT /api/settings` that changes the `sso` block (a provider added, removed or edited in
+any field, or `sso.enabled` changed) needs an account whose stored role is Super admin,
+with a strict fresh sign-in; so does `POST /api/auth/sso/providers/{provider_id}/secret`.
+Anyone else gets `403` with "Only a Super admin can change single sign-on." A provider's
+`default_role` and each `group_role_map` value must be a built-in role; a custom role
+name is refused with `422` when the provider is saved. A provider saved before 0.2.0 with
+a custom role value is kept as stored until it is next changed.
 
 ### Team activity
 

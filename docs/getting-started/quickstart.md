@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Choose an Agentic SOC 0.1 checkout, run the deterministic demo, or bring up the standalone evaluation stack.
+description: Choose an Agentic SOC 0.2 checkout, run the deterministic demo, or bring up the standalone evaluation stack.
 ---
 
 # Quickstart
@@ -12,8 +12,8 @@ real source with persistent application state.
 !!! info "Choose the matching channel"
 
     `Testing` contains integrated candidates. Under the release contract, `main`
-    holds only accepted Stable source and immutable `v0.1.13` identifies this candidate.
-    The remote has both canonical branches. Use `v0.1.13` only when its signed GitHub
+    holds only accepted Stable source and immutable `v0.2.0` identifies this candidate.
+    The remote has both canonical branches. Use `v0.2.0` only when its signed GitHub
     Release and public digest-pinned images verify and canonical PostgreSQL Compose
     runtime acceptance completes, and use `Testing` only for an unreleased preview.
     Repository administrators must verify branch protections and required checks
@@ -52,15 +52,15 @@ real source with persistent application state.
     cd Kavach-AgenticSOC
     ```
 
-=== "Stable 0.1.13 (after acceptance)"
+=== "Stable 0.2.0 (after acceptance)"
 
     ```bash
     git clone https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git
     cd Kavach-AgenticSOC
-    git checkout v0.1.13
+    git checkout v0.2.0
     ```
 
-    The `v0.1.13` tag is absent before publication and immutable afterward; do not
+    The `v0.2.0` tag is absent before publication and immutable afterward; do not
     create, move, or replace it locally. Users pulling `main` receive the current
     accepted Stable source, while candidate work remains isolated on `Testing`. A branch
     name alone is not acceptance evidence, so repository administrators must verify
@@ -89,7 +89,10 @@ without contacting a model provider or upstream security system.
 The script starts the backend on port `8088` with sign-in enabled and the Console dev
 server on port `5173`, then completes setup for you. Open `http://127.0.0.1:5173` and
 sign in with the demo-only account printed by the script. In the standard seed it is
-`Admin` / `Admin@123`. Stop both processes with <kbd>Ctrl</kbd>+<kbd>C</kbd>.
+`Admin` / `Admin@123`. If this account has not seen the newest release's notes, a short
+**What's new** welcome shows their highlights once after you sign in; close it to go
+on. Stop both processes with
+<kbd>Ctrl</kbd>+<kbd>C</kbd>.
 
 !!! warning "Demo credentials are not deployment credentials"
 
@@ -192,7 +195,7 @@ curl --fail http://localhost:8080/api/health/build-info
 - **Build info** reports version and build identity without exposing secrets.
 
 Open **Help Center** from the bottom of the Console rail, select **Browse all guides**,
-and verify it opens the same-origin `/docs/0.1/` Help Center. This installed guide is
+and verify it opens the same-origin `/docs/0.2/` Help Center. This installed guide is
 the operator authority for the running build; public Stable/Development material is
 secondary.
 
@@ -241,14 +244,18 @@ its type, status, enabled switch, last event, and protocol.
 <figcaption>Sources in the demo: five connected sources, all ready.</figcaption>
 </figure>
 
-In **Case Manager**, a case's Investigation tab shows the **AI assessment**, labelled
-**AI** and marked advisory, then the **Decision** card, labelled **Code**. The close or
-escalate decision is made by deterministic code against the operator policy, never by
-the model.
+In **Case Manager**, a case's Brief tab shows the **Assessment** lane, labelled **AI**, and
+then the **Decision** lane, labelled **Code**. The AI investigation tab holds the advisory
+**AI assessment** and the trace; the decision's policy inputs are one click away in the
+Decision lane. The close or escalate decision is made by deterministic code against the
+operator policy, never by the model. Point at the case's risk score to see its formula
+with the real numbers, and select it for the whole calculation (see
+[Explainable numbers](../analyst/explainable-numbers.md)). While the AI investigates a
+case, its header shows **AI working**.
 
 <figure markdown="span">
-[![Case Manager with an escalated true-positive case open on its Investigation tab: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the Decision card below it, labelled Code, records that code routed the case to a person.](../assets/screenshots/case-manager.webp) ](../assets/screenshots/case-manager.webp)
-<figcaption>Case Manager: the advisory AI assessment, then the code decision.</figcaption>
+[![Case Manager with a false-positive case the AI closed automatically, open on its Brief tab: the Evidence lane, the Assessment lane, labelled AI, with the model's reading, and the Decision lane, labelled Code, which records that the case policy closed it.](../assets/screenshots/case-manager.webp) ](../assets/screenshots/case-manager.webp)
+<figcaption>Case Manager, Brief tab: the AI's advisory reading, then the code's decision.</figcaption>
 </figure>
 
 ## Stop

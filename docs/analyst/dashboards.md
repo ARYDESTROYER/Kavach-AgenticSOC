@@ -101,7 +101,7 @@ before.
 | Needs attention now | Open cases with a breached target first, then the most urgent | View queue |
 | Analyst workload | Open cases per analyst, with the unassigned queue | View assignments |
 | Backlog aging | Open cases by how long they have been open: under 1 hour, 1 to 4 hours, 4 to 24 hours, 1 to 3 days, 3 to 7 days, over 7 days | View open cases |
-| SLA breaches and at risk | Cases past or near their response and resolve targets | View in Standup |
+| SLA breaches and at risk | Cases opened in the window that are past or near their response and resolve targets. With none, it says how many open cases from earlier are past their response target and links to them | View in Standup |
 | Open cases by status | The open stock by status | View cases |
 | Response timing | Time to detect, acknowledge and resolve, and dwell time, each as p50 with its p90 and the number of cases counted | View performance |
 
@@ -115,7 +115,7 @@ For detection engineers and platform admins, over the last 7 days.
 | Alerts and cases over time | Raw alerts and the cases they became, on one day axis | View logs |
 | Noise reduction | Raw alerts reduced to cases and outcomes over the window | Open the flow |
 | Top detection rules | The rules behind the most cases in the window. A rule can count for several cases and a case for several rules, so the rows do not add up to the case total. Select a rule name to open its picture. | View cases |
-| Noisiest rules | Rules above the false-positive target, with their tuning state | Open Auto-tuning |
+| Noisiest rules | Rules above the false-positive target, with their tuning state. The FP rate is the lower end of the 95% range for the analyst-graded cases | Open Auto-tuning |
 | Connector health | Each source with its events per minute, its last event and its state | View sources |
 | Cases by source | The window's cases by the source that raised them | View cases |
 | Techniques seen in cases | ATT&CK tactic by technique for the cases in the window. This is what the cases showed, not detection coverage. | View coverage |
@@ -150,12 +150,16 @@ its definition. A figure your role cannot read shows "No access"; a figure its s
 could not measure shows "Not measured" with the reason, never 0. "Open now" figures are
 a stock read across all time, whatever the window says.
 
+A KPI widget explains its figure: point at it for a one-line formula with the real
+numbers, and select it for the inputs, the steps and the rounding, with **Copy
+calculation**. See [Explainable numbers](explainable-numbers.md).
+
 | Board | Figure | What it counts |
 |---|---|---|
 | SOC operations | Open now | Cases not closed or resolved right now. |
 | | Awaiting a decision | Open cases whose AI verdict is Needs human. |
 | | Unassigned | Open cases with no assignee. |
-| | SLA breached | Open cases past their response or resolve target. |
+| | SLA breached | Open cases past their response target. |
 | | New cases | Cases created in the window. |
 | | Closed | Cases created in the window that are now closed or resolved, not counting closes by an analyst policy. |
 | Detection and data health | Sources reporting | Enabled sources that sent at least one event in the window. |

@@ -40,6 +40,7 @@ from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.models import AuditDoc, Case, Entity, UsageDoc
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 T1 = UserRole.ANALYST_TIER1.value
 SOC_MANAGER = UserRole.SOC_MANAGER.value
@@ -106,6 +107,7 @@ def _sign_in_as(client: TestClient, role: str) -> None:
     login("Admin", "Admin@123")
     created = client.post("/api/users", json={"username": "viewer", "password": "viewer-pass-1234", "role": role})
     assert created.status_code == 200, created.text
+    ready_user(client, "viewer", "viewer-pass-1234")
     client.cookies.clear()
     login("viewer", "viewer-pass-1234")
 

@@ -212,6 +212,7 @@ def _bare_lane() -> "lane.Lane":
     instance.boots = []
     instance.screenshot_id = ""
     instance.feedback_baseline = -1
+    instance.round16 = {}
     return instance
 
 
@@ -365,6 +366,353 @@ class Round15PlantTests(unittest.TestCase):
         source = inspect.getsource(lane.Lane._plant_review_case)
         self.assertIn("SqlCaseRepository(engine)", source)
         self.assertIn("AutoCloseReviewStore(SqlKVStore(engine)).update(add)", source)
+
+
+# --------------------------------------------------------------------------- #
+# Round 16 (SPEC §3.7): recorded risk inputs, ledger rates, an MFA lockout counter
+# and the What's new marker.
+# --------------------------------------------------------------------------- #
+_NOW_ISO = "2026-11-25T12:00:00+00:00"
+_LOCKOUT = {"mfa_failed_count": 10, "mfa_locked_until": "2026-11-25T13:00:00+00:00"}
+
+
+def _plants() -> dict:
+    """The Round 16 plant documents as N builds them (skips without the backend)."""
+    from datetime import datetime
+
+    try:
+        with _Backend():
+            return lane.round16_plant_docs(datetime.fromisoformat(_NOW_ISO))
+    except ImportError as exc:  # pragma: no cover - the backend's dependencies are absent
+        raise unittest.SkipTest(f"the backend's dependencies are not installed ({exc})") from exc
+
+
+def _expected(docs: dict) -> dict:
+    return {
+        "factors": docs["factors"], "inputs": docs["inputs"], "cost": docs["cost"],
+        "rates": docs["rates"], "lockout": dict(_LOCKOUT), "marker": lane.whats_new_marker(),
+    }
+
+
+def _risk_case(docs: dict, *, inputs: bool = True, comment: bool = False, **changes: object) -> dict:
+    case = json.loads(json.dumps(docs["case"]))
+    if not inputs:
+        case["risk_breakdown"].pop("inputs", None)
+    if comment:
+        case["comments"] = [{"author": "rollback-lane", "body": lane.RISK_COMMENT}]
+    case.update(changes)
+    return case
+
+
+def _stages(basis: str) -> dict:
+    return {"stages": [
+        {"id": "input", "state": None},
+        {"id": "risk", "state": {"risk_calculation": {"weight_basis": basis}}},
+    ]}
+
+
+def _round16_responses(docs: dict, *, recorded: bool, comment: bool, display_name: str,
+                       theme: str = "system") -> dict:
+    base = f"/api/cases/{lane.RISK_CASE_ID}"
+    usage_row = dict(docs["usage"])
+    return {
+        ("GET", base): (200, _risk_case(docs, inputs=recorded, comment=comment)),
+        ("GET", f"{base}/stages"): (200, _stages("recorded_at_scoring" if recorded else "current_preferences")),
+        ("GET", f"{base}/usage"): (200, {"rows": [usage_row], "reconciles": True}),
+        ("GET", "/api/users"): (200, {"users": [
+            {"username": "someone-else", "display_name": ""},
+            {"username": lane.LOCKED_USER, "display_name": display_name},
+        ]}),
+        ("GET", "/api/prefs/user"): (200, {"theme_mode": theme, "misc": {
+            lane.WHATS_NEW_SEEN_KEY: lane.whats_new_marker(), lane.WHATS_NEW_AUTO_KEY: False,
+        }}),
+        ("PUT", "/api/prefs/user"): (200, {}),
+        ("POST", f"{base}/comment"): (200, {"ok": True}),
+        ("GET", f"/api/usage/summary?case_id={lane.RISK_CASE_ID}&window_hours=24"): (
+            200, {"call_count": 1, "total_cost": round(docs["cost"], 6)},
+        ),
+        ("PUT", f"/api/users/{lane.LOCKED_USER}"): (200, {"ok": True}),
+    }
+
+
+def _round16_lane(docs: dict, *, stored_user: dict | None, previous: Path | None = None) -> "lane.Lane":
+    instance = _bare_lane()
+    instance.round16 = _expected(docs)
+    instance.previous_backend = previous or lane.BACKEND
+
+    async def stored() -> dict | None:
+        return stored_user
+
+    instance._stored_user = stored  # type: ignore[method-assign]
+    return instance
+
+
+def _previous_backend(tmp: str, *source_lines: str) -> Path:
+    """A previous release's backend whose ``app/models.py`` holds ``source_lines``."""
+    backend = Path(tmp) / "backend"
+    (backend / "app").mkdir(parents=True)
+    (backend / "app" / "models.py").write_text("\n".join(source_lines) + "\n", encoding="utf-8")
+    return backend
+
+
+class Round16PlantTests(unittest.TestCase):
+    """SPEC §3.7: N writes the Round 16 fields, N-1 loads and rewrites them, N reads the
+    rewritten case as "not recorded" and the losses are exactly the documented ones."""
+
+    def test_the_risk_plant_records_inputs_that_reproduce_its_score(self) -> None:
+        docs = _plants()
+        with _Backend():
+            from app.engine.risk_explain import factors_from_inputs
+            from app.models import Case, RiskInputs
+        case = Case.model_validate(docs["case"])
+        self.assertIsNotNone(case.risk_breakdown.inputs)
+        self.assertEqual(case.risk_score, case.risk_breakdown.total)
+        self.assertEqual(docs["inputs"]["event_count"], lane.RISK_EVENTS)
+        self.assertEqual(docs["inputs"]["rule_values"], list(lane.RISK_RULES))
+        self.assertEqual(docs["inputs"]["reputation_source"], "enrichment")
+        # Every factor re-derives from the recorded inputs alone (the explanation's use).
+        derived = factors_from_inputs(RiskInputs.model_validate(docs["inputs"]))
+        for key in lane.RISK_FACTORS:
+            # compute_risk rounds each factor and the total once, to 2 decimals.
+            self.assertAlmostEqual(derived[key], docs["factors"][key], delta=0.01, msg=key)
+        self.assertGreater(docs["factors"]["total"], 0)
+
+    def test_the_usage_plant_carries_its_rates_and_reconciles_with_the_case(self) -> None:
+        docs = _plants()
+        with _Backend():
+            from app.models import UsageDoc
+        row = UsageDoc.model_validate(docs["usage"])
+        self.assertEqual(row.case_id, lane.RISK_CASE_ID)
+        self.assertEqual(set(docs["rates"]), set(lane.USAGE_RATE_FIELDS))
+        self.assertTrue(all(value is not None for value in docs["rates"].values()), docs["rates"])
+        self.assertEqual(docs["rates"]["price_basis"], "catalog")
+        self.assertGreater(row.cost, 0, "a priced row; a free model would prove nothing")
+        rederived = round((
+            row.prompt_tokens * row.input_rate_per_million
+            + row.completion_tokens * row.output_rate_per_million
+        ) / 1e6, 8)
+        self.assertEqual(rederived, row.cost)
+        self.assertEqual(docs["case"]["token_cost"], row.cost)
+        with _Backend():
+            from app.constants import CASE_PIPELINE_USAGE_ROLES
+            from app.models import USAGE_RATE_FIELDS
+        self.assertIn(lane.USAGE_ROLE, CASE_PIPELINE_USAGE_ROLES)
+        self.assertEqual(tuple(lane.USAGE_RATE_FIELDS), tuple(USAGE_RATE_FIELDS))
+
+    def test_the_lockout_plant_uses_the_threshold_the_second_factor_route_locks_at(self) -> None:
+        routes = (ROOT / "backend" / "app" / "api" / "routes.py").read_text(encoding="utf-8")
+        self.assertIn(f"MFA_LOCK_THRESHOLD = {lane.LOCKED_USER_FAILURES}\n", routes)
+        source = inspect_source(lane.Lane._plant_round16)
+        self.assertIn("accounts.record_mfa_failure(", source)
+        self.assertIn("UserStore(SqlKVStore(engine))", source)
+        self.assertIn("SqlCaseRepository(engine)", source)
+        self.assertIn("SqlUsageRepository(engine).write_strict(", source)
+
+    def test_the_marker_is_the_newest_bundled_update_id(self) -> None:
+        latest = json.loads((ROOT / "backend" / "app" / "whats_new_latest.json").read_text(encoding="utf-8"))
+        self.assertEqual(lane.whats_new_marker(), latest["latest_update_id"])
+        with _Backend():
+            from app.models import DISMISSED_INTRO_ID_PATTERN, WHATS_NEW_AUTO_PREF_KEY, WHATS_NEW_SEEN_PREF_KEY
+        self.assertEqual((lane.WHATS_NEW_SEEN_KEY, lane.WHATS_NEW_AUTO_KEY), (WHATS_NEW_SEEN_PREF_KEY, WHATS_NEW_AUTO_PREF_KEY))
+        self.assertEqual(f"^{lane.UPDATE_ID_PATTERN}$", DISMISSED_INTRO_ID_PATTERN)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "latest.json"
+            for bad in ({"latest_update_id": "Has Spaces"}, {"latest_update_id": ""}, ["x"]):
+                path.write_text(json.dumps(bad), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    lane.whats_new_marker(path)
+
+    def test_previous_defines_reads_the_previous_models(self) -> None:
+        self.assertTrue(lane.previous_defines(lane.BACKEND, lane.DEFINES_RISK_INPUTS))
+        self.assertTrue(lane.previous_defines(lane.BACKEND, lane.DEFINES_MFA_LOCKOUT))
+        with tempfile.TemporaryDirectory() as tmp:
+            older = _previous_backend(tmp, "class RiskBreakdown(BaseModel):", "    total: float = 0.0")
+            self.assertFalse(lane.previous_defines(older, lane.DEFINES_RISK_INPUTS))
+            self.assertFalse(lane.previous_defines(older, lane.DEFINES_MFA_LOCKOUT))
+        with self.assertRaises(lane.LaneFailure):
+            lane.previous_defines(Path("/nonexistent/backend"), lane.DEFINES_RISK_INPUTS)
+
+    def test_the_pinned_release_defines_none_of_the_round16_fields(self) -> None:
+        """So the pinned scenario takes the documented-loss path: the case reads "not
+        recorded" and the lockout counter resets."""
+        import subprocess
+
+        pin = lane.load_pin()
+        shown = subprocess.run(
+            ["git", "-C", str(ROOT), "show", f"{pin.previous_release}:backend/app/models.py"],
+            capture_output=True, text=True,
+        )
+        if shown.returncode != 0:  # pragma: no cover - a shallow clone without the pin
+            self.skipTest("the pinned release is not in this clone")
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = _previous_backend(tmp, shown.stdout)
+            self.assertFalse(lane.previous_defines(previous, lane.DEFINES_RISK_INPUTS))
+            self.assertFalse(lane.previous_defines(previous, lane.DEFINES_MFA_LOCKOUT))
+            self.assertNotIn("input_rate_per_million", shown.stdout)
+            self.assertIn("misc: dict[str, Any]", shown.stdout, "misc is a free dictionary in N-1")
+
+    def test_release_n_serves_every_plant_back(self) -> None:
+        docs = _plants()
+        stored = {"username": lane.LOCKED_USER, **_LOCKOUT}
+        instance = _round16_lane(docs, stored_user=stored)
+        good = _round16_responses(docs, recorded=True, comment=False, display_name="")
+        boot = _FakeBoot("release-n", good)
+        instance.assert_risk_case(boot, recorded=True)  # type: ignore[arg-type]
+        instance.assert_usage_rates(boot)  # type: ignore[arg-type]
+        instance.assert_locked_user(boot, kept=True, display_name="")  # type: ignore[arg-type]
+        instance.assert_marker(boot)  # type: ignore[arg-type]
+
+        base = f"/api/cases/{lane.RISK_CASE_ID}"
+        for key, value in (
+            (("GET", base), (200, _risk_case(docs, inputs=False))),
+            (("GET", f"{base}/stages"), (200, _stages("current_preferences"))),
+        ):
+            broken = dict(good)
+            broken[key] = value
+            with self.assertRaises(lane.LaneFailure, msg=str(key)):
+                instance.assert_risk_case(_FakeBoot("release-n", broken), recorded=True)  # type: ignore[arg-type]
+        unrated = dict(good)
+        unrated[("GET", f"{base}/usage")] = (200, {"rows": [{
+            k: v for k, v in docs["usage"].items() if k not in lane.USAGE_RATE_FIELDS
+        }], "reconciles": True})
+        with self.assertRaises(lane.LaneFailure):
+            instance.assert_usage_rates(_FakeBoot("release-n", unrated))  # type: ignore[arg-type]
+        unlocked = _round16_lane(docs, stored_user={"username": lane.LOCKED_USER, "mfa_failed_count": 0, "mfa_locked_until": ""})
+        with self.assertRaises(lane.LaneFailure):
+            unlocked.assert_locked_user(_FakeBoot("release-n", good), kept=True, display_name="")  # type: ignore[arg-type]
+        no_marker = dict(good)
+        no_marker[("GET", "/api/prefs/user")] = (200, {"misc": {}})
+        with self.assertRaises(lane.LaneFailure):
+            instance.assert_marker(_FakeBoot("release-n", no_marker))  # type: ignore[arg-type]
+
+    def test_release_n_minus_1_reads_each_plant_then_rewrites_them(self) -> None:
+        docs = _plants()
+        instance = _round16_lane(docs, stored_user=None)
+        responses = _round16_responses(docs, recorded=False, comment=False, display_name="")
+        boot = _FakeBoot("release-n-1", responses)
+        instance.round16_on_previous(boot)  # type: ignore[arg-type]
+        writes = [call[:2] for call in boot.calls if call[0] in ("POST", "PUT")]
+        self.assertEqual(writes, [
+            ("POST", f"/api/cases/{lane.RISK_CASE_ID}/comment"),
+            ("PUT", f"/api/users/{lane.LOCKED_USER}"),
+            ("PUT", "/api/prefs/user"),
+        ])
+        bodies = {call[1]: call[2] for call in boot.calls if call[0] in ("POST", "PUT")}
+        self.assertEqual(bodies[f"/api/users/{lane.LOCKED_USER}"], {"display_name": lane.LOCKED_USER_DISPLAY_NAME})
+        self.assertEqual(bodies["/api/prefs/user"], {"theme_mode": lane.PREVIOUS_THEME})
+        self.assertEqual(bodies[f"/api/cases/{lane.RISK_CASE_ID}/comment"]["body"], lane.RISK_COMMENT)
+
+        for key, value in (
+            (("GET", f"/api/usage/summary?case_id={lane.RISK_CASE_ID}&window_hours=24"),
+             (200, {"call_count": 0, "total_cost": 0.0})),
+            (("GET", "/api/users"), (200, {"users": []})),
+            (("GET", "/api/prefs/user"), (200, {"misc": {}})),
+            (("GET", f"/api/cases/{lane.RISK_CASE_ID}"), (404, {"detail": "Case not found"})),
+        ):
+            broken = dict(responses)
+            broken[key] = value
+            with self.assertRaises(lane.LaneFailure, msg=str(key)):
+                instance.round16_on_previous(_FakeBoot("release-n-1", broken))  # type: ignore[arg-type]
+
+    def test_release_n_again_reads_the_rewritten_case_as_not_recorded(self) -> None:
+        """Against an N-1 that defines none of the fields (the pinned release): the
+        inputs are gone, today's weights apply, the score holds; the counter is reset;
+        the rates and the marker survive."""
+        docs = _plants()
+        with tempfile.TemporaryDirectory() as tmp:
+            older = _previous_backend(tmp, "class RiskBreakdown(BaseModel):")
+            reset = {"username": lane.LOCKED_USER, "mfa_failed_count": 0, "mfa_locked_until": ""}
+            instance = _round16_lane(docs, stored_user=reset, previous=older)
+            good = _round16_responses(
+                docs, recorded=False, comment=True, display_name=lane.LOCKED_USER_DISPLAY_NAME,
+                theme=lane.PREVIOUS_THEME,
+            )
+            lines = instance.assert_round16_return(_FakeBoot("release-n-again", good))  # type: ignore[arg-type]
+            self.assertIn("not recorded", lines[0])
+            self.assertIn("reset the lockout counter", lines[2])
+
+            base = f"/api/cases/{lane.RISK_CASE_ID}"
+            breaks = {
+                "inputs survived a rewrite that drops them": (("GET", base), (200, _risk_case(docs, inputs=True, comment=True))),
+                "today's weights not used": (("GET", f"{base}/stages"), (200, _stages("recorded_at_scoring"))),
+                "the score moved": (("GET", base), (200, _risk_case(docs, inputs=False, comment=True, risk_score=1.0))),
+                "N-1's save is missing": (("GET", base), (200, _risk_case(docs, inputs=False))),
+                "the rates were lost": (("GET", f"{base}/usage"), (200, {"rows": [{"cost": docs["cost"]}], "reconciles": True})),
+                "the marker was lost": (("GET", "/api/prefs/user"), (200, {"theme_mode": "dark", "misc": {}})),
+                "N-1's theme is missing": (("GET", "/api/prefs/user"), (200, {"theme_mode": "system", "misc": {
+                    lane.WHATS_NEW_SEEN_KEY: lane.whats_new_marker(), lane.WHATS_NEW_AUTO_KEY: False}})),
+                "N-1's display name is missing": (("GET", "/api/users"), (200, {"users": [
+                    {"username": lane.LOCKED_USER, "display_name": ""}]})),
+            }
+            for reason, (key, value) in breaks.items():
+                broken = dict(good)
+                broken[key] = value
+                with self.assertRaises(lane.LaneFailure, msg=reason):
+                    instance.assert_round16_return(_FakeBoot("release-n-again", broken))  # type: ignore[arg-type]
+            kept_counter = _round16_lane(docs, stored_user={"username": lane.LOCKED_USER, **_LOCKOUT}, previous=older)
+            with self.assertRaises(lane.LaneFailure, msg="the counter must read reset"):
+                kept_counter.assert_round16_return(_FakeBoot("release-n-again", good))  # type: ignore[arg-type]
+            gone = _round16_lane(docs, stored_user=None, previous=older)
+            with self.assertRaises(lane.LaneFailure, msg="the account must still load"):
+                gone.assert_round16_return(_FakeBoot("release-n-again", good))  # type: ignore[arg-type]
+
+    def test_release_n_again_requires_an_n_minus_1_that_defines_a_field_to_keep_it(self) -> None:
+        """The self-forward scenario (this checkout as N-1): nothing may be lost."""
+        docs = _plants()
+        instance = _round16_lane(docs, stored_user={"username": lane.LOCKED_USER, **_LOCKOUT})
+        kept = _round16_responses(
+            docs, recorded=True, comment=True, display_name=lane.LOCKED_USER_DISPLAY_NAME,
+            theme=lane.PREVIOUS_THEME,
+        )
+        lines = instance.assert_round16_return(_FakeBoot("release-n-again", kept))  # type: ignore[arg-type]
+        self.assertIn("kept its recorded inputs", lines[0])
+        self.assertIn("survived", lines[2])
+        dropped = _round16_responses(
+            docs, recorded=False, comment=True, display_name=lane.LOCKED_USER_DISPLAY_NAME,
+            theme=lane.PREVIOUS_THEME,
+        )
+        with self.assertRaises(lane.LaneFailure):
+            instance.assert_round16_return(_FakeBoot("release-n-again", dropped))  # type: ignore[arg-type]
+        reset = _round16_lane(docs, stored_user={"username": lane.LOCKED_USER, "mfa_failed_count": 0, "mfa_locked_until": ""})
+        with self.assertRaises(lane.LaneFailure):
+            reset.assert_round16_return(_FakeBoot("release-n-again", kept))  # type: ignore[arg-type]
+
+    def test_each_phase_carries_the_round16_step_unconditionally(self) -> None:
+        import inspect
+
+        phase_n = inspect.getsource(lane.Lane.phase_n)
+        self.assertLess(phase_n.index("self.plant_round16(boot)"), phase_n.index("self.stop(boot)"))
+        self.assertLess(phase_n.index("self.plant_review_case(boot)"), phase_n.index("self.plant_round16(boot)"))
+        previous = inspect.getsource(lane.Lane.phase_previous)
+        self.assertLess(previous.index("self.round16_on_previous(boot)"), previous.index("self.stop(boot)"))
+        back = inspect.getsource(lane.Lane.phase_return)
+        self.assertLess(back.index("self.assert_round16_return(boot)"), back.index("self.stop(boot)"))
+        self.assertIn("self.results.extend(round16)", back)
+        self.assertNotIn("forward_contract", phase_n + previous + back)
+        plant = inspect.getsource(lane.Lane.plant_round16)
+        for call in ("self.assert_risk_case(boot, recorded=True)", "self.assert_usage_rates(boot)",
+                     "self.assert_locked_user(boot, kept=True", "self.assert_marker(boot)"):
+            self.assertIn(call, plant)
+
+    def test_the_plant_is_written_through_n_and_the_marker_through_its_route(self) -> None:
+        docs = _plants()
+        instance = _round16_lane(docs, stored_user={"username": lane.LOCKED_USER, **_LOCKOUT})
+        expected = _expected(docs)
+        planted: list[str] = []
+
+        async def plant() -> dict:
+            planted.append("stores")
+            return {key: expected[key] for key in ("factors", "inputs", "cost", "rates", "lockout")}
+
+        instance._plant_round16 = plant  # type: ignore[method-assign]
+        boot = _FakeBoot("release-n", _round16_responses(docs, recorded=True, comment=False, display_name=""))
+        instance.plant_round16(boot)  # type: ignore[arg-type]
+        self.assertEqual(planted, ["stores"])
+        puts = [call for call in boot.calls if call[0] == "PUT"]
+        self.assertEqual(puts, [("PUT", "/api/prefs/user", {"misc": {
+            lane.WHATS_NEW_SEEN_KEY: lane.whats_new_marker(), lane.WHATS_NEW_AUTO_KEY: False,
+        }})])
+        self.assertEqual(instance.round16["marker"], lane.whats_new_marker())
 
 
 if __name__ == "__main__":

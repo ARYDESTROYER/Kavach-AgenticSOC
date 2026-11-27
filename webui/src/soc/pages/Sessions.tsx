@@ -380,7 +380,7 @@ export function SessionsTable({
 /**
  * The activity rows of a `GET /api/account/activity` answer. The server sends audit
  * records under `activity`, so each row's event name, summary and client address are
- * mapped onto the fields the list shows (`action`, `detail`, `ip`).
+ * mapped onto the fields the list shows (`action`, `event_label`, `detail`, `ip`).
  */
 export function activityRows(res: ActivityResponse | null | undefined): ActivityEvent[] {
   const rows = Array.isArray(res?.activity) ? res.activity : Array.isArray(res?.events) ? res.events : [];
@@ -391,31 +391,84 @@ export function activityRows(res: ActivityResponse | null | undefined): Activity
     return {
       ...row,
       action: text(row.action) ?? text(row.action_type),
+      event_label: text(row.event_label),
       detail: text(row.detail) ?? text(row.result_summary),
       ip: text(row.ip) ?? text(client.ip) ?? null,
     };
   });
 }
 
-function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: boolean }) {
+/**
+ * The plain sentence under each known account and session event. The audit row's own
+ * summary (`detail`, such as "session_create sid=... new session") is an internal record
+ * and never shows here; an event this list does not know shows its name alone.
+ */
+const ACTIVITY_SENTENCES: Readonly<Record<string, string>> = {
+  'auth.login': 'You signed in.',
+  'auth.login_failed': 'A sign-in to this account failed.',
+  'auth.logout': 'You signed out.',
+  'auth.reauthenticated': 'You confirmed your password for a protected action.',
+  'auth.reauth_failed': 'A password confirmation failed.',
+  'auth.password_changed': 'The password of this account was changed.',
+  'auth.password_change_failed': 'A password change failed.',
+  'auth.mfa_setup_started': 'Two-factor setup started.',
+  'auth.mfa_enrolled': 'Two-factor authentication was set up.',
+  'auth.mfa_challenged': 'A two-factor code was asked for.',
+  'auth.mfa_failed': 'A two-factor code was not accepted.',
+  'auth.mfa_locked': 'Two-factor checks were paused after too many wrong codes.',
+  'auth.mfa_disabled': 'Two-factor authentication was turned off.',
+  'session.created': 'A new session started.',
+  'session.refreshed': 'A session was renewed.',
+  'session.revoked': 'A session was signed out.',
+  'user.preferences_updated': 'Your personal preferences changed.',
+};
+
+/** The sentence for an event's action, or null when the list does not know it. Exported for tests. */
+export function activitySentence(action: unknown): string | null {
+  return typeof action === 'string' && Object.prototype.hasOwnProperty.call(ACTIVITY_SENTENCES, action)
+    ? ACTIVITY_SENTENCES[action]
+    : null;
+}
+
+function ActivityList({
+  events,
+  loading,
+  failed = false,
+}: {
+  events: ActivityEvent[];
+  loading: boolean;
+  /** The last read failed: the empty slot says so instead of "No recent activity." */
+  failed?: boolean;
+}) {
+  // A fixed layout (the Where and When widths) keeps the table inside a phone panel: the
+  // list holds nothing a keyboard can focus, so a table wider than its panel would be a
+  // scroll region no keyboard can reach, with the When column cut off. Its planned
+  // minimum is 6rem + 8rem (224 px); the sentence wraps instead of being cut short.
   const columns: DataTableColumn<ActivityEvent>[] = [
     {
       id: 'action',
       header: 'Event',
-      cell: (e) => (
-        <div className="min-w-0">
-          <span className="block truncate text-sm font-medium text-foreground">
-            {e.action ? humanizeToken(String(e.action)) : 'Event'}
-          </span>
-          {e.detail ? (
-            <span className="block truncate text-xs text-muted-foreground">{e.detail}</span>
-          ) : null}
-        </div>
-      ),
+      wrap: true,
+      cell: (e) => {
+        const sentence = activitySentence(e.action);
+        return (
+          <div className="min-w-0">
+            <span className="block truncate text-sm font-medium text-foreground">
+              {e.event_label || (e.action ? humanizeToken(String(e.action)) : 'Event')}
+            </span>
+            {sentence ? (
+              <span className="block break-words text-xs text-muted-foreground" data-activity-sentence>
+                {sentence}
+              </span>
+            ) : null}
+          </div>
+        );
+      },
     },
     {
       id: 'location',
       header: 'Where',
+      width: '30%',
       cell: (e) => {
         const loc = sessionLocation(e);
         const dev = sessionDevice(e);
@@ -433,6 +486,7 @@ function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: b
       id: 'ts',
       header: 'When',
       align: 'right',
+      width: '6rem',
       cell: (e) => (
         <span className="text-sm text-muted-foreground" title={formatTimestamp(e.ts)}>
           {humanizeAge(e.ts)}
@@ -448,7 +502,7 @@ function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: b
       loading={loading}
       surface="panel"
       ariaLabel="Recent account activity"
-      empty="No recent activity."
+      empty={failed ? 'Activity could not be loaded. Use Refresh to try again.' : 'No recent activity.'}
     />
   );
 }
@@ -481,6 +535,8 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
   const [activity, setActivity] = React.useState<ActivityEvent[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [activityLoading, setActivityLoading] = React.useState(true);
+  // A failed activity read is said as such, never shown as "No recent activity."
+  const [activityFailed, setActivityFailed] = React.useState(false);
   const [busySid, setBusySid] = React.useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = React.useState<Session | null>(null);
   const [revokeOthersOpen, setRevokeOthersOpen] = React.useState(false);
@@ -507,10 +563,12 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
     try {
       const res = await api.account_activity();
       setActivity(activityRows(res));
+      setActivityFailed(false);
     } catch (e) {
       // Activity is best-effort; a failure shouldn't break the page.
       toast.error(errMsg(e, 'Could not load activity.'));
       setActivity([]);
+      setActivityFailed(true);
     } finally {
       setActivityLoading(false);
     }
@@ -635,7 +693,7 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
 
           <TabsContent value="activity">
             <Panel as="div" padding="none" data-sessions-panel="activity">
-              <ActivityList events={activity} loading={activityLoading} />
+              <ActivityList events={activity} loading={activityLoading} failed={activityFailed} />
             </Panel>
           </TabsContent>
         </Tabs>

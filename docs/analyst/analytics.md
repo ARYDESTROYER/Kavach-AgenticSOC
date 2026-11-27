@@ -1,31 +1,57 @@
 ---
 title: Analytics and standup
-description: Interpret v0.1 posture, timing, noise reduction, ATT&CK coverage, cost, and shift handoff metrics.
+description: Interpret posture, timing, noise reduction, ATT&CK coverage, cost, and shift handoff metrics, and read how each figure was calculated.
 ---
 
 # Analytics and standup
 
-The **Analytics** group in the navigation opens three pages, each titled by its
-navigation label: **Metrics** (`#/metrics`), **Agent effectiveness**
-(`#/effectiveness`) and **Cost** (`#/cost`). The group also opens **Team activity**
-(`#/team`, `team:view`), per-person work counts from the audit log; see
-[Team activity](team-activity.md). **Overview → Standup** holds the current
-action queue. Analytics are advisory: they describe stored cases and ingest counters but
-never feed the case decision policy.
+The **Analytics** group in the navigation opens seven pages, each titled by its
+navigation label, in this order:
 
-Posture and ATT&CK endpoints require `metrics:view` when RBAC is enabled.
+- **Metrics** (`#/metrics`, `metrics:view`): posture, timing, noise reduction and
+  ATT&CK coverage.
+- **Team activity** (`#/team`, `team:view`), per-person work counts from the audit log;
+  see [Team activity](team-activity.md).
+- **Agent effectiveness** (`#/effectiveness`, `metrics:view`): agent health, the
+  improvement evidence and the auto-close review.
+- **Cost** (`#/cost`, `cost:view`): the model spend ledger; see [Cost](#cost).
+- **Models** (`#/models`, `models:read`): the model catalog, routing and prices; see
+  [Models and spend controls](../administration/models-spend.md).
+- **Baseline** (`#/baseline`, `settings:read`): the learned entity and source
+  baselines; see [Tuning and baselines](../automation/tuning-baselines.md).
+- **Jobs** (`#/batchjobs`): the background jobs you started; see [Jobs](#jobs).
+
+A page shows in the navigation only for someone allowed to read it.
+**Overview → Standup** holds the current action queue. Analytics are advisory: they
+describe stored cases and ingest counters but never feed the case decision policy.
+
+Posture and ATT&CK endpoints require `metrics:view` when RBAC is enabled, and so does
+the Standup.
+
+Many figures on these pages explain themselves. Point at one for a one-line formula with
+the real numbers; select it, or press Enter or Space while it has focus, for the inputs, the
+steps, the rounding and who computed it, with **Copy calculation**. MTTA, MTTR and dwell
+also read the cases behind the median: the panel shows the rank arithmetic of the median
+and p90, and **Show all** opens the cases in a side sheet, shortest first, with the
+median case or cases marked and each one linked to Case Manager. MTTR also says how many
+cases the AI agent closed and how many a person closed, with each group's median. A case
+you may not read, or one outside your data scope, is not listed but still counts in the
+figure. See [Explainable numbers](explainable-numbers.md).
 
 ## How the Analytics pages are laid out
 
-Each page follows the Overview's layout. The header holds the title with a help tip,
+**Metrics**, **Agent effectiveness** and **Cost** follow the Overview's layout. The
+header holds the title with a help tip,
 the time range (last 24 hours, 7 days or 30 days) and one refresh beside it, and on the
 right when the figures were last read ("Updated just now"). Below it, every module sits
 on the same tinted panel and names its window after its title ("all time", "last 7
 days", "now"). A caption always names the range of the figures on screen: while a new
 range is being read, and if it cannot be read, the page keeps the previous figures under
-their own captions and says which range it shows. The range you pick on one Analytics
-page is kept for the others until you reload the page or sign out. The navigation switches between
-the pages; there is no second row of page tabs.
+their own captions and says which range it shows. The range you pick on one of these
+three pages is kept for the other two until you reload the page or sign out. **Team
+activity** has its own range; **Models**, **Baseline** and **Jobs** show the current
+state with no time range. The navigation switches between the pages; there is no second
+row of page tabs.
 
 **Metrics** has three tabs:
 
@@ -108,7 +134,7 @@ retrieval projection. An unreadable corpus reports "Unknown", never zero.
 
 Agentic SOC reports distributions, including p50 and p90 where available:
 
-| Metric | v0.1 definition |
+| Metric | Definition |
 |---|---|
 | MTTD | First member-event time to case creation |
 | MTTA | Case creation to the first human acknowledgement |
@@ -117,7 +143,9 @@ Agentic SOC reports distributions, including p50 and p90 where available:
 
 MTTA uses a human acknowledgement; an automatic close is not counted as a human
 response. Missing eligible samples remain missing rather than being displayed as
-zero.
+zero. The **MTTR** tile on the Operational tab is the median (p50) of the same clock,
+from case creation, or detection when recorded, to the first time the case was resolved
+or closed, over the cases that are resolved or closed now. Later edits do not change it.
 
 ## Posture and quality
 
@@ -265,7 +293,13 @@ Neither proves the upstream alert generator itself is getting better.
 Open **Analytics → Agent effectiveness** for the detailed operator surface. The
 **Operational outcomes** panel shows its four headline comparisons as one strip, with
 **Week over week** or **Rolling 28 days** in the panel's title row; its caption names
-the window ("last 7 complete UTC days against the 7 before"). While the headline is
+the window ("last 7 complete UTC days against the 7 before"). Point at a comparison's
+figure, or select it, for its calculation: both windows worked from their counts (the
+recorded cost over the costed cases, the two closure medians, the alerts over the days,
+the confirmed cases over the graded ones) and the change between them. The server rounds
+each figure before it compares them, so a change worked from the tile's shorter figures
+can differ a little; the panel prints the figures the server compared, and its change
+ends on the tile's chip. **How** beside each figure gives the definition in words. While the headline is
 still collecting evidence, an **Evidence details** panel sits above the strip with a
 **Show details** button. The comparisons, the rows behind the operational outcomes
 (**What supports these movements**, **Evidence by system layer** and the **Trend
@@ -372,6 +406,23 @@ cases still in the status the console shows as **Open · awaiting analyst**, the
 automation routed to a person that no one has picked up; the workload list shows that
 count per assignee as "N awaiting".
 
+Every number on the Standup can be explained. Point at it for a one-line formula, or
+select it for the full calculation:
+
+- a strip count states the count now, the "was" figure and the change ("15 - 10 =
+  +5"). The "was" figure is not a count taken when the window began: it is the same
+  count over the cases open now that were created before the window, so a case that has
+  closed since is in neither count;
+- a case's risk chip shows the weighted sum it was scored with, as in the Case Manager
+  queue;
+- a case's age is the snapshot time minus when the case was detected, or created, shown
+  as its two largest units ("12d 4h");
+- the SLA pressure counts add up per priority ("P3 5 + P4 5 = 10"), and each "over" line
+  is the response clock's elapsed minutes minus the target ("18,677.93 - 480 =
+  18,197.93 minutes"), shown as its two largest units ("12d 15h over");
+- an analyst's open count is their escalated, awaiting-analyst and other open cases
+  added up.
+
 Writing action items or acknowledgements requires `cases:write`.
 
 ## Cost
@@ -387,7 +438,18 @@ zero; the change on **Total cost** compares the second half of the range with th
 itself, so a 7-day range reads per day over 7 days, not over the 8 calendar days it
 touches.
 Every model call must pass through this ledger. A price is an estimate based on the active catalog or operator override; it
-does not replace the provider invoice.
+does not replace the provider invoice. Each call made by version 0.2 or later also
+records the rates it was charged and where they came from, so a case's AI usage list can
+recompute every call; see [Explainable numbers](explainable-numbers.md#cost).
+
+## Jobs
+
+Open **Analytics → Jobs** to follow the background jobs you started, such as a data
+export, an audit log export, a bulk change from Case Manager or a reset. To stop a job
+that is still running, choose **Cancel** on its row. There is no force kill: the button
+reads **Stopping…** until the job reaches its next safe checkpoint. Work the job already
+finished is not undone, but a cancelled export leaves no file to download. Each row shows
+the job's progress and result, and an export offers **Download** once its file is ready.
 
 See [Analyst overview](overview.md), [Cases](cases.md), and
 [Background jobs](../operations/background-jobs.md).

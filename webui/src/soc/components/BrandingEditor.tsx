@@ -60,13 +60,8 @@ import {
   accentContrastAdvisory,
   type BrandingDoc,
 } from './branding.api';
-import {
-  asLoginLayout,
-  type BrandHeroProps,
-  type LoginLayout,
-} from './auth/loginParts';
+import { asLoginLayout, type LoginLayout } from './auth/loginParts';
 import { LOGIN_BRANDING_DEFAULTS } from './auth/login.api';
-import { LoginAuthBackdrop } from './auth/LoginAuthBackdrop';
 import { LoadError } from './LoadError';
 
 import { Button } from '@/ui/button';
@@ -114,8 +109,12 @@ const MAX_LOGIN_BODY_LEN = 600;
 const MAX_LOGIN_CHIPS = 6;
 const MAX_LOGIN_CHIP_LEN = 60;
 
-const DEFAULT_ACCENT = '#6c5ce7';
-const DEFAULT_ACCENT2 = '#00b894';
+/**
+ * The light theme's `--blue-9` (theme.css), the default `--primary`. Used only when the
+ * live token cannot be read (no DOM); the editor otherwise reads the tokens themselves,
+ * so an unset accent always shows what the Console really paints (B50).
+ */
+const FALLBACK_PRIMARY_TRIPLET = '214 90% 42%';
 
 /** Built-in defaults — reproduce the no-branding experience (Round-3/4 superset). */
 const DEFAULT_BRANDING: BrandingDoc = {
@@ -228,6 +227,16 @@ function resolvedTokenHex(name: string): string | null {
   if (!raw) return null;
   if (isValidHex(raw)) return raw;
   return hslTripletToHex(raw);
+}
+
+/**
+ * The Console's default accents as the current theme paints them: the live `--primary`
+ * and `--accent2` (B50). An unset accent leaves these in force, so the editor shows them
+ * instead of a hard-coded pair.
+ */
+function readTokenDefaults(): { primary: string; accent2: string } {
+  const primary = resolvedTokenHex('--primary') || hslTripletToHex(FALLBACK_PRIMARY_TRIPLET) || '';
+  return { primary, accent2: resolvedTokenHex('--accent2') || primary };
 }
 
 /** Live-preview the accent by rewriting (or clearing) the primary/ring CSS vars. */
@@ -500,41 +509,49 @@ function ImageUpload({
 const PREVIEW_DESIGN_W = 1160;
 const PREVIEW_DESIGN_H = 700;
 
-type PreviewHero = Omit<BrandHeroProps, 'variant'>;
+/** The operator copy the login preview shows (all plain text, #9). */
+interface PreviewHero {
+  wordmark: string;
+  tagline: string;
+  logoUrl: string;
+  headline?: string;
+  body?: string;
+  chips?: string[];
+  subtitle?: string;
+  footerText?: string;
+}
 
 /**
- * A small, faithful identity-slab preview. It mirrors the real login's standalone
- * mark, single title hierarchy, and 48px credential rhythm; there is
- * intentionally no marketing hero, illustration, floating card, or elevation.
+ * A small, faithful preview of the sign-in column. It mirrors the real page: the mark,
+ * the one heading ("Sign in to {organization}" unless a headline replaces it), the
+ * operator's description, a 44px field and the primary Continue on the Console's own
+ * tokens. There is no hero, illustration, card or elevation.
  */
 function LoginPreviewCard({ hero }: { hero: PreviewHero }) {
-  const title = hero.headline?.trim() || 'Welcome back';
-  const description = hero.body?.trim() || hero.subtitle?.trim() || `Sign in to continue to ${hero.wordmark}.`;
+  const title = hero.headline?.trim() || `Sign in to ${hero.wordmark}`;
+  const description = hero.body?.trim() || hero.subtitle?.trim() || '';
   return (
-    <div data-login-preview-content className="w-[384px]">
-      <div className="mb-5 flex h-14 min-w-0 items-center">
-        <div className="flex h-14 w-14 shrink-0 items-center justify-start">
-          {hero.logoUrl ? (
-            <img src={hero.logoUrl} alt="" className="h-14 w-14 object-contain" />
-          ) : (
-            <Shield className="h-12 w-12 stroke-[1.35] text-primary" aria-hidden />
-          )}
-        </div>
+    <div data-login-preview-content className="w-[400px]">
+      <div className="mb-8 flex h-10 items-center">
+        {hero.logoUrl ? (
+          <img src={hero.logoUrl} alt="" className="h-10 w-auto max-w-48 object-contain object-left" />
+        ) : (
+          <Shield className="h-7 w-7 text-primary" aria-hidden />
+        )}
       </div>
-      <div>
-        <div className="text-left">
-          <p className="break-words text-display font-medium text-foreground">
-            {title}
-          </p>
-          <p className="mt-3 break-words text-base leading-5 text-muted-foreground">
-            {description}
-          </p>
+      <p className="break-words text-3xl text-foreground">{title}</p>
+      {description ? (
+        <p className="mt-2 whitespace-pre-line break-words text-base text-muted-foreground">
+          {description}
+        </p>
+      ) : null}
+      <div className="mt-8 space-y-4">
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-foreground">Username</p>
+          <div className="h-11 rounded-md border border-input bg-background" />
         </div>
-        <div className="mt-9 space-y-4">
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-foreground">Username</p>
-            <div className="h-12 rounded-md border border-input bg-background" />
-          </div>
+        <div className="flex h-11 items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground">
+          Continue
         </div>
       </div>
     </div>
@@ -542,32 +559,24 @@ function LoginPreviewCard({ hero }: { hero: PreviewHero }) {
 }
 
 /**
- * The full-screen login arrangement at DESIGN size. Legacy layout values remain
+ * The full-screen sign-in arrangement at DESIGN size. Legacy layout values remain
  * visible in Settings for wire compatibility, but all three intentionally preview the
- * same minimal centered shell used by the real login.
+ * same centred column used by the real page, with its static brand wash.
  */
 function LoginPreviewStage({ layout, hero }: { layout: LoginLayout; hero: PreviewHero }) {
   return (
     <div
       data-login-preview-shell="minimal"
       data-login-preview-layout={layout}
-      className="login-auth-canvas absolute inset-0 overflow-hidden"
+      className="login-canvas absolute inset-0 isolate overflow-hidden bg-canvas"
     >
-      <div className="absolute right-8 top-8 flex gap-0.5">
-        <span className="h-6 w-6 bg-muted" />
-        <span className="h-6 w-6" />
-        <span className="h-6 w-6" />
+      <div className="absolute right-6 top-6 flex gap-0.5 rounded-full border border-border bg-card p-0.5">
+        <span className="h-7 w-7 rounded-full bg-foreground" />
+        <span className="h-7 w-7 rounded-full" />
+        <span className="h-7 w-7 rounded-full" />
       </div>
       <div className="flex min-h-full items-center justify-center px-12 py-12">
-        <div className="relative isolate w-[480px]">
-          <LoginAuthBackdrop staticFrame />
-          <div
-            data-login-preview-slab
-            className="login-auth-slab relative z-30 min-h-[492px] w-[480px] px-12 pb-24 pt-12"
-          >
-            <LoginPreviewCard hero={hero} />
-          </div>
-        </div>
+        <LoginPreviewCard hero={hero} />
       </div>
     </div>
   );
@@ -699,6 +708,16 @@ export function BrandingEditor({ readOnly = false }: BrandingEditorProps) {
   const accent2 = draft.accent_color2 || '';
   const accentValid = !accent || isValidHex(accent);
   const accent2Valid = !accent2 || isValidHex(accent2);
+  // Read after each commit, not during render: a theme switch applies `.dark` in
+  // ThemeProvider's layout effect, after this editor renders, and an accent preview is
+  // cleared in the handler, so only a read after the commit sees the defaults in force.
+  const [tokenDefaults, setTokenDefaults] = React.useState(readTokenDefaults);
+  React.useEffect(() => {
+    const next = readTokenDefaults();
+    setTokenDefaults((prev) =>
+      prev.primary === next.primary && prev.accent2 === next.accent2 ? prev : next,
+    );
+  }, [isDark, accent, accent2]);
 
   const onAccent = (value: string) => {
     set({ accent_color: value });
@@ -903,8 +922,11 @@ export function BrandingEditor({ readOnly = false }: BrandingEditorProps) {
 
   const wordmark = draft.org_name.trim() || 'Agentic SOC';
   const tagline = draft.product_name.trim() || 'Security operations console';
-  const a1 = accentValid && accent ? accent : DEFAULT_ACCENT;
-  const a2 = accent2Valid && accent2 ? accent2 : DEFAULT_ACCENT2;
+  // An unset accent leaves the stylesheet default in force, so show that default (B50).
+  const defaultAccent = tokenDefaults.primary;
+  const defaultAccent2 = tokenDefaults.accent2;
+  const a1 = accentValid && accent ? accent : defaultAccent;
+  const a2 = accent2Valid && accent2 ? accent2 : defaultAccent2;
   const gradient = `linear-gradient(135deg, ${a1} 0%, ${a2} 100%)`;
 
   if (loading) {
@@ -1107,7 +1129,7 @@ export function BrandingEditor({ readOnly = false }: BrandingEditorProps) {
           <ColorField
             label="Primary accent"
             value={accent}
-            placeholder={DEFAULT_ACCENT}
+            placeholder={defaultAccent}
             invalid={!accentValid}
             disabled={readOnly}
             onChange={onAccent}
@@ -1115,7 +1137,7 @@ export function BrandingEditor({ readOnly = false }: BrandingEditorProps) {
           <ColorField
             label="Secondary accent"
             value={accent2}
-            placeholder={DEFAULT_ACCENT2}
+            placeholder={defaultAccent2}
             invalid={!accent2Valid}
             disabled={readOnly}
             onChange={onAccent2}
@@ -1268,7 +1290,7 @@ export function BrandingEditor({ readOnly = false }: BrandingEditorProps) {
           <Input
             id="brand-subtitle"
             value={draft.login_subtitle}
-            placeholder="Welcome back"
+            placeholder="Use your work account to continue."
             disabled={readOnly}
             maxLength={MAX_TEXT_LEN}
             onChange={(e) => set({ login_subtitle: e.target.value })}
@@ -1316,7 +1338,7 @@ export function BrandingEditor({ readOnly = false }: BrandingEditorProps) {
       <div className="space-y-4">
         <Heading
           title="Login screen"
-          sub="Keep sign-in quiet and concise. Optional copy is plain text and appears inside the centered identity slab."
+          sub="Keep sign-in quiet and concise. Optional copy is plain text and appears in the sign-in column."
         />
 
         {/* Faithful miniature of the same minimal shell used by Login. */}
@@ -1350,7 +1372,7 @@ export function BrandingEditor({ readOnly = false }: BrandingEditorProps) {
             onChange={(e) => set({ login_headline: e.target.value })}
           />
           <p className="text-xs text-muted-foreground">
-            Optional. Replaces the default “Welcome back” heading.
+            Optional. Replaces the default “Sign in to {wordmark}” heading.
           </p>
         </div>
 

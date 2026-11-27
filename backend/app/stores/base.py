@@ -328,6 +328,60 @@ def window_bounds_proven(
     return (not created_from or lo is not None) and (not created_to or hi is not None)
 
 
+#: The ``awaiting_reason`` prefix of a candidate the per-tick cap deferred; the drain
+#: investigates exactly these (``engine.ingest._candidate_reason``).
+DEFERRED_REASON_PREFIX = "deferred:"
+
+
+#: ``decision_by`` of a case a person acted on; such a candidate is theirs and never
+#: drained (Round 16 B05).
+PERSON_DECIDER = "analyst"
+
+
+def is_deferred_candidate(case: Case, *, older_than: str) -> bool:
+    """Whether ``case`` is a cap-deferred candidate the drain may take now: OPEN, no
+    verdict, ``awaiting_reason`` starting with :data:`DEFERRED_REASON_PREFIX`, last
+    updated before ``older_than`` (ISO strings compared as the stores store them), and
+    not acted on by a person (``decision_by`` is not :data:`PERSON_DECIDER`). The
+    stores leave a person's candidates out of the query itself, so any number of them
+    can never fill the drain's page and hide the candidates behind them."""
+    status = getattr(case.status, "value", case.status)
+    decider = getattr(case.decision_by, "value", case.decision_by)
+    return (
+        str(status) == "open"
+        and case.verdict is None
+        and str(decider or "") != PERSON_DECIDER
+        and str(case.awaiting_reason or "").startswith(DEFERRED_REASON_PREFIX)
+        and str(case.updated_at or "") < str(older_than or "")
+    )
+
+
+class DeferredCandidates(list):
+    """One page of the deferred queue (Round 16 CDX1): a plain ``list`` of cases that
+    also carries ``next_after``, the store-private marker that continues the read
+    after this page's last row, or ``None`` at the end of the queue.
+
+    :meth:`CaseRepository.list_deferred_candidates` returns it; a caller passes
+    ``next_after`` back as ``after`` and treats it as opaque. A store that does not
+    page returns a plain list, which has no ``next_after``, so the drain reads it as
+    the whole answer for the tick (the old single page)."""
+
+    def __init__(self, cases: Any = (), next_after: Any = None) -> None:
+        super().__init__(cases)
+        self.next_after = next_after
+
+
+def _open_scan_offset(after: Any) -> int:
+    """The OPEN-listing offset in the base default's marker; ``0`` (the head of the
+    queue) for a marker it cannot read."""
+    if isinstance(after, dict):
+        try:
+            return max(0, int(after.get("open_offset", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
 class CaseRepository(ABC):
     """Persists :class:`Case` documents (Section 7.1).
 
@@ -572,6 +626,57 @@ class CaseRepository(ABC):
         if cursor is None:
             return
         await self.close_export_cursor(cursor)
+
+    async def list_deferred_candidates(
+        self, *, older_than: str, limit: int, after: Any = None,
+    ) -> list[Case]:
+        """The cap-deferred candidates the deferred drain may investigate, oldest
+        created first, at most ``limit`` (Round 16 SPEC WP15B, B11).
+
+        A deferred candidate is an OPEN case with no verdict whose ``awaiting_reason``
+        starts with :data:`DEFERRED_REASON_PREFIX`, whose ``updated_at`` is before
+        ``older_than`` (a candidate deferred in this tick keeps the cap) and that no
+        person acted on (:func:`is_deferred_candidate`). The bundled
+        Elasticsearch and SQL repositories answer it with one query. This default
+        keeps the paged scan over OPEN cases for third-party repositories: correct,
+        but it reads every OPEN case before the first deferred one.
+
+        ``after`` (Round 16 CDX1, additive) continues the read after an earlier page:
+        pass the ``next_after`` of the :class:`DeferredCandidates` page a call
+        returned; ``None`` reads from the head of the queue, and a marker the store
+        cannot read does too. The drain reads past a page of candidates it cannot
+        rebuild this way. This default's marker is the offset in the OPEN listing
+        after the last row it examined; the bundled stores use a keyset on
+        ``created_at`` then ``case_id``."""
+        if limit <= 0:
+            return DeferredCandidates()
+        out: list[Case] = []
+        offset = _open_scan_offset(after)
+        page_size = max(50, int(limit))
+        more = True
+        while len(out) < limit:
+            page, total = await self.list(
+                status="open",
+                limit=page_size,
+                offset=offset,
+                sort_field="created_at",
+                sort_order="asc",
+            )
+            if not page:
+                more = False
+                break
+            examined = 0
+            for case in page:
+                examined += 1
+                if is_deferred_candidate(case, older_than=older_than):
+                    out.append(case)
+                    if len(out) >= limit:
+                        break
+            offset += examined
+            if offset >= total:
+                more = False
+                break
+        return DeferredCandidates(out, next_after={"open_offset": offset} if more else None)
 
 
 def _status_value(case: Any) -> str:
@@ -962,6 +1067,19 @@ class AuditRepository(ABC):
             return cap, "gte"
         return len(matched), "gte" if capped else "eq"
 
+    async def count_for_case(self, case_id: str, *, cap: int) -> tuple[int, str]:
+        """``(count, relation)`` of a case's audit rows (Round 16 SPEC §4.3 WP01, [dv]
+        R14): exact up to ``cap`` (relation ``eq``), otherwise ``(cap, "gte")``, so a
+        trace that shows the newest :meth:`records_for_case` rows can say how many it
+        left out. Built on :meth:`count_matching`, so every audit store answers it the
+        way it counts any other filter. Raises when the store cannot count; a caller
+        then reports the total as unknown."""
+        from ..audit.query import Eq
+
+        if not case_id:
+            return 0, "eq"
+        return await self.count_matching(Eq("case_id", str(case_id)), cap=max(1, int(cap)))
+
     async def run_totals(
         self, predicate: Any, run_ids: list[str], *, snapshot: Any = None,
     ) -> dict[str, int]:
@@ -1053,6 +1171,17 @@ class UsageRepository(ABC):
         """Newest-first, bounded ledger export. The safe default keeps third-party
         repositories source-compatible; bundled ES/SQL repositories override it."""
         return []
+
+    async def records_for_case(self, case_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        """One case's ledger rows, NEWEST first, at most ``limit`` (1 to 500) (Round 16
+        SPEC §4.3 WP01, [dv] R3): every call written with this ``case_id``, pipeline and
+        case chat alike. Read-only (#6: the gateway stays the only writer).
+
+        Raises when the ledger cannot be read, so a caller reports "unavailable" and
+        never "no spend". The bundled Elasticsearch and SQL repositories implement it;
+        a third-party repository must opt in, so this default raises
+        ``NotImplementedError``."""
+        raise NotImplementedError("usage repository does not implement per-case reads")
 
     async def records_strict(self, *, limit: int = 1000) -> list[dict[str, Any]]:
         """Newest-first bounded rows, raising when availability cannot be proven.

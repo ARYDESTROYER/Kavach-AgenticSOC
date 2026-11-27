@@ -14,7 +14,7 @@
  * Cases investigated before Round 14 keep their stored rows, written with the retired
  * procedure noun (`playbook=...`, actor `playbook_selector`, action type `playbook`).
  * Those shapes are read too, and their tokens get the Console-authored friendly names of
- * SPEC §3.1 ("Runbook selector (before Round 14)"); the stored text stays verbatim under
+ * SPEC §3.1 ("Older runbook selector"); the stored text stays verbatim under
  * Details (AU-7).
  *
  * SECURITY (#9): the values come from the audit trail and can carry log- or
@@ -22,7 +22,7 @@
  * a string that the caller renders as a plain text node, never as markup.
  */
 import { humanizeToken } from '@/lib/format';
-import { confidencePercent, verdictWords } from '@/soc/components/outcome';
+import { confidencePercent, dispositionWords, verdictWords } from '@/soc/components/outcome';
 
 /** A prompt excerpt longer than this, or on several lines, is kept under Details. */
 const PROMPT_INLINE_MAX = 240;
@@ -52,8 +52,8 @@ const SYSTEM_ACTORS: Readonly<Record<string, string>> = {
   router: 'Router',
   runbook_selector: 'Runbook selector',
   // Legacy tokens (SPEC §3.1): the stored value stays in the record; a list names them.
-  playbook_selector: 'Runbook selector (before Round 14)',
-  run_playbook: 'Runbook automation (before Round 14)',
+  playbook_selector: 'Older runbook selector',
+  run_playbook: 'Older runbook automation',
   analyst_policy: 'Analyst policy',
   agentic_soc: 'Agentic SOC',
   scheduler: 'Scheduler',
@@ -74,7 +74,7 @@ export function activityActorLabel(actor: string | null | undefined): string {
 /** Activity kinds (audit action types) whose list name is not the token's own words. */
 const KIND_LABELS: Readonly<Record<string, string>> = {
   // Legacy `ActionType.PLAYBOOK` (SPEC §3.1).
-  playbook: 'Runbook (before Round 14)',
+  playbook: 'Older runbook',
 };
 
 /** The kind badge's words: a friendly name for a legacy token, else the token's words. */
@@ -218,7 +218,7 @@ const DECISION_STATUS: Readonly<Record<string, string>> = {
   closed: 'Closed',
   resolved: 'Resolved',
   escalated: 'Escalated',
-  needs_human: 'Left for an analyst',
+  needs_human: 'Sent to an analyst',
   investigating: 'Kept under investigation',
   open: 'Kept open',
 };
@@ -249,6 +249,119 @@ function decisionRow(fields: {
   const risk = fields.risk && fields.risk !== 'None' ? `risk ${fields.risk}` : '';
   const facts = [assessment, risk].filter(Boolean).join(', ');
   return sentences(`${[status, by].filter(Boolean).join(' ')}${facts ? `: ${facts}` : ''}`, GATE[fields.gate] ?? '');
+}
+
+/** The case manager's DECISION record, its gate token optional (older rows lack it). */
+const DECISION_RECORD_ROW =
+  /^verdict=\S+ status=(\S+) decision_by=(\S+) risk=\S+ cost=\S+ confidence=\S+(?: auto_close_gate=\S+)?$/;
+
+/**
+ * Who settled a case and how, in words, from the case manager's DECISION record
+ * (`verdict=… status=… decision_by=… risk=… cost=… confidence=… auto_close_gate=…`):
+ * "Escalated by the system.", "Closed by the AI agent.", "Sent to an analyst.". Null when
+ * `raw` is not that record. It leaves out the verdict, confidence, risk and cost (the
+ * header has them, and Policy inputs keeps the record word for word) and the gate (the
+ * auto-close line explains it). Our own words from the enum tokens only (#9).
+ */
+export function decisionRecordSentence(raw: string): string | null {
+  const m = DECISION_RECORD_ROW.exec(raw.trim());
+  if (!m) return null;
+  const [, status, by] = m;
+  const decider = ownWord(DECIDERS, by);
+  return `${ownWord(DECISION_STATUS, status) ?? humanizeToken(status)}${decider ? ` ${decider}` : ''}.`;
+}
+
+/** A table's own entry for `key` (never an inherited one such as `constructor`). */
+function ownWord(table: Readonly<Record<string, string>>, key: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
+}
+
+/** A number the engine wrote into a rationale template. */
+const NUM = '(-?\\d+(?:\\.\\d+)?)';
+const VERDICT_TOKEN = '(?:TRUE_POSITIVE|FALSE_POSITIVE|NEEDS_HUMAN|\\?)';
+
+/**
+ * The fixed rationale templates `decide()` writes (`backend/app/engine/case_manager.py`),
+ * the same set chat words in `agents/chat_tools/common.py` `status_reason_text`. Each
+ * reads as the gate it records, so the words come from {@link GATE}.
+ */
+const RATIONALE_AUTO_CLOSED = new RegExp(
+  `^${VERDICT_TOKEN} auto-closed: confidence ${NUM} >= ${NUM} and risk ${NUM} <= ${NUM}; objection window \\d+m\\.?$`,
+);
+const RATIONALE_BELOW_BAR = new RegExp(
+  `^${VERDICT_TOKEN} routed to human: did not clear the auto-close bar \\(confidence ${NUM} vs ${NUM}, risk ${NUM} vs ${NUM}\\)\\.?$`,
+);
+const RATIONALE_CLASS_OFF = /^(?:True|False) positive routed to human: (?:tp|fp) auto-close disabled\.?$/;
+const RATIONALE_FAIL_SAFE = /^No confident close decision; routing to human \(fail-safe\)\.?$/;
+
+/** The case policy routing a case to a person, the one phrasing of that fact. */
+const SENT_TO_ANALYST = 'Sent to an analyst by the case policy.';
+
+/** The case manager's decision, in words: how it routed the case, and why. */
+export interface DecisionWords {
+  /** Who settled it and how: "Sent to an analyst by the case policy.", "Escalated by the system.". */
+  route: string;
+  /** The gate it recorded, as a sentence ("Auto-close is off for this verdict."), or empty. */
+  why: string;
+}
+
+/**
+ * The deterministic decision a case recorded, in plain words: the case manager's DECISION
+ * audit record (`verdict=… status=… decision_by=…`) or the rationale `decide()` wrote into
+ * the case history ("True positive routed to human: tp auto-close disabled."). Null for
+ * any other text, which the caller never shows as it is: the record stays word for word
+ * in Policy inputs. The Brief's Decision lane and the History share this one mapping.
+ * Our own words from the engine's fixed templates and enum tokens only (#9). Nothing here
+ * decides (#3).
+ */
+export function decisionWords(raw: string | null | undefined): DecisionWords | null {
+  const text = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  const record = /^verdict=\S+ status=(\S+) decision_by=(\S+) risk=\S+ cost=\S+ confidence=\S+(?: auto_close_gate=(\S+))?$/.exec(
+    text,
+  );
+  if (record) {
+    const gate = record[3] ? ownWord(GATE, record[3]) : undefined;
+    // A routing to a person is the case policy's, in the words the rationale templates
+    // below get (FXF): one phrasing for one fact, whichever record the lane reads.
+    const route = record[1] === 'needs_human' ? SENT_TO_ANALYST : (decisionRecordSentence(text) ?? '');
+    return { route, why: gate ? `${gate}.` : '' };
+  }
+  if (RATIONALE_AUTO_CLOSED.test(text)) {
+    return { route: 'Closed automatically by the case policy.', why: `${GATE.cleared}.` };
+  }
+  const bar = RATIONALE_BELOW_BAR.exec(text);
+  if (bar) {
+    const [conf, minConf, risk, maxRisk] = bar.slice(1).map(Number);
+    const low = conf < minConf;
+    const high = risk > maxRisk;
+    const gate = low && high ? 'blocked_confidence_and_risk' : high ? 'blocked_risk' : 'blocked_confidence';
+    return { route: SENT_TO_ANALYST, why: `${GATE[gate]}.` };
+  }
+  if (RATIONALE_CLASS_OFF.test(text)) {
+    return { route: SENT_TO_ANALYST, why: `${GATE.class_disabled}.` };
+  }
+  if (RATIONALE_FAIL_SAFE.test(text)) {
+    return { route: SENT_TO_ANALYST, why: `${GATE.not_closable}.` };
+  }
+  return null;
+}
+
+/** The severity range a stored trigger sentence ends with; its ends compare as numbers. */
+const SEVERITY_RANGE = /; severity (-?\d+(?:\.\d+)?)[\u2013-](-?\d+(?:\.\d+)?)$/;
+
+/**
+ * A stored trigger sentence as the Console shows it. Correlation writes the severity as
+ * a range even when both ends are the same ("; severity 75" then an en dash and "75"),
+ * so a range with equal ends reads as one value ("; severity 75"). Any other sentence,
+ * and a real range, is returned as stored. Presentation only: the stored sentence is
+ * never rewritten, and it is UNTRUSTED text the caller renders as a text node (#9).
+ */
+export function triggerSentenceText(raw: string | null | undefined): string {
+  const text = String(raw ?? '').trim();
+  const m = SEVERITY_RANGE.exec(text);
+  if (!m || Number(m[1]) !== Number(m[2])) return text;
+  return `${text.slice(0, m.index)}; severity ${m[1]}`;
 }
 
 const TRIAGE: Readonly<Record<string, string>> = {
@@ -329,6 +442,67 @@ const LOOKUP_STATUS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * A stored screenshot size in plain words: "107 B", "812 KB", "1.4 MB" (binary units, as
+ * the Files section counts them). The audit row carries only the byte count.
+ */
+function screenshotSize(raw: string): string {
+  const bytes = Number(raw);
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes.toLocaleString('en-US')} B`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024).toLocaleString('en-US')} KB`;
+  return `${(bytes / (1024 * 1024)).toLocaleString('en-US', { maximumFractionDigits: 1 })} MB`;
+}
+
+/** What a person's lifecycle action did to the case, in plain words (`case.*` actions). */
+const STATUS_ACTION: Readonly<Record<string, string>> = {
+  acknowledge: 'Acknowledged the case',
+  close: 'Closed the case',
+  confirm_fp: 'Confirmed the case as a false positive',
+  resolve: 'Marked the case resolved',
+  reopen: 'Reopened the case',
+  escalate: 'Escalated the case',
+  deescalate: 'Took the case off escalation',
+  hold: 'Put the case on hold',
+  resume: 'Resumed the case',
+  set_disposition: 'Set the disposition',
+  set_status: 'Set the status',
+};
+
+/** A status token in running text ("on hold"); empty for the unknown `?`. */
+function statusInText(raw: string): string {
+  const t = raw.trim().toLowerCase();
+  if (!t || t === '?') return '';
+  return t === 'needs_human' ? 'needs human review' : humanizeToken(t).toLowerCase();
+}
+
+/**
+ * A person's status change as the case action route records it
+ * (`action=hold status escalated→on_hold disposition=none reason=... classified=...`; the
+ * fields after the disposition are appended only when present): what was done, the status
+ * before and after, the disposition (or the classification made in this action) and the
+ * reason given.
+ */
+function statusRow(row: {
+  action: string;
+  from: string;
+  to: string;
+  disposition: string;
+  reason: string;
+  classified: string;
+}): string {
+  const lead = STATUS_ACTION[row.action.toLowerCase()] ?? `${humanizeToken(row.action)} on the case`;
+  const from = statusInText(row.from);
+  const to = statusInText(row.to);
+  const status = !to ? '' : !from ? `The status is now ${to}` : from === to ? `The status stays ${to}` : `The status went from ${from} to ${to}`;
+  const disposition = row.classified
+    ? `Classified as ${dispositionWords(row.classified).toLowerCase()}`
+    : row.disposition && row.disposition.toLowerCase() !== 'none'
+      ? `Disposition: ${dispositionWords(row.disposition).toLowerCase()}`
+      : '';
+  return sentences(lead, status, disposition, row.reason ? `Reason: ${row.reason}` : '');
+}
+
+/**
  * The display text for one activity row. A recognised `key=value` summary becomes one
  * plain sentence and `recorded` keeps the original; anything else is returned as it is.
  */
@@ -340,6 +514,21 @@ export function activityText(item: ActivityInput): ActivityText {
 
   let m = /^rule=(\S+) action=(\S+)(?: (.*))?$/s.exec(raw);
   if (m) return plain(automationAction(m[1], m[2], (m[3] ?? '').trim()));
+
+  // A person's lifecycle action (`routes.py`, and the seeded Demo rows).
+  m = /^action=(\w+) status (\S+?)(?:→|->)(\S+) disposition=(\S+)(?: reason=(.*?))?(?: classified=(\S+))?$/s.exec(raw);
+  if (m) {
+    return plain(
+      statusRow({
+        action: m[1],
+        from: m[2],
+        to: m[3],
+        disposition: m[4],
+        reason: (m[5] ?? '').trim(),
+        classified: m[6] ?? '',
+      }),
+    );
+  }
 
   m = /^automation drafted (\S+) proposal \S+ \(rule=(\S+)\)$/.exec(raw);
   if (m) return plain(`Automation drafted a ${approvalKind(m[1])} proposal for approval${ruleNote(m[2])}.`);
@@ -432,6 +621,18 @@ export function activityText(item: ActivityInput): ActivityText {
 
   m = /^no material change; returning existing case unchanged \(verdict=(\S+)\)$/.exec(raw);
   if (m) return plain(`No material change, so the case stays as it was (${verdictInText(m[1])}).`);
+
+  // A screenshot added to or deleted from the case (`routes_case_files.py`, Round 16
+  // B30). The audit summary names only the file id, its type and size, never the caption
+  // or the file name; the Files section lists a deleted screenshot's caption, who added
+  // it and when.
+  m = /^file_attached file=[0-9a-f]{32} type=(png|jpeg|webp) bytes=(\d+)$/.exec(raw);
+  if (m) {
+    const size = screenshotSize(m[2]);
+    return plain(`Screenshot added (${m[1].toUpperCase()}${size ? `, ${size}` : ''}).`);
+  }
+
+  if (/^file_deleted file=[0-9a-f]{32}$/.test(raw)) return plain('Screenshot deleted.');
 
   m = /^assessment=(\S+) outcome=(\S+) accuracy=(\S+)$/.exec(raw);
   if (m) {

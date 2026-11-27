@@ -9,6 +9,7 @@ import {
   resolveDocumentationDirectory,
 } from './docs.config';
 import { releaseEntryId, resolveBuildReleaseIdentity } from './release.config';
+import { resolveWhatsNewLatest } from './whats-new.config';
 
 /**
  * Vite config for Agentic SOC.
@@ -21,6 +22,8 @@ import { releaseEntryId, resolveBuildReleaseIdentity } from './release.config';
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8088';
 const RELEASE_IDENTITY = resolveBuildReleaseIdentity();
 const RELEASE_ENTRY_ID = releaseEntryId(RELEASE_IDENTITY);
+// Round 16 (SPEC D7): the newest What's new update id, compared in the entry chunk.
+const WHATS_NEW_LATEST = resolveWhatsNewLatest();
 const DEV_DOCS_ROOT = path.resolve(__dirname, 'public/docs');
 const PREVIEW_DOCS_ROOT = path.resolve(__dirname, 'dist/docs');
 const RELEASE_MANIFEST_PATH = '/release.json';
@@ -268,6 +271,7 @@ export default defineConfig({
   ],
   define: {
     __TLSOC_RELEASE_IDENTITY__: JSON.stringify(RELEASE_IDENTITY),
+    __AGENTIC_SOC_WHATS_NEW_LATEST__: JSON.stringify(WHATS_NEW_LATEST),
   },
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },

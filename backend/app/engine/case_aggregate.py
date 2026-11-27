@@ -1230,7 +1230,12 @@ def build_case_result(
             emit(filler, None, merged_all, other=True,
                  open_override=trimmed_open if want_open else None)
         other = {
+            # Every trimmed group, including one that only holds open stock from older
+            # arrivals (``open_now``): chat's Other row covers that part too.
             "groups": len(trimmed),
+            # Only the trimmed groups with cases in the window (Round 16 B68): the
+            # number of groups that share ``metrics.count``.
+            "groups_counted": sum(1 for g in trimmed if count_by.get(g, 0) > 0),
             "metrics": merged_all.result(
                 metrics,
                 open_now=(trimmed_open if not unit else merged_all.open) if want_open else None,

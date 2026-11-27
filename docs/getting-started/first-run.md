@@ -5,16 +5,19 @@ description: Choose a workspace, connect data sources and an AI runtime, and lau
 
 # First-run setup
 
-This guide applies to **Agentic SOC 0.1** and is for administrators opening a new Agentic SOC
+This guide applies to **Agentic SOC 0.2** and is for administrators opening a new Agentic SOC
 Console for the first time. The console shows setup instead of the operational
 workspace until the deployment is marked complete.
 
-The screenshots on this page come from a real fresh install of 0.1.13. Numbered amber
+The screenshots on this page come from a real fresh install. Numbered amber
 badges mark the controls each step uses; select a screenshot to open it full size. The
 screenshots use the light theme; a fresh install opens in the dark theme, the
 organization default, and each user can change it under
-**Settings → Account → Appearance**. The sign-in screens follow the browser's own
-choice, with a light and dark switch in the top right corner.
+**Settings → Account → Appearance**. The sign-in screens use the same theme. Three
+appearance buttons sit in the top right corner: default, light and dark. The default
+button uses the organization default theme when one is set, otherwise the browser's
+choice. While an organization default is set, it is named **Use the organization default
+theme**; otherwise it is named **Use system theme**.
 
 ## Before you begin
 
@@ -98,17 +101,48 @@ account. Select **Turn on two-factor** to enroll an authenticator app now, or
 ### Sign in later
 
 The sign-in form has two steps. First enter the **Username** (badge 1) and select
-**Continue** (badge 2); the button appears once you type a username.
+**Continue** (badge 2). The heading names your organization; on a device that remembers
+you it says "Welcome back". When single sign-on is set up, a **Sign in with** button for
+each provider follows Continue.
 
 <figure markdown="span">
-[![Sign-in screen titled Welcome back with the username soc-admin entered and a Continue button.](../assets/screenshots/install-02a-sign-in-username.webp) ](../assets/screenshots/install-02a-sign-in-username.webp)
+[![Sign-in screen titled Sign in to Agentic SOC with the username soc-admin entered and the Continue button.](../assets/screenshots/install-02a-sign-in-username.webp) ](../assets/screenshots/install-02a-sign-in-username.webp)
 <figcaption>Sign-in, step 1: the username.</figcaption>
 </figure>
 
 Then enter the **Password** (badge 1). **Remember me** (badge 2) keeps this browser
-signed in for a server-bounded time, up to 24 hours, and asks you to confirm first;
-leave it clear on a shared computer. Select **Sign in** (badge 3). **Back** returns to
-the username step.
+signed in for a time your administrator sets. The row shows only its label. The first
+time you tick it, a dialog asks "Stay signed in on this device?": anyone who uses this
+browser can open the Console as you until you sign out or your session ends. Confirm with
+**Keep me signed in** only on a device you trust; leave it clear on a shared computer.
+When your administrator turned Remember me off, the row stays visible, greyed out, with
+"Turned off by your administrator". Select **Sign in** (badge 3). **Back** returns to
+the username step. **Forgot password?** explains that an administrator resets passwords;
+there is no self-service reset. A wrong password shows "The username or password is not
+correct." under the field. If the server cannot be reached, the page says "Could not
+reach the server. Try again.", and after too many tries it says "Too many attempts. Wait
+a few minutes, then try again." The page never shows the server's own error text. If
+you select a button before filling its field, the page says what is missing under the
+field, for example "Enter the 6-digit code." or "Enter a new password."
+
+With two-factor sign-in, type or paste the six-digit code; it is checked as soon as the
+last digit is in, and a wrong code reads "That code is not correct. Try again." Ten
+wrong codes in a row lock second-factor checks for the account for a while (see
+[Authentication](../administration/authentication.md#sessions)). If single sign-on
+fails, the page says in one short sentence what went wrong. An account that an
+administrator created or reset asks you to **Set a new password** before anything else;
+it needs at least 8 characters, not counting spaces at either end. An account that must
+use two-factor authentication but has none yet shows **Set up two-factor authentication**:
+scan the QR code (or type the secret shown under it), save the recovery codes and tick
+**I have saved my recovery codes somewhere safe**, then enter the 6-digit code and select
+**Verify and sign in**.
+The three buttons in the top right corner set the sign-in page to the default theme,
+light or dark.
+
+After you sign in following an update, a short **What's new** welcome shows the
+release's highlights once. Close it to go on; it never blocks the Console. You can open
+it again from **Communication → What's new**, and **Show What's new after updates** in
+**Settings → Account → Appearance** turns it off.
 
 <figure markdown="span">
 [![Sign-in password step for soc-admin with a masked password field, a Remember me checkbox and the Sign in button.](../assets/screenshots/install-02-sign-in.webp) ](../assets/screenshots/install-02-sign-in.webp)
@@ -218,7 +252,7 @@ Fill in the top of the form:
 !!! warning "Give a file path, not pasted certificate text"
 
     The field also takes pasted text, and **Select a .pem / .crt file** pastes a file's
-    text into it. The 0.1.13 backend reads the value only as a file path: with pasted
+    text into it. The 0.2.0 backend reads the value only as a file path: with pasted
     text it cannot build the source's own connection and falls back to the shared one,
     so **Test connection** and polling do not use your source's URL and key. Mount the
     CA file and give its path instead.
@@ -267,8 +301,11 @@ source. Then:
 
 The stage now lists the saved source (badge 1) with its **Primary** badge, its connector
 and mode (`Elasticsearch · Pull`), and **Edit** and **Remove**. Another pull source can
-be made primary with **Make primary**. The footer button reads **Skip for now** until a
-source is enabled, and **Continue** (badge 2) afterwards.
+be made primary with **Make primary**. Make primary appears only on a pull source. While
+Demo Mode is on, the list shows the Demo sources marked **Managed by Demo Mode**, with no
+actions. You can still add a real source: it is saved, and it appears in the list once
+Demo Mode is turned off. The footer button reads **Skip for now** until a source is
+enabled, and **Continue** (badge 2) afterwards.
 
 <figure markdown="span">
 [![Setup wizard data sources list showing one enabled source, Production SIEM, marked Primary, and the Continue button.](../assets/screenshots/install-04d-source-saved.webp) ](../assets/screenshots/install-04d-source-saved.webp)

@@ -6,6 +6,9 @@
    "two-factor",
    "totp"
   ],
+  "abort": [
+   "cancel"
+  ],
   "account": [
    "users"
   ],
@@ -37,6 +40,12 @@
   "budget": [
    "spend",
    "cost"
+  ],
+  "cancel": [
+   "stop",
+   "kill",
+   "abort",
+   "abandon"
   ],
   "chat": [
    "workspace"
@@ -70,6 +79,9 @@
   "integrate": [
    "source",
    "connector"
+  ],
+  "kill": [
+   "cancel"
   ],
   "kpi": [
    "metric"

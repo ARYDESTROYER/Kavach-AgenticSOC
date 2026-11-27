@@ -64,6 +64,7 @@ from app.stored_text import audit_actor_key
 from app.stores.base import AuditCursorExpired, AuditRepository
 from app.stores.sql import SqlAuditRepository, build_async_engine, create_all
 from app.stores.sql.models import AuditRow
+from tests._auth_helpers import ready_user
 
 BASE = datetime(2026, 10, 20, 9, 0, tzinfo=timezone.utc)
 
@@ -247,7 +248,7 @@ def test_fixture_labels_are_console_copy():
         ({"action_type": "status", "surface": "case"}, "case_work", "Case status changed"),
         ({"action_type": "status", "surface": "rules"}, "config", "Detection rule changed"),
         ({"action_type": "auth", "surface": "anything"}, "access", "Sign-in event"),
-        ({"action_type": "playbook", "surface": "x"}, "config", "Runbook (before Round 14)"),
+        ({"action_type": "playbook", "surface": "x"}, "config", "Older runbook"),
         ({"action_type": "user_mgmt", "surface": "settings"}, "access", "User changed"),
         ({"action_type": "user_mgmt", "surface": "users"}, "access", "User changed"),
         ({"action_type": "user_mgmt", "surface": "rbac"}, "access", "User changed"),
@@ -2130,7 +2131,9 @@ def test_every_audit_route_needs_audit_view():
             assert c.get(path, params={"scope": "bogus"}).status_code == 401, path
         c.post("/api/auth/login", json={"username": "Admin", "password": "Admin@123"})
         c.post("/api/users", json={"username": "t1", "password": "t1password", "role": "analyst_tier1"})
+        ready_user(c, "t1", "t1password")
         c.post("/api/users", json={"username": "aud", "password": "audpassword", "role": "auditor"})
+        ready_user(c, "aud", "audpassword")
         c.post("/api/auth/logout")
         c.post("/api/auth/login", json={"username": "t1", "password": "t1password"})
         for path in paths:

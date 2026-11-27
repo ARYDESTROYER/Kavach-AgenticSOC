@@ -67,14 +67,17 @@ export const ChatTab: React.FC<{
       data-case-panel="chat"
       data-presentation="case-manager"
     >
-      {/* Keyed per case: case A's transcript never shows under case B. */}
-      <LazyCaseChat
-        key={c.case_id}
-        caseId={c.case_id}
-        displayId={caseDisplayId(c)}
-        caseManager
-        starters={CASE_MANAGER_CHAT_STARTERS}
-      />
+      {/* The tab's first block, where the case geometry is measured (Round 16). Keyed per
+          case: case A's transcript never shows under case B. */}
+      <div className="flex h-full min-h-0 min-w-0 flex-1" data-testid="case-tab-first">
+        <LazyCaseChat
+          key={c.case_id}
+          caseId={c.case_id}
+          displayId={caseDisplayId(c)}
+          caseManager
+          starters={CASE_MANAGER_CHAT_STARTERS}
+        />
+      </div>
     </div>
   );
 };

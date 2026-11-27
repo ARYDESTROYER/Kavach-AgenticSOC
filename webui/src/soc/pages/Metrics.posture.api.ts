@@ -149,6 +149,14 @@ export interface CompareBlock {
    * undefined; `null` = "new growth" (prior was 0, current is not).
    */
   delta_pct: number | string | null;
+  /**
+   * The counts a rate divides in this window and the one before (additive; absent from an
+   * older server and on a block that is not a rate).
+   */
+  numerator?: number;
+  denominator?: number;
+  prev_numerator?: number;
+  prev_denominator?: number;
 }
 
 export interface PostureCompare {

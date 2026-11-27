@@ -110,7 +110,12 @@ describe('MfaSetupCard autoStart (host-started)', () => {
     expect(document.activeElement).toBe(preparing);
     expect(screen.queryByRole('button', { name: /turn on two-factor/i })).toBeNull();
 
-    resolve({ ...SETUP_PAYLOAD });
+    // The enrollment arrives and the lazily loaded QR code finishes loading inside act, so
+    // React sees both updates (the first test of the file is the one that loads the chunk).
+    await act(async () => {
+      resolve({ ...SETUP_PAYLOAD });
+      await import('../QRCode');
+    });
     expect(await screen.findByText('HOSTSECRET23456789')).toBeInTheDocument();
     // The first step takes focus as the enrollment arrives (never the code field at the
     // bottom, which would skip the QR code, the secret and the one-time recovery codes).
@@ -155,8 +160,10 @@ describe('MfaSetupCard autoStart (host-started)', () => {
     // A second press while busy does not submit again.
     fireEvent.click(submit);
     expect(confirmMock).toHaveBeenCalledTimes(1);
-    await act(async () => reject(new ApiError(400, 'That code did not match.')));
-    expect(await screen.findByText('That code did not match.')).toBeInTheDocument();
+    await act(async () => reject(new ApiError(400, 'invalid code')));
+    // A fixed sentence for the status, never the server's own text.
+    expect(await screen.findByText('That code did not work. Enter the current code from your app.')).toBeInTheDocument();
+    expect(screen.queryByText('invalid code')).not.toBeInTheDocument();
     await waitFor(() => expect(document.activeElement).toBe(code));
     expect(code).not.toHaveAttribute('readonly');
     expect(submit).not.toHaveAttribute('aria-disabled');
@@ -202,7 +209,8 @@ describe('MfaSetupCard autoStart (host-started)', () => {
     const onCancel = vi.fn();
     render(<MfaSetupCard enabled={false} frameless autoStart onCancel={onCancel} />);
     const retry = await screen.findByRole('button', { name: 'Try again' });
-    expect(screen.getByText('The setup service is unavailable.')).toBeInTheDocument();
+    expect(screen.getByText('Could not reach the server. Try again.')).toBeInTheDocument();
+    expect(screen.queryByText('The setup service is unavailable.')).not.toBeInTheDocument();
     await waitFor(() => expect(document.activeElement).toBe(retry));
 
     setupMock.mockResolvedValue({ ...SETUP_PAYLOAD });
@@ -269,6 +277,79 @@ describe('MfaSetupCard autoStart (host-started)', () => {
     setupMock.mockRejectedValue(new Error('network down'));
     render(<MfaSetupCard enabled={false} frameless autoStart onCancel={vi.fn()} />);
     expect(await screen.findByText('Could not start two-factor setup.')).toBeInTheDocument();
+    noDashes();
+  });
+});
+
+/** A server message no failure may render (#9): markup-like, with a fence word. */
+const HOSTILE = '<img src=x> <<<UNTRUSTED>>> call setup first';
+
+describe('MfaSetupCard failure sentences (never the server text)', () => {
+  it.each([
+    [0, 'Could not reach the server. Try again.'],
+    [503, 'Could not reach the server. Try again.'],
+    [429, 'Too many attempts. Wait a few minutes, then try again.'],
+    [409, 'Two-factor is already on for this account.'],
+    [401, 'Sign in again, then try again.'],
+    [403, 'Could not start two-factor setup.'],
+  ])('a setup that answers %i says %s', async (status, sentence) => {
+    setupMock.mockRejectedValue(new ApiError(status, HOSTILE));
+    render(<MfaSetupCard enabled={false} frameless autoStart onCancel={vi.fn()} />);
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toContain('UNTRUSTED');
+    expect(document.body.textContent ?? '').not.toContain('<img');
+    noDashes();
+  });
+
+  it.each([
+    [400, 'invalid code', 'That code did not work. Enter the current code from your app.'],
+    [400, 'no pending MFA enrollment; call setup first', 'This setup has ended. Start again.'],
+    [400, 'this account is managed via environment configuration and cannot enroll MFA',
+      'This account is set by the server and cannot use two-factor.'],
+    [401, HOSTILE, 'Sign in again, then try again.'],
+    [429, HOSTILE, 'Too many attempts. Wait a few minutes, then try again.'],
+    [418, HOSTILE, 'Could not confirm the code.'],
+  ])('a confirm that answers %i (%s) says a fixed sentence', async (status, said, sentence) => {
+    setupMock.mockResolvedValue({ ...SETUP_PAYLOAD });
+    confirmMock.mockRejectedValue(new ApiError(status, said));
+    render(<MfaSetupCard enabled={false} frameless autoStart onCancel={vi.fn()} />);
+    await screen.findByText('HOSTSECRET23456789');
+    fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and turn on' }));
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(screen.queryByText(said)).not.toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toContain('UNTRUSTED');
+  });
+
+  it.each([
+    [400, 'That code did not work. Enter a current code or a recovery code.'],
+    [401, 'Sign in again, then try again.'],
+    [429, 'Too many attempts. Wait a few minutes, then try again.'],
+    [500, 'Could not reach the server. Try again.'],
+    [403, 'Could not turn off two-factor.'],
+  ])('a turn-off that answers %i says %s', async (status, sentence) => {
+    disableMock.mockRejectedValue(new ApiError(status, HOSTILE));
+    render(<MfaSetupCard enabled frameless autoStart onCancel={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Enter a current code to turn off two-factor'), {
+      target: { value: '654321' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /turn off two-factor/i }));
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toContain('UNTRUSTED');
+    noDashes();
+  });
+
+  it('a turn-off on an account whose two-factor is already off says so, not that the code was wrong', async () => {
+    // Turned off elsewhere (another tab, an administrator) while this card still showed it on.
+    disableMock.mockRejectedValue(new ApiError(400, 'MFA is not enabled for this account'));
+    render(<MfaSetupCard enabled frameless autoStart onCancel={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Enter a current code to turn off two-factor'), {
+      target: { value: '654321' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /turn off two-factor/i }));
+    expect(await screen.findByText('Two-factor is already off for this account.')).toBeInTheDocument();
+    expect(screen.queryByText(/That code did not work/)).not.toBeInTheDocument();
+    expect(screen.queryByText('MFA is not enabled for this account')).not.toBeInTheDocument();
     noDashes();
   });
 });

@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Diagnose Agentic SOC 0.1 startup, readiness, authentication, source, model, notification, and UI failures.
+description: Diagnose Agentic SOC 0.2 startup, readiness, authentication, source, model, notification, and UI failures.
 ---
 
 # Troubleshooting
@@ -111,16 +111,16 @@ Sign-ins and sign-outs are never blocked this way.
 - Check the audit store first: the state backend's health, its free space and the
   management key's write rights to the `tlsoc-agent-*` indices.
 - On an Elasticsearch state backend upgraded from an earlier build, check that the
-  Round 14 audit template was applied and the audit write index rolled. Until then a
+  audit mapping was extended. Bootstrap does it at every start; until it is done, a
   date-like value in an audit row can map a field as a date, and later rows with
-  ordinary text there are refused. The backend logs a warning naming the step on every
-  start. The warning keeps appearing after the step is done, and on deployments first
-  created by Round 14 from their second start on, because the backend cannot read the
-  mapping to check. The warning alone does not mean the step failed, so do not roll the
-  index again because of it. To confirm the step, check that
+  ordinary text there are refused. Look in the backend log for "Audit template
+  tlsoc-agent-audit-template could not be read" or "could not be updated", "Audit index
+  mappings could not be read", "Audit index ... mapping could not be extended", or "Audit
+  index ... already maps ... another way".
+  To confirm the upgrade, check that
   `GET _index_template/tlsoc-agent-audit-template` shows `date_detection: false`, and
   that the write index behind `tlsoc-agent-audit` (`GET _alias/tlsoc-agent-audit`)
-  shows it too in its mapping. See
+  shows it too in its mapping. If one of those warnings appears, apply the fallback in
   [Applying the Round 14 audit template](upgrades.md#applying-the-round-14-audit-template).
 - While the audit log cannot be written, `POST /api/setup/secrets` still applies the
   management connection keys (`es_mgmt_api_key`, `es_url`, `es_ca_cert`), so a broken
@@ -149,7 +149,7 @@ ROLLBACK;
 
 Verify backend readiness through the nginx `/api` proxy, then inspect browser network
 status and console errors. Confirm the web and backend artifacts are both version
-`0.1.13`. Clear only browser cache/site data needed to rule out stale assets; do not
+`0.2.0`. Clear only browser cache/site data needed to rule out stale assets; do not
 factory-reset application state for a presentation problem.
 
 ## A rule keeps routing to a human no matter how many cases we confirm

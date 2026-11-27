@@ -16,12 +16,17 @@
  * every read it shows, with one Retry for all of them. Plain text only (#9); nothing
  * here decides anything (#3).
  */
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainQuotient } from '@/lib/explain/builders';
+import { plain } from '@/lib/explain/rounding';
+import type { Explanation } from '@/lib/explain/types';
 import { fmtMoney, fmtNumber } from '@/lib/format';
+import { explainKpiShare, SERVER_COUNTED } from '@/soc/components/metrics-explain/builders';
 import type { UsageSummary } from '@/lib/types';
 import type { BudgetStatus } from '@/soc/pages/Models.api';
 
 import { useDashboardData, useDashboardRequest, useDashboardRequests } from '../DashboardDataProvider';
-import { bindingRequests, evaluateBinding } from './kpi-eval';
+import { bindingRequests, evaluateBinding, ratioParts } from './kpi-eval';
 import { NEEDS_HUMAN_BINDING, SPEND_PER_CASE_BINDING } from './widget-requests';
 import type { DashboardRequest } from './requests';
 import {
@@ -40,11 +45,12 @@ import {
 /** The request `kpi.needs_human` reads. */
 export const NEEDS_HUMAN_REQUESTS: readonly DashboardRequest[] = bindingRequests(NEEDS_HUMAN_BINDING);
 
-function Figure({ value, label }: { value: string; label: string }) {
+function Figure({ value, label, explanation }: { value: string; label: string; explanation?: Explanation | null }) {
   return (
     <div className="min-w-0">
       <div className="text-3xl font-semibold leading-none tabular-nums text-foreground" data-widget-figure="">
-        {value}
+        {/* Round 16 (WP12): the figure explains itself on hover and click. */}
+        {explanation ? <ExplainTrigger explanation={explanation}>{value}</ExplainTrigger> : value}
       </div>
       <div className="mt-1.5 text-sm text-muted-foreground">{label}</div>
     </div>
@@ -81,7 +87,26 @@ export function NeedsHumanQueueWidget(props: WidgetProps) {
       footer={result.qualifier ? `At least this many. ${result.reason ?? ''}`.trim() : undefined}
     >
       {result.status === 'value' ? (
-        <Figure value={`${result.qualifier === 'at least' ? '≥' : ''}${result.text}`} label={label} />
+        <Figure
+          value={`${result.qualifier === 'at least' ? '≥' : ''}${result.text}`}
+          label={label}
+          explanation={
+            typeof openTotal === 'number' && typeof result.value === 'number'
+              ? explainKpiShare({
+                  metric: 'needs_human_open',
+                  title: title,
+                  numerator: result.value,
+                  denominator: openTotal,
+                  numeratorLabel: 'open cases whose AI verdict is Needs human',
+                  denominatorLabel: 'open cases',
+                  window: 'open now, any arrival date',
+                  dividedBy: 'console',
+                  tileRounding: 'The figure is the count; its share is shown with at most one decimal.',
+                  caveats: result.qualifier ? [`At least this many. ${result.reason ?? ''}`.trim()] : [],
+                })
+              : null
+          }
+        />
       ) : null}
     </WidgetShell>
   );
@@ -109,6 +134,40 @@ export function budgetLine(budget: BudgetStatus, currency: string): string {
   if (pick.w.spent == null) return 'You do not have access to AI spend.';
   const pct = typeof pick.w.fraction === 'number' && Number.isFinite(pick.w.fraction) ? ` (${shareText(pick.w.fraction)})` : '';
   return `${moneyText(pick.w.spent, currency)} of ${fmtMoney(pick.w.cap, currency)} ${pick.period}${pct}`;
+}
+
+/**
+ * AI spend explained (Round 16 WP12): the ledger sum over the window, its calls, and the
+ * chat part that sits outside the budget. Every figure is the usage ledger's.
+ */
+export function spendExplanation(
+  total: number,
+  calls: number,
+  chat: number | null,
+  currency: string,
+  phrase: string,
+): Explanation {
+  return {
+    metric: 'ai_spend',
+    title: 'AI spend',
+    value: total,
+    display: moneyText(total, currency),
+    summary: `${moneyText(total, currency)} over ${fmtNumber(calls)} ${calls === 1 ? 'call' : 'calls'} in the ${phrase}, each priced from its own token counts.`,
+    formula: 'sum of the cost of every model call in the window (one usage ledger row per call)',
+    inputs: [
+      { key: 'calls', label: 'Calls', value: fmtNumber(calls), source: 'Usage ledger' },
+      { key: 'total', label: 'Total', value: moneyText(total, currency), source: 'Usage ledger' },
+      ...(chat == null ? [] : [{ key: 'chat', label: 'Of which chat', value: moneyText(chat, currency), source: 'Usage ledger, by surface' }]),
+      { key: 'window', label: 'Window', value: `the ${phrase}`, source: 'The board window' },
+    ],
+    steps:
+      chat == null
+        ? []
+        : [{ label: 'Inside the budget', expression: `${moneyText(total, currency)} - ${moneyText(chat, currency)}`, result: moneyText(Math.max(0, total - chat), currency) }],
+    provenance: 'server_computed',
+    provenanceNote: SERVER_COUNTED.replace('the cases', 'the model calls'),
+    caveats: ['Chat sits outside the daily and monthly AI budget; it is still metered.'],
+  };
 }
 
 const USAGE_REQ: DashboardRequest = { key: 'usage' };
@@ -167,7 +226,11 @@ export function CostBudgetWidget(props: WidgetProps) {
     >
       {usage ? (
         <>
-          <Figure value={total == null ? 'Not measured' : moneyText(total, currency)} label={`model spend, ${fmtNumber(usage.call_count ?? 0)} ${(usage.call_count ?? 0) === 1 ? 'call' : 'calls'}`} />
+          <Figure
+            value={total == null ? 'Not measured' : moneyText(total, currency)}
+            label={`model spend, ${fmtNumber(usage.call_count ?? 0)} ${(usage.call_count ?? 0) === 1 ? 'call' : 'calls'}`}
+            explanation={total == null ? null : spendExplanation(total, usage.call_count ?? 0, chat, currency, windowInfo.phrase)}
+          />
           <dl className="mt-4 grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1 text-sm">
             <dt className="text-muted-foreground">Of which chat, outside the budget</dt>
             <dd className="text-right tabular-nums text-foreground">{chat == null ? 'Not measured' : moneyText(chat, currency)}</dd>
@@ -182,7 +245,36 @@ export function CostBudgetWidget(props: WidgetProps) {
             {perCaseText != null ? (
               <>
                 <dt className="text-muted-foreground">Per investigated case</dt>
-                <dd className="text-right tabular-nums text-foreground">{perCaseText}</dd>
+                <dd className="text-right tabular-nums text-foreground">
+                  {(() => {
+                    // The quotient explains itself (FXD1): investigation spend over the
+                    // verdicted cases of the window, the two sums the figure divides.
+                    const parts = perCase?.status === 'value' ? ratioParts(SPEND_PER_CASE_BINDING, readPerCase) : null;
+                    const explanation = parts
+                      ? explainQuotient({
+                          metric: 'spend_per_case',
+                          title: 'Spend per investigated case',
+                          numerator: parts.numerator,
+                          denominator: parts.denominator,
+                          numeratorLabel: 'investigation spend',
+                          denominatorLabel: parts.denominator === 1 ? 'verdicted case' : 'verdicted cases',
+                          numeratorTerm: (n) => `$${plain(n, 6)}`,
+                          resultTerm: (n) => `$${plain(n, 6)}`,
+                          shown: perCaseText,
+                          window: `the ${windowInfo.phrase}`,
+                          rounding: 'Amounts under $1 are shown to 4 decimals, larger ones to 2.',
+                          caveats: [SPEND_PER_CASE_BINDING.definition],
+                        })
+                      : null;
+                    return explanation ? (
+                      <ExplainTrigger explanation={explanation} className="justify-end">
+                        {perCaseText}
+                      </ExplainTrigger>
+                    ) : (
+                      perCaseText
+                    );
+                  })()}
+                </dd>
               </>
             ) : null}
           </dl>

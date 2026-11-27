@@ -8,7 +8,15 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { activityActorLabel, activityKindLabel, activityText, notifyDelivery } from '../caseActivityText';
+import {
+  activityActorLabel,
+  activityKindLabel,
+  activityText,
+  decisionRecordSentence,
+  decisionWords,
+  notifyDelivery,
+  triggerSentenceText,
+} from '../caseActivityText';
 
 const row = (summary: string, kind = 'decision', actor = 'case_manager') => ({ summary, kind, actor });
 
@@ -133,6 +141,31 @@ describe('activityText', () => {
     });
   });
 
+  it("words a person's status change and keeps the recorded text under Details (WP16)", () => {
+    const summary = 'action=hold status escalated→on_hold disposition=none reason=Waiting for the owner to confirm';
+    expect(activityText(row(summary, 'status', 'aryan'))).toEqual({
+      text: 'Put the case on hold. The status went from escalated to on hold. Reason: Waiting for the owner to confirm.',
+      recorded: summary,
+    });
+    // The classification made in this action, and the arrow written as two characters.
+    expect(
+      activityText(row('action=close status open->closed disposition=false_positive classified=false_positive', 'status', 'aryan')).text,
+    ).toBe('Closed the case. The status went from open to closed. Classified as false positive.');
+    // A disposition set without a classification; an unchanged status; an unknown start.
+    expect(activityText(row('action=set_disposition status closed→closed disposition=true_positive', 'status', 'x')).text).toBe(
+      'Set the disposition. The status stays closed. Disposition: true positive.',
+    );
+    expect(activityText(row('action=acknowledge status ?→investigating disposition=none', 'status', 'x')).text).toBe(
+      'Acknowledged the case. The status is now investigating.',
+    );
+    // A reason with words that look like fields stays the person's text.
+    expect(activityText(row('action=escalate status open→escalated disposition=none reason=status a=b', 'status', 'x')).text).toBe(
+      'Escalated the case. The status went from open to escalated. Reason: status a=b.',
+    );
+    // Never the raw key=value text.
+    expect(activityText(row(summary, 'status', 'aryan')).text).not.toMatch(/action=|disposition=|→/);
+  });
+
   it('names a drafted proposal by what approving it does', () => {
     expect(
       activityText(row('automation drafted automation_ack proposal prop-9ac06f (rule=demo-seed-approval)', 'proposal', 'automation'))
@@ -164,7 +197,7 @@ describe('activityText', () => {
           'verdict=NEEDS_HUMAN status=needs_human decision_by=None risk=40 cost=0 confidence=0.5 auto_close_gate=unrecorded',
         ),
       ).text,
-    ).toBe('Left for an analyst: needs human review at 50% confidence, risk 40.');
+    ).toBe('Sent to an analyst: needs human review at 50% confidence, risk 40.');
   });
 
   it('reads the investigator verdict and keeps its reasoning on its own line', () => {
@@ -361,8 +394,8 @@ describe('rows from before Round 14', () => {
       'Runbook brute_force_login v3 selected for the identity persona. Its match rules matched this case.',
     );
     expect(out.recorded).toBe(summary);
-    expect(activityActorLabel('playbook_selector')).toBe('Runbook selector (before Round 14)');
-    expect(activityKindLabel('playbook')).toBe('Runbook (before Round 14)');
+    expect(activityActorLabel('playbook_selector')).toBe('Older runbook selector');
+    expect(activityKindLabel('playbook')).toBe('Older runbook');
     expect(visible(out, 'playbook_selector', 'playbook').toLowerCase()).not.toContain('playbook');
   });
 
@@ -406,7 +439,47 @@ describe('rows from before Round 14', () => {
     expect(out.text).toBe(text);
     expect(out.recorded).toBe(summary);
     expect(visible(out, 'run_playbook', 'automation').toLowerCase()).not.toContain('playbook');
-    expect(activityActorLabel('run_playbook')).toBe('Runbook automation (before Round 14)');
+    expect(activityActorLabel('run_playbook')).toBe('Older runbook automation');
+  });
+});
+
+/**
+ * Round 16 B30: the screenshot rows `routes_case_files.py` records (`file_attached file=<id>
+ * type=<kind> bytes=<n>`, `file_deleted file=<id>`) read as a sentence; the recorded text
+ * stays under Details and the audit summary never carries a caption or a file name.
+ */
+describe('screenshot rows (B30)', () => {
+  const id = '1bd838e791c1b042dced58454e8c12e3';
+
+  it('words an added screenshot with its type and size, and keeps the record', () => {
+    const summary = `file_attached file=${id} type=png bytes=107`;
+    const out = activityText(row(summary, 'collab', 'alice'));
+    expect(out.text).toBe('Screenshot added (PNG, 107 B).');
+    expect(out.recorded).toBe(summary);
+    expect(activityText(row(`file_attached file=${id} type=jpeg bytes=831488`, 'collab', 'alice')).text).toBe(
+      'Screenshot added (JPEG, 812 KB).',
+    );
+    expect(activityText(row(`file_attached file=${id} type=webp bytes=1468006`, 'collab', 'alice')).text).toBe(
+      'Screenshot added (WEBP, 1.4 MB).',
+    );
+  });
+
+  it('words a deleted screenshot and keeps the record', () => {
+    const summary = `file_deleted file=${id}`;
+    const out = activityText(row(summary, 'collab', 'alice'));
+    expect(out.text).toBe('Screenshot deleted.');
+    expect(out.recorded).toBe(summary);
+    expect(out.text).not.toContain(id);
+  });
+
+  it('leaves a near miss unchanged', () => {
+    for (const summary of [
+      `file_attached file=${id} type=gif bytes=107`,
+      `file_attached file=${id.slice(1)} type=png bytes=107`,
+      `file_deleted file=${id} extra`,
+    ]) {
+      expect(activityText(row(summary, 'collab', 'alice'))).toEqual({ text: summary, recorded: null });
+    }
   });
 });
 
@@ -414,7 +487,7 @@ describe('activityKindLabel', () => {
   it('words the kind badge, with the friendly name of the legacy kind', () => {
     expect(activityKindLabel('decision')).toBe('Decision');
     expect(activityKindLabel('tool_call')).toBe('Tool call');
-    expect(activityKindLabel('PLAYBOOK')).toBe('Runbook (before Round 14)');
+    expect(activityKindLabel('PLAYBOOK')).toBe('Older runbook');
     expect(activityKindLabel('')).toBe('Event');
     expect(activityKindLabel(null)).toBe('Event');
   });
@@ -430,5 +503,124 @@ describe('activityActorLabel', () => {
     expect(activityActorLabel(null)).toBe('System');
     expect(activityActorLabel('dsingh')).toBe('dsingh');
     expect(activityActorLabel('Case_Manager')).toBe('Case manager');
+  });
+});
+
+describe('decisionRecordSentence (XFCM: the Brief decision line)', () => {
+  it('says who settled the case and how, from the enum tokens only', () => {
+    expect(
+      decisionRecordSentence(
+        'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=29.09 cost=0.028701 confidence=0.88 auto_close_gate=class_disabled',
+      ),
+    ).toBe('Escalated by the system.');
+    expect(
+      decisionRecordSentence('verdict=FALSE_POSITIVE status=closed decision_by=agent risk=8.2 cost=0.01 confidence=0.95 auto_close_gate=cleared'),
+    ).toBe('Closed by the AI agent.');
+  });
+
+  it('reads a row without the gate token, a withheld cost and no decider', () => {
+    expect(
+      decisionRecordSentence('verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=0.02 confidence=0.9'),
+    ).toBe('Escalated by the system.');
+    expect(
+      decisionRecordSentence('verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=hidden confidence=0.9 auto_close_gate=class_disabled'),
+    ).toBe('Escalated by the system.');
+    expect(
+      decisionRecordSentence('verdict=NEEDS_HUMAN status=needs_human decision_by=None risk=40 cost=0.02 confidence=0.5 auto_close_gate=not_closable'),
+    ).toBe('Sent to an analyst.');
+  });
+
+  it('never names the verdict, confidence, risk, cost or gate', () => {
+    const text = decisionRecordSentence(
+      'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=29.09 cost=0.028701 confidence=0.88 auto_close_gate=class_disabled',
+    );
+    expect(text).not.toMatch(/true positive|0\.88|29|0\.0287|auto-close/i);
+  });
+
+  it('returns null for anything else, prose included', () => {
+    expect(decisionRecordSentence('Escalated for a person to review.')).toBeNull();
+    expect(decisionRecordSentence('verdict=TRUE_POSITIVE status=escalated')).toBeNull();
+    expect(decisionRecordSentence('')).toBeNull();
+  });
+
+  it('never reads an inherited property as a word', () => {
+    expect(
+      decisionRecordSentence('verdict=X status=constructor decision_by=toString risk=1 cost=0 confidence=0.1'),
+    ).toBe('Constructor.');
+  });
+});
+
+describe('decisionWords (FXA1: the Decision lane and the History share one mapping)', () => {
+  // The fixed templates decide() writes (backend/app/engine/case_manager.py), verbatim.
+  const AUTO = 'FALSE_POSITIVE auto-closed: confidence 0.87 >= 0.85 and risk 13.6 <= 30.0; objection window 1440m.';
+  const TP_OFF = 'True positive routed to human: tp auto-close disabled.';
+  const FP_OFF = 'False positive routed to human: fp auto-close disabled.';
+  const FAIL_SAFE = 'No confident close decision; routing to human (fail-safe).';
+  const bar = (conf: string, risk: string) =>
+    `FALSE_POSITIVE routed to human: did not clear the auto-close bar (confidence ${conf} vs 0.85, risk ${risk} vs 30.0).`;
+
+  it('words every engine template, never the raw record', () => {
+    expect(decisionWords(AUTO)).toEqual({
+      route: 'Closed automatically by the case policy.',
+      why: 'It met the auto-close bar.',
+    });
+    for (const off of [TP_OFF, FP_OFF]) {
+      expect(decisionWords(off)).toEqual({
+        route: 'Sent to an analyst by the case policy.',
+        why: 'Auto-close is off for this verdict.',
+      });
+    }
+    expect(decisionWords(FAIL_SAFE)?.why).toBe('This verdict never closes automatically.');
+    expect(decisionWords(bar('0.60', '12.0'))?.why).toBe('Confidence was below the auto-close bar.');
+    expect(decisionWords(bar('0.90', '55.0'))?.why).toBe('Risk was above the auto-close bar.');
+    expect(decisionWords(bar('0.60', '55.0'))?.why).toBe('Confidence was below and risk above the auto-close bar.');
+    for (const raw of [AUTO, TP_OFF, FP_OFF, FAIL_SAFE, bar('0.60', '12.0')]) {
+      const { route, why } = decisionWords(raw)!;
+      expect(`${route} ${why}`).not.toMatch(/FALSE_POSITIVE|>=|<=|tp auto-close|fp auto-close|fail-safe|1440m/);
+    }
+  });
+
+  it('reads the case manager record with its gate, as the record sentence does', () => {
+    expect(
+      decisionWords(
+        'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=0.02 confidence=0.9 auto_close_gate=class_disabled',
+      ),
+    ).toEqual({ route: 'Escalated by the system.', why: 'Auto-close is off for this verdict.' });
+    expect(
+      decisionWords('verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=hidden confidence=0.9'),
+    ).toEqual({ route: 'Escalated by the system.', why: '' });
+  });
+
+  it('words a routing to a person one way, from the record or the rationale (FXF)', () => {
+    // The case manager's record and the history rationale of one decision.
+    const record = decisionWords(
+      'verdict=NEEDS_HUMAN status=needs_human decision_by=system risk=40 cost=0.02 confidence=0.5 auto_close_gate=not_closable',
+    );
+    expect(record).toEqual({ route: 'Sent to an analyst by the case policy.', why: 'This verdict never closes automatically.' });
+    expect(decisionWords(FAIL_SAFE)?.route).toBe(record?.route);
+    expect(decisionWords(bar('0.60', '12.0'))?.route).toBe(record?.route);
+    expect(`${record?.route}`).not.toMatch(/Left for an analyst|by the system/);
+  });
+
+  it('returns null for any other text, so the caller never shows it as it is', () => {
+    expect(decisionWords('Escalated for a person to review.')).toBeNull();
+    expect(decisionWords('gate=open route=human')).toBeNull();
+    expect(decisionWords('')).toBeNull();
+    expect(decisionWords(null)).toBeNull();
+  });
+});
+
+describe('triggerSentenceText (FXA1: a severity range with equal ends)', () => {
+  const lead = "'web_access' event from user vpatel (rule configured to investigate every occurrence)";
+
+  it('reads equal ends as one value', () => {
+    expect(triggerSentenceText(`${lead}; severity 30\u201330`)).toBe(`${lead}; severity 30`);
+    expect(triggerSentenceText(`${lead}; severity 7.5\u20137.5`)).toBe(`${lead}; severity 7.5`);
+  });
+
+  it('keeps a real range and any other sentence as stored', () => {
+    expect(triggerSentenceText(`${lead}; severity 30\u201375`)).toBe(`${lead}; severity 30\u201375`);
+    expect(triggerSentenceText(lead)).toBe(lead);
+    expect(triggerSentenceText('  ')).toBe('');
   });
 });

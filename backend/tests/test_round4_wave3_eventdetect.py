@@ -670,8 +670,11 @@ def test_forwarding_kill_switch_surfaces_advisory_note_but_is_not_a_gate() -> No
 def test_forwarding_to_dict_is_pure_data() -> None:
     prefs = Preferences(background_scan_enabled=True, auto_forward_allowlist=["*"])
     d = explain_forwarding(_cluster(), prefs).to_dict()
+    # Round 16 ([comp] R3): the routing total, the floor and whether the floor decided;
+    # FXD2: the weighted terms and the weight sum the total was worked from.
     assert set(d) == {"gate", "forwarded", "dropped", "sentence", "source_id",
-                      "is_alert", "notes"}
+                      "is_alert", "notes", "routing_total", "risk_floor",
+                      "routing_gate_applied", "routing_terms", "routing_weight_total"}
     # No verdict / status / disposition leaks into the advisory explanation (#3).
     assert "verdict" not in d and "status" not in d and "disposition" not in d
 

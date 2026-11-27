@@ -35,6 +35,7 @@ REVAMP_SPEC = REPO_ROOT / "docs" / "research" / "2026-10-chat-revamp" / "SPEC.md
 ROUND12_SPEC = REPO_ROOT / "docs" / "research" / "2026-10-round12" / "SPEC.md"
 ROUND14_SPEC = REPO_ROOT / "docs" / "research" / "2026-10-round14" / "SPEC.md"
 ROUND15_SPEC = REPO_ROOT / "docs" / "research" / "2026-11-round15" / "SPEC.md"
+ROUND16_SPEC = REPO_ROOT / "docs" / "research" / "2026-11-round16" / "SPEC.md"
 KNOWN_LIMITATIONS = REPO_ROOT / "docs" / "releases" / "known-limitations.md"
 BUNDLE_TEST = REPO_ROOT / "webui" / "src" / "soc" / "__tests__" / "bundle-first-paint.test.ts"
 SCOPE_CONTROLS = REPO_ROOT / "webui" / "src" / "soc" / "chat" / "composer" / "ScopeControls.tsx"
@@ -240,7 +241,8 @@ def _entry_baseline() -> tuple[str, int]:
 def test_round12_entry_bundle_item_records_the_rebased_baseline():
     """Round 12's §7.3 "Entry bundle" item keeps its own history and, since the Round 14
     rebase (Round 14 SPEC §3.4, E11), points at the Round 14 SPEC §11.1 "Entry bundle"
-    item, which holds the value in bundle-first-paint.test.ts."""
+    item; each later record points at the next, and the Round 16 SPEC §8.1 "Entry bundle"
+    item holds the value in bundle-first-paint.test.ts."""
     raw, value = _entry_baseline()
     item = _bullet(_section(_read(ROUND12_SPEC), "### 7.3 Known limitations"), "Entry bundle.")
     # The measured sources, not files that did not change in Round 12.
@@ -259,14 +261,22 @@ def test_round12_entry_bundle_item_records_the_rebased_baseline():
     assert '"Entry bundle" item of the Round 15 SPEC §8.1' in round14, (
         "the Round 14 record must point at the Round 15 record of the ratcheted baseline"
     )
-    current = _bullet(_section(_read(ROUND15_SPEC), "### 8.1 Contract resolutions"), "Entry bundle.")
+    round15 = _bullet(_section(_read(ROUND15_SPEC), "### 8.1 Contract resolutions"), "Entry bundle.")
+    # The per-file deltas of the Round 15 ratchet, and its own value.
+    for name in ("Wizard.tsx", "RuntimeReviewSteps.tsx", "SecretField.tsx", "Field.tsx", "registry.tsx"):
+        assert name in round15, name
+    assert "PRE_REVAMP_ENTRY_BYTES = 329_080" in round15, "the Round 15 record keeps its own value"
+    assert '"Entry bundle" item of the Round 16 SPEC §8.1' in round15, (
+        "the Round 15 record must point at the Round 16 record of the current baseline"
+    )
+    current = _bullet(_section(_read(ROUND16_SPEC), "### 8.1 Contract resolutions"), "Entry bundle.")
     assert f"PRE_REVAMP_ENTRY_BYTES = {raw}" in current, (
-        "Round 15 SPEC §8.1 'Entry bundle' is the one record of the current entry baseline "
-        "(its §3.1 ratchet); update it with the value in bundle-first-paint.test.ts"
+        "Round 16 SPEC §8.1 'Entry bundle' is the one record of the current entry baseline "
+        "(its §3.1 and §4.6 WP16 ratchet); update it with the value in bundle-first-paint.test.ts"
     )
     assert f"{value:,} B" in current
-    # The per-file deltas of the Round 15 ratchet.
-    for name in ("Wizard.tsx", "RuntimeReviewSteps.tsx", "SecretField.tsx", "Field.tsx", "registry.tsx"):
+    # The per-file deltas of the Round 16 measurement and the WP16P trim.
+    for name in ("useEventStream.ts", "Login.tsx", "NavSidebar.tsx", "agentSteps.ts", "ConfirmDialog.tsx"):
         assert name in current, name
 
 

@@ -128,7 +128,10 @@ async def _custom_catalog_rows(state: AppState, seen: set[str]) -> list[dict[str
 # GET /api/llm/models — catalog + capabilities + pricing + provenance + assignment
 # --------------------------------------------------------------------------- #
 @router.get("/llm/models")
-async def llm_models(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def llm_models(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("models", "read")),
+) -> dict[str, Any]:
     assigned = _assigned_roles(state.prefs)
     overlay: dict[str, dict[str, float]] = {}
     try:
@@ -173,7 +176,10 @@ async def llm_models(state: AppState = Depends(get_state)) -> dict[str, Any]:
 # GET /api/llm/providers — the provider registry + per-provider configured flag
 # --------------------------------------------------------------------------- #
 @router.get("/llm/providers")
-async def llm_providers(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def llm_providers(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("models", "read")),
+) -> dict[str, Any]:
     from ..llm.providers import PROVIDER_REGISTRY
 
     configured = state.secrets.configured_status()
@@ -703,7 +709,7 @@ def _validate_base_url(raw: str) -> str:
     if parts.scheme not in ("http", "https") or not parts.netloc:
         raise HTTPException(
             status_code=400,
-            detail="base_url must be an http(s) URL (e.g. http://localhost:4000/v1)",
+            detail="base_url must be an http(s) URL (e.g. http://host.docker.internal:4000/v1)",
         )
     return url
 

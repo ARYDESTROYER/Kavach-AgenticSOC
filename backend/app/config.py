@@ -2394,6 +2394,14 @@ def _validated_github_branch(value: str) -> str:
     return branch
 
 
+#: The canonical public repository. It is also the update trust root.
+CANONICAL_RELEASE_REPOSITORY_URL = "https://github.com/ARYDESTROYER/Kavach-AgenticSOC"
+#: The former name of the same repository, compared ignoring case. GitHub answers the
+#: former API path with a redirect, which discovery refuses by design, so a stored
+#: preference that still names it would never see a release.
+_FORMER_RELEASE_REPOSITORY = ("arydestroyer", "agentic-kibana")
+
+
 class ReleaseUpdateConfig(BaseModel):
     """Read-only public upstream metadata discovery.
 
@@ -2405,7 +2413,7 @@ class ReleaseUpdateConfig(BaseModel):
 
     enabled: bool = True
     repository_url: str = Field(
-        default="https://github.com/ARYDESTROYER/Agentic-Kibana",
+        default=CANONICAL_RELEASE_REPOSITORY_URL,
         description="Public GitHub upstream used only for release metadata discovery.",
     )
     stable_branch: str = Field(
@@ -2426,7 +2434,13 @@ class ReleaseUpdateConfig(BaseModel):
     @field_validator("repository_url")
     @classmethod
     def _repository_is_public_github(cls, value: str) -> str:
-        return _canonical_public_github_repository(value)
+        canonical = _canonical_public_github_repository(value)
+        # After canonicalisation, the former name of this repository (in any case)
+        # moves to the current one. Any other repository, a fork included, is kept.
+        owner, repository = canonical.rsplit("/", 2)[-2:]
+        if (owner.lower(), repository.lower()) == _FORMER_RELEASE_REPOSITORY:
+            return CANONICAL_RELEASE_REPOSITORY_URL
+        return canonical
 
     @field_validator("stable_branch", "testing_branch")
     @classmethod
@@ -4209,6 +4223,28 @@ class Preferences(BaseModel):
             self.rag = self.rag.model_copy(update={"use_runbooks": corpus})
         return self
 
+    @model_validator(mode="after")
+    def _one_org_theme_default(self) -> "Preferences":
+        """Branding ``default_theme`` is the one organization theme default (Round 16,
+        B45). An administrator's earlier choice in the legacy Appearance control
+        (``customization.default_theme``, which used to override Branding for every
+        "System" user) is kept: while Branding is still at its factory default, the
+        legacy value is copied into Branding the way the Branding editor writes it, and
+        the legacy value becomes ``system`` in the same load. So the copy happens once,
+        a second load changes nothing, and a later Branding reset is not undone by the
+        legacy value. Copies are assigned, so a section model the caller passed in is
+        never changed in place."""
+        legacy = self.customization.default_theme
+        if legacy == "system":
+            return self
+        factory = BrandingConfig.model_fields["default_theme"].default
+        if self.branding.default_theme == factory:
+            self.branding = self.branding.model_copy(
+                update={"default_theme": legacy, "theme": legacy, "dark_mode_default": False}
+            )
+        self.customization = self.customization.model_copy(update={"default_theme": "system"})
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def _migrate_fp_auto_close(cls, data: Any) -> Any:
@@ -4756,6 +4792,25 @@ class Preferences(BaseModel):
         if rd is not None:
             return self.correlation_rules.get(rd.name, self.default_correlation)
         return self.default_correlation
+
+    def widest_correlation_window_seconds(self) -> int:
+        """The widest correlation window any configured rule can ask for (Round 16 B07):
+        the default window, every ``correlation_rules`` entry, and every ENABLED
+        rule-catalog definition's effective window (:meth:`correlation_for_def`, which
+        prefers the inline correlation the Detection and Rules editor saves); a
+        definition whose mode is ``never`` is skipped, it never correlates. The poller
+        and the push look-back both read it, so a catalog rule's 1-hour threshold sees
+        an hour of events, not the default window."""
+        windows = [self.default_correlation.window_seconds]
+        windows.extend(rule.window_seconds for rule in self.correlation_rules.values())
+        for rd in self.rule_catalog:
+            if not rd.enabled:
+                continue
+            resolved = self.correlation_for_def(rd)
+            if resolved.mode == CorrelationMode.NEVER:
+                continue
+            windows.append(resolved.window_seconds)
+        return max(int(w) for w in windows)
 
     def model_for(self, role: str) -> ModelConfig:
         mapping = {

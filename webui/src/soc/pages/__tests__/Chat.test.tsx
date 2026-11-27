@@ -812,6 +812,7 @@ describe('Workspace Chat page', () => {
   });
 
   it('confirms a delete and keeps the report', async () => {
+    rows = [{ ...OLDER, report_id: 'rep-1' }, NEWEST];
     const user = userEvent.setup();
     renderChat();
     await screen.findByText('Newest sign-in review answer');
@@ -824,6 +825,19 @@ describe('Workspace Chat page', () => {
       expect(calls.some((call) => call.method === 'DELETE' && call.url === '/api/chat/conversations/c-older')).toBe(true),
     );
     expect(screen.queryByRole('button', { name: /^Older endpoint review, / })).toBeNull();
+  });
+
+  it('says nothing about a report when the conversation has none (B40)', async () => {
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    await user.click(screen.getByRole('button', { name: 'Actions for Older endpoint review' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Delete' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).toHaveTextContent('Older endpoint review” and its saved messages will be removed.');
+    expect(dialog).not.toHaveTextContent(/report/i);
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(calls.some((call) => call.method === 'DELETE')).toBe(false);
   });
 
   it('shows a failed /chat/context as a retryable error in the empty state and the composer', async () => {

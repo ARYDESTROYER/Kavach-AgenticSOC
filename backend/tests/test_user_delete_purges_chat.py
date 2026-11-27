@@ -17,6 +17,7 @@ from app.stores.chat_conversations import live_state_key, partition_key_for_user
 from app.stores.chat_feedback import CHAT_FEEDBACK_NS
 from tests.test_chat_round12_api import REPORT_FINAL, _auth_client, _login
 from tests.test_chat_routes_stream import TOOL_STEP
+from tests._auth_helpers import ready_user
 
 COMMENT = "host FIN-SRV-02 is our payroll box, keep quiet"
 
@@ -32,6 +33,7 @@ def test_a_recreated_account_inherits_no_chat_material() -> None:
             "username": "carol", "password": "carol-pass-12345", "role": "analyst_tier1",
         })
         assert created.status_code == 200, created.text
+        ready_user(client, "carol", "carol-pass-12345")
         _login(client, "carol", "carol-pass-12345")
         first = client.post("/api/chat", json={
             "message": "Create a monthly SOC report for September",
@@ -59,6 +61,7 @@ def test_a_recreated_account_inherits_no_chat_material() -> None:
             "username": "carol", "password": "carol-new-pass-999", "role": "analyst_tier1",
         })
         assert recreated.status_code == 200, recreated.text
+        ready_user(client, "carol", "carol-new-pass-999")
         _login(client, "carol", "carol-new-pass-999")
 
         assert client.get("/api/chat/feedback").json()["feedback"] == []
@@ -91,7 +94,9 @@ def test_deleting_an_account_without_chat_material_still_succeeds() -> None:
         assert client.post("/api/users", json={
             "username": "dave", "password": "dave-pass-12345", "role": "analyst_tier1",
         }).status_code == 200
+        ready_user(client, "dave", "dave-pass-12345")
         assert client.delete("/api/users/dave").status_code == 200
         assert client.post("/api/users", json={
             "username": "dave", "password": "dave-pass-12345", "role": "analyst_tier1",
         }).status_code == 200
+        ready_user(client, "dave", "dave-pass-12345")

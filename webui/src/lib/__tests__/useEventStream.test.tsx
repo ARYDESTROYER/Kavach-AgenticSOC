@@ -19,10 +19,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { useAgentSteps } from '../agentSteps';
 import {
   AGENT_STEP_CHANNEL,
   STREAM_CHANNELS,
-  useAgentSteps,
   useEventStream,
 } from '../useEventStream';
 
@@ -286,6 +286,10 @@ describe('SSE channel names (A4)', () => {
     expect(STREAM_CHANNELS).toContain('agent.step');
     // The defect, pinned: the bare `agent` token matched nothing the backend emits.
     expect(STREAM_CHANNELS).not.toContain('agent');
+  });
+
+  it('listens on the AI investigation channel (Round 16)', () => {
+    expect(STREAM_CHANNELS as readonly string[]).toContain('case.investigation');
   });
 
   it('listens on the runbook run channel (Round 14) and hands its frame over', async () => {

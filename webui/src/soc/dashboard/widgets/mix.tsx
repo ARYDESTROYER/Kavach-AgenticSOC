@@ -15,8 +15,10 @@
  */
 import * as React from 'react';
 
+import { ExplainTrigger } from '@/design-system/explain';
 import { Panel } from '@/design-system/panel';
 import { cn } from '@/lib/cn';
+import { explainCloseShare } from '@/lib/explain/builders';
 import { fmtNumber, humanizeToken } from '@/lib/format';
 import type { MetricsTrends } from '@/lib/types';
 import type { MetricsBreakdown } from '@/lib/types-dashboards';
@@ -307,6 +309,25 @@ export function humanVsAiSeries(trends: MetricsTrends | null | undefined): Human
   });
 }
 
+/**
+ * One Human vs AI figure inside its explanation (FXD1): hover names the count over the
+ * window's closed cases, click prints the whole-percent arithmetic. The Cyber Defence
+ * Center card builds the same trigger from the same builder in its own chunk.
+ */
+export function humanVsAiFigureExplain(
+  totals: HumanVsAiTotals,
+  band: 'ai' | 'human' | 'system',
+  window: string,
+  figure: React.ReactNode,
+): React.ReactNode {
+  const explanation = explainCloseShare(totals, band, window);
+  return (
+    <ExplainTrigger explanation={explanation} className="flex-wrap items-baseline gap-x-1.5">
+      {figure}
+    </ExplainTrigger>
+  );
+}
+
 const POSTURE_REQ: DashboardRequest = { key: 'posture' };
 const TRENDS_REQ: DashboardRequest = { key: 'trends' };
 
@@ -356,6 +377,9 @@ export function AutonomousVsHumanWidget(props: WidgetProps) {
           <>
             <HumanVsAiCard
               totals={totals}
+              explainFigure={
+                totals ? (band, figure) => humanVsAiFigureExplain(totals, band, `the ${windowInfo.phrase}`, figure) : undefined
+              }
               unavailableReason={
                 closeAttributionState(posture?.quality) === 'unreconciled'
                   ? 'Close attribution did not reconcile for this window.'

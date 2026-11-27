@@ -1,11 +1,11 @@
 ---
 title: Known limitations
-description: Release gates and explicit operating constraints for Agentic SOC 0.1.13.
+description: Release gates and explicit operating constraints for Agentic SOC 0.2.0.
 ---
 
 # Known limitations
 
-This list is part of the product contract for Agentic SOC `0.1.13` in Testing and,
+This list is part of the product contract for Agentic SOC `0.2.0` in Testing and,
 if the exact verified commit is published, its Stable artifacts. It distinguishes
 release gates from documented beta constraints so a green unit-test suite is never
 mistaken for release or production evidence.
@@ -23,21 +23,39 @@ promotion into `main`, set Pages source to **GitHub Actions**, and protect the
 `github-pages` environment as appropriate. Verify those settings before treating a
 new commit or documentation deployment as accepted merely because its workflow ran.
 
-### No project license
+### Project license (resolved in 0.2.0)
 
-The repository does not contain a `LICENSE` file. Publicly visible source is not
-automatically open source and does not grant redistribution rights.
+The maintainer chose the Apache License, Version 2.0. The verbatim text is `LICENSE` at
+the repository root, with byte-identical copies in `backend/` and `updater/` for their
+image build contexts. Each shipping image carries it at
+`/usr/share/doc/agentic-soc/LICENSE` with the label
+`org.opencontainers.image.licenses="Apache-2.0"`, and the backend package declares
+`License-Expression: Apache-2.0`. Bundled fonts, Unicode data and the MITRE ATT&CK subset
+keep their own terms; the README lists them under "Third-party notices".
 
-**Required decision:** choose and commit the intended license before publishing
-binaries, containers, or an “open-source” announcement. Apache-2.0 is permissive and
-patent-explicit; AGPL-3.0 requires network-service modifications to be offered to
-users. This is an owner/product decision and must not be guessed by automation.
+### The repository was renamed, so the update trust root changed
+
+The repository is now `ARYDESTROYER/Kavach-AgenticSOC`. From 0.2.0 on, that name is the
+signing identity of every release plan, the GHCR namespace and the OCI source label. The
+frozen Compose base (`deploy/docker-compose.agnostic.yml`) cannot change under updater
+protocol 1, so it still defaults `AGENTIC_SOC_UPDATE_REPOSITORY` to the former name.
+
+**Required control:** set
+`AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env` before running
+`scripts/bootstrap-updater.sh`. The bootstrap refuses a missing line, the former name in
+any letter case, and the new name in the wrong letter case, because the signing identity
+is case-sensitive; it never edits `.env`. Artifacts of v0.1.12 and earlier stay valid
+under the former identity and are not re-signed. GitHub does not redirect project Pages
+after a rename, so old `arydestroyer.github.io/Agentic-Kibana/` links answer 404; the
+public Help Center is `https://arydestroyer.github.io/Kavach-AgenticSOC/`. A saved
+**Updates & releases** preference that names the former repository reads as the new one;
+a fork is kept.
 
 ### Signed update acceptance is external to local unit tests
 
 The updater protocol, release plan, signature verification, rollback state machine,
 and reference Compose contracts have offline coverage. That does not prove the exact
-published `v0.1.13` images and signed assets work through a real PostgreSQL Compose
+published `v0.2.0` images and signed assets work through a real PostgreSQL Compose
 upgrade, interruption, cancellation, automatic rollback, and post-success rollback.
 
 **Required control:** after the exact accepted `main` commit passes remote CI, publish
@@ -145,18 +163,18 @@ new case. Add tests for retries of one incident, distinct rules on the same enti
 NAT/shared IPs, distant/reopened activity, legacy migration, and cross-source
 related-but-not-merged cases.
 
-## Version 0.1 constraints
+## Version 0.2 constraints
 
 ### One-click updates support one deployment profile
 
 The unpublished 0.1.2 snapshot introduced source discovery and coherent-pair
 activation but did not publish the host supervisor or signed upgrade plan. Version
-0.1.13 carries the version-1 supervisor protocol and canonical base-Compose contract
+0.2.0 carries the version-1 supervisor protocol and canonical base-Compose contract
 without broadening its supported topology. It still cannot retroactively install a
 privileged host component. A supported canonical v0.1.1 installation requires one manual
-`scripts/bootstrap-updater.sh` step from the clean, exact annotated `v0.1.13` tag whose
+`scripts/bootstrap-updater.sh` step from the clean, exact annotated `v0.2.0` tag whose
 commit remains contained in `origin/main`; that step delegates the full
-v0.1.1→v0.1.13 transition to the signed plan. That tag is not an installation source
+v0.1.1 to v0.2.0 transition to the signed plan. That tag is not an installation source
 until the complete signed publication and canonical runtime acceptance evidence exists.
 Testing/source-built 0.1.3 and the
 non-installable v0.1.4/v0.1.5 attempts, plus the published-but-bootstrap-blocked
@@ -187,10 +205,11 @@ Version 0.1.12 restored the runner-owned fixture directory to mode `0700` only a
 verifier exit, then removed it. That release completed its entire signed/public
 publication gate, but canonical v0.1.1 bootstrap failed closed before application
 mutation because both legacy images omit the state-schema label and one absence was
-normalized while the other remained raw. Version 0.1.13 normalizes matching absent
-legacy schema labels symmetrically while retaining every mixed/later-identity
-rejection. It changes no application schema, updater protocol, publisher identity,
-process privilege, trust predicate, or frozen-base bytes.
+normalized while the other remained raw. The never-tagged 0.1.13 candidate, folded
+into 0.2.0, normalizes matching absent legacy schema labels symmetrically while
+retaining every mixed/later-identity rejection. Version 0.2.0 changes no application
+schema, updater protocol, process privilege, or frozen-base bytes. It does change the
+publisher identity to the renamed repository (see the release gate above).
 Subsequent compatible Stable releases can be installed from the Console only for
 the reference, single-replica
 standalone Docker Compose topology with PostgreSQL-owned state, durable authentication/secrets, a
@@ -232,7 +251,7 @@ credential. See [Upgrades](../operations/upgrades.md).
 
 ### Updater artifacts are not auto-pruned
 
-The updater foundation included in version 0.1.13 retains updater jobs, preflights,
+The updater foundation included in version 0.2.0 retains updater jobs, preflights,
 signed plan assets, receipts, and deployment snapshots in the updater-state volume
 and verified PostgreSQL dumps in the
 updater-backup volume. It does not implement age-, count-, or status-based pruning.
@@ -310,6 +329,45 @@ The steps are in [Upgrades](../operations/upgrades.md#rolling-back-from-round-15
 
 **Required change:** none for later releases, which carry the forward contract.
 
+### Rolling back from 0.2.0 loses what the earlier build cannot keep
+
+Every field 0.2.0 stores is additive, and the earlier builds load documents with fields
+they do not know. They drop those fields when they save a document again. After an
+image-only rollback and the return:
+
+- **Recorded risk inputs** are lost on every case the earlier build saves again. Back on
+  0.2.0, such a case reads "not recorded", and its explanation uses today's weights.
+- **Second-factor lock counters** reset, so a locked account can try again at once.
+- **The read grants and the server-side forced password change revert** while the
+  earlier build runs: a custom role without a read grant can read again, and an account
+  that must change its password is not held to it. The rollback lane runs with sign-in
+  off, so it does not prove these two losses; they follow from the earlier build's code.
+- **The in-memory list of AI investigations** is lost, as on any restart.
+
+Usage-ledger rows are append-only and keep their rate fields. What's new markers
+survive, because the earlier build keeps personal preference entries it does not know.
+The steps are in [Upgrades](../operations/upgrades.md#rolling-back-from-020).
+
+The image-only rollback rehearsal to v0.1.1 on PostgreSQL: Recorded at release
+preparation.
+
+**Required change:** none for later releases; the earlier builds cannot be changed.
+
+### The audit id column is widened in place on PostgreSQL
+
+Every published release up to v0.1.12 created the PostgreSQL `audit.id` column as a
+32-bit integer. On its first start on such a database, 0.2.0 widens the column and its
+sequence to `bigint` in place. PostgreSQL rewrites the audit table to do it and holds an
+exclusive lock on it, so a large audit table makes the first start slower and audit
+writes wait until it finishes. A rollback never narrows the column again. The time per
+million rows is measured at release preparation.
+
+**Required control:** on a very large audit table, run the two `ALTER` statements in
+[Upgrades](../operations/upgrades.md#the-audit-id-column) in a maintenance window before
+upgrading. If the widening fails, the backend still starts, and
+`GET /api/diagnostics/health` reports the failed schema migration with the statements
+to run; strict audit writes, such as approving a proposal, fail until then.
+
 ### Single replica only
 
 Run exactly one backend replica. Signature locks, receiver ownership, schedulers,
@@ -322,8 +380,15 @@ and deliver inconsistent live updates. Workspace Chat's running answers are also
 process-local: the turn registry, the buffer a browser rejoins a running answer from,
 Stop, and the questions-at-once bounds live in one backend process. A backend restart
 ends running answers (nothing is saved for them, and the question can be asked again),
-and a second replica would neither see nor stop the first one's answers. The [scale-out roadmap](../architecture/ingestion.md#scale-out-roadmap)
-defines the required worker/lease split.
+and a second replica would neither see nor stop the first one's answers. The list of AI
+investigations in progress is process-local too: `GET /api/investigations/active`, the
+**AI working** chip, the queue marks and the navigation count show only the runs of the
+backend that serves the request, and a restart forgets them (the case itself keeps the
+run's result). The guard against a second reinvestigation of the same case is held in
+the same list. The [scale-out roadmap](../architecture/ingestion.md#scale-out-roadmap)
+defines the required worker/lease split. The second-factor sign-in step keeps its
+pending tokens in memory too, at most 10,000; the per-account failure count is stored and
+stays the lasting bound.
 
 Application background jobs do use strict-CAS mutations and renewable five-minute
 leases. That narrow registry protection is not a distributed application runtime: the
@@ -386,6 +451,12 @@ both, and another replica would not share them.
 Cases retain selected event IDs and evidence, but the suite does not yet provide a
 durable raw-event archive for pushed data. Keep the authoritative event in the
 source/broker/object store during evaluation.
+
+On a push source, correlation looks back over the last 500 events that source delivered,
+held in memory and lost on restart. A rule with a long window on a busy push source
+therefore sees at most those 500 events, not its whole window. A case built from a push
+source always says its events are not retrievable on the Evidence tab, even while that
+memory still holds them.
 
 ### Receiver supervision is process-local
 
@@ -480,6 +551,122 @@ a count its answer would contradict. Case lists in chat answers name a case by i
 and a short ID until the lookups return case numbers, and chat cannot yet filter cases by
 the signed-in analyst, so the answer to "Which of my open cases should I work on first?"
 says so and shows the open queue by assignee.
+
+### Case chat is a sixth tab
+
+A case has six tabs this release: Brief, Evidence, AI investigation, Response, Activity
+and Chat. Alt+2, Alt+4 and Alt+5 open different tabs than in earlier releases, and Chat
+moved to Alt+6. A later release is planned to move case chat into the case facts column,
+which brings the tabs back to five and changes the keys again.
+
+### Explanations of older records use today's settings
+
+Cases scored, decisions made and model calls recorded before 0.2.0 did not keep their
+inputs, thresholds or rates. Their explanations say "not recorded" and, where they can,
+use today's weights or policy, marked as such. A model call recorded before 0.2.0 shows
+its stored cost and says its rates were not recorded; it is never repriced. On
+Elasticsearch, a deployment
+whose client may not read or change index templates cannot add the new cases mapping,
+so its cases keep no risk inputs either; the backend logs this once.
+
+### Single sign-on maps only built-in roles
+
+A provider's default role and each group mapping must be a built-in role, and a custom
+role name is refused when the provider is saved. Mapping a group to a custom role is in
+the backlog. A provider saved before 0.2.0 with a custom role value is kept as stored
+until it is next changed. Give an SSO user custom-role grants on their account after
+their first sign-in. A generic OIDC provider saved with no display name shows its id on its
+sign-in button; give it a display name.
+
+### Two-factor setup screens differ
+
+The optional **Secure your account** step of the first-run setup keeps the Settings card
+layout: the QR code beside the text, a secret that is cut off, and a smaller code field. In
+the required two-factor setup on the sign-in page, the "I have saved my recovery codes" box
+and the Copy, Copy all and Download buttons are smaller than 44 px on a phone.
+
+### Cost figures in recorded text follow cost:view, but search still matches them
+
+Without `cost:view`, the cost figures in the text of a case's timeout, decision, runbook
+AI and budget rows, and in a replay experiment's spend row, read "hidden", and amounts
+"(amount hidden)": in the trace, the timeline, the activity feed, the case rationale,
+chat answers about the case, the Audit log list and record, and an audit log export. A
+budget refusal's reason shown on a case reads "(amount hidden)" too. Tool output and log
+evidence are shown as they were recorded and are never rewritten. Three limits remain:
+
+- Search reads the stored text. A person without `cost:view` can still search the Audit
+  log, or filter an audit log export, by free text such as a cost figure, and a row that
+  matches shows that the hidden figure is there.
+- The full application export (`data_export:export`) keeps every audit row, and a budget
+  refusal's figure in the case's error text, as stored: it is an administrator backup.
+- A replay experiment's own job record shows its spend to the person who ran it: its
+  cancel reason ("replay spend bound $... reached") and its report. That person set the
+  bound and needs `models:manage`; the reason is written to no audit row.
+
+### Demo user and host cases score low
+
+The seeded Demo runs with the tenant's asset criticality map, which is normally empty, so
+its user and host cases score about 10 to 40 and their impact reads low. A Demo asset map
+would raise about half of the seeded scores by some 9 points and change two seeded
+cases; it is not shipped.
+
+### The Demo does not show every live behaviour
+
+- A change to the auto-close policy in **Settings** changes the sentence in a case's
+  Decision lane, but the Demo keeps deciding with its own policy, so the two disagree until
+  you undo the change.
+- The Demo runs every AI investigation at once, without the investigation slots, so "AI
+  queued" and the queue's notice about waiting runs never show there.
+- The seeded cases were decided without a recorded gate, so their decision explanations use
+  today's thresholds until you reinvestigate a case.
+
+### Entity investigation searches one pull source
+
+With no source named, **Run investigation** on Entity investigation searches the main log
+source first, then, in Demo Mode, the other Demo sources, or otherwise the recent events each
+push source delivered (up to its last 500, held in memory). Other pull sources are not
+searched, so name the source when the entity's events are in one of them. The first source
+with matching events builds the case, even when a later source matches in a shorter window.
+
+### A lookback in months is read as minutes
+
+A lookback written with an upper-case `M` for months, such as `now-1M`, is searched as one
+minute, while the case's sentence says "in the last month". Write months as days (`now-30d`).
+The default lookback and the widening windows (24 hours, 7 days, 30 days and 365 days) are
+not affected.
+
+### Small gaps in AI run signals and explanations
+
+- In a bulk close or status dialog, the end of an AI run on the case you are looking at is
+  announced twice: once by the dialog's note and once by the case header's chip.
+- Chat answers and the knowledge text show a case's trigger sentence as it was stored, so a
+  severity range with the same number at both ends reads as a range there. The Console reads
+  it as one value.
+- The auto-close review medians on Agent effectiveness show no worked median, and the
+  explanation of why a case was investigated still names the feed setting `severity_floor`
+  in the engine's spelling.
+- At 1440 px with the navigation expanded, the case page is a little narrower than the case
+  facts column needs, so the facts open as a side sheet. Collapse the navigation or fold the
+  queue with `[` to show them beside the tabs.
+
+### A copied event id can stand in during a reinvestigation
+
+The Evidence tab reads each of a case's events by its index and id. A reinvestigation still
+rebuilds the case's evidence by event id alone, so where the same id exists in other indices
+of the source's data view, a copy from another index can stand in for the case's own event in
+that run's evidence.
+
+### Three accessibility findings remain
+
+The closing accessibility check of 0.2.0 left three findings that are not serious:
+
+- Seven tables, among them Users, Models and Roles & permissions, have a column of row
+  actions with no header text, so a screen reader reads an empty column header there.
+- The title of an alert is a level 5 heading, so a heading level is skipped in the Demo
+  section of Settings, in the Reinvestigate dialog and in the close dialog while an AI run
+  works.
+- A hover card or tooltip that opens while the page scrolls, such as a trend card on
+  Overview, sits outside the page's landmark regions.
 
 ### Screenshots are checked, not decoded
 
@@ -711,7 +898,7 @@ rotation, state backup/restore, log retention, monitoring, image scanning, and a
 documented incident/upgrade procedure.
 
 The project has not published a compliance certification or an independent
-production security assessment for version 0.1.
+production security assessment for version 0.2.
 
 ## What is safe to evaluate
 
@@ -729,5 +916,5 @@ Suitable evaluation goals include:
 - case provenance, audit, collaboration, and notification UX;
 - fault-injection and performance work needed to close the blockers above.
 
-Version 0.1 should not be marketed as lossless, horizontally scalable, production
+Version 0.2 should not be marketed as lossless, horizontally scalable, production
 certified, or independently assessed until the corresponding evidence is published.

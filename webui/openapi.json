@@ -2268,6 +2268,79 @@
         "title": "CaseComment",
         "type": "object"
       },
+      "CaseEventsPage": {
+        "description": "``GET /api/cases/{case_id}/events`` (Round 16 SPEC §4.5 WP13, [dv] R2).\n\nThe raw records behind a case, read on demand through the read-only log client (#1)\nand kept only when their source-qualified key is one of the case's\n``member_event_keys``. ``available`` is false with a ``reason`` when the source could\nnot answer; ``expected`` is the case's member count, ``returned`` the rows on this\npage and ``truncated`` true when more remain (``next_cursor``). Each row is the\n``/api/logs`` row contract (``engine/log_rows.log_row``: ``id``, ``ts``,\n``source_ip``, ``user``, ``host``, ``rule``, ``severity``, ``message``, ``_raw``)\nplus ``index``, ``source_id`` and ``in_evidence`` (the finding indexes that cite\nit). Every value is source-controlled UNTRUSTED data: a reader renders it as text,\nnever as markup (#9), and it is never sent to a model (#7).",
+        "properties": {
+          "available": {
+            "default": false,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "expected": {
+            "default": 0,
+            "title": "Expected",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "aged_out",
+                  "push_source_not_retrievable",
+                  "source_unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "returned": {
+            "default": 0,
+            "title": "Returned",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "case_id"
+        ],
+        "title": "CaseEventsPage",
+        "type": "object"
+      },
       "CaseFileDeleteResult": {
         "properties": {
           "deleted": {
@@ -2814,6 +2887,100 @@
           }
         },
         "title": "CaseTask",
+        "type": "object"
+      },
+      "CaseUsagePage": {
+        "description": "``GET /api/cases/{case_id}/usage`` (Round 16 SPEC §4.5 WP13, [dv] R3 and R14).\n\n``rows``: the case's ledger rows, newest first, at most :data:`CASE_USAGE_MAX_ROWS`.\n``rows_total`` is the exact count when the store could prove it (else ``None``) and\n``truncated`` is true when rows exist beyond ``rows``. ``totals`` are lifetime sums\nover every row of the case, not only the returned page; ``token_cost`` is the case's\nrecorded investigation cost and ``reconciles`` says whether ``totals.pipeline``\nequals it within the display epsilon. Served only with ``cost:view``.",
+        "properties": {
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "reconciles": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reconciles"
+          },
+          "returned": {
+            "default": 0,
+            "title": "Returned",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/UsageDoc"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "rows_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows Total"
+          },
+          "token_cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Cost"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/CaseUsageTotals"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "case_id"
+        ],
+        "title": "CaseUsagePage",
+        "type": "object"
+      },
+      "CaseUsageTotals": {
+        "description": "A case's ledger spend in USD, split as the Console shows it: ``pipeline`` (the\ninvestigation roles, ``constants.CASE_PIPELINE_USAGE_ROLES``, the figure\n``Case.token_cost`` records) and ``chat`` (case chat on this case, never part of the\ninvestigation cost); ``runbook`` (additive) is runbook AI help on the case, the\ncalls on surface ``runbook``, never case chat; ``other`` holds anything else written\nwith the case id.",
+        "properties": {
+          "chat": {
+            "default": 0.0,
+            "title": "Chat",
+            "type": "number"
+          },
+          "other": {
+            "default": 0.0,
+            "title": "Other",
+            "type": "number"
+          },
+          "pipeline": {
+            "default": 0.0,
+            "title": "Pipeline",
+            "type": "number"
+          },
+          "runbook": {
+            "default": 0.0,
+            "title": "Runbook",
+            "type": "number"
+          }
+        },
+        "title": "CaseUsageTotals",
         "type": "object"
       },
       "ChangePasswordBody": {
@@ -5761,6 +5928,18 @@
             ],
             "title": "Case Id"
           },
+          "case_number": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Number"
+          },
           "doc": {
             "anyOf": [
               {
@@ -7361,6 +7540,221 @@
           }
         },
         "title": "InvestigateRequest",
+        "type": "object"
+      },
+      "InvestigationSlots": {
+        "description": "The investigation gate's use: ``in_use`` permits held, ``cap`` the configured\n``caps.max_concurrent``.",
+        "properties": {
+          "cap": {
+            "default": 0,
+            "title": "Cap",
+            "type": "integer"
+          },
+          "in_use": {
+            "default": 0,
+            "title": "In Use",
+            "type": "integer"
+          }
+        },
+        "title": "InvestigationSlots",
+        "type": "object"
+      },
+      "InvestigationView": {
+        "description": "One AI investigation run as the Console sees it (SPEC §4.5 WP08, D10).\n\nIds, enums, ISO timestamps and integers only (#7, #9): never a title, entity, rule\nor model text, and never a person's name in a broadcast. ``case_id`` is ``None``\nwhile a run on new events has not attached its case yet. ``deadline_at`` is\n``started_at`` plus ``time_cap_seconds`` (the run's model-call cap).\n\n``requested_by_you`` and ``requested_by`` are filled only by the caller-scoped\nroute: ``requested_by_you`` for everyone, ``requested_by`` (the requester's user\nname) only for a holder of ``users:manage``. The ``case.investigation`` frame drops\nboth (``realtime.publish_case_investigation``).",
+        "properties": {
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "deadline_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "decided",
+                  "routed_to_person",
+                  "closed_by_policy",
+                  "unchanged",
+                  "cancelled",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "phase": {
+            "default": "queued",
+            "enum": [
+              "queued",
+              "triage",
+              "specialist",
+              "evidence",
+              "verdict",
+              "decision"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "queued_at": {
+            "default": "",
+            "title": "Queued At",
+            "type": "string"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "requested_by_you": {
+            "default": false,
+            "title": "Requested By You",
+            "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "state": {
+            "default": "queued",
+            "enum": [
+              "queued",
+              "running",
+              "finished"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "status_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status After"
+          },
+          "time_cap_seconds": {
+            "default": 0,
+            "title": "Time Cap Seconds",
+            "type": "integer"
+          },
+          "trigger": {
+            "default": "automatic",
+            "enum": [
+              "automatic",
+              "manual",
+              "job",
+              "drain",
+              "detection"
+            ],
+            "title": "Trigger",
+            "type": "string"
+          },
+          "verdict_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict After"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "InvestigationView",
+        "type": "object"
+      },
+      "InvestigationsActive": {
+        "description": "``GET /api/investigations/active`` (SPEC §4.5 WP08). Memory only: ``items`` are\nthe queued or running runs whose case is known, ``recent`` the runs that finished in\nthe last 120 s, ``new_runs`` the count of runs whose case does not exist yet.\n``process_local`` is always true: another backend replica's runs are not seen.",
+        "properties": {
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InvestigationView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "new_runs": {
+            "default": 0,
+            "title": "New Runs",
+            "type": "integer"
+          },
+          "process_local": {
+            "default": true,
+            "title": "Process Local",
+            "type": "boolean"
+          },
+          "recent": {
+            "items": {
+              "$ref": "#/components/schemas/InvestigationView"
+            },
+            "title": "Recent",
+            "type": "array"
+          },
+          "slots": {
+            "$ref": "#/components/schemas/InvestigationSlots"
+          }
+        },
+        "title": "InvestigationsActive",
         "type": "object"
       },
       "JobFailure": {
@@ -9752,7 +10146,7 @@
         "type": "object"
       },
       "ReinvestigateRequest": {
-        "description": "Re-run the investigation on an existing case. Optional ``model`` overrides\nthe investigation-role models (router/investigator/formatter) for THIS run via a\nprefs copy (the per-call model-override technique) — no gateway plumbing change.",
+        "description": "Re-run the investigation on an existing case. Optional ``model`` overrides\nthe investigation-role models (router/investigator/formatter) for THIS run via a\nprefs copy (the per-call model-override technique); no gateway plumbing change.\n\n``wait`` (Round 16 SPEC §4.5 WP08): true (the default) answers when the run ends,\nwith the updated case; false answers ``202 {run_id, case_id, state: \"queued\"}`` at\nonce and the run goes on in the background (its result arrives as a case update,\na ``case.investigation`` frame and an Inbox notice).",
         "properties": {
           "analyst": {
             "default": "analyst",
@@ -9769,6 +10163,11 @@
               }
             ],
             "title": "Model"
+          },
+          "wait": {
+            "default": true,
+            "title": "Wait",
+            "type": "boolean"
           }
         },
         "title": "ReinvestigateRequest",
@@ -11338,6 +11737,16 @@
             "title": "Diversity",
             "type": "number"
           },
+          "inputs": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RiskInputs"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "reputation": {
             "default": 0.0,
             "title": "Reputation",
@@ -11360,6 +11769,171 @@
           }
         },
         "title": "RiskBreakdown",
+        "type": "object"
+      },
+      "RiskInputs": {
+        "description": "What one risk score was computed from (Round 16 SPEC §4.3 WP01, S3, B13).\n\nWritten beside ``compute_risk`` by the pure ``engine/risk_explain.explain_risk``\n(``engine/risk.py`` stays byte-identical, #3), so a reader can re-derive every\nfactor and the total from the record alone, after the case attached more events or\nthe weights changed. Read only by explanations: nothing reads it to decide (#3).\n\n* ``event_count``, ``span_seconds``: the scoring cluster's count and first-to-last\n  span; ``effective_window_seconds`` is the span floored at 1 s;\n  ``rate_per_minute`` is ``event_count / (effective_window_seconds / 60)`` when\n  ``velocity_rule == \"rate\"`` and ``None`` below 3 events\n  (``\"below_min_events\"``, velocity 0).\n* ``rule_values``: the distinct rule values, first order, at most\n  :data:`RISK_INPUTS_MAX_RULE_VALUES`, each at most\n  :data:`RISK_INPUTS_RULE_VALUE_CHARS` characters. Source-controlled strings: a\n  reader renders them as text (#9). ``rule_type_count`` is exactly\n  ``len(cluster.rule_values)``, the count the diversity factor used.\n* ``reputation_input``: the reputation passed in, before clamping to 0..100;\n  ``reputation_source`` says where it came from.\n* ``asset_value``: the criticality the asset policy gave, before clamping;\n  ``asset_match`` says how (a network range, an exact entry, or none). The matched\n  range is never stored: every route that returns a case would return it\n  (SPEC Appendix C, C5).\n* ``weights``, ``total_weight`` (their sum) and ``zero_weight_fallback`` (the sum\n  was 0, so the score divided by 1); ``refs`` the factor reference points.\n* ``scored_at``: when the score was computed (the only date); ``inputs_version``.",
+        "properties": {
+          "asset_match": {
+            "default": "none",
+            "enum": [
+              "network",
+              "exact",
+              "none"
+            ],
+            "title": "Asset Match",
+            "type": "string"
+          },
+          "asset_value": {
+            "default": 0.0,
+            "title": "Asset Value",
+            "type": "number"
+          },
+          "effective_window_seconds": {
+            "default": 1.0,
+            "title": "Effective Window Seconds",
+            "type": "number"
+          },
+          "event_count": {
+            "default": 0,
+            "title": "Event Count",
+            "type": "integer"
+          },
+          "inputs_version": {
+            "default": 1,
+            "title": "Inputs Version",
+            "type": "integer"
+          },
+          "rate_per_minute": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate Per Minute"
+          },
+          "refs": {
+            "$ref": "#/components/schemas/RiskReferences"
+          },
+          "reputation_input": {
+            "default": 0.0,
+            "title": "Reputation Input",
+            "type": "number"
+          },
+          "reputation_source": {
+            "default": "not_looked_up",
+            "enum": [
+              "enrichment",
+              "not_ip_entity",
+              "enrichment_off",
+              "not_looked_up"
+            ],
+            "title": "Reputation Source",
+            "type": "string"
+          },
+          "rule_type_count": {
+            "default": 0,
+            "title": "Rule Type Count",
+            "type": "integer"
+          },
+          "rule_values": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rule Values",
+            "type": "array"
+          },
+          "scored_at": {
+            "default": "",
+            "title": "Scored At",
+            "type": "string"
+          },
+          "span_seconds": {
+            "default": 0.0,
+            "title": "Span Seconds",
+            "type": "number"
+          },
+          "total_weight": {
+            "default": 0.0,
+            "title": "Total Weight",
+            "type": "number"
+          },
+          "velocity_rule": {
+            "default": "below_min_events",
+            "enum": [
+              "below_min_events",
+              "rate"
+            ],
+            "title": "Velocity Rule",
+            "type": "string"
+          },
+          "weights": {
+            "$ref": "#/components/schemas/RiskWeightsSnapshot"
+          },
+          "zero_weight_fallback": {
+            "default": false,
+            "title": "Zero Weight Fallback",
+            "type": "boolean"
+          }
+        },
+        "title": "RiskInputs",
+        "type": "object"
+      },
+      "RiskReferences": {
+        "description": "The reference points at which a factor reaches full score (``engine/risk.py``).",
+        "properties": {
+          "diversity": {
+            "default": 5,
+            "title": "Diversity",
+            "type": "integer"
+          },
+          "velocity": {
+            "default": 10.0,
+            "title": "Velocity",
+            "type": "number"
+          },
+          "volume": {
+            "default": 50,
+            "title": "Volume",
+            "type": "integer"
+          }
+        },
+        "title": "RiskReferences",
+        "type": "object"
+      },
+      "RiskWeightsSnapshot": {
+        "description": "The five risk weights in force when a score was computed (a fixed key set).",
+        "properties": {
+          "asset_criticality": {
+            "default": 0.0,
+            "title": "Asset Criticality",
+            "type": "number"
+          },
+          "diversity": {
+            "default": 0.0,
+            "title": "Diversity",
+            "type": "number"
+          },
+          "reputation": {
+            "default": 0.0,
+            "title": "Reputation",
+            "type": "number"
+          },
+          "velocity": {
+            "default": 0.0,
+            "title": "Velocity",
+            "type": "number"
+          },
+          "volume": {
+            "default": 0.0,
+            "title": "Volume",
+            "type": "number"
+          }
+        },
+        "title": "RiskWeightsSnapshot",
         "type": "object"
       },
       "RolePreviewBody": {
@@ -16065,6 +16639,20 @@
       },
       "TeamTotals": {
         "properties": {
+          "ack_sample_offset": {
+            "default": 0,
+            "description": "The 0-based rank of the first listed time among all ack_samples sorted times.",
+            "title": "Ack Sample Offset",
+            "type": "integer"
+          },
+          "ack_sample_seconds": {
+            "description": "The sorted times to acknowledge, in seconds, around the median: at most 200, always the one or two middle times the median is taken from. Empty unless measured.",
+            "items": {
+              "type": "number"
+            },
+            "title": "Ack Sample Seconds",
+            "type": "array"
+          },
           "ack_samples": {
             "default": 0,
             "title": "Ack Samples",
@@ -17682,6 +18270,219 @@
         "title": "UpdateStatus",
         "type": "object"
       },
+      "UsageDoc": {
+        "properties": {
+          "app_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version"
+          },
+          "attempts": {
+            "default": 1,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "batch": {
+            "default": false,
+            "title": "Batch",
+            "type": "boolean"
+          },
+          "build_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build Sha"
+          },
+          "cache_read_rate_per_million": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Read Rate Per Million"
+          },
+          "cache_read_tokens": {
+            "default": 0,
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cache_write_rate_per_million": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Write Rate Per Million"
+          },
+          "cache_write_tokens": {
+            "default": 0,
+            "title": "Cache Write Tokens",
+            "type": "integer"
+          },
+          "cache_write_ttl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Write Ttl"
+          },
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "completion_tokens": {
+            "default": 0,
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "cost": {
+            "default": 0.0,
+            "title": "Cost",
+            "type": "number"
+          },
+          "currency": {
+            "default": "USD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "failure_class": {
+            "default": "",
+            "title": "Failure Class",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "input_rate_per_million": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Rate Per Million"
+          },
+          "latency_ms": {
+            "default": 0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "model": {
+            "default": "",
+            "title": "Model",
+            "type": "string"
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UsageOutcome"
+              }
+            ],
+            "default": "ok"
+          },
+          "output_rate_per_million": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Rate Per Million"
+          },
+          "price_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Basis"
+          },
+          "pricing_source": {
+            "default": "exact",
+            "title": "Pricing Source",
+            "type": "string"
+          },
+          "processing_tier": {
+            "default": "standard",
+            "title": "Processing Tier",
+            "type": "string"
+          },
+          "prompt_tokens": {
+            "default": 0,
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "role": {
+            "default": "",
+            "title": "Role",
+            "type": "string"
+          },
+          "surface": {
+            "default": "",
+            "title": "Surface",
+            "type": "string"
+          },
+          "total_tokens": {
+            "default": 0,
+            "title": "Total Tokens",
+            "type": "integer"
+          },
+          "ts": {
+            "title": "Ts",
+            "type": "string"
+          },
+          "usage_estimated": {
+            "default": false,
+            "title": "Usage Estimated",
+            "type": "boolean"
+          }
+        },
+        "title": "UsageDoc",
+        "type": "object"
+      },
       "UsageEvent": {
         "additionalProperties": false,
         "description": "Running totals after a model call (the meter ticks on every one).",
@@ -17700,6 +18501,15 @@
         ],
         "title": "UsageEvent",
         "type": "object"
+      },
+      "UsageOutcome": {
+        "enum": [
+          "ok",
+          "error",
+          "capped"
+        ],
+        "title": "UsageOutcome",
+        "type": "string"
       },
       "UserCreateBody": {
         "properties": {
@@ -18287,7 +19097,7 @@
   "info": {
     "description": "Vendor-neutral Agentic SOC API. It consumes source data read-only and owns only Agentic SOC application state.",
     "title": "Agentic SOC API",
-    "version": "0.1.13"
+    "version": "0.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -19757,7 +20567,7 @@
     },
     "/api/auth/change-password": {
       "post": {
-        "description": "Self-service password change (requires a valid session). Verifies the current\npassword, sets the new one and clears ``must_change_password``. Works only for\nmulti-user accounts; the env single-admin has no persisted record to update.",
+        "description": "Self-service password change (requires a valid session). Verifies the current\npassword, sets the new one and clears ``must_change_password``. Works only for\nmulti-user accounts; the env single-admin has no persisted record to update.\n\nRound 16 (B21): a successful change signs out the caller's other sessions (this\none stays) and stops their chat answers, writes a ``session.revoked`` row and\nreturns ``sessions_revoked``.",
         "operationId": "auth_change_password_api_auth_change_password_post",
         "requestBody": {
           "content": {
@@ -19875,7 +20685,7 @@
     },
     "/api/auth/mfa/confirm": {
       "post": {
-        "description": "Confirm MFA enrollment (self): verify a TOTP code against the PENDING secret,\nthen persist the obfuscated secret + hashed recovery codes and set\n``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off.",
+        "description": "Confirm MFA enrollment (self): verify a TOTP code against the PENDING secret,\nthen persist the obfuscated secret + hashed recovery codes and set\n``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off.\n\nRound 16: needs a fresh sign-in and answers 409 for an enrolled account (B17); a\nwrong code counts toward the account's second-factor bound (B19).",
         "operationId": "mfa_confirm_api_auth_mfa_confirm_post",
         "requestBody": {
           "content": {
@@ -19915,7 +20725,7 @@
     },
     "/api/auth/mfa/disable": {
       "post": {
-        "description": "Disable MFA for the calling user (self). Requires a valid CURRENT TOTP or a\nsingle-use recovery code (so a hijacked session alone cannot turn MFA off).\nClears the secret + recovery hashes. (A super_admin can force-disable another\nuser via PUT /api/users/{username} {mfa_enabled:false}.)",
+        "description": "Disable MFA for the calling user (self). Requires a valid CURRENT TOTP or a\nsingle-use recovery code (so a hijacked session alone cannot turn MFA off).\nClears the secret + recovery hashes. (A super_admin can force-disable another\nuser via PUT /api/users/{username} {mfa_enabled:false}.)\n\nRound 16 (B19): needs a fresh sign-in, and a wrong code counts toward the\naccount's second-factor bound, so a session cannot guess codes without limit.",
         "operationId": "mfa_disable_api_auth_mfa_disable_post",
         "requestBody": {
           "content": {
@@ -20035,7 +20845,7 @@
     },
     "/api/auth/mfa/setup": {
       "post": {
-        "description": "Begin MFA enrollment (self, authenticated). Generates a PENDING TOTP secret +\nrecovery codes and returns them ONCE (the secret + otpauth URI for the QR, and the\nplaintext recovery codes for the user to save). Does NOT enable MFA — the user must\nprove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret.",
+        "description": "Begin MFA enrollment (self, authenticated). Generates a PENDING TOTP secret +\nrecovery codes and returns them ONCE (the secret + otpauth URI for the QR, and the\nplaintext recovery codes for the user to save). Does NOT enable MFA: the user must\nprove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret.\n\nRound 16 (B17): needs a fresh sign-in, and answers 409 for an account that is\nalready enrolled, so a stolen session cannot replace the authenticator.",
         "operationId": "mfa_setup_api_auth_mfa_setup_post",
         "responses": {
           "200": {
@@ -20135,7 +20945,8 @@
     },
     "/api/auth/refresh": {
       "post": {
-        "description": "Rotate a refresh token → mint a fresh ACCESS token + a NEW refresh token.\n\nReuse detection (theft): if the presented token matches an ALREADY-ROTATED\nprevious hash, the session is treated as compromised → revoke + bump the user's\ntoken_version (global sign-out) + audit + best-effort notify, and 401.",
+        "deprecated": true,
+        "description": "Rotate a refresh token → mint a fresh ACCESS token + a NEW refresh token.\n\nRound 16 (B24): deprecated. No sign-in issues a refresh token, so every call\nanswers 401 with code ``session_invalid`` and reason ``unknown_refresh``. A\nsession lasts until its access token expires, within the idle and absolute\nlimits. The route stays so an older client gets that answer, not a 404.\n\nReuse detection (theft): if the presented token matches an ALREADY-ROTATED\nprevious hash, the session is treated as compromised → revoke + bump the user's\ntoken_version (global sign-out) + audit + best-effort notify, and 401.",
         "operationId": "auth_refresh_api_auth_refresh_post",
         "requestBody": {
           "content": {
@@ -20295,7 +21106,7 @@
     },
     "/api/auth/sso/providers/{provider_id}/secret": {
       "post": {
-        "description": "Set/clear one OIDC provider's client secret (super_admin only). The value goes\nto the SECRET tier (in memory), NEVER to Preferences/the config doc; only a\nconfigured-boolean is returned.",
+        "description": "Set/clear one OIDC provider's client secret (super_admin only). The value goes\nto the SECRET tier (in memory), NEVER to Preferences/the config doc; only a\nconfigured-boolean is returned.\n\nRound 16 (B15): a stored Super admin with a strict fresh sign-in only, otherwise\n``403 super_admin_only`` and nothing changes.",
         "operationId": "set_sso_provider_secret_api_auth_sso_providers__provider_id__secret_post",
         "parameters": [
           {
@@ -21346,7 +22157,7 @@
     },
     "/api/cases/{case_id}/activity": {
       "get": {
-        "description": "The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed\nwith the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays\nthe source of truth (#2); the friendly feed adds human-readable collaboration\nevents. All text is returned plain (#9).",
+        "description": "The case ACTIVITY timeline: the authoritative audit rows for the case UNIONed\nwith the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays\nthe source of truth (#2); the friendly feed adds human-readable collaboration\nevents. All text is returned plain (#9). For a caller without ``cost:view`` the\ncost figures a spend writer put into a row's ``result_summary`` are replaced, as\non the trace (Round 16, WP16: ``api.cost_text``).",
         "operationId": "get_case_activity_api_cases__case_id__activity_get",
         "parameters": [
           {
@@ -21534,6 +22345,79 @@
           }
         },
         "summary": "Case Comment"
+      }
+    },
+    "/api/cases/{case_id}/events": {
+      "get": {
+        "description": "The raw events behind a case, read again from its source (see the module\ndocstring). 404 for an unknown case; 400 for a cursor this route never returned.",
+        "operationId": "case_events_api_cases__case_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Member events per page, 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "Member events per page, 1 to 200.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseEventsPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Case Events"
       }
     },
     "/api/cases/{case_id}/export": {
@@ -21910,7 +22794,7 @@
     },
     "/api/cases/{case_id}/investigate": {
       "post": {
-        "description": "Human-triggered (re-)investigation of a stored case (C3-4).\n\nRebuilds the cluster from the case — preferring an exact id-based re-query,\nfalling back to a config-windowed entity re-query — then re-runs the SAME\nshared pipeline with ``force=True`` so an already-investigated OPEN case is\nre-investigated in place. The case's ORIGINAL provenance (``source_surface`` /\n``origin_surface``) is preserved by the pipeline, so an automated-scan case\nstays in the Automated Scans tab. Returns a NEUTRAL 400 if no events remain\n(the cluster aged out of the configured window).",
+        "description": "Human-triggered (re-)investigation of a stored case (C3-4).\n\nRebuilds the cluster from the case (preferring an exact id-based re-query,\nfalling back to a config-windowed entity re-query), then re-runs the SAME\nshared pipeline with ``force=True`` so an already-investigated OPEN case is\nre-investigated in place. The case's ORIGINAL provenance (``source_surface`` /\n``origin_surface``) is preserved by the pipeline, so an automated-scan case\nstays in the Automated Scans tab. Returns a NEUTRAL 400 if no events remain\n(the cluster aged out of the configured window).\n\nRound 16 (SPEC §4.5 WP08): a closed case is investigated in place unless an open\ncase holds its signature (``409 open_case_exists``), and a second request while a\nrun on the case is queued or running answers ``409 investigation_running``; both\nare checked before the rebuild.",
         "operationId": "case_investigate_api_cases__case_id__investigate_post",
         "parameters": [
           {
@@ -22002,7 +22886,7 @@
     },
     "/api/cases/{case_id}/rationale": {
       "get": {
-        "description": "Case EXPLAINABILITY: a clean, human-readable \"why\" object assembled from the\ncase + its audit records — WITHOUT calling the LLM.\n\nSurfaces exactly how a case reached its verdict: the persona/playbook chosen, the\noperator MEMORY facts consulted, the RAG knowledge retrieved (source + snippet),\nthe IP enrichment/reputation, the read-only tools/queries the agent ran, the\ninvestigator's reasoning excerpt, the deterministic close/escalate rationale, the\nMITRE techniques, and the evidence. Every piece is parsed DEFENSIVELY from the\naudit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields — a\nmissing piece degrades to an empty value, never an error. NEVER 404s.",
+        "description": "Case EXPLAINABILITY: a clean, human-readable \"why\" object assembled from the\ncase + its audit records, WITHOUT calling the LLM.\n\nSurfaces exactly how a case reached its verdict: the persona/playbook chosen, the\noperator MEMORY facts consulted, the RAG knowledge retrieved (source + snippet),\nthe IP enrichment/reputation, the read-only tools/queries the agent ran, the\ninvestigator's reasoning excerpt, the deterministic close/escalate rationale, the\nMITRE techniques, and the evidence. Every piece is parsed DEFENSIVELY from the\naudit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields; a\nmissing piece degrades to an empty value, never an error. NEVER 404s.\n\nRound 16 (WP16, [dv] R14): additive ``returned``, ``rows_total``,\n``rows_total_relation`` and ``truncated``, as the timeline answers them, say when\nthe rationale was read from only the newest audit records of a long-lived case.\nFor a caller without ``cost:view`` the cost figure in ``decision_rationale`` (the\ncase manager's DECISION row text) is replaced (``api.cost_text``).",
         "operationId": "case_rationale_api_cases__case_id__rationale_get",
         "parameters": [
           {
@@ -22043,7 +22927,7 @@
     },
     "/api/cases/{case_id}/reinvestigate": {
       "post": {
-        "description": "Manually re-run the SHARED investigation pipeline on a stored case (force).\n\nLoads the case (404 if missing), reconstructs the cluster from the case's stored\nfields (member event ids → exact id re-query, else a config-windowed entity\nre-query — via the same robust ``_cluster_for_case`` helper the legacy\n``/investigate`` route uses), then calls ``investigate_cluster(..., force=True)``\nso it re-runs even on an already-verdicted case. An optional ``{\"model\": \"<id>\"}``\nbody overrides the investigation-role models for this run only via a prefs copy\n(still through the one gateway, #6). The case's ORIGINAL provenance\n(``source_surface``) is preserved by the pipeline. The deterministic\nclose/escalate decision in the Case Manager is untouched (#3). Returns the\nupdated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster.",
+        "description": "Manually re-run the SHARED investigation pipeline on a stored case (force).\n\nLoads the case (404 if missing), reconstructs the cluster from the case's stored\nfields (member event ids → exact id re-query, else a config-windowed entity\nre-query, via the same robust ``_cluster_for_case`` helper the legacy\n``/investigate`` route uses), then calls ``investigate_cluster(..., force=True)``\nso it re-runs even on an already-verdicted case. An optional ``{\"model\": \"<id>\"}``\nbody overrides the investigation-role models for this run only via a prefs copy\n(still through the one gateway, #6). The case's ORIGINAL provenance\n(``source_surface``) is preserved by the pipeline. The deterministic\nclose/escalate decision in the Case Manager is untouched (#3). Returns the\nupdated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster.\n\nRound 16 (SPEC §4.5 WP08, D10), each checked before the audit row and the rebuild:\na closed case is reinvestigated IN PLACE unless an open case holds its signature\n(``409 open_case_exists`` with that case's id); a second request while a run on the\ncase or its signature is queued or running answers ``409 investigation_running``\nwith the run. ``wait=false`` answers ``202 {run_id, case_id, state}`` at once.",
         "operationId": "case_reinvestigate_api_cases__case_id__reinvestigate_post",
         "parameters": [
           {
@@ -22078,8 +22962,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "title": "Response Case Reinvestigate Api Cases  Case Id  Reinvestigate Post",
-                  "type": "object"
+                  "title": "Response Case Reinvestigate Api Cases  Case Id  Reinvestigate Post"
                 }
               }
             },
@@ -22873,7 +23756,7 @@
     },
     "/api/cases/{case_id}/stages": {
       "get": {
-        "description": "The six-stage Timeline narrative for a case (the ``TimelineStage`` shape).\n\nA pure read-time projection over the Case + its audit rows (the SAME facts the\n``/timeline`` span view reads), reframed into ``input → correlate → risk → triage\n→ investigate → decide``. Advisory/observability ONLY — re-derives ``decide()`` to\nDISPLAY the clause, mutates nothing (#3); untrusted source/log text is fenced in\nsteps (#9). NEVER 404s — an unknown case returns the six-stage skeleton.",
+        "description": "The six-stage Timeline narrative for a case (the ``TimelineStage`` shape).\n\nA pure read-time projection over the Case + its audit rows (the SAME facts the\n``/timeline`` span view reads), reframed into ``input → correlate → risk → triage\n→ investigate → decide``. Advisory/observability ONLY: the Decision stage reports\nthe recorded decision (Round 16 B63) and mutates nothing (#3); untrusted source/log\ntext is fenced in steps (#9). NEVER 404s: an unknown case returns the six-stage\nskeleton. ``rows_total`` and ``truncated`` say when only the newest audit records\nwere read.",
         "operationId": "case_stages_api_cases__case_id__stages_get",
         "parameters": [
           {
@@ -23483,7 +24366,7 @@
     },
     "/api/cases/{case_id}/timeline": {
       "get": {
-        "description": "A TYPED ReAct span timeline for a case (the ``TraceSpan`` shape).\n\nAssembled from the already-recorded ``tlsoc-agent-audit`` rows (oldest-first) +\nthe per-case usage/cost ledger. Each audit row becomes ONE span classified by\n``kind`` (invoke_agent | chat | execute_tool | decision) with ``step_index`` /\n``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION\nis rendered as a distinct TERMINAL ``decision`` span whose summary shows the exact\n``(verdict, confidence, risk_score, policy clause)`` the deterministic ``decide()``\nproduced, re-derived at read time and mutating nothing (#3 made visible).\n\nTRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log\npayloads (es_query / tool output) are separated by the per-span ``trusted`` flag\n(#9). NEVER 404s: an unknown or not-yet-investigated case returns empty spans.\n``prompt_excerpt`` text is dropped from a span summary when\n``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle).\n\nThe cost and tokens come from the usage ledger, which ``cost:view`` governs (the\ngrant ``GET /api/usage/summary?case_id=`` needs): for a caller without it the\nledger is not read, every span's ``cost`` and ``tokens`` are ``null`` and so are\n``totals.cost`` and ``totals.tokens``.",
+        "description": "A TYPED ReAct span timeline for a case (the ``TraceSpan`` shape).\n\nAssembled from the already-recorded ``tlsoc-agent-audit`` rows (oldest-first) +\nthe per-case usage/cost ledger. Each audit row becomes ONE span classified by\n``kind`` (invoke_agent | chat | execute_tool | decision) with ``step_index`` /\n``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION\nis rendered as a distinct TERMINAL ``decision`` span reporting the decision as it was\nRECORDED (its time, result, decider, rationale and the gate the run recorded, Round\n16 B63), with today's policy beside it; it mutates nothing (#3 made visible).\n\nTRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log\npayloads (es_query / tool output) are separated by the per-span ``trusted`` flag\n(#9). NEVER 404s: an unknown or not-yet-investigated case returns empty spans.\n``prompt_excerpt`` text is dropped from a span summary when\n``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle).\n\nThe cost and tokens come from the usage ledger, which ``cost:view`` governs (the\ngrant ``GET /api/usage/summary?case_id=`` needs): for a caller without it the\nledger is not read, every span's ``cost`` and ``tokens`` are ``null`` and so are\n``totals.cost`` and ``totals.tokens``.\n\nRound 16 (SPEC §4.5 WP10, [dv] R4 and R14): a span's ``kind`` says who acted\n(``person`` for a person's row, ``chat`` for case chat, ``system`` for a\ndeterministic actor, else the agent kinds); ``detail`` carries the bounded audit\nrecord behind it; ``cost_basis`` is ``exact`` when the span carries its own call's\ncost and latency from the ledger and ``split`` when a role's total is shared evenly\nacross its steps; the decision span has none, because code made the decision and no\nmodel call or ledger row exists for it. ``rows_total`` and ``truncated`` say when\nthe trace shows only the newest records of a long-lived case.",
         "operationId": "case_timeline_api_cases__case_id__timeline_get",
         "parameters": [
           {
@@ -23524,7 +24407,7 @@
     },
     "/api/cases/{case_id}/trace": {
       "get": {
-        "description": "Ordered agent-pipeline trace for a case (C3-3).\n\nProjects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator\n→ tool calls → verdict → formatter → case-manager decision) into a timeline.\nRead-only on the management-scoped audit index. NEVER 404s — an unknown or\nnot-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is\nomitted when ``prefs.trace.include_prompts`` is false.",
+        "description": "Ordered agent-pipeline trace for a case (C3-3).\n\nProjects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator\n→ tool calls → verdict → formatter → case-manager decision) into a timeline.\nRead-only on the management-scoped audit index. NEVER 404s: an unknown or\nnot-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is\nomitted when ``prefs.trace.include_prompts`` is false. For a caller without\n``cost:view`` the cost figures a spend writer put into a row's ``result_summary``\nare replaced (Round 16, WP16: ``api.cost_text``); tool output is never changed.",
         "operationId": "case_trace_api_cases__case_id__trace_get",
         "parameters": [
           {
@@ -23565,7 +24448,7 @@
     },
     "/api/cases/{case_id}/triage": {
       "get": {
-        "description": "The FOUR honestly-distinct advisory chips for a case.\n\n``risk`` (the existing deterministic 0-100 score + breakdown), ``severity``\n(SOURCE-asserted, NOT risk), ``impact`` (asset criticality), and ``priority``\n(ITIL Impact×Urgency). Each carries an ``inputs`` bag for a UI HelpTip. NEVER\n404s — an unknown case returns an empty-but-renderable shell. Pure derivation\n(#3: advisory only, never feeds the decision).",
+        "description": "The FOUR honestly-distinct advisory chips for a case.\n\n``risk`` (the existing deterministic 0-100 score + breakdown), ``severity``\n(SOURCE-asserted, NOT risk), ``impact`` (asset criticality), and ``priority``\n(ITIL Impact×Urgency). Each carries an ``inputs`` bag for a UI HelpTip. NEVER\n404s: an unknown case returns an empty-but-renderable shell. Pure derivation\n(#3: advisory only, never feeds the decision).\n\nRound 16 (SPEC §4.5 WP10) read-time additions, built here and never stored on the\ncase: ``auto_close_policy`` (the auto-close entry for the case's verdict class, so\nCase detail can state the policy without ``GET /api/settings``), ``sla`` (the\nper-case SLA reading, ``engine/sla_reading.py``, or ``null``) and, for a\n``settings:read`` holder only, ``asset_cidr`` (the internal network range of\ntoday's configuration that holds the entity, labelled so). Everything reads the\nactive execution preferences, so Demo Mode reads its sandbox.",
         "operationId": "case_triage_api_cases__case_id__triage_get",
         "parameters": [
           {
@@ -23602,6 +24485,46 @@
           }
         },
         "summary": "Case Triage"
+      }
+    },
+    "/api/cases/{case_id}/usage": {
+      "get": {
+        "description": "The case's ledger rows and its spend split (see the module docstring). 404 for an\nunknown case; 503 ``case_usage_unavailable`` when the ledger cannot be read (never a\nfalse \"no spend\"); 501 ``case_usage_unsupported`` for a ledger that has no per-case\nread.",
+        "operationId": "case_usage_api_cases__case_id__usage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseUsagePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Case Usage"
       }
     },
     "/api/chat": {
@@ -25157,7 +26080,7 @@
     },
     "/api/diagnostics/health": {
       "get": {
-        "description": "The operator diagnostics roll-up for the conditions that used to fail silently.\n\nReturns the precedent-corpus health signal (size, per-source projection counts, and\nthe explicit \"0 analyst-confirmed precedents available\" flag), the SQL\nschema-migration state, and the rolling auto-close health signal — plus a flat\n``alerts`` list of positively-detected conditions and a SEPARATE ``unknowns`` list\nof signals that could not be evaluated, so an empty ``alerts`` is never mistaken for\na clean bill of health. There is no composite health score — only the two counts.\n\nAuthenticated and gated on ``settings:read``. This detail is deliberately NOT on the\npublic ``GET /api/health``: corpus counts and per-source detection posture must not\nbe readable by an anonymous caller.\n\nSeed-free, and read-only over everything an operator would call state: asking about\ncorpus health never triggers an embedding spend, a projection, a case write or a\nconfiguration change. It does perform ONE bounded advisory write — the composition\nbaseline a class-share shift is measured against, described in the module docstring.\nAdvisory only; never read by ``decide()`` (#3).",
+        "description": "The operator diagnostics roll-up for the conditions that used to fail silently.\n\nReturns the precedent-corpus health signal (size, per-source projection counts, and\nthe explicit \"0 analyst-confirmed precedents available\" flag), the SQL\nschema-migration state, and the rolling auto-close health signal — plus a flat\n``alerts`` list of positively-detected conditions and a SEPARATE ``unknowns`` list\nof signals that could not be evaluated, so an empty ``alerts`` is never mistaken for\na clean bill of health. There is no composite health score — only the two counts.\n\nAuthenticated and gated on ``settings:read``. This detail is deliberately NOT on the\npublic ``GET /api/health``: corpus counts and per-source detection posture must not\nbe readable by an anonymous caller.\n\nSeed-free, and read-only over everything an operator would call state: asking about\ncorpus health never triggers an embedding spend, a projection, a case write or a\nconfiguration change. It does perform ONE bounded advisory write — the composition\nbaseline a class-share shift is measured against, described in the module docstring.\nAdvisory only; never read by ``decide()`` (#3).\n\n``case_population`` says when the case figures were read (the shared all-time\npopulation is kept for up to a minute), and ``event_loop`` carries the event-loop\nlag gauge (measured values only; it feeds neither list).",
         "operationId": "diagnostics_health_api_diagnostics_health_get",
         "parameters": [
           {
@@ -25728,6 +26651,7 @@
     },
     "/api/investigate": {
       "post": {
+        "description": "The Investigate page: a person asks for one investigation. The run is a manual\nrun of that person (Round 16, WP16), so the AI run popover names who asked and the\nfinish notice reaches them, as Investigate on a case does.",
         "operationId": "investigate_api_investigate_post",
         "requestBody": {
           "content": {
@@ -25763,6 +26687,57 @@
           }
         },
         "summary": "Investigate"
+      }
+    },
+    "/api/investigations/active": {
+      "get": {
+        "description": "The AI investigations queued or running now, and those that just finished.",
+        "operationId": "investigations_active_api_investigations_active_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "case_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Case Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationsActive"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Investigations Active",
+        "tags": [
+          "investigations"
+        ]
       }
     },
     "/api/jobs": {
@@ -27132,6 +28107,60 @@
         "summary": "Metrics Breakdown"
       }
     },
+    "/api/metrics/explain": {
+      "get": {
+        "description": "The cases behind one dashboard figure, so a reader can cross-check it (Round 16\nWP12; research explainability D-API-4).\n\n``metric`` is ``mtta``, ``mttr``, ``dwell`` or ``mttd`` (the posture lifecycle\nmedian for ``window_hours``), ``active_risk_index`` (the ``GET /api/metrics`` index,\nall time, ``window_hours`` ignored), ``fp_rate`` (the posture AI-verdict false\npositive rate) or ``sla_attainment`` (the posture SLA attainment). The figure is\ncomputed from the SAME population (``fetch_case_population``) and the SAME code as\nthe figure it explains (``engine.metrics.explain_metric``), so its value equals\nthe posture value for the same window. Up to 200 case rows; ``sample_count`` is how\nmany cases the figure counts (for a timing, the stat block's ``count``).\n\nNeeds ``metrics:view``; the case rows also need ``cases:read`` (without it they are\nwithheld and ``samples_withheld`` says why), and with row-level data scope on each\nrow is checked with ``can_object`` (``hidden_by_scope`` counts the rows left out;\nthey still count in the figure). Ids, enums and our own numbers only (#7). An\nunreadable store is a 503, never a figure of zero. Advisory (#3).",
+        "operationId": "metrics_explain_api_metrics_explain_get",
+        "parameters": [
+          {
+            "description": "One of mtta, mttr, dwell, mttd, active_risk_index, fp_rate, sla_attainment.",
+            "in": "query",
+            "name": "metric",
+            "required": true,
+            "schema": {
+              "description": "One of mtta, mttr, dwell, mttd, active_risk_index, fp_rate, sla_attainment.",
+              "maxLength": 32,
+              "title": "Metric",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "window_hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "title": "Window Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Metrics Explain Api Metrics Explain Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Explain"
+      }
+    },
     "/api/metrics/noise-reduction": {
       "get": {
         "description": "The Noise-Reduction funnel over the last ``window_hours`` (default 24) — \"total\nalerts by severity → what the AI reduced it to\".\n\n``ingested``/``clustered`` come from the DURABLE ``noise_counters`` store (raw-alert-by-\nseverity, so they reflect the TRUE inbound volume even after low-value events are\ndropped at ingest); ``cases`` + the MECE outcomes (needs_human > escalated >\nauto_cleared > true_positive residual) come from a tally over every case in the window\n(``cases_meta.truncated`` is True when the window holds more cases than\n``_STORE_FETCH_LIMIT`` or the read failed partway — the outcome tallies are then a\nlower bound and ``store_total``/``fetched`` say by how much). When the counters are still warming\nup (``counters.available: false``) the ingested/clustered totals are ``null`` and the\nheadline ``reduction.overall_pct`` is a DASH, so the UI degrades to a case-only funnel.\n\n``events_per_min`` (Round 14, SPEC §4.4.3, the detection board's \"Events per minute\")\nis the mean raw alerts per minute over the whole hours the counters summed\n(:func:`_events_per_min`), rounded to 0.01. When the counters began inside the\nwindow (``counters.incomplete``, a fresh install, a Demo) the hour they began in is\nleft out, because it can hold a backfilled burst (a cold-start lookback, the Demo's\nhistory written at once): the rate then covers the hours after it. ``null`` while\n``counters.available`` is false or less than five minutes are measured, never a\nmade-up 0 and never a burst read as a rate. ``events_per_min_since`` is the ISO\nstart of the span the rate covers (``null`` with no rate) and\n``events_per_min_reason`` a plain sentence saying why the rate is not measured or,\nwhen the counters began inside the window, that it covers only the time since the\nend of the hour they began in (``null`` when the rate covers the whole window).\n\nDETERMINISTIC + advisory: nothing here is read by ``case_manager.decide()`` (#3); every\nband name is plain framework data the UI renders escaped.",
@@ -27282,7 +28311,7 @@
     },
     "/api/metrics/trends": {
       "get": {
-        "description": "Bucketed case-cohort + raw-alert trends over the trailing ``window_hours``\n(clamped to 1..720) — the Overview hover-trendline feed.\n\nFROZEN response contract::\n\n    {\"window_hours\": int, \"bucket_minutes\": int, \"generated_at\": iso8601,\n     \"buckets\": [{\"t\": iso8601 bucket-start UTC, \"new_cases\": int, \"closed\": int,\n                  \"auto_closed\": int, \"false_positives\": int, \"needs_human\": int,\n                  \"escalated\": int, \"fp_rate\": float 0-100 | null,\n                  \"alerts\": int | null}],\n     \"truncated\": bool, \"store_total\": int, \"fetched\": int}\n\n``bucket_minutes`` follows the frozen ladder (<=24h → 60, <=72h → 180,\n<=168h → 360, else 1440); buckets are UTC-aligned, zero-filled across the whole\nwindow, newest bucket partial. Cohort counts reuse the exact\n``engine.metrics.quality_metrics`` field/verdict/decision_by semantics so they\nreconcile with the posture tiles; ``fp_rate`` mirrors posture's\n``false_positive_rate`` numerator/denominator within the bucket (null when no\nverdicted case). ``alerts`` comes from the durable noise counters' per-hour\ningested tallies (null when the counters are warming up / unreadable, and for\nbuckets predating their first observation).\n\nServed from the SAME shared short-TTL exact population as the other posture\nrollups (every case the window reaches; one store scan per TTL window). The\n``truncated``/``store_total``/``fetched`` marker is True only when the window alone\noutgrew ``_STORE_FETCH_LIMIT``. DETERMINISTIC + advisory: nothing here is read by\n``case_manager.decide()`` (#3).",
+        "description": "Bucketed case-cohort + raw-alert trends over the trailing ``window_hours``\n(clamped to 1..720) — the Overview hover-trendline feed.\n\nFROZEN response contract::\n\n    {\"window_hours\": int, \"bucket_minutes\": int, \"generated_at\": iso8601,\n     \"buckets\": [{\"t\": iso8601 bucket-start UTC, \"new_cases\": int, \"closed\": int,\n                  \"auto_closed\": int, \"false_positives\": int, \"needs_human\": int,\n                  \"escalated\": int, \"fp_rate\": float 0-100 | null,\n                  \"alerts\": int | null}],\n     \"truncated\": bool, \"store_total\": int, \"fetched\": int}\n\n``bucket_minutes`` follows the frozen ladder (<=24h → 60, <=72h → 180,\n<=168h → 360, else 1440); buckets are UTC-aligned, zero-filled across the whole\nwindow, newest bucket partial. The FIRST bucket is partial too: it starts on its\naligned edge, before the window does, and counts only what lies inside the window\n(the cases created from ``now - window_hours`` on, and the alert hours from the\nhour that instant falls in, the same hours the noise funnel sums). So the buckets\nadd up to the window's own case count, the figure every other panel shows. Cohort\ncounts reuse the exact\n``engine.metrics.quality_metrics`` field/verdict/decision_by semantics so they\nreconcile with the posture tiles; ``fp_rate`` mirrors posture's\n``false_positive_rate`` numerator/denominator within the bucket (null when no\nverdicted case). ``alerts`` comes from the durable noise counters' per-hour\ningested tallies (null when the counters are warming up / unreadable, and for\nbuckets predating their first observation).\n\nServed from the SAME shared short-TTL exact population as the other posture\nrollups (every case the window reaches; one store scan per TTL window). The\n``truncated``/``store_total``/``fetched`` marker is True only when the window alone\noutgrew ``_STORE_FETCH_LIMIT``. DETERMINISTIC + advisory: nothing here is read by\n``case_manager.decide()`` (#3).",
         "operationId": "metrics_trends_api_metrics_trends_get",
         "parameters": [
           {
@@ -28175,7 +29204,7 @@
         "summary": "Prefs Org Get"
       },
       "put": {
-        "description": "Replace the ORG customization defaults (admin-only). Validated/bounded by\nCustomizationConfig. All free-text is plain data (#9).",
+        "description": "Replace the ORG customization defaults (admin-only). Validated/bounded by\nCustomizationConfig. All free-text is plain data (#9).\n\nRound 16 (WP16): the new settings are validated as a whole ``Preferences``, so its\nafter-validators run on this write as on every other: a legacy\n``customization.default_theme`` other than ``system`` is moved into Branding (B45)\nand is never stored here.",
         "operationId": "prefs_org_put_api_prefs_org_put",
         "requestBody": {
           "content": {
@@ -32679,7 +33708,7 @@
     },
     "/api/standup": {
       "get": {
-        "description": "Daily standup summary. ALWAYS returns HTTP 200 with a renderable payload:\na clear ``{enabled: false}`` shape when disabled, the full happy-path result\nwhen data is present, or a graceful ``degraded: true`` + ``error`` + a short\nsummary note when the aggregation/summary step is unavailable (never a 500).",
+        "description": "Daily standup summary. ALWAYS returns HTTP 200 with a renderable payload:\na clear ``{enabled: false}`` shape when disabled, the full happy-path result\nwhen data is present, or a graceful ``degraded: true`` + ``error`` + a short\nsummary note when the aggregation/summary step is unavailable (never a 500).\n\nThe summary's AI spend, ``cost``, follows the one spend rule, ``cost:view``\n(Round 16 cross-cutting review): without it the key stays and its value is\n``null``, the withheld-spend shape of ``_withhold_case_spend``.",
         "operationId": "standup_api_standup_get",
         "parameters": [
           {
@@ -32767,7 +33796,7 @@
     },
     "/api/standup/acknowledgements": {
       "get": {
-        "description": "The acknowledgement log (newest first), optionally filtered by ``window`` /\n``user``. Read inherits the router auth mount. Never 500s.",
+        "description": "The acknowledgement log (newest first), optionally filtered by ``window`` /\n``user``. Read needs metrics:view. Never 500s.",
         "operationId": "list_acknowledgements_api_standup_acknowledgements_get",
         "parameters": [
           {
@@ -32831,7 +33860,7 @@
     },
     "/api/standup/action-items": {
       "get": {
-        "description": "List shift action items (newest-tracked first by creation order). Read inherits\nthe router auth mount. Never 500s — a degraded store yields an empty list.",
+        "description": "List shift action items (newest-tracked first by creation order). Read needs\nmetrics:view. Never 500s: a degraded store yields an empty list.",
         "operationId": "list_action_items_api_standup_action_items_get",
         "parameters": [
           {

@@ -118,14 +118,14 @@ describe('audit event table mirror', () => {
   it('names in the help tip every quick view that only rows recorded since Round 14 match', () => {
     expect(AUDIT_QUICK_VIEWS_HELP).toBe(
       'Each quick view sets one filter, shown as a chip. Sign-in failed, User events and Settings events match rows ' +
-        'recorded since Round 14; for older rows, pick Access and identity or Configuration and data in the Event menu.',
+        'recorded by newer versions only; for older rows, pick Access and identity or Configuration and data in the Event menu.',
     );
     // An event token that is not a category (an action, or an action family) is matched
     // against the Round 14 `action` field only: older rows carry no such token, so the
     // tip must say the view leaves them out. A category view and an outcome view match
     // older rows too (the category through the legacy table, Denied through derivation).
     const legacyTypes = new Set(AUDIT_LEGACY_EVENTS.map((e) => e.action_type));
-    const [named] = AUDIT_QUICK_VIEWS_HELP.split(' match rows recorded since Round 14');
+    const [named] = AUDIT_QUICK_VIEWS_HELP.split(' match rows recorded by newer versions only');
     for (const qv of AUDIT_QUICK_VIEWS) {
       const roundFourteenOnly = Boolean(qv.event && !isAuditCategory(qv.event) && !legacyTypes.has(qv.event));
       expect({ view: qv.label, named: named.includes(qv.label) }).toEqual({ view: qv.label, named: roundFourteenOnly });

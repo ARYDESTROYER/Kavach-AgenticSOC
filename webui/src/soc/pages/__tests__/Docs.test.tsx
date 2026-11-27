@@ -1,4 +1,6 @@
 import type { ComponentProps } from 'react';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { axe, toHaveNoViolations } from 'jest-axe';
@@ -7,6 +9,7 @@ import type { ReleaseIdentity } from '@/lib/release';
 import Docs, {
   DEVELOPMENT_DOCS_URL,
   PUBLIC_STABLE_DOCS_URL,
+  RELEASE_LINE_PAGE,
   documentationSourceUrl,
   docsArticleUrl,
   docsVersionLine,
@@ -131,11 +134,33 @@ describe('Help Center', () => {
       expect(link.getAttribute('href')).toMatch(/^\/docs\/0\.1\//);
     }
 
-    expect(screen.queryByRole('link', { name: /latest stable/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/Stable site publishes with the first Stable release/i)).toBeVisible();
+    // B54: a Testing build links the published Stable site; it never claims that
+    // the site does not exist yet.
+    expect(screen.getByRole('link', { name: /latest stable/i })).toHaveAttribute(
+      'href',
+      'https://arydestroyer.github.io/Kavach-AgenticSOC/stable/',
+    );
+    expect(screen.getByRole('link', { name: /latest stable/i })).toHaveAttribute('target', '_blank');
+    expect(screen.queryByText(/Stable site publishes with the first Stable release/i)).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: /development source/i })).toHaveAttribute(
       'href',
       DEVELOPMENT_DOCS_URL,
+    );
+  });
+
+  it('opens the release notes of the line this Console ships in, never an earlier line', () => {
+    // The Console and its bundled Help Center are built from one VERSION, so the
+    // Release notes card follows that line (releases/0.2/ for 0.2.x), never releases/0.1/.
+    const repoRoot = path.resolve(__dirname, '../../../../..');
+    const line = docsVersionLine(readFileSync(path.join(repoRoot, 'VERSION'), 'utf8').trim());
+    expect(RELEASE_LINE_PAGE).toBe(`releases/${line}/`);
+    expect(existsSync(path.join(repoRoot, 'docs', 'releases', `${line}.md`))).toBe(true);
+
+    render(<Docs backendInfo={null} />);
+    fireEvent.click(screen.getByRole('button', { name: /reference & releases/i }));
+    expect(screen.getByRole('link', { name: /^Release notes/ })).toHaveAttribute(
+      'href',
+      `/docs/${line}/releases/${line}/`,
     );
   });
 
@@ -145,10 +170,11 @@ describe('Help Center', () => {
     expect(docsArticleUrl('/analyst/cases/', '2.4.19')).toBe('/docs/2.4/analyst/cases/');
     expect(documentationSourceUrl(testingRelease)).toBe(DEVELOPMENT_DOCS_URL);
     expect(documentationSourceUrl({ ...testingRelease, version: '2.4.19', channel: 'stable' }))
-      .toBe('https://github.com/ARYDESTROYER/Agentic-Kibana/tree/v2.4.19/docs');
+      .toBe('https://github.com/ARYDESTROYER/Kavach-AgenticSOC/tree/v2.4.19/docs');
+    expect(DEVELOPMENT_DOCS_URL).toBe('https://github.com/ARYDESTROYER/Kavach-AgenticSOC/tree/Testing/docs');
   });
 
-  it('offers the public Stable site only from an explicitly Stable Console build', () => {
+  it('offers the public Stable site from an explicitly Stable Console build', () => {
     renderDocs({
       releaseIdentity: { ...testingRelease, channel: 'stable' },
       backendInfo: {
@@ -180,7 +206,12 @@ describe('Help Center', () => {
     expect(
       screen.getByText(/Console and backend build identities differ/i),
     ).toBeVisible();
-    expect(screen.queryByRole('link', { name: /latest stable/i })).not.toBeInTheDocument();
+    // The Stable site link is an external reference on every channel (B54); the
+    // fail-safe is the Testing release line and the mismatch notice above.
+    expect(screen.getByRole('link', { name: /latest stable/i })).toHaveAttribute(
+      'href',
+      PUBLIC_STABLE_DOCS_URL,
+    );
   });
 
   it('has no detectable accessibility violations', async () => {

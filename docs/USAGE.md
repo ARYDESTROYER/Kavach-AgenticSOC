@@ -26,8 +26,8 @@ came from.
 of built-in and personal boards, and the app still lands on the Cyber Defence Center
 (§0, §21). The Audit log is server-paged with three scopes, search, a record inspector and
 CSV or JSON Lines export (§31). Runbooks are one feature: write, review and publish them
-under **Intelligence → Runbooks**, and work through the matching one on a case's
-**Runbook** tab; a runbook never closes a case (§12). A detection rule opens a rule sheet
+under **Intelligence → Runbooks**, and work through the matching one on the case (on its
+**Response** tab since version 0.2); a runbook never closes a case (§12). A detection rule opens a rule sheet
 with exact counts (§2a). Every page uses one panel grammar, the Automated scans page is
 gone (§6), and chat runs three times as many questions at once (§5). Upgrade notes are in
 the Help Center's Upgrades page.
@@ -62,11 +62,13 @@ surface into **six top-level nav groups**:
 | **Triage** | Cases (§3), **Case Manager** (§3), Campaigns (§16), Logs (a unified cross-source log browser, §2a), Workspace with **Chat** (§5), **Entity investigation** (§4) and **Reports** as children, Approvals |
 | **Intelligence** | Knowledge corpus (§9), Runbooks (§12), Operator memory (§10), Agent personas |
 | **Analytics** | Metrics, **Agent effectiveness** (§7a), Cost (§8), Models (§22), Baseline (§17), Jobs (§22) |
-| **Notifications** | Inbox (the in-app notification inbox, §23) |
+| **Communication** | Inbox (the in-app notification inbox, §23) and **What's new** (the release tracker: every release this Console ships notes for, with highlights and screenshots; a short welcome shows once after each update, and the personal switch **Show What's new after updates** in **Settings → Account → Appearance** turns it off) |
 | **Platform** | Sources (§2, standalone, not inside Settings), Audit log (§31), Auto-tuning (§15), Settings (§25, with Users and Roles as children) |
 
 The pinned **Help Center** item at the bottom of the rail opens the
-version-matched Help Center bundled with this application at `/docs/0.1/`. That
+version-matched Help Center bundled with this application at `/docs/0.2/` (since version
+0.2.0; every page under `/docs/0.1/` redirects to the same page of 0.2 and keeps the part
+after `#`, so saved chat citations and bookmarks still work). That
 installed copy is authoritative for the controls and behavior in the running build;
 public Stable and Development documentation are secondary destinations for upgrade
 planning and preview. Lazy destinations immediately show a route-labelled
@@ -477,22 +479,30 @@ split-pane way to work the same case data while the table-based Cases surface re
 available during the migration. The left queue supports **Active / Mine / Review / All**
 (Mine when signed in; Review, with its waiting count, while the auto-close review is on or
 has picks waiting), search, severity/status filters, latest/highest-risk sorting, and
-manual refresh. The right pane embeds the canonical CaseDetail workflow: the same five
-tabs, lifecycle confirmations, deterministic decision card, RBAC gates, reinvestigate,
-runbooks, exports, notifications, collaboration/tasks/activity, and case-scoped chat.
-Its header holds one primary action for the case's state (for example **Acknowledge &
+manual refresh. There is no page header: **Live**, **Refresh case queue** and **About Case
+Manager** sit in the first row of the queue's controls. **[** (or **Hide queue** in the
+queue's view menu) folds the queue to a narrow strip with Previous and Next, and J and K
+keep moving through the cases. The right pane embeds the canonical CaseDetail workflow:
+the same six tabs, lifecycle confirmations, deterministic decision card, RBAC gates,
+reinvestigate, runbooks, exports, notifications, collaboration/tasks/activity, and
+case-scoped chat. Its header is 118 px tall for every case. The first row holds the
+title, one primary action for the case's state (for example **Acknowledge &
 investigate**, **Close case**, **Resume**, **Mark resolved**, **Start review** or
-**Reopen**), **Take action** (every other lifecycle and operational command), **More
-options** (copy link, open in new tab) and the pane-close control. What happened and
-Threat context are sections of the Overview and Investigation tabs and are not repeated
-in that menu. Opening a row or deep link on **Cases** now announces a short
-handoff and opens that exact record in Case Manager; `caseId` stays in the URL across
-refresh, history, and bookmarks instead of opening a second detail drawer.
-At tablet/mobile widths the selected case replaces the queue and a **Cases** back control
-returns to the list. Counts explicitly distinguish the loaded 200-case window from the
-backend total when those differ.
+**Reopen**), **Take action** (every other lifecycle and operational command), **Ask AI**,
+**More options** (copy link, open in new tab), **Case facts** (`]`) and the pane-close
+control. The second row is a one-line meta strip: case number, severity, status or
+outcome, risk, AI verdict, owner, SLA and the review chip. The tabs sit under it. What
+happened and Threat context are sections of the Evidence tab and are not repeated in
+that menu. Beside every tab, the **case facts** (the inspector) are a column once the
+case pane is 52rem wide, shown or hidden with `]`; a narrower pane opens them in a side
+sheet that does not block the case. Opening a row or deep link on **Cases** now announces
+a short handoff and opens that exact record in Case Manager; `caseId` stays in the URL
+across refresh, history, and bookmarks instead of opening a second detail drawer.
+At tablet/mobile widths the selected case replaces the queue and the back arrow at the
+start of the case header returns to the list. Counts explicitly distinguish the loaded
+200-case window from the backend total when those differ.
 
-For an opened record, **Investigation** shows a flat **Investigation inputs** section
+For an opened record, **AI investigation** shows a flat **Investigation inputs** section
 when the latest investigation run recorded applicable context: approved
 operator **memory consulted**, indexed **RAG knowledge retrieved**, **runbook references
 retrieved**, the matched Published **runbook** actually given to the investigator, or a
@@ -501,8 +511,9 @@ tuning snapshot. **Review inputs** opens the detailed Investigation evidence. Th
 section stays absent when no inputs were recorded; an unavailable provenance lookup is
 reported as unavailable rather than as an empty successful run.
 
-At desktop width, drag the divider between queue and detail. It defaults to 400 px,
-stays between 320 and 680 px, and preserves at least 560 px for detail. Focus the
+At desktop width, drag the divider between queue and detail. Until you choose a width
+the queue takes 28% of the board, between 340 and 520 px; a chosen width stays between
+320 and 680 px and preserves at least 560 px for detail. Focus the
 divider and use Left/Right Arrow in 24-pixel steps (48 with Shift), Home/End for the
 bounds, or double-click to reset. The chosen width is stored in the browser.
 
@@ -540,26 +551,69 @@ cohort; use job counts, case history, and Audit for exact accountability.
   verdict, so a stored disposition is not by itself an analyst statement — see
   `disposition_declared` below.
 
+### The AI agent at work on a case (version 0.2)
+
+While the AI investigates a case, the Console says so wherever the case appears:
+
+- the case header shows **AI working · m:ss**, or **AI queued** while the run waits for an
+  investigation slot (press **W** in the case to open the AI investigation tab at the live
+  trace). Select it for a popover with the five
+  steps, who or what started the run ("You started it", "Started by a person", or the
+  automatic origin such as "Started when an investigation slot came free"), the time against
+  the investigation cap, and a link to the run's steps in the Audit log. For a few seconds
+  after the run ends the header shows **AI finished**;
+- queue rows show **AI working** or **AI queued** in place of the status mark, the Case
+  Manager navigation item counts the cases the AI is investigating, and the queue band says
+  how many new alerts it is investigating;
+- the close, resolve and status dialogs, the bulk close and the bulk Acknowledge and Set
+  status dialogs say that the run's result will replace what you set now. Nothing is
+  blocked; the run's result stays authoritative, and the note changes to "finished" when the
+  run ends. Take action shows Reinvestigate as unavailable during a run, and the header dims
+  the verdict the run will replace;
+- when a manual run ends, the person who started it gets a toast and an Inbox item; when a
+  run replaces a person's close, that person gets an Inbox item and the change is recorded as
+  a `case.close_replaced` audit row.
+
+The server keeps the runs in memory in one backend process (`process_local: true`); a
+restarted process starts empty and the Console reconciles from the route:
+
+```bash
+curl -s -b cookies.txt localhost:8088/api/investigations/active
+# -> {"items":[{"run_id":"...","case_id":"case-...","state":"running","phase":"evidence",
+#      "trigger":"manual","queued_at":"...","started_at":"...","deadline_at":"...",
+#      "time_cap_seconds":...,"requested_by_you":true,"requested_by":null, ...}],
+#     "recent":[...], "new_runs":0, "slots":{"in_use":1,"cap":...},
+#     "process_local":true, "generated_at":"..."}
+# needs cases:read; requested_by (the account name) is filled only for users:manage.
+```
+
+`case.investigation` frames carry ids, enums and timestamps only, on `cases`,
+`cases:{id}` and the `investigations` topic of `GET /api/events`. One EventSource per page
+carries every live update.
+
 ### Case detail + lifecycle
 
 Opening a case loads the **stored** case by id (`GET /api/cases/{id}`) — it does
-**not** re-investigate. `CaseDetail` renders **five tabs** (Round 15): **Overview** (the
-runbook's **Next step** card, the AI summary and its recommended action, **What
-happened**, key entities, related cases and the signature baseline; risk factors and
-severity are in the facts rail's Signal section, the owner is in the header, and the
-status history is on Collaboration's History), **Runbook** (the
-runbook runs on the case, with its progress as the tab count; §12; shown with
-`runbooks:read`), **Investigation** (the AI assessment, pinned deterministic
-`DecisionCard`, Threat context, the investigation inputs, and full agent trace, see §11),
-**Collaboration** (§18's threads, the case's screenshots under **Files**, and the
-**History**; tasks now sit on the Runbook tab under **Other tasks**), and **Chat** (a
-case-scoped chat follow-up, §5). The Overview also holds **What happened** (the former
-Timeline tab: the narrative with Risk Assigned and Decision, see §11), and Investigation
-holds **Threat context** (the former Threat context tab, §12's panel); a link to the
-retired `timeline` or `threat` tab opens that section. Alt+1 to Alt+5 move between the
-tabs.
+**not** re-investigate. `CaseDetail` renders **six tabs** (version 0.2), one lane each:
+**Brief** (id `overview`: the review note on a pending auto-close review sample, the
+runbook's **Next step** row, then four lanes tagged with their provenance, Evidence
+(SIEM), AI, Decision (Code, with the deterministic `DecisionCard` folded under
+**Policy inputs** and the automation applied) and People (Analyst), and the folded **How
+this case was built**, the six-stage story with Risk Assigned and Decision, see §11; the
+lanes never repeat the header's verdict, confidence, risk, status or owner), **Evidence**
+(`evidence`: **What happened**, entities, Threat context, related cases and the
+signature baseline), **AI investigation** (`investigation`: the AI assessment, the
+investigation inputs, the full agent trace and earlier gradings, see §11), **Response**
+(`runbook`: the runbook runs on the case with their progress as the tab count, §12, for
+a viewer with `runbooks:read`, and the case's tasks for everyone), **Activity** (`collab`:
+§18's threads, the case's screenshots under **Files**, and the **History**), and **Chat**
+(`chat`: a case-scoped chat follow-up, §5). Risk factors, severity and the SLA are in the case
+facts' Signal section, and the owner is in the header. A link to the retired `timeline`
+or `threat` tab opens Evidence on its **What happened** or **Threat context** section.
+Alt+1 to Alt+6 move between the tabs; Alt+2, Alt+4 and Alt+5 changed meaning in version
+0.2 and Chat moved to Alt+6.
 
-The **Threat context** section of the Investigation tab includes **How this case was clustered**, a read-only
+The **Threat context** section of the Evidence tab includes **How this case was clustered**, a read-only
 projection of persisted facts: Input alerts → Correlation cluster → Opened case. Hover or
 focus a node for source counts, grouping, threshold/window, current status/verdict, and
 bounded related-case links. Alert references are stable one-way hashes and are
@@ -647,6 +701,43 @@ provenance**. If the retained log window has aged out, it rebuilds the
 investigation from the **stored evidence already on the case** rather than
 failing; a NEUTRAL `400` is returned only when neither a re-query nor the stored
 evidence is usable.
+
+Since version 0.2, `POST /api/cases/{id}/reinvestigate` takes `{"wait": false}` and
+answers `202` with the run id at once; the Console's Reinvestigate dialog closes on it and
+the header shows the run. A second request while a run on the case, or on its events, is
+queued or running answers `409 investigation_running`. Reinvestigating a closed case
+updates that case in place instead of opening a second one; when an open case already holds
+its events, Reinvestigate and Investigate answer `409 open_case_exists` with that case's id,
+and the bulk reinvestigate job fails that item with the same reason. Re-investigation keeps
+the case's people-made state, its automation record and its links to related cases on other
+sources. The deferred drain and the bulk job rebuild a case the same way the button does, so
+one case gets one risk score.
+
+**Case records (version 0.2).** Everything stored on a case is reachable from the case:
+
+```bash
+# The case's own raw events, read again from its source a page at a time
+# (cases:read and sources:read; limit 1 to 200; cursor is the next_cursor of the last page)
+curl -s -b cookies.txt "localhost:8088/api/cases/case-abc/events?limit=50"
+# -> {"case_id":"case-abc","available":true,"reason":null,"returned":50,"expected":120,
+#     "truncated":true,"limit":50,"next_cursor":"50","rows":[{...}, ...]}
+# reason is aged_out, push_source_not_retrievable or source_unavailable when they cannot be
+# read. Reading writes one "Case events viewed" audit row per person and case per 10 minutes.
+
+# Every model call on the case, with the rates behind each cost (cases:read and cost:view)
+curl -s -b cookies.txt localhost:8088/api/cases/case-abc/usage
+# -> {"case_id":"case-abc","rows":[...UsageDoc...],"returned":3,"rows_total":3,
+#     "truncated":false,"totals":{...investigation, chat, other...},
+#     "token_cost":0.0123,"reconciles":true}
+```
+
+In the Console the Evidence tab lists the events (one opens in a side sheet with Table and
+JSON views, Copy, an NDJSON download and Open in Logs), the investigation cost in the case
+facts opens the per-call usage with each call's formula, and **View all fields** shows every
+stored field in a searchable tree with Copy JSON and Download (costs are left out without
+`cost:view`). Trace steps open **Details** (model, latency, tokens, cost, tool input, query
+and tool output, marked untrusted), History shows status reasons and resolution notes, and a
+finding's **Cites N events** opens the events table narrowed to those events.
 
 > **Decision invariants (code-enforced):** the **close/escalate decision is a
 > pure, deterministic function** (`case_manager.decide()`) over `(verdict,
@@ -1091,16 +1182,18 @@ is retained but not injected. A pending fact is not trusted regardless of `activ
 
 ---
 
-## 11. Case explainability — the Investigation tab
+## 11. Case explainability: the Brief's Decision lane and the AI investigation tab
 
-Every case can explain itself, right where you're already looking: `CaseDetail`'s
-**Investigation** tab (one of the six tabs, §3) — there is **no** separate "Why" or
-"Agent trace" tab. It combines three things:
+Every case can explain itself, right where you're already looking. The code's decision
+and the model's reasoning have separate homes among the six tabs (§3): the Brief's
+**Decision** lane holds what the code decided, and the **AI investigation** tab holds the
+model's work. There is **no** separate "Why" or "Agent trace" tab. Together they show
+three things:
 
-- **A pinned `DecisionCard`.** The **code-made** close/escalate rationale from the
-  Case Manager, shown prominently and separately from the model's opinion — the
-  verdict/confidence are the LLM's recommendation; the *decision* is deterministic
-  (non-negotiable #3).
+- **A `DecisionCard`.** The **code-made** close/escalate rationale from the Case
+  Manager, folded under **Policy inputs** in the Brief's Decision lane, shown separately
+  from the model's opinion. The verdict and confidence are the LLM's recommendation; the
+  *decision* is deterministic (non-negotiable #3).
 - **A "why" / rationale panel**, backed by `GET /api/cases/{id}/rationale`. The
   investigator records a **CONTEXT audit entry** (`ActionType.CONTEXT`) capturing
   everything it was handed; the rationale object — assembled defensively from the
@@ -1110,7 +1203,7 @@ Every case can explain itself, right where you're already looking: `CaseDetail`'
   the retrieval query groups that produced it); approved operator **memory consulted** (§10);
   the exact **tool calls / ES queries** run; **enrichment** pulled; and the routed
   **persona** and **runbook** with explicit selected-versus-consulted state (a run from
-  before Round 14 keeps its stored procedure id under "Runbook (before Round 14)"),
+  before Round 14 keeps its stored procedure id under "Older runbook"),
   selection reason and consultation path (+ version/why), **MITRE**
   techniques, and evidence list. When the case traversed a threshold previously
   changed by Agentic SOC, it also shows the immutable platform tuning snapshot
@@ -1130,17 +1223,57 @@ route or kill switch prevented from being consulted. It never promotes selected-
 procedure metadata into consulted provenance. These inputs may inform preprocessing or the model assessment; deterministic
 case policy remains the final close/escalate route authority.
 
-The Overview's **What happened** section (the former Timeline tab) is deliberately
+The Brief's folded **How this case was built** (the former Timeline tab) is deliberately
 narrower: it is ONLY the "what happened" narrative, a 6-stage story (input → correlate →
-**Risk Assigned** → triage → investigate → **Decision**), backed by `GET /api/cases/{id}/stages`. Expanding Risk
-Assigned reconstructs the arithmetic from persisted factor values and current
-configured weights; it preserves the recorded score and warns when historical
-weights cannot be attributed exactly. In Case Manager, the terminal marker alone
+**Risk Assigned** → triage → investigate → **Decision**), backed by `GET /api/cases/{id}/stages`.
+The Evidence tab's **What happened** shows only the input stage, the source's own
+evidence. Expanding Risk
+Assigned shows the arithmetic from the inputs and weights recorded when the case was scored
+(since version 0.2); a case scored earlier says "not recorded", uses today's weights
+labelled as such, and warns when they do not reproduce the stored score. The Decision stage
+shows the decision as it was recorded, at its own time. In Case Manager, the terminal marker alone
 pulses. If the Investigate sentence already repeats the verdict/confidence chips,
-that duplicate sentence is suppressed. Use Investigation
-to audit *how* a verdict was reached and confirm the close/escalate was a
-deterministic policy outcome; use What happened to see the sequence of events at a
-glance.
+that duplicate sentence is suppressed. Use AI investigation
+to audit *how* a verdict was reached and the Decision lane to confirm the
+close/escalate was a deterministic policy outcome; use How this case was built to see the
+sequence of events at a glance.
+
+### Every number explains itself (version 0.2)
+
+Hover any score, verdict, severity, priority, SLA, cost or dashboard figure for a one-line
+formula with the real numbers. Click it, press Enter or Space, or tap it for the full
+calculation: the inputs, each step, the rounding, where each number came from, caveats and
+**Copy calculation**. Queue rows show the line on mouse hover only (a row is one control);
+the keyboard path is the case header's chip. The help page is the Help Center's
+**Explainable numbers**.
+
+- **Risk.** A new score records what it was computed from in `risk_breakdown.inputs`: the
+  event count and time span, the rule types, the reputation and where it came from, the
+  asset match and the five weights in force, so the panel reproduces the stored score after
+  the case gains events or the weights change. The inputs are written beside `compute_risk`
+  by the pure `engine/risk_explain.py`; `engine/risk.py` is unchanged and nothing reads the
+  inputs to decide (#3). A case scored before 0.2.0 reads "not recorded".
+- **Decision.** The Decision card and the trace's decision step show the decision as it was
+  recorded: when it was made, what code decided, why, both auto-close conditions with their
+  numbers and the thresholds the gate compared (`tool_input.gate` on the DECISION audit row,
+  paired by the run's `run_id`). They say when today's policy would decide differently; a
+  case decided before 0.2.0 shows a decision re-derived with today's policy, labelled so.
+- **SLA.** `GET /api/cases/{id}/triage` serves the case's SLA reading (`sla`), the same clock
+  rules as SLA attainment: the response clock stops at the first human response (an
+  acknowledgement, or a person moving the case into Investigating, Escalated or On hold) or
+  at the agent's close; a clock is at risk from 80% of its target; the countdown floors the
+  time left. The same read adds the auto-close policy for the case's verdict and, for
+  `settings:read`, the internal network range that holds the entity.
+- **Rounding.** Every shown score is rounded half up and coloured by the band of the shown
+  number, so a 73.6 reads 74 and is critical everywhere.
+- **Dashboards.** `GET /api/metrics/explain?metric=...&window_hours=24` (`metrics:view`;
+  `metric` is `mtta`, `mttr`, `dwell`, `mttd`, `active_risk_index`, `fp_rate` or
+  `sla_attainment`) returns the cases behind a figure for its window, computed from the same
+  population with the same code, up to 200
+  rows centred on the median (the rows need `cases:read` and respect row-level data scope).
+  Response time panels show the median, p90, mean and count, and **Show all** lists the cases
+  with the median marked. `GET /api/metrics` adds `mttr_lifecycle` and `mttr_by_decider`;
+  every all-time payload carries `generated_at` and `case_population`.
 
 ### What the agent actually sees per event (case evidence fields)
 
@@ -1244,8 +1377,8 @@ verdicts, statuses and tags, and the most specific match wins (rule, then techni
 the other conditions, then the fallback).
 
 **On a case.** The matching runbook attaches to each case that needs a person, at most once
-per runbook. Open the case's **Runbook** tab (Case detail and Case Manager) to work through
-it phase by phase; the **Overview** tab carries a **Next step** card, and the case chat
+per runbook. Open the case's **Response** tab (Case detail and Case Manager) to work through
+it phase by phase; the **Brief** tab carries a **Next step** row, and the case chat
 follows the same next step. Steps are Check, Lookup, Decision, Action or Record. A Lookup
 runs one read-only query with values from the case, under the caller's own grants; the
 result is labelled "Collected automatically" and shown as untrusted data. **Start runbook**
@@ -1269,7 +1402,7 @@ route, code and grant.
 
 **Threat context** (`GET /api/cases/{id}/threat-context`) assembles a defensive,
 **fail-open** panel for the case (each section degrades independently if its source
-is missing), shown as the **Threat context** section of the Investigation tab (§3):
+is missing), shown as the **Threat context** section of the Evidence tab (§3):
 
 - **IOC reputation** — enrichment-provider lookups (§19) for the case's indicators
   (an indicator is flagged malicious above `threat_context.ioc_malicious_threshold`,
@@ -1325,8 +1458,8 @@ from *different* sources that share an entity
 `entity_keys`. The result is surfaced as **RELATED cases** — the cases are linked
 (`related_case_ids`, `cross_source_cluster_id`, a source breakdown) but **never
 force-merged**, so the per-source 1:1 cluster→case signature and audit trail stay
-intact. The Overview tab shows a "Sources" pill and a "Related cases" facet; the
-Cases list can filter to related-only.
+intact. The Evidence tab's **Related cases** section lists them with the source
+breakdown, and the case facts link to it; the Cases list can filter to related-only.
 
 **Per-source field-mapping overrides + connector help.** Beyond the wizard's field
 mapping, a source's config can carry `field_mappings_extra` overrides applied at
@@ -1546,7 +1679,8 @@ records a durable `last_reconciled_at` success anchor.
 A campaign only **references** `case_ids`; it never recomputes or mutates a
 case's `cluster_signature`, and it can never close or escalate a member case — a
 `NEEDS_HUMAN` case that joins a campaign stays `NEEDS_HUMAN` (non-negotiable #3,
-#4). The CaseDetail Overview tab shows a campaign chip when a case belongs to one.
+#4). The case facts' **Tags and campaign** section shows a campaign chip when a case
+belongs to one.
 Campaign operation is still single-replica/process-local: there is no distributed
 lease or immutable split/merge lifecycle history, and the pass remains bounded. Use
 `GET /api/schedulers/health` to distinguish disabled, manual/gated, running, failed,
@@ -1578,15 +1712,15 @@ never triggers one.
 Baseline is a **pure advisory producer** — it is keyed by `cluster_signature` but
 never recomputes or mutates one, never reads risk weights, and never calls
 `decide()`; it can never close or escalate a case on its own (non-negotiable #3,
-#4). The webui shows a "warm-up gauge" on `CaseDetail` for a case whose signature
+#4). The webui shows a "warm-up gauge" on the case's Evidence tab for a case whose signature
 has an active baseline.
 
 ---
 
 ## 18. Case collaboration — threads, tasks, and @mentions
 
-Every case has a per-case **thread** (**Collaboration** tab, §3) for human+AI ticket
-collaboration, plus a lightweight **task checklist** (on the **Runbook** tab under **Other
+Every case has a per-case **thread** (**Activity** tab, §3) for human+AI ticket
+collaboration, plus a lightweight **task checklist** (on the **Response** tab under **Other
 tasks**):
 
 | Action | Endpoint |
@@ -1950,9 +2084,11 @@ curl -s -b cookies.txt -X POST localhost:8088/api/notifications/channels/resend-
 ### In-app inbox
 
 Every notification also fans into a per-user, self-scoped **in-app inbox**
-(the **Inbox** page under the **Notifications** nav group) — including @mention
+(the **Inbox** page under the **Communication** nav group), including @mention
 fan-out from case threads (§18). Every route reads/writes only the requesting
-user's bucket; there is no admin view of another user's inbox.
+user's bucket; there is no admin view of another user's inbox. The top-bar bell keeps the
+name **Notifications**. Since version 0.2 the Inbox also receives the AI run notices: the end
+of a manual run for the person who started it, and a close an AI run replaced.
 
 | Action | Endpoint |
 |---|---|
@@ -1976,6 +2112,21 @@ have no Cancel, Download, or terminal toast. Legacy rows and later users/grants 
 Jobs-list-only; permission/generation loss hides and removes a stale note. The Jobs list
 remains the authoritative shared record for every non-recipient.
 
+### What's new
+
+The **What's new** page under **Communication** is the release tracker: every release this
+Console ships notes for, newest first, with highlights grouped by update, an area filter,
+search, links to one highlight, "New to you" marks and screenshots. A short welcome opens once
+after each update, after sign-in and never over another dialog or an open record; a new
+account starts with it marked seen. Closing it writes `misc.whats_new_seen` (the newest
+update id) through `PUT /api/prefs/user`, which audits it as a preferences change. **Show
+What's new after updates** (on the page, or Settings → Account → Appearance;
+`misc.whats_new_auto`, absent means on) turns the welcome off. The top-bar release badge links to What's new for
+the running version, and the Help Center has a What's new page generated from the same
+notes. With sign-in off every caller shares the `default` preferences bucket, so the welcome
+shows once per installation. The notes live in `docs/releases/notes/<version>.json` and
+`scripts/build_release_notes.py` generates the Console, backend and Help Center copies.
+
 ---
 
 ## 24. Authentication — users, RBAC, custom roles, MFA, SSO
@@ -1997,12 +2148,31 @@ When auth is enabled, the relevant `Secrets` are `auth_enabled`,
 
 ### First login + OOBE
 
+The sign-in page (version 0.2) is one column on the Console's own colours with one short
+entrance and nothing moving afterwards. Its heading names the organization ("Sign in to
+Acme SOC"); Continue is always shown and errors sit under their field; single sign-on
+buttons are labelled by provider; a single sign-on error shows a fixed sentence, never text
+from the link. **Remember me** shows only its label. The confirmation the first time you
+tick it says who can use this browser as you and what still ends the session (the schedule
+your administrator set, an administrator, signing out); it states no duration. When an
+administrator turned it off or the connection is insecure, the row stays visible, disabled,
+with its reason. Ten wrong
+second-factor codes in a row lock the second-factor checks for 5 minutes, doubling up to an
+hour (`429`); after five wrong codes on one sign-in the page returns to the password step.
+
 On first boot with an **empty** user store, the suite seeds a single
-**`super_admin`** — `Admin` / `Admin@123` — with `must_change_password=true`. At
-the login screen sign in as `Admin` / `Admin@123`; the login flow detects the flag
-and forces a **change-password** step (`POST /api/auth/change-password`) before it
-issues a real session. **Change this password immediately** — the seed is a known
-default. You can disable the seed with `TLSOC_AUTH_SEED_ADMIN=false`; the platform
+**`super_admin`** (`Admin` / `Admin@123`) for demonstrations. The seeded `Admin`
+is deliberately **not** flagged to change its password, so the sign-in goes straight
+to the Console. **Change this password immediately**: the seed is a known default.
+Call `POST /api/auth/change-password`, or reset it in Settings, Users (Reset
+password), which then asks for a new password at the next sign-in. The forced change
+applies to accounts an administrator creates or resets: such an account signs in,
+and until it changes its temporary password (`POST /api/auth/change-password`)
+every other `/api` route answers `403` with code `password_change_required`. Only signing out, the change itself and the
+reads the sign-in screen needs (`/api/auth/me`, `/api/account/me`,
+`/api/account/permissions`, `/api/prefs/effective`, `/api/prefs/user`) answer.
+Changing a password signs out your other sessions; an administrator's reset signs the
+account out everywhere. You can disable the seed with `TLSOC_AUTH_SEED_ADMIN=false`; the platform
 then self-bootstraps via the public **`POST /api/setup/account`** endpoint — a
 strong-password-enforced (min length, must differ from the username, rejects
 common passwords), one-shot OOBE that is only callable while auth is on, setup is
@@ -2370,9 +2540,10 @@ A JSON map of **rule value → `{ mode, n, window_seconds, group_by }`**:
 The login screen is a two-column split (a left brand hero consuming your
 branding — org name / logo / accent colours from `GET /api/branding` — and a
 right form card, `hidden lg:block` on the hero so a phone just sees the clean
-form). It drives four modes from one screen: normal sign-in, the forced OOBE
-change-password step on the seeded admin's first login (with a live,
-dependency-free password-strength meter), the **MFA** code step (a 6-cell
+form). It drives four modes from one screen: normal sign-in, the forced
+change-password step for an account an administrator created or reset (with a live,
+dependency-free password-strength meter; the seeded demo `Admin` is not forced to
+change its password, so rotate it yourself), the **MFA** code step (a 6-cell
 segmented OTP entry, §24), and any configured **SSO** buttons.
 
 ### Edit your profile + avatar
@@ -2473,21 +2644,18 @@ toggles. Idle + absolute expiry and revocation are enforced in `require_auth`
 (the async gate), not in the hot-path sync `verify()`. A session whose
 idle/absolute window has lapsed gets `401 {code:"session_expired"}`.
 
-**Refresh rotation + theft detection.** `POST /api/auth/refresh` rotates the
-refresh token (old hash slides to a previous-hash slot) and mints a fresh access
-token. If a caller replays an **already-rotated** refresh token, that is treated
-as theft: the session is revoked, the user's `token_version` is bumped (global
-sign-out), the event is audited + best-effort notified, and a `401
-{code:"session_invalid"}` is returned. `POST /api/auth/logout` revokes the
-current `sid`.
+**No refresh tokens.** No sign-in issues a refresh token, so `refresh_ttl` has
+no effect today. A session lasts until its access token expires (`AUTH_TOKEN_HOURS`,
+or the Remember me duration), within the idle and absolute limits; then the person
+signs in again. `POST /api/auth/refresh` is kept for older clients, is marked
+deprecated, and always answers `401 {code:"session_invalid",
+reason:"unknown_refresh"}`. `POST /api/auth/logout` revokes the current `sid`.
 
 ```bash
 curl -s -b cookies.txt localhost:8088/api/sessions
 curl -s -b cookies.txt -X POST localhost:8088/api/sessions/revoke-others -d '{}'
 curl -s -b cookies.txt -X POST localhost:8088/api/auth/reauth \
   -H 'content-type: application/json' -d '{"password":"<my-password>"}'
-curl -s -b cookies.txt -X POST localhost:8088/api/auth/refresh \
-  -H 'content-type: application/json' -d '{"refresh_token":"<token>"}'
 ```
 
 ---
@@ -2562,7 +2730,13 @@ response attributes records, native alerts, and system detections per source.
 **While demo is engaged** the top bar shows one amber **Demo mode** chip whose popover
 offers *Reset* and *Exit & clear* and notes that platform health checks are muted (the
 health indicator leaves the bar while demo runs; a backend outage still shows); demo
-rows carry a `SAMPLE` badge; cost tiles read "(simulated)";
+rows carry a `SAMPLE` badge; cost tiles read "(simulated)" (since version 0.2 every seeded
+case with a cost has simulated ledger rows with `price_basis` `demo_simulated`, so its
+investigation cost matches its usage rows, the Cost page and Agent effectiveness; Demo spend
+is never billed); every seeded case keeps its own events and a risk score computed from them;
+rule Test and preview reads only the Demo sources; the setup wizard shows the Demo sources as
+"Managed by Demo Mode" and the server refuses a change to one (`409 source_demo_readonly`);
+data export, storage Apply, the reset tiers and Knowledge import are disabled with a reason;
 the Sources UI disables real connector controls; and outbound notification tests are
 refused. Other organization/admin settings remain live and should be left unchanged
 during a presentation. FALSE_POSITIVE still runs through the **real** `decide()`
@@ -2688,15 +2862,21 @@ Each table persists its own **column state** (order / hidden / widths) per user 
 Theme mode, pinned view ids, and last-list-state live on your personal bucket via
 `GET/PUT /api/prefs/user` (a partial patch — only the fields you send change):
 the compact **System / Light / Dark** segmented control writes `theme_mode` as
-`system` | `light` | `dark` and overrides the org `default_theme`. System follows
-the organization default when one is set, otherwise the device preference.
+`system` | `light` | `dark`. A personal Light or Dark choice wins. System follows the
+organization default theme, which is Branding's `default_theme` (Settings → Organization →
+Branding, `PUT /api/branding`), and follows the device preference when that default is
+itself `system`.
 
 ### Terminology
 
 Admins can rename suite nouns org-wide via `GET/PUT /api/terminology` (the map, e.g.
 `{"case":"incident","cases":"incidents"}`) or the broader
 `GET /api/prefs/org` / `PUT /api/prefs/org` (`CustomizationConfig`: `terminology`,
-`default_saved_views`, `default_theme`). The UI renders every label through a
+`default_saved_views`). The legacy `customization.default_theme` is no longer an
+organization default (since 0.2.0, B45): a value other than `system` sent to
+`PUT /api/prefs/org` is copied into Branding's `default_theme` only while Branding is
+still at its factory default, and is otherwise dropped; the stored and returned
+`customization.default_theme` is always `system`. The UI renders every label through a
 `t(key)` helper; all terminology and view text is **plain data**, never markup and
 never an LLM-prompt input (#9). Writes to `prefs/org` + `terminology` are admin-gated
 and audited; reads are open to any signed-in user (the cascade needs them).
@@ -2810,7 +2990,7 @@ the same paths work under the SPA origin (e.g. `http://localhost:8080/api/...`).
 ```bash
 # Health
 curl -s localhost:8088/api/health
-# -> {"status":"ok","version":"0.1.13","es_connected":true,"store_type":"...","setup_complete":true}
+# -> {"status":"ok","version":"0.2.0","es_connected":true,"store_type":"...","setup_complete":true}
 # NOTE: "store_type" is the log-surface ES CLIENT CLASS ("RealESClient" /
 # "InMemoryESClient") — it never reports your STATE_BACKEND (elasticsearch /
 # postgres / sqlite). "InMemoryESClient" with no pull source wired is expected,

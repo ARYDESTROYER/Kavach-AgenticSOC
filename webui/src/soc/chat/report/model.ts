@@ -422,6 +422,27 @@ export function buildReportDoc(report: Report, options: BuildOptions = {}): Repo
 /** The longest prompt a conversation export quotes in full (the composer's own bound). */
 const PROMPT_EXPORT_CHARS = 8_000;
 
+/** The lookups that read a log source; every other tool reads the app's own store. */
+const LOG_TOOLS: ReadonlySet<string> = new Set(['search_logs', 'log_stats']);
+/** The most sources one item names (the server's `_scope_for` bound). */
+const ITEM_SOURCES_MAX = 20;
+
+/**
+ * The log sources one answer read, by the server's `_scope_for` rule
+ * (`routes_reports.py`), so an exported conversation and a report saved from the same
+ * answer name the same sources (Round 16, B38): the sources its lookups recorded;
+ * else, when a log search ran without recording any (an older step), the turn's
+ * source; else none. Case, metric, cost and knowledge lookups read the app's own
+ * store, never a log feed, so an answer built only from them names no source.
+ */
+function answerSources(response: ChatResponse | null, messageSource: string | null | undefined): string[] {
+  const tools = (response?.steps ?? []).filter((step) => step.kind === 'tool');
+  const recorded = uniq(tools.flatMap((step) => step.sources ?? []));
+  if (recorded.length) return recorded.slice(0, ITEM_SOURCES_MAX);
+  if (!tools.some((step) => LOG_TOOLS.has(step.tool ?? ''))) return [];
+  return uniq([response?.effective_source_name || messageSource]);
+}
+
 /**
  * A conversation as a document: one section per exchange, titled by the user's prompt
  * (one line) and quoting it in full, holding the answer prose, then that turn's blocks
@@ -490,7 +511,7 @@ export function buildConversationDoc(conversation: ChatConversation, options: Bu
       question: question?.full ?? null,
       scope: {
         window: null,
-        sources: uniq([message.source_name, response?.effective_source_name]),
+        sources: answerSources(response, message.source_name),
         generated_by: response?.usage?.model ?? response?.effective_model ?? message.model ?? null,
         app_version: null,
         demo: response?.usage?.simulated === true,

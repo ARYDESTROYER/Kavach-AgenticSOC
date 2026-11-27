@@ -378,6 +378,10 @@ export interface paths {
          * @description Self-service password change (requires a valid session). Verifies the current
          *     password, sets the new one and clears ``must_change_password``. Works only for
          *     multi-user accounts; the env single-admin has no persisted record to update.
+         *
+         *     Round 16 (B21): a successful change signs out the caller's other sessions (this
+         *     one stays) and stops their chat answers, writes a ``session.revoked`` row and
+         *     returns ``sessions_revoked``.
          */
         post: operations["auth_change_password_api_auth_change_password_post"];
         delete?: never;
@@ -471,6 +475,9 @@ export interface paths {
          * @description Confirm MFA enrollment (self): verify a TOTP code against the PENDING secret,
          *     then persist the obfuscated secret + hashed recovery codes and set
          *     ``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off.
+         *
+         *     Round 16: needs a fresh sign-in and answers 409 for an enrolled account (B17); a
+         *     wrong code counts toward the account's second-factor bound (B19).
          */
         post: operations["mfa_confirm_api_auth_mfa_confirm_post"];
         delete?: never;
@@ -494,6 +501,9 @@ export interface paths {
          *     single-use recovery code (so a hijacked session alone cannot turn MFA off).
          *     Clears the secret + recovery hashes. (A super_admin can force-disable another
          *     user via PUT /api/users/{username} {mfa_enabled:false}.)
+         *
+         *     Round 16 (B19): needs a fresh sign-in, and a wrong code counts toward the
+         *     account's second-factor bound, so a session cannot guess codes without limit.
          */
         post: operations["mfa_disable_api_auth_mfa_disable_post"];
         delete?: never;
@@ -561,8 +571,11 @@ export interface paths {
          * Mfa Setup
          * @description Begin MFA enrollment (self, authenticated). Generates a PENDING TOTP secret +
          *     recovery codes and returns them ONCE (the secret + otpauth URI for the QR, and the
-         *     plaintext recovery codes for the user to save). Does NOT enable MFA — the user must
+         *     plaintext recovery codes for the user to save). Does NOT enable MFA: the user must
          *     prove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret.
+         *
+         *     Round 16 (B17): needs a fresh sign-in, and answers 409 for an account that is
+         *     already enrolled, so a stolen session cannot replace the authenticator.
          */
         post: operations["mfa_setup_api_auth_mfa_setup_post"];
         delete?: never;
@@ -626,7 +639,13 @@ export interface paths {
         put?: never;
         /**
          * Auth Refresh
+         * @deprecated
          * @description Rotate a refresh token → mint a fresh ACCESS token + a NEW refresh token.
+         *
+         *     Round 16 (B24): deprecated. No sign-in issues a refresh token, so every call
+         *     answers 401 with code ``session_invalid`` and reason ``unknown_refresh``. A
+         *     session lasts until its access token expires, within the idle and absolute
+         *     limits. The route stays so an older client gets that answer, not a 404.
          *
          *     Reuse detection (theft): if the presented token matches an ALREADY-ROTATED
          *     previous hash, the session is treated as compromised → revoke + bump the user's
@@ -723,6 +742,9 @@ export interface paths {
          * @description Set/clear one OIDC provider's client secret (super_admin only). The value goes
          *     to the SECRET tier (in memory), NEVER to Preferences/the config doc; only a
          *     configured-boolean is returned.
+         *
+         *     Round 16 (B15): a stored Super admin with a strict fresh sign-in only, otherwise
+         *     ``403 super_admin_only`` and nothing changes.
          */
         post: operations["set_sso_provider_secret_api_auth_sso_providers__provider_id__secret_post"];
         delete?: never;
@@ -1225,10 +1247,12 @@ export interface paths {
         };
         /**
          * Get Case Activity
-         * @description The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed
+         * @description The case ACTIVITY timeline: the authoritative audit rows for the case UNIONed
          *     with the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays
          *     the source of truth (#2); the friendly feed adds human-readable collaboration
-         *     events. All text is returned plain (#9).
+         *     events. All text is returned plain (#9). For a caller without ``cost:view`` the
+         *     cost figures a spend writer put into a row's ``result_summary`` are replaced, as
+         *     on the trace (Round 16, WP16: ``api.cost_text``).
          */
         get: operations["get_case_activity_api_cases__case_id__activity_get"];
         put?: never;
@@ -1291,6 +1315,27 @@ export interface paths {
         put?: never;
         /** Case Comment */
         post: operations["case_comment_api_cases__case_id__comment_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Case Events
+         * @description The raw events behind a case, read again from its source (see the module
+         *     docstring). 404 for an unknown case; 400 for a cursor this route never returned.
+         */
+        get: operations["case_events_api_cases__case_id__events_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1457,13 +1502,18 @@ export interface paths {
          * Case Investigate
          * @description Human-triggered (re-)investigation of a stored case (C3-4).
          *
-         *     Rebuilds the cluster from the case — preferring an exact id-based re-query,
-         *     falling back to a config-windowed entity re-query — then re-runs the SAME
+         *     Rebuilds the cluster from the case (preferring an exact id-based re-query,
+         *     falling back to a config-windowed entity re-query), then re-runs the SAME
          *     shared pipeline with ``force=True`` so an already-investigated OPEN case is
          *     re-investigated in place. The case's ORIGINAL provenance (``source_surface`` /
          *     ``origin_surface``) is preserved by the pipeline, so an automated-scan case
          *     stays in the Automated Scans tab. Returns a NEUTRAL 400 if no events remain
          *     (the cluster aged out of the configured window).
+         *
+         *     Round 16 (SPEC §4.5 WP08): a closed case is investigated in place unless an open
+         *     case holds its signature (``409 open_case_exists``), and a second request while a
+         *     run on the case is queued or running answers ``409 investigation_running``; both
+         *     are checked before the rebuild.
          */
         post: operations["case_investigate_api_cases__case_id__investigate_post"];
         delete?: never;
@@ -1504,15 +1554,21 @@ export interface paths {
         /**
          * Case Rationale
          * @description Case EXPLAINABILITY: a clean, human-readable "why" object assembled from the
-         *     case + its audit records — WITHOUT calling the LLM.
+         *     case + its audit records, WITHOUT calling the LLM.
          *
          *     Surfaces exactly how a case reached its verdict: the persona/playbook chosen, the
          *     operator MEMORY facts consulted, the RAG knowledge retrieved (source + snippet),
          *     the IP enrichment/reputation, the read-only tools/queries the agent ran, the
          *     investigator's reasoning excerpt, the deterministic close/escalate rationale, the
          *     MITRE techniques, and the evidence. Every piece is parsed DEFENSIVELY from the
-         *     audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields — a
+         *     audit rows this run writes (CONTEXT/TOOL_CALL/VERDICT) + the case fields; a
          *     missing piece degrades to an empty value, never an error. NEVER 404s.
+         *
+         *     Round 16 (WP16, [dv] R14): additive ``returned``, ``rows_total``,
+         *     ``rows_total_relation`` and ``truncated``, as the timeline answers them, say when
+         *     the rationale was read from only the newest audit records of a long-lived case.
+         *     For a caller without ``cost:view`` the cost figure in ``decision_rationale`` (the
+         *     case manager's DECISION row text) is replaced (``api.cost_text``).
          */
         get: operations["case_rationale_api_cases__case_id__rationale_get"];
         put?: never;
@@ -1538,7 +1594,7 @@ export interface paths {
          *
          *     Loads the case (404 if missing), reconstructs the cluster from the case's stored
          *     fields (member event ids → exact id re-query, else a config-windowed entity
-         *     re-query — via the same robust ``_cluster_for_case`` helper the legacy
+         *     re-query, via the same robust ``_cluster_for_case`` helper the legacy
          *     ``/investigate`` route uses), then calls ``investigate_cluster(..., force=True)``
          *     so it re-runs even on an already-verdicted case. An optional ``{"model": "<id>"}``
          *     body overrides the investigation-role models for this run only via a prefs copy
@@ -1546,6 +1602,12 @@ export interface paths {
          *     (``source_surface``) is preserved by the pipeline. The deterministic
          *     close/escalate decision in the Case Manager is untouched (#3). Returns the
          *     updated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster.
+         *
+         *     Round 16 (SPEC §4.5 WP08, D10), each checked before the audit row and the rebuild:
+         *     a closed case is reinvestigated IN PLACE unless an open case holds its signature
+         *     (``409 open_case_exists`` with that case's id); a second request while a run on the
+         *     case or its signature is queued or running answers ``409 investigation_running``
+         *     with the run. ``wait=false`` answers ``202 {run_id, case_id, state}`` at once.
          */
         post: operations["case_reinvestigate_api_cases__case_id__reinvestigate_post"];
         delete?: never;
@@ -1832,9 +1894,11 @@ export interface paths {
          *
          *     A pure read-time projection over the Case + its audit rows (the SAME facts the
          *     ``/timeline`` span view reads), reframed into ``input → correlate → risk → triage
-         *     → investigate → decide``. Advisory/observability ONLY — re-derives ``decide()`` to
-         *     DISPLAY the clause, mutates nothing (#3); untrusted source/log text is fenced in
-         *     steps (#9). NEVER 404s — an unknown case returns the six-stage skeleton.
+         *     → investigate → decide``. Advisory/observability ONLY: the Decision stage reports
+         *     the recorded decision (Round 16 B63) and mutates nothing (#3); untrusted source/log
+         *     text is fenced in steps (#9). NEVER 404s: an unknown case returns the six-stage
+         *     skeleton. ``rows_total`` and ``truncated`` say when only the newest audit records
+         *     were read.
          */
         get: operations["case_stages_api_cases__case_id__stages_get"];
         put?: never;
@@ -2054,9 +2118,9 @@ export interface paths {
          *     the per-case usage/cost ledger. Each audit row becomes ONE span classified by
          *     ``kind`` (invoke_agent | chat | execute_tool | decision) with ``step_index`` /
          *     ``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION
-         *     is rendered as a distinct TERMINAL ``decision`` span whose summary shows the exact
-         *     ``(verdict, confidence, risk_score, policy clause)`` the deterministic ``decide()``
-         *     produced, re-derived at read time and mutating nothing (#3 made visible).
+         *     is rendered as a distinct TERMINAL ``decision`` span reporting the decision as it was
+         *     RECORDED (its time, result, decider, rationale and the gate the run recorded, Round
+         *     16 B63), with today's policy beside it; it mutates nothing (#3 made visible).
          *
          *     TRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log
          *     payloads (es_query / tool output) are separated by the per-span ``trusted`` flag
@@ -2068,6 +2132,15 @@ export interface paths {
          *     grant ``GET /api/usage/summary?case_id=`` needs): for a caller without it the
          *     ledger is not read, every span's ``cost`` and ``tokens`` are ``null`` and so are
          *     ``totals.cost`` and ``totals.tokens``.
+         *
+         *     Round 16 (SPEC §4.5 WP10, [dv] R4 and R14): a span's ``kind`` says who acted
+         *     (``person`` for a person's row, ``chat`` for case chat, ``system`` for a
+         *     deterministic actor, else the agent kinds); ``detail`` carries the bounded audit
+         *     record behind it; ``cost_basis`` is ``exact`` when the span carries its own call's
+         *     cost and latency from the ledger and ``split`` when a role's total is shared evenly
+         *     across its steps; the decision span has none, because code made the decision and no
+         *     model call or ledger row exists for it. ``rows_total`` and ``truncated`` say when
+         *     the trace shows only the newest records of a long-lived case.
          */
         get: operations["case_timeline_api_cases__case_id__timeline_get"];
         put?: never;
@@ -2091,9 +2164,11 @@ export interface paths {
          *
          *     Projects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator
          *     → tool calls → verdict → formatter → case-manager decision) into a timeline.
-         *     Read-only on the management-scoped audit index. NEVER 404s — an unknown or
+         *     Read-only on the management-scoped audit index. NEVER 404s: an unknown or
          *     not-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is
-         *     omitted when ``prefs.trace.include_prompts`` is false.
+         *     omitted when ``prefs.trace.include_prompts`` is false. For a caller without
+         *     ``cost:view`` the cost figures a spend writer put into a row's ``result_summary``
+         *     are replaced (Round 16, WP16: ``api.cost_text``); tool output is never changed.
          */
         get: operations["case_trace_api_cases__case_id__trace_get"];
         put?: never;
@@ -2118,10 +2193,41 @@ export interface paths {
          *     ``risk`` (the existing deterministic 0-100 score + breakdown), ``severity``
          *     (SOURCE-asserted, NOT risk), ``impact`` (asset criticality), and ``priority``
          *     (ITIL Impact×Urgency). Each carries an ``inputs`` bag for a UI HelpTip. NEVER
-         *     404s — an unknown case returns an empty-but-renderable shell. Pure derivation
+         *     404s: an unknown case returns an empty-but-renderable shell. Pure derivation
          *     (#3: advisory only, never feeds the decision).
+         *
+         *     Round 16 (SPEC §4.5 WP10) read-time additions, built here and never stored on the
+         *     case: ``auto_close_policy`` (the auto-close entry for the case's verdict class, so
+         *     Case detail can state the policy without ``GET /api/settings``), ``sla`` (the
+         *     per-case SLA reading, ``engine/sla_reading.py``, or ``null``) and, for a
+         *     ``settings:read`` holder only, ``asset_cidr`` (the internal network range of
+         *     today's configuration that holds the entity, labelled so). Everything reads the
+         *     active execution preferences, so Demo Mode reads its sandbox.
          */
         get: operations["case_triage_api_cases__case_id__triage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Case Usage
+         * @description The case's ledger rows and its spend split (see the module docstring). 404 for an
+         *     unknown case; 503 ``case_usage_unavailable`` when the ledger cannot be read (never a
+         *     false "no spend"); 501 ``case_usage_unsupported`` for a ledger that has no per-case
+         *     read.
+         */
+        get: operations["case_usage_api_cases__case_id__usage_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2877,6 +2983,10 @@ export interface paths {
          *     configuration change. It does perform ONE bounded advisory write — the composition
          *     baseline a class-share shift is measured against, described in the module docstring.
          *     Advisory only; never read by ``decide()`` (#3).
+         *
+         *     ``case_population`` says when the case figures were read (the shared all-time
+         *     population is kept for up to a minute), and ``event_loop`` carries the event-loop
+         *     lag gauge (measured values only; it feeds neither list).
          */
         get: operations["diagnostics_health_api_diagnostics_health_get"];
         put?: never;
@@ -3217,8 +3327,33 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Investigate */
+        /**
+         * Investigate
+         * @description The Investigate page: a person asks for one investigation. The run is a manual
+         *     run of that person (Round 16, WP16), so the AI run popover names who asked and the
+         *     finish notice reaches them, as Investigate on a case does.
+         */
         post: operations["investigate_api_investigate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/investigations/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Investigations Active
+         * @description The AI investigations queued or running now, and those that just finished.
+         */
+        get: operations["investigations_active_api_investigations_active_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3821,6 +3956,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/metrics/explain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Explain
+         * @description The cases behind one dashboard figure, so a reader can cross-check it (Round 16
+         *     WP12; research explainability D-API-4).
+         *
+         *     ``metric`` is ``mtta``, ``mttr``, ``dwell`` or ``mttd`` (the posture lifecycle
+         *     median for ``window_hours``), ``active_risk_index`` (the ``GET /api/metrics`` index,
+         *     all time, ``window_hours`` ignored), ``fp_rate`` (the posture AI-verdict false
+         *     positive rate) or ``sla_attainment`` (the posture SLA attainment). The figure is
+         *     computed from the SAME population (``fetch_case_population``) and the SAME code as
+         *     the figure it explains (``engine.metrics.explain_metric``), so its value equals
+         *     the posture value for the same window. Up to 200 case rows; ``sample_count`` is how
+         *     many cases the figure counts (for a timing, the stat block's ``count``).
+         *
+         *     Needs ``metrics:view``; the case rows also need ``cases:read`` (without it they are
+         *     withheld and ``samples_withheld`` says why), and with row-level data scope on each
+         *     row is checked with ``can_object`` (``hidden_by_scope`` counts the rows left out;
+         *     they still count in the figure). Ids, enums and our own numbers only (#7). An
+         *     unreadable store is a 503, never a figure of zero. Advisory (#3).
+         */
+        get: operations["metrics_explain_api_metrics_explain_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/metrics/noise-reduction": {
         parameters: {
             query?: never;
@@ -3989,7 +4160,12 @@ export interface paths {
          *
          *     ``bucket_minutes`` follows the frozen ladder (<=24h → 60, <=72h → 180,
          *     <=168h → 360, else 1440); buckets are UTC-aligned, zero-filled across the whole
-         *     window, newest bucket partial. Cohort counts reuse the exact
+         *     window, newest bucket partial. The FIRST bucket is partial too: it starts on its
+         *     aligned edge, before the window does, and counts only what lies inside the window
+         *     (the cases created from ``now - window_hours`` on, and the alert hours from the
+         *     hour that instant falls in, the same hours the noise funnel sums). So the buckets
+         *     add up to the window's own case count, the figure every other panel shows. Cohort
+         *     counts reuse the exact
          *     ``engine.metrics.quality_metrics`` field/verdict/decision_by semantics so they
          *     reconcile with the posture tiles; ``fp_rate`` mirrors posture's
          *     ``false_positive_rate`` numerator/denominator within the bucket (null when no
@@ -4539,6 +4715,11 @@ export interface paths {
          * Prefs Org Put
          * @description Replace the ORG customization defaults (admin-only). Validated/bounded by
          *     CustomizationConfig. All free-text is plain data (#9).
+         *
+         *     Round 16 (WP16): the new settings are validated as a whole ``Preferences``, so its
+         *     after-validators run on this write as on every other: a legacy
+         *     ``customization.default_theme`` other than ``system`` is moved into Branding (B45)
+         *     and is never stored here.
          */
         put: operations["prefs_org_put_api_prefs_org_put"];
         post?: never;
@@ -6739,6 +6920,10 @@ export interface paths {
          *     a clear ``{enabled: false}`` shape when disabled, the full happy-path result
          *     when data is present, or a graceful ``degraded: true`` + ``error`` + a short
          *     summary note when the aggregation/summary step is unavailable (never a 500).
+         *
+         *     The summary's AI spend, ``cost``, follows the one spend rule, ``cost:view``
+         *     (Round 16 cross-cutting review): without it the key stays and its value is
+         *     ``null``, the withheld-spend shape of ``_withhold_case_spend``.
          */
         get: operations["standup_api_standup_get"];
         put?: never;
@@ -6781,7 +6966,7 @@ export interface paths {
         /**
          * List Acknowledgements
          * @description The acknowledgement log (newest first), optionally filtered by ``window`` /
-         *     ``user``. Read inherits the router auth mount. Never 500s.
+         *     ``user``. Read needs metrics:view. Never 500s.
          */
         get: operations["list_acknowledgements_api_standup_acknowledgements_get"];
         put?: never;
@@ -6801,8 +6986,8 @@ export interface paths {
         };
         /**
          * List Action Items
-         * @description List shift action items (newest-tracked first by creation order). Read inherits
-         *     the router auth mount. Never 500s — a degraded store yields an empty list.
+         * @description List shift action items (newest-tracked first by creation order). Read needs
+         *     metrics:view. Never 500s: a degraded store yields an empty list.
          */
         get: operations["list_action_items_api_standup_action_items_get"];
         put?: never;
@@ -8529,6 +8714,56 @@ export interface components {
             /** Ts */
             ts?: string;
         };
+        /**
+         * CaseEventsPage
+         * @description ``GET /api/cases/{case_id}/events`` (Round 16 SPEC §4.5 WP13, [dv] R2).
+         *
+         *     The raw records behind a case, read on demand through the read-only log client (#1)
+         *     and kept only when their source-qualified key is one of the case's
+         *     ``member_event_keys``. ``available`` is false with a ``reason`` when the source could
+         *     not answer; ``expected`` is the case's member count, ``returned`` the rows on this
+         *     page and ``truncated`` true when more remain (``next_cursor``). Each row is the
+         *     ``/api/logs`` row contract (``engine/log_rows.log_row``: ``id``, ``ts``,
+         *     ``source_ip``, ``user``, ``host``, ``rule``, ``severity``, ``message``, ``_raw``)
+         *     plus ``index``, ``source_id`` and ``in_evidence`` (the finding indexes that cite
+         *     it). Every value is source-controlled UNTRUSTED data: a reader renders it as text,
+         *     never as markup (#9), and it is never sent to a model (#7).
+         */
+        CaseEventsPage: {
+            /**
+             * Available
+             * @default false
+             */
+            available: boolean;
+            /** Case Id */
+            case_id: string;
+            /**
+             * Expected
+             * @default 0
+             */
+            expected: number;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Reason */
+            reason?: ("aged_out" | "push_source_not_retrievable" | "source_unavailable") | null;
+            /**
+             * Returned
+             * @default 0
+             */
+            returned: number;
+            /** Rows */
+            rows?: Record<string, never>[];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
         /** CaseFileDeleteResult */
         CaseFileDeleteResult: {
             /**
@@ -8817,6 +9052,71 @@ export interface components {
              * @default
              */
             title: string;
+        };
+        /**
+         * CaseUsagePage
+         * @description ``GET /api/cases/{case_id}/usage`` (Round 16 SPEC §4.5 WP13, [dv] R3 and R14).
+         *
+         *     ``rows``: the case's ledger rows, newest first, at most :data:`CASE_USAGE_MAX_ROWS`.
+         *     ``rows_total`` is the exact count when the store could prove it (else ``None``) and
+         *     ``truncated`` is true when rows exist beyond ``rows``. ``totals`` are lifetime sums
+         *     over every row of the case, not only the returned page; ``token_cost`` is the case's
+         *     recorded investigation cost and ``reconciles`` says whether ``totals.pipeline``
+         *     equals it within the display epsilon. Served only with ``cost:view``.
+         */
+        CaseUsagePage: {
+            /** Case Id */
+            case_id: string;
+            /** Reconciles */
+            reconciles?: boolean | null;
+            /**
+             * Returned
+             * @default 0
+             */
+            returned: number;
+            /** Rows */
+            rows?: components["schemas"]["UsageDoc"][];
+            /** Rows Total */
+            rows_total?: number | null;
+            /** Token Cost */
+            token_cost?: number | null;
+            totals?: components["schemas"]["CaseUsageTotals"];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /**
+         * CaseUsageTotals
+         * @description A case's ledger spend in USD, split as the Console shows it: ``pipeline`` (the
+         *     investigation roles, ``constants.CASE_PIPELINE_USAGE_ROLES``, the figure
+         *     ``Case.token_cost`` records) and ``chat`` (case chat on this case, never part of the
+         *     investigation cost); ``runbook`` (additive) is runbook AI help on the case, the
+         *     calls on surface ``runbook``, never case chat; ``other`` holds anything else written
+         *     with the case id.
+         */
+        CaseUsageTotals: {
+            /**
+             * Chat
+             * @default 0
+             */
+            chat: number;
+            /**
+             * Other
+             * @default 0
+             */
+            other: number;
+            /**
+             * Pipeline
+             * @default 0
+             */
+            pipeline: number;
+            /**
+             * Runbook
+             * @default 0
+             */
+            runbook: number;
         };
         /** ChangePasswordBody */
         ChangePasswordBody: {
@@ -9983,6 +10283,8 @@ export interface components {
         Citation: {
             /** Case Id */
             case_id?: string | null;
+            /** Case Number */
+            case_number?: string | null;
             /** Doc */
             doc?: string | null;
             /** Id */
@@ -10909,6 +11211,116 @@ export interface components {
             source_id?: string | null;
             /** @default investigate */
             source_surface: components["schemas"]["SourceSurface"];
+        };
+        /**
+         * InvestigationSlots
+         * @description The investigation gate's use: ``in_use`` permits held, ``cap`` the configured
+         *     ``caps.max_concurrent``.
+         */
+        InvestigationSlots: {
+            /**
+             * Cap
+             * @default 0
+             */
+            cap: number;
+            /**
+             * In Use
+             * @default 0
+             */
+            in_use: number;
+        };
+        /**
+         * InvestigationView
+         * @description One AI investigation run as the Console sees it (SPEC §4.5 WP08, D10).
+         *
+         *     Ids, enums, ISO timestamps and integers only (#7, #9): never a title, entity, rule
+         *     or model text, and never a person's name in a broadcast. ``case_id`` is ``None``
+         *     while a run on new events has not attached its case yet. ``deadline_at`` is
+         *     ``started_at`` plus ``time_cap_seconds`` (the run's model-call cap).
+         *
+         *     ``requested_by_you`` and ``requested_by`` are filled only by the caller-scoped
+         *     route: ``requested_by_you`` for everyone, ``requested_by`` (the requester's user
+         *     name) only for a holder of ``users:manage``. The ``case.investigation`` frame drops
+         *     both (``realtime.publish_case_investigation``).
+         */
+        InvestigationView: {
+            /** Case Id */
+            case_id?: string | null;
+            /** Deadline At */
+            deadline_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Outcome */
+            outcome?: ("decided" | "routed_to_person" | "closed_by_policy" | "unchanged" | "cancelled" | "failed") | null;
+            /**
+             * Phase
+             * @default queued
+             * @enum {string}
+             */
+            phase: "queued" | "triage" | "specialist" | "evidence" | "verdict" | "decision";
+            /**
+             * Queued At
+             * @default
+             */
+            queued_at: string;
+            /** Requested By */
+            requested_by?: string | null;
+            /**
+             * Requested By You
+             * @default false
+             */
+            requested_by_you: boolean;
+            /** Run Id */
+            run_id: string;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * State
+             * @default queued
+             * @enum {string}
+             */
+            state: "queued" | "running" | "finished";
+            /** Status After */
+            status_after?: string | null;
+            /**
+             * Time Cap Seconds
+             * @default 0
+             */
+            time_cap_seconds: number;
+            /**
+             * Trigger
+             * @default automatic
+             * @enum {string}
+             */
+            trigger: "automatic" | "manual" | "job" | "drain" | "detection";
+            /** Verdict After */
+            verdict_after?: string | null;
+        };
+        /**
+         * InvestigationsActive
+         * @description ``GET /api/investigations/active`` (SPEC §4.5 WP08). Memory only: ``items`` are
+         *     the queued or running runs whose case is known, ``recent`` the runs that finished in
+         *     the last 120 s, ``new_runs`` the count of runs whose case does not exist yet.
+         *     ``process_local`` is always true: another backend replica's runs are not seen.
+         */
+        InvestigationsActive: {
+            /** Generated At */
+            generated_at?: string;
+            /** Items */
+            items?: components["schemas"]["InvestigationView"][];
+            /**
+             * New Runs
+             * @default 0
+             */
+            new_runs: number;
+            /**
+             * Process Local
+             * @default true
+             */
+            process_local: boolean;
+            /** Recent */
+            recent?: components["schemas"]["InvestigationView"][];
+            slots?: components["schemas"]["InvestigationSlots"];
         };
         /** JobFailure */
         JobFailure: {
@@ -12095,7 +12507,12 @@ export interface components {
          * ReinvestigateRequest
          * @description Re-run the investigation on an existing case. Optional ``model`` overrides
          *     the investigation-role models (router/investigator/formatter) for THIS run via a
-         *     prefs copy (the per-call model-override technique) — no gateway plumbing change.
+         *     prefs copy (the per-call model-override technique); no gateway plumbing change.
+         *
+         *     ``wait`` (Round 16 SPEC §4.5 WP08): true (the default) answers when the run ends,
+         *     with the updated case; false answers ``202 {run_id, case_id, state: "queued"}`` at
+         *     once and the run goes on in the background (its result arrives as a case update,
+         *     a ``case.investigation`` frame and an Inbox notice).
          */
         ReinvestigateRequest: {
             /**
@@ -12105,6 +12522,11 @@ export interface components {
             analyst: string;
             /** Model */
             model?: string | null;
+            /**
+             * Wait
+             * @default true
+             */
+            wait: boolean;
         };
         /**
          * RelatedBatchJobPublic
@@ -12738,6 +13160,7 @@ export interface components {
              * @default 0
              */
             diversity: number;
+            inputs?: components["schemas"]["RiskInputs"] | null;
             /**
              * Reputation
              * @default 0
@@ -12748,6 +13171,163 @@ export interface components {
              * @default 0
              */
             total: number;
+            /**
+             * Velocity
+             * @default 0
+             */
+            velocity: number;
+            /**
+             * Volume
+             * @default 0
+             */
+            volume: number;
+        };
+        /**
+         * RiskInputs
+         * @description What one risk score was computed from (Round 16 SPEC §4.3 WP01, S3, B13).
+         *
+         *     Written beside ``compute_risk`` by the pure ``engine/risk_explain.explain_risk``
+         *     (``engine/risk.py`` stays byte-identical, #3), so a reader can re-derive every
+         *     factor and the total from the record alone, after the case attached more events or
+         *     the weights changed. Read only by explanations: nothing reads it to decide (#3).
+         *
+         *     * ``event_count``, ``span_seconds``: the scoring cluster's count and first-to-last
+         *       span; ``effective_window_seconds`` is the span floored at 1 s;
+         *       ``rate_per_minute`` is ``event_count / (effective_window_seconds / 60)`` when
+         *       ``velocity_rule == "rate"`` and ``None`` below 3 events
+         *       (``"below_min_events"``, velocity 0).
+         *     * ``rule_values``: the distinct rule values, first order, at most
+         *       :data:`RISK_INPUTS_MAX_RULE_VALUES`, each at most
+         *       :data:`RISK_INPUTS_RULE_VALUE_CHARS` characters. Source-controlled strings: a
+         *       reader renders them as text (#9). ``rule_type_count`` is exactly
+         *       ``len(cluster.rule_values)``, the count the diversity factor used.
+         *     * ``reputation_input``: the reputation passed in, before clamping to 0..100;
+         *       ``reputation_source`` says where it came from.
+         *     * ``asset_value``: the criticality the asset policy gave, before clamping;
+         *       ``asset_match`` says how (a network range, an exact entry, or none). The matched
+         *       range is never stored: every route that returns a case would return it
+         *       (SPEC Appendix C, C5).
+         *     * ``weights``, ``total_weight`` (their sum) and ``zero_weight_fallback`` (the sum
+         *       was 0, so the score divided by 1); ``refs`` the factor reference points.
+         *     * ``scored_at``: when the score was computed (the only date); ``inputs_version``.
+         */
+        RiskInputs: {
+            /**
+             * Asset Match
+             * @default none
+             * @enum {string}
+             */
+            asset_match: "network" | "exact" | "none";
+            /**
+             * Asset Value
+             * @default 0
+             */
+            asset_value: number;
+            /**
+             * Effective Window Seconds
+             * @default 1
+             */
+            effective_window_seconds: number;
+            /**
+             * Event Count
+             * @default 0
+             */
+            event_count: number;
+            /**
+             * Inputs Version
+             * @default 1
+             */
+            inputs_version: number;
+            /** Rate Per Minute */
+            rate_per_minute?: number | null;
+            refs?: components["schemas"]["RiskReferences"];
+            /**
+             * Reputation Input
+             * @default 0
+             */
+            reputation_input: number;
+            /**
+             * Reputation Source
+             * @default not_looked_up
+             * @enum {string}
+             */
+            reputation_source: "enrichment" | "not_ip_entity" | "enrichment_off" | "not_looked_up";
+            /**
+             * Rule Type Count
+             * @default 0
+             */
+            rule_type_count: number;
+            /** Rule Values */
+            rule_values?: string[];
+            /**
+             * Scored At
+             * @default
+             */
+            scored_at: string;
+            /**
+             * Span Seconds
+             * @default 0
+             */
+            span_seconds: number;
+            /**
+             * Total Weight
+             * @default 0
+             */
+            total_weight: number;
+            /**
+             * Velocity Rule
+             * @default below_min_events
+             * @enum {string}
+             */
+            velocity_rule: "below_min_events" | "rate";
+            weights?: components["schemas"]["RiskWeightsSnapshot"];
+            /**
+             * Zero Weight Fallback
+             * @default false
+             */
+            zero_weight_fallback: boolean;
+        };
+        /**
+         * RiskReferences
+         * @description The reference points at which a factor reaches full score (``engine/risk.py``).
+         */
+        RiskReferences: {
+            /**
+             * Diversity
+             * @default 5
+             */
+            diversity: number;
+            /**
+             * Velocity
+             * @default 10
+             */
+            velocity: number;
+            /**
+             * Volume
+             * @default 50
+             */
+            volume: number;
+        };
+        /**
+         * RiskWeightsSnapshot
+         * @description The five risk weights in force when a score was computed (a fixed key set).
+         */
+        RiskWeightsSnapshot: {
+            /**
+             * Asset Criticality
+             * @default 0
+             */
+            asset_criticality: number;
+            /**
+             * Diversity
+             * @default 0
+             */
+            diversity: number;
+            /**
+             * Reputation
+             * @default 0
+             */
+            reputation: number;
             /**
              * Velocity
              * @default 0
@@ -15043,6 +15623,17 @@ export interface components {
         /** TeamTotals */
         TeamTotals: {
             /**
+             * Ack Sample Offset
+             * @description The 0-based rank of the first listed time among all ack_samples sorted times.
+             * @default 0
+             */
+            ack_sample_offset: number;
+            /**
+             * Ack Sample Seconds
+             * @description The sorted times to acknowledge, in seconds, around the median: at most 200, always the one or two middle times the median is taken from. Empty unless measured.
+             */
+            ack_sample_seconds?: number[];
+            /**
              * Ack Samples
              * @default 0
              */
@@ -15812,6 +16403,118 @@ export interface components {
             last_job?: components["schemas"]["UpdateJob"] | null;
             release_discovery: components["schemas"]["UpdateReleaseDiscovery"];
         };
+        /** UsageDoc */
+        UsageDoc: {
+            /** App Version */
+            app_version?: string | null;
+            /**
+             * Attempts
+             * @default 1
+             */
+            attempts: number;
+            /**
+             * Batch
+             * @default false
+             */
+            batch: boolean;
+            /** Build Sha */
+            build_sha?: string | null;
+            /** Cache Read Rate Per Million */
+            cache_read_rate_per_million?: number | null;
+            /**
+             * Cache Read Tokens
+             * @default 0
+             */
+            cache_read_tokens: number;
+            /** Cache Write Rate Per Million */
+            cache_write_rate_per_million?: number | null;
+            /**
+             * Cache Write Tokens
+             * @default 0
+             */
+            cache_write_tokens: number;
+            /** Cache Write Ttl */
+            cache_write_ttl?: string | null;
+            /** Case Id */
+            case_id?: string | null;
+            /**
+             * Completion Tokens
+             * @default 0
+             */
+            completion_tokens: number;
+            /**
+             * Cost
+             * @default 0
+             */
+            cost: number;
+            /**
+             * Currency
+             * @default USD
+             */
+            currency: string;
+            /**
+             * Failure Class
+             * @default
+             */
+            failure_class: string;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /** Input Rate Per Million */
+            input_rate_per_million?: number | null;
+            /**
+             * Latency Ms
+             * @default 0
+             */
+            latency_ms: number;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /** @default ok */
+            outcome: components["schemas"]["UsageOutcome"];
+            /** Output Rate Per Million */
+            output_rate_per_million?: number | null;
+            /** Price Basis */
+            price_basis?: string | null;
+            /**
+             * Pricing Source
+             * @default exact
+             */
+            pricing_source: string;
+            /**
+             * Processing Tier
+             * @default standard
+             */
+            processing_tier: string;
+            /**
+             * Prompt Tokens
+             * @default 0
+             */
+            prompt_tokens: number;
+            /**
+             * Role
+             * @default
+             */
+            role: string;
+            /**
+             * Surface
+             * @default
+             */
+            surface: string;
+            /**
+             * Total Tokens
+             * @default 0
+             */
+            total_tokens: number;
+            /** Ts */
+            ts?: string;
+            /**
+             * Usage Estimated
+             * @default false
+             */
+            usage_estimated: boolean;
+        };
         /**
          * UsageEvent
          * @description Running totals after a model call (the meter ticks on every one).
@@ -15824,6 +16527,11 @@ export interface components {
              */
             type: "usage";
         };
+        /**
+         * UsageOutcome
+         * @enum {string}
+         */
+        UsageOutcome: "ok" | "error" | "capped";
         /** UserCreateBody */
         UserCreateBody: {
             /** Custom Roles */
@@ -17881,6 +18589,42 @@ export interface operations {
             };
         };
     };
+    case_events_api_cases__case_id__events_get: {
+        parameters: {
+            query?: {
+                /** @description Member events per page, 1 to 200. */
+                limit?: number;
+                /** @description The previous page's next_cursor. */
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseEventsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     case_export_api_cases__case_id__export_get: {
         parameters: {
             query?: {
@@ -18247,7 +18991,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -19228,6 +19972,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    case_usage_api_cases__case_id__usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseUsagePage"];
                 };
             };
             /** @description Validation Error */
@@ -20766,6 +21541,37 @@ export interface operations {
             };
         };
     };
+    investigations_active_api_investigations_active_get: {
+        parameters: {
+            query?: {
+                case_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvestigationsActive"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_jobs_api_jobs_get: {
         parameters: {
             query?: {
@@ -21572,6 +22378,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MetricsBreakdown"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_explain_api_metrics_explain_get: {
+        parameters: {
+            query: {
+                /** @description One of mtta, mttr, dwell, mttd, active_risk_index, fp_rate, sla_attainment. */
+                metric: string;
+                window_hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */

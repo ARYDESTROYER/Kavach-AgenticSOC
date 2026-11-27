@@ -1,6 +1,7 @@
 /**
- * CollaborationPanel (Round 15, SPEC D8.3): Discussion, Files (a slot the WP4 kit fills),
- * Tasks and History, with no owner picker (the owner's one home is the header).
+ * CollaborationPanel, the Activity tab (Round 16, SPEC D8; Round 15 D8.3): Discussion,
+ * Files (a slot the WP4 kit fills) and History, with no owner picker (the owner's one home
+ * is the header) and no tasks (they are on the Response tab since Round 16).
  *
  * The assignee Select value binding (Round-6 finding #11) is kept with the picker, which
  * now lives in the header's owner popover: it must reflect the ACTUAL assignee, not a
@@ -111,7 +112,6 @@ const PANEL_PROPS = {
   onEdit: vi.fn(),
   onDelete: vi.fn(),
   onReact: vi.fn(),
-  onOpenTasks: vi.fn(),
   liveCaseId: CASE.case_id,
   onLiveThread: vi.fn(),
   onLiveActivity: vi.fn(),
@@ -137,10 +137,10 @@ function openAllActivity() {
   fireEvent.click(screen.getByRole('button', { name: /show all activity/i }));
 }
 
-describe('CollaborationThreadTab: Discussion, Files, Tasks, History (D8.3)', () => {
+describe('CollaborationThreadTab: Discussion, Files, History (Round 16, D8)', () => {
   beforeEach(() => useEventStreamMock.mockClear());
 
-  it('lays out the discussion beside tasks and history, with no owner picker', () => {
+  it('lays out the discussion beside the history, with no owner picker and no tasks', () => {
     const { container } = render(<CollaborationThreadTab {...PANEL_PROPS} />);
 
     const panel = container.querySelector('[data-case-panel="collaboration"][data-presentation="case-manager"]');
@@ -161,10 +161,15 @@ describe('CollaborationThreadTab: Discussion, Files, Tasks, History (D8.3)', () 
     expect(screen.queryByRole('heading', { name: 'Ownership' })).toBeNull();
     expect(screen.queryByRole('combobox', { name: 'Assignee' })).toBeNull();
 
-    // Round 14 (D36): the case's tasks live in the Runbook tab under "Other tasks".
-    expect(screen.getByRole('heading', { name: 'Tasks' })).toBeInTheDocument();
-    expect(screen.getByText('Case tasks are in the Runbook tab, under Other tasks.')).toBeInTheDocument();
+    // Round 16 (D8): the case's tasks are on the Response tab, so this tab has no Tasks
+    // section and no pointer to one.
+    expect(screen.queryByRole('heading', { name: 'Tasks' })).toBeNull();
+    expect(screen.queryByText(/Case tasks are in the Runbook tab/)).toBeNull();
+    expect(screen.queryByTestId('collaboration-tasks')).toBeNull();
+    expect(screen.getByRole('region', { name: 'History' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'History' })).toBeInTheDocument();
+    // The geometry is measured at the tab's first block, the two-column grid.
+    expect(panel?.firstElementChild).toHaveAttribute('data-testid', 'case-tab-first');
 
     // No Files section until the caller fills the slot.
     expect(screen.queryByRole('heading', { name: 'Files' })).toBeNull();
@@ -245,15 +250,13 @@ describe('CollaborationThreadTab: Discussion, Files, Tasks, History (D8.3)', () 
     ).toContainElement(threadSurface as HTMLElement);
   });
 
-  it('renders a truthful activity failure, preserves last good data, and opens the Runbook tab for tasks', () => {
+  it('renders a truthful activity failure and preserves last good data', () => {
     const onRetryActivity = vi.fn();
-    const onOpenTasks = vi.fn();
     render(
       <CollaborationThreadTab
         {...PANEL_PROPS}
         activityError={new Error('activity endpoint unavailable')}
         onRetryActivity={onRetryActivity}
-        onOpenTasks={onOpenTasks}
       />,
     );
 
@@ -268,25 +271,8 @@ describe('CollaborationThreadTab: Discussion, Files, Tasks, History (D8.3)', () 
 
     const opened = onRetryActivity.mock.calls.length;
     screen.getByRole('button', { name: 'Retry activity' }).click();
-    screen.getByRole('button', { name: 'Open the Runbook tab' }).click();
     expect(onRetryActivity).toHaveBeenCalledTimes(opened + 1);
-    expect(onOpenTasks).toHaveBeenCalledTimes(1);
-  });
-
-  it('shows the tasks themselves to a viewer with no Runbook tab, and no tasks section otherwise', () => {
-    const { rerender } = render(
-      <CollaborationThreadTab
-        {...PANEL_PROPS}
-        onOpenTasks={undefined}
-        tasksSection={<p>Standalone task list</p>}
-      />,
-    );
-    expect(screen.getByText('Standalone task list')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Open the Runbook tab' })).toBeNull();
-
-    rerender(<CollaborationThreadTab {...PANEL_PROPS} onOpenTasks={undefined} />);
-    expect(screen.queryByTestId('collaboration-tasks')).toBeNull();
-    expect(screen.getByRole('heading', { name: 'History' })).toBeInTheDocument();
   });
 
   it('keeps the last good discussion visible beside a retryable refresh failure', () => {

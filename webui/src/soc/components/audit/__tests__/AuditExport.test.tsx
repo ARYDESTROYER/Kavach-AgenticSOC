@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   release: vi.fn(),
   demo: { active: false, confirmed: true, loading: false, status: { mode: 'off' as string, run_id: null as string | null } },
   toast: { info: vi.fn(), error: vi.fn(), success: vi.fn() },
+  denied: new Set<string>(),
 }));
 
 vi.mock('@/lib/api-audit', () => ({
@@ -55,7 +56,9 @@ vi.mock('@/soc/jobs/jobs', async (importOriginal) => ({
   announceJobAccepted: h.announce,
   releaseJobToast: h.release,
 }));
-vi.mock('@/soc/auth', () => ({ useAuth: () => ({ authEnabled: false, hasPermission: () => true }) }));
+vi.mock('@/soc/auth', () => ({
+  useAuth: () => ({ authEnabled: false, hasPermission: (r: string, a: string) => !h.denied.has(`${r}:${a}`) }),
+}));
 vi.mock('@/soc/demo', () => ({ useDemo: () => h.demo }));
 vi.mock('sonner', () => ({ toast: h.toast }));
 
@@ -93,6 +96,7 @@ beforeEach(() => {
   Object.values(h.toast).forEach((f) => f.mockReset());
   h.saveBlob.mockReturnValue('agentic-soc-audit.csv');
   h.demo = { active: false, confirmed: true, loading: false, status: { mode: 'off', run_id: null } };
+  h.denied.clear();
   h.list.mockResolvedValue(page(rows(3), { total: 1_284 }));
   h.count.mockResolvedValue({ count: 1_284, relation: 'eq' });
 });
@@ -155,6 +159,42 @@ describe('the export dialog', () => {
     expect(dialog).toHaveTextContent('agentic-soc-audit_2026-10-18T151000Z_2026-10-25T150959Z.csv');
     expect(dialog).toHaveTextContent('You will be asked to sign in again. This export is recorded in the audit log.');
     expect(within(dialog).getByRole('button', { name: 'Export 1,284 events' })).toBeEnabled();
+  });
+
+  it('says JSON Lines records are unchanged only to a person who may see AI spend', async () => {
+    const user = userEvent.setup();
+    renderAudit();
+    await screen.findByText('Settings changed 1');
+    await user.click(screen.getByRole('button', { name: 'Export' }));
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getByRole('menuitem', { name: /Export JSON Lines/ })).toHaveTextContent(
+      'Each stored record unchanged, one per line',
+    );
+    await user.click(within(menu).getByRole('menuitem', { name: /Export JSON Lines/ }));
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByRole('heading', { name: 'Export 1,284 events?' });
+    expect(dialog).toHaveTextContent('Each stored record unchanged, one per line.');
+    expect(dialog).not.toHaveTextContent('AI spend');
+  });
+
+  it('tells a person without AI spend access that the file hides its figures', async () => {
+    h.denied.add('cost:view');
+    const user = userEvent.setup();
+    renderAudit();
+    await screen.findByText('Settings changed 1');
+    await user.click(screen.getByRole('button', { name: 'Export' }));
+    const menu = await screen.findByRole('menu');
+    const item = within(menu).getByRole('menuitem', { name: /Export JSON Lines/ });
+    expect(item).toHaveTextContent('Each stored record, one per line, with AI spend hidden');
+    expect(item).not.toHaveTextContent('unchanged');
+    await user.click(item);
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByRole('heading', { name: 'Export 1,284 events?' });
+    expect(dialog).toHaveTextContent('Each stored record, one per line, with AI spend hidden.');
+    expect(dialog).not.toHaveTextContent('unchanged');
+    expect(dialog).toHaveTextContent(
+      'You do not have access to AI spend, so the file hides its figures, as this page does.',
+    );
   });
 
   it('refuses more than 100,000 events and offers the last 30 days when it fits', async () => {

@@ -1,11 +1,11 @@
 ---
 title: Run the demo
-description: Explore Agentic SOC 0.1 with isolated synthetic data and a deterministic zero-cost model.
+description: Explore Agentic SOC 0.2 with isolated synthetic data and a deterministic zero-cost model.
 ---
 
 # Run the demo
 
-This guide applies to **Agentic SOC 0.1** and is for evaluators who want to explore the
+This guide applies to **Agentic SOC 0.2** and is for evaluators who want to explore the
 complete analyst workflow without external sources or model spend.
 
 ## Requirements
@@ -41,16 +41,34 @@ Protection-shaped vocabulary. All five pass through the real parser, OCSF
 normalization, correlation, investigation, and deterministic decision pipeline.
 
 Demo-generated cases, events, usage, retrieval data, and polling cursors are kept in
-an isolated demo store. The mock model has zero price. The real deterministic case
-policy is still used inside the sandbox: an uncertain verdict remains open for a
-human.
+an isolated demo store. Demo spend is simulated: the mock model is never billed, and
+each Demo call is priced at a fixed simulated rate so the cost figures add up. A
+seeded case's cost matches the ledger rows of its investigation, and its AI
+investigation trace shows that investigation's steps: the investigator's prompt, one
+read-only log query and the verdict. The real
+deterministic case policy is still used inside the sandbox: an uncertain verdict
+remains open for a human.
+
+In Demo Mode, an investigation you start (**Reinvestigate** on a case, or **Run
+investigation** on **Workspace → Entity investigation**) pauses at each step, so you can watch the AI work on the case: the case header shows **AI
+working** with its clock, the queue row and the Case Manager count mark the run, and a
+close made meanwhile says the run's result will replace it. A manual run takes a few
+seconds; its pauses never use more than a quarter of the run's time cap. Chat, report
+summaries, runbook help and automatic runs are not slowed. A case keeps its own
+storyline when you reinvestigate it: the Demo model reads the storyline only from the
+case's own events, never from a precedent, a memory or a runbook that names another
+one.
+
+Known limitation: in Demo Mode, a change to the auto-close policy in **Settings** changes
+the sentence in a case's Decision lane, but the Demo keeps deciding with its own policy, so
+the two disagree until you undo the change.
 
 ## Suggested tour
 
 1. Open **Overview** and inspect source coverage, the Human-vs-AI close
    attribution, and the Noise-Reduction flow.
-2. Open **Case Manager**, compare the Overview, Runbook, Investigation, Collaboration,
-   and Chat tabs, then try queue selection. The legacy **Cases**
+2. Open **Case Manager**, compare the Brief, Evidence, AI investigation, Response,
+   Activity and Chat tabs, then try queue selection. The legacy **Cases**
    table remains available for comparison.
 3. Open **Workspace Chat**: the start screen says what changed in the demo data since
    your last visit and suggests questions about it, such as your shift brief or a case
@@ -59,7 +77,8 @@ human.
 4. Open **Sources** and inspect the five simulated source types and recent activity.
 5. Open **Detection & Rules**, Campaigns, Baseline, and Tuning to see the advisory
    automation loop.
-6. Open **Cost** and confirm model spend remains `$0`.
+6. Open **Cost**. Every Demo figure there is simulated spend, and nothing is billed.
+   A case's investigation cost matches its rows in the cost ledger.
 7. Open **Audit** and trace the demo actions.
 
 Use **Generate incident** in the Demo settings for an on-demand, cooldown-aware

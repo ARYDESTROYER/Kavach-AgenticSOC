@@ -138,7 +138,11 @@ recipe (or `materialThick` for large floating panes, or `MaterialBar` from
 `@/design-system`); never a page-local `bg-*/95 backdrop-blur`. Content — tables,
 charts, transcripts, evidence — always sits on an opaque canvas or card, and menus,
 popovers, dialogs and sheets are solid, so translucent never stacks on translucent (a
-material nested in another material, or in the glass top bar, is painted solid). The
+material nested in another material, or in the glass top bar, is painted solid). On a
+material the semantic tints (`--<axis>-text`) resolve to the grouped panel's stronger inks
+(`--panel-<axis>-text`) in `theme.css`, so coloured text on it (the top bar's Demo and release
+chips, a status badge in a sticky header) keeps 4.5:1 with any content scrolled beneath
+(`material-chip-contrast.test.ts`). The
 fill hides what scrolls beneath on its own, in every engine: 0.97 for bars and the top
 bar, 0.98 for thick panes. The backdrop blur is decoration that cannot be relied on, and
 it stops at a backdrop root: never put a filling animation (`both`/`forwards`), `opacity`
@@ -170,6 +174,13 @@ Nothing lands under a sticky page band, neither keyboard focus nor a heading (WC
 Shift+Tab, in-page links, `scrollIntoView` and find-in-page all stop with the target in
 full view below the band. Do not add a `scroll-margin-top` for the band on the page's
 own elements as well: margin and padding add up and push the target too low.
+
+A pinned leading table column follows the same rule sideways (WCAG 2.4.11, technique C43).
+While a `DataTable` has `stickyFirstColumn`, it sets its horizontal scroller's
+`scroll-padding-inline-start` to the pinned cells' right edge, the selection column
+included, and clears it when the table unmounts. Tab, Shift+Tab and `scrollIntoView` then
+stop with a cell in full view beside the pinned column, never under it. Do not add a
+`scroll-margin-inline-start` to the cells as well.
 
 Sticky chrome needs a scroller that actually scrolls. The shell clips horizontal
 overflow with `overflow-x-clip`, never `overflow-x-hidden`: a lone hidden axis turns
@@ -220,9 +231,11 @@ only behind a flag.
 `prefers-contrast: more`: hairlines become ≥3:1 structural lines — including the
 alpha hairline variants (`border-border/70` and the like), through the
 `--border-alpha-floor` the `border` colour carries — secondary text strengthens (and
-is never weaker than muted text), the login identity canvas strengthens its own
-borders, field edges and text, and materials turn solid with a defined bottom rule
-instead of the scroll-edge fade.
+is never weaker than muted text), and materials turn solid with a defined bottom rule
+instead of the scroll-edge fade. The sign-in page has no rule of its own: it paints only
+Console tokens, so its hairlines and secondary text change with the rest of the Console.
+Its field edges and focus ring stay as they are, already at least 3:1 (see Identity
+surfaces).
 
 ## Page anatomy
 
@@ -557,10 +570,17 @@ presentation preference locally, and remove the handle below the desktop breakpo
 compact layouts use an explicit back-to-list path.
 
 A routed split workspace may reclaim the shared shell gutter down to a consistent
-16px operational inset, but it remains framed rather than touching the navigation or
-viewport edge. Inside the detail pane, header, tabs, and every tab panel share one
-responsive 16 to 24px content rail. Do not stack page, pane, and panel padding into
-separate 32px gutters; the resizable detail pane must spend its width on evidence.
+16px operational inset on every side, but it remains framed rather than touching the
+navigation or viewport edge. Such a workspace may own its frame as Chat does: no routed
+page header (the top bar's breadcrumb already names the page) and an `sr-only` h1. The
+Case Manager does both (Round 16): its board takes 8px of the shell's 24px top and
+bottom inset back (`-my-2`, `h-[calc(100dvh-5.5rem)]`), so the split frame starts 72px
+from the top of the window and the page never scrolls. Below the split, its back-to-list
+bar steps aside once the case header carries a Back of its own (marked
+`data-case-header-back`), so a phone keeps one back path. Inside the detail pane, header,
+tabs, and every tab panel share one responsive 16 to 24px content rail. Do not stack
+page, pane, and panel padding into separate 32px gutters; the resizable detail pane must
+spend its width on evidence.
 
 Queue rows are a divided list, not boxed cards. A row has two lines: the title and its
 relative age, then the severity word, risk score, display id, and the status as
@@ -572,43 +592,68 @@ light tint) and open (a stronger tint, a primary edge rail and `aria-current`) n
 look alike. Labels and titles are sentence case, never tracked capitals. Panels inside a
 resizable pane lay out against the pane width with container queries, not the viewport.
 
-The Case Manager queue (Round 12, calmed in Round 15) keeps that grammar and adds to it.
-Its scope (Active, Mine, Review with its pending count, All), filters, search and sort
-are answered by the server over every case, paged with Load more, and the scope line in
-the list footer, beside Load more, always states loaded against total ("1 of 68 active ·
-50 loaded"); a client-side filter of a recent window is never the queue. Above the list
-is one control band of two rows: the scope `SegmentedControl` and a view menu (sort,
-compact density and the keyboard shortcuts, outside the filter count); then, for a role
-that may do bulk work, the "Select visible" checkbox, and a `FilterBar` with the search
-and `primaryCount={0}`, so Severity, Status and Closed by sit behind its one "Filters
-(n)" control with their removable chips and Clear all. Live and Refresh stay in the page
-header. A bulk bar with the selection count appears only while something is selected (or
-a bulk job runs or reports). Rows are two lines: the title (one line, its full value
-accessible) and the age; then the severity word, "Risk N" (coloured by `scoreBand`), the
+The Case Manager queue (Round 12, calmed in Rounds 15 and 16) keeps that grammar and
+adds to it. Its scope (Active, Mine, Review with its pending count, All), filters, search
+and sort are answered by the server over every case, paged with Load more, and the scope
+line in the list footer, beside Load more, always states loaded against total ("1 of 68
+active · 50 loaded"); a client-side filter of a recent window is never the queue. Its
+default width is 28% of the board, 340 to 520px. Above the list is one control band of
+two 32px rows in 10px padding with an 8px gap (92px inside its hairline). Row 1 holds the
+scope `SegmentedControl`, then Live (a dot, with its word once the queue is 28rem wide),
+Refresh, a view menu (sort, compact density, Hide queue where the split shows, and the
+keyboard shortcuts) and the "About Case Manager" help tip; below a 400px queue the scope
+fills the row, so Refresh and "About Case Manager" move into the view menu. Row 2 holds,
+for a role that may do bulk work, the "Select visible" checkbox, then a `FilterBar` with
+the search and `primaryCount={0}`, so Severity, Status and Closed by sit behind its one
+"Filters (n)" control with their removable chips and Clear all. The AI queue notice ("AI
+is investigating 2 new alerts. They join the queue when the investigation finishes.") is
+the band's third line, one 16px line that truncates and takes no room while it has
+nothing to say, so the band grows by 20px at most (see AI investigation signals). A bulk
+bar with the selection count appears only while something is selected (or a bulk job
+runs or reports). Rows are two lines beside a 40px leading slot. The slot shows the severity
+glyph; for a role that may do bulk work it becomes the row checkbox on hover and focus,
+and stays the checkbox while anything is selected or a bulk job runs, and always on a
+touch screen (a role with no bulk action keeps the glyph). Line one is the title (one
+line, its full value accessible) and the age; line two the severity word, "Risk N", the
 case number, and either the status of an open case or the outcome badge of a case that
-ended, never both, with the owner monogram at the end. The runbook chip and the source
-fact are not on the row. A compact density is one line. The list is one tab stop with a
-roving focus (↑/↓ or J/K move and open, X or Space select,
+ended, never both, with the owner monogram at the end. "Risk N" is neutral
+(`text-foreground/80`): the severity word and the rail carry the row's colour, and the
+risk keeps its band colour in the case header and in the inspector's Signal section. It
+wears the risk explainer's mouse-only row hover card, with no focusable content inside
+the row; the row's accessible name carries the number. While the AI investigates a case,
+its run mark takes the status glyph's place inside the status node (before the outcome
+badge on a case that ended), never the case chat glyph's slot before the age, so a row
+can show both, and the row's accessible name says so. The runbook chip and the source
+fact are not on the row. A compact density is one line. The
+list is one tab stop with a roving focus (↑/↓ or J/K move and open, X or Space select,
 Enter moves into the case, / searches, ? lists the shortcuts) and rows update live from
-the `cases` realtime topic. A live change is checked against the whole view (scope,
-status, owner, search, severity): a row that no longer matches leaves the window and the
-total, a case that now lists inside the loaded window appears, and Load more re-reads the
-window rather than skip a case when the live order has shifted. "N new cases · Show"
-re-reads the window grown by the new cases, never just the first page, so rows the
-analyst loaded (and the open case) keep their place. When the open case leaves the view
-(a plain Close, or a live change), the roving stop moves to the row that took its place
-and the first J/↓ (K/↑ when the last row closed) or Enter opens that row rather than
-skipping it. A count that claims an exact total (the Cases "Needs human" tile) is made
-from structured filters (status, AI verdict), never the free-text search. A single-letter shortcut
-never fires while focus is in a control that takes letters itself (text, a select, a
-menu, a radio group).
+the `cases` realtime topic. Where the split shows, `[` (or Hide queue) folds the queue to
+a 44px strip with Show queue, Previous and Next and the open case's position; while it is
+folded, J and K step through the cases from anywhere on the page, / shows the queue and
+searches it, and the choice is kept per viewer. A live change is checked against the
+whole view (scope, status, owner, search, severity): a row that no longer matches leaves
+the window and the total, a case that now lists inside the loaded window appears, and
+Load more re-reads the window rather than skip a case when the live order has shifted.
+"N new cases · Show" re-reads the window grown by the new cases, never just the first
+page, so rows the analyst loaded (and the open case) keep their place. When the open case
+leaves the view (a plain Close, or a live change), the roving stop moves to the row that
+took its place and the first J/↓ (K/↑ when the last row closed) or Enter opens that row
+rather than skipping it. With no case open, the detail pane says "No case open" and
+offers up to three counted shortcuts into the queue (critical cases, cases awaiting an
+analyst, reviews waiting); each count is the server's exact total for the filter its
+button applies, and an unknown or zero count leaves its button out. A count that claims
+an exact total (the Cases "Needs human" tile) is made from structured filters (status, AI
+verdict), never the free-text search. A single-letter shortcut never fires while focus is
+in a control that takes letters itself (text, a select, a menu, a radio group), and the
+shortcuts sheet lists only the keys the viewer's role and layout can use.
 
 Row selection is independent of row navigation. “Select visible” means the filtered
 rows in the loaded client window and never implies every server match; "Select all N
 matching" is a separate, explicit control that snapshots the server's matches. A row
 checkbox is a sibling of the row's open control, never nested in it; it may appear on
 hover or focus, but stays visible on touch screens and once anything is selected (the
-Case Manager shows it always). Mixed bulk operations expose progress and per-record
+Case Manager shows it in the row's leading slot; X or Space selects a row whose checkbox
+is not showing yet). Mixed bulk operations expose progress and per-record
 partial failures; successful records leave the selection while failures remain
 retryable. Every bulk or single path that ends a case (close, resolve) collects a
 disposition first. Permission hiding in the Console is guidance; the API must recheck
@@ -633,29 +678,62 @@ the headline. One shared helper decides it for the case header,
 queue rows, the Cases list, hover cards and grading; a disposition value alone is never
 treated as an analyst's call.
 
-**Case header.** The header stays put above every tab: the title (one line at every
-width, its full text on hover and in its accessible name), then one primary contextual
-action, the Take action menu (every other verb), a "More options" menu (copy link, open
-in new tab) and, below a 60rem pane, the Details button. Under it, one meta row: the case
-number with its copy control, severity, the status while the case is open or its outcome
-once it ended, the AI verdict chip, the owner (its one editable home), the opened age and,
-while open, the SLA. Tags, the campaign, the risk reading, Ask AI and the Sample mark live
-in the facts rail; T and "Edit tags" open the Details sheet first when the rail is hidden.
-The primary action follows the status: Acknowledge when new; Close case while open,
+**Case header.** The header stays put above every tab and is the same height for every
+case: a 44px title row, a 24px meta strip and 36px underline tabs, 118px in all, with the
+same padding at the top of every tab body. The title row holds the title (one line at
+every width, truncating first, its full text on hover and in its accessible name), one
+primary contextual action, the Take action menu (every other verb), Ask AI, a "More
+options" menu (copy link, open in new tab), the inspector toggle (`]`) and Back. Below a
+40rem pane the primary action and Take action show as icons, named for assistive
+technology. The meta strip never wraps: the case number with its copy control, severity,
+the status while the case is open or its outcome once it ended, the Risk chip (its
+explanation on hover or click), the AI verdict (explained the same way) with the live AI
+run chip after it, the owner (its one editable home, opened with M), the SLA while open
+and the review chip while an auto-close review waits. As the pane narrows, items give way
+by container query, never the viewport: the Risk chip below 30rem, the long severity
+label and the outcome's `Analyst` tag below 36rem (its word is still read aloud), the
+verdict below 40rem (below 48rem while the AI run chip shows: below those widths, beside
+the longest status words, it would sit at its floor), the owner's name and the review
+chip below 44rem, the SLA below 52rem. The owner's
+monogram never hides, and the case number never hides. On a short line the owner's name
+truncates first, then the verdict's words down to the chip's 5rem floor (its label and
+confidence keep their width), then the start of a long case number, and the status words
+or the outcome give way last, only once the others are at their minimum: on a phone-width
+strip, where the owner's name and the verdict are already hidden, a long case number and
+then the status truncate. A control on the strip never shrinks to a box of no size: an item
+that no longer fits hides, so it leaves the tab order and the accessibility tree. A case
+number longer than twelve characters ends in a middle ellipsis on a short line, down to its
+first five characters and its last six ("CASE-…000041"), and takes the room of 20
+characters at most; its whole value is its hover title and what assistive technology reads.
+The default template's numbers ("CASE-000046") never shrink. The
+outcome badge is never cut: when the outcome gives way, the `Analyst` tag drops whole first
+at any pane width (a long case number leaves the line short on a wide pane too), then the
+badge's words end in an ellipsis inside its whole border, and the whole outcome is its hover
+title. A review
+sample has no band in the header: its sentence is the review chip's hover and the Brief's
+first block. Tags, the campaign, the factor reading of the risk, Ask AI about the case
+and the Sample mark live in the inspector. The primary action follows the status: Acknowledge when new; Close case while open,
 investigating or awaiting an analyst (Escalate is in Take action, and C opens the close
 dialog wherever a close is allowed); Resume when on hold; Mark resolved when escalated;
 Close case when resolved; Reopen when closed. A case the AI agent closed whose auto-close
 review is pending shows Start review instead, and Reopen moves into Take action; on any
 other case the agent closed, Take action offers "Review this auto-close" in place of Set
 disposition while a review can still be recorded (Set disposition stays hidden either
-way). Facts about the case live once, in a facts
-rail beside every tab (a non-blocking Details sheet in a narrow pane): eight sections
-divided by hairlines, with no icon headings (Outcome, Signal, Runbook, Times, Tags with
-the campaign, Source with the primary entity, Related cases, Record). The record
-sections are five underline tabs (Overview, Runbook, Investigation, Collaboration, Chat;
-Alt+1 to Alt+5); the retired Timeline and Threat context tab links open the Overview's
-"What happened" and Investigation's "Threat context" sections. The tabs hold the evidence
-narrative.
+way). Facts about the case live once, in the inspector: a column beside every tab from a
+52rem pane (272px, 304px from a 72rem pane), shown or hidden with `]` or the header's
+toggle and kept per viewer, and a non-blocking side sheet in a narrower pane, where the
+toggle opens it. It has six sections divided by hairlines, each heading the plain control
+that folds it, kept open or closed per viewer: Outcome (with why the case is waiting),
+Signal, Times, Source and entity (with the related-cases link to Evidence), Tags and
+campaign, and Record, closed at first (the cost with its per-call rows, the build, the
+investigator runbook, the classification history and "View all fields"). T and "Edit
+tags" open a hidden column first when it fits, and the sheet first when it does not; they
+open a folded Tags and campaign section and bring it into view, so the editor is never
+out of sight. The
+record sections are six underline tabs, one lane each: Brief, Evidence, AI
+investigation, Response, Activity and Chat, on Alt+1 to Alt+6. Older links still land:
+the retired Timeline tab and the "what happened" section open Evidence there, and so do
+the retired Threat context tab and the threat-context and related-cases sections.
 
 **Case tab bodies.** Every tab body is flat: sections divided by one hairline, each under
 a plain `text-base` heading (no icon, no card, no tinted panel), with a section's
@@ -664,23 +742,68 @@ secondary detail behind a disclosure rather than a nested card. The parts of one
 are set apart by space under a smaller heading, never by a second hairline that would
 read as a sibling section. A link to a section holds it at the top of the pane while the
 content above it loads, and lets go when the analyst scrolls. A fact has one home: a
-tab never repeats the verdict, confidence, risk, status or owner the header and rail
-already show. The **Overview** is the brief: the runbook's Next step card (open cases),
-the Summary, What happened (the trigger sentence and the six-stage story), Key entities,
-Related cases and the baseline. Its summary is the model's own reasoning (its first two
-or three sentences), tagged AI; it never falls back to the deterministic decision's
-text, which belongs to the code and is shown, attributed to the code, only under
-Investigation's Decision (G17). A case the AI did not assess shows its system summary,
-untagged. **Investigation** reads in order: AI assessment (reasoning, found and ruled
-out, reproduce query, the full evidence one click away), Decision (the decision line,
-the authority sentence, the auto-close reading, automation applied, the policy inputs
-one click away), Threat context, Investigation inputs, the trace and earlier gradings.
-**Collaboration** is Discussion and Files in the main column with Tasks (a pointer to
-the Runbook tab) and History in a side column from a 52rem pane (a container query,
-never the viewport); it has no owner control. History is the case's own lifecycle,
-newest first, with who, when and the actions taken; the full activity feed is one
-disclosure away and names a load failure while closed. The title shares its row with the actions only when the whole title fits
-beside them; otherwise the actions wrap below it, so the title is never squeezed. Lifecycle dialogs keep their actions in a footer that never scrolls
+tab never repeats the verdict, confidence, risk, status or owner the header and inspector
+already show. The **Brief** opens with the review sentence on a review sample and, on an
+open case, the runbook's next step as one 48px row, then four lanes, each tagged with who
+wrote it: Evidence (source: the trigger sentence and one quiet line of events, entity,
+times and source), Assessment (ai: the model's own reasoning, its first two or three
+sentences, and the recommendation while the case is open; once the case ended, the
+recommendation at triage is folded under it), Decision (code, or analyst when a person
+settled it, named "Analyst policy" when an operator's declared-benign rule closed it: the
+decision line, the auto-close reading against the policy entry for the case's verdict,
+the authority sentence once, with Policy inputs and Automation applied one disclosure
+away each) and People (analyst: the last thing a person did, then the runbook's progress
+and the counts of messages and screenshots). The decision line is a sentence about who
+settled the case and how, never the `key=value` record, which Policy inputs keeps word
+for word: "Escalated by the system." or "Closed by the AI agent." from the case
+manager's record, and "Sent to an analyst by the case policy." for every routing to a
+person, whether the lane reads the record or the rationale `decide()` wrote. The reason
+the code recorded ("Confidence was below the auto-close bar.") follows it only when there
+is no auto-close reading to say why. On a person's close the decision line is what the
+policy recorded before them ("Before the analyst: ..."), or nothing; the outcome, the
+person and the time are in the header, the inspector and the People lane. The People
+lane's last action is the newer of a person's last History entry (a status change, an
+owner change or a review) and the last runbook step a person finished, with when it
+happened. When a run decided after a person's close and the case is open again, it adds
+"The AI investigation then replaced the close." Work without either (messages,
+screenshots, steps with no name) reads "No status change by a person yet.", and a case
+nobody touched reads "No one has worked on this case yet." The Evidence, Assessment and
+People lanes link to their tabs. The Assessment lane never falls back to the
+deterministic decision's text, which belongs to the code and is shown, attributed to the
+code, only under the Brief's Decision lane (G17). A case the AI did not assess shows its
+system summary, untagged. While nobody has settled a case, the inspector's Outcome reads
+"Not classified yet" rather than repeat the AI verdict the header shows. "How this case
+was built" (the six-stage story) is folded at the end. **Evidence** is what the sources
+said, and nothing the AI or the code made of it: What happened (the trigger, the source
+stage and the case's events, filtered when a finding's "Cites N events" opened the tab),
+Entities, Threat context, Related cases and the baseline. The events table is fixed
+layout and joins its columns by container query as the pane widens, so the message
+always keeps at least 12rem: below 36rem it shows the time (the date over the time) and
+the message, with the rule above the message; the Rule column joins from 36rem, Severity
+from 44rem, Source IP from 56rem, and User and Host from 80rem. **AI investigation** is
+what the model said and did: one muted line saying it is advisory and that code decides
+the route, the AI assessment (reasoning, the findings, found and ruled out, the
+reproduce query, the full evidence one click away), the investigation inputs, the trace
+(open while an AI run is under way; runbook AI help a person asked for is its own actor,
+Runbook, named after the person who asked and with its own call's cost) and earlier
+gradings; no code provenance tag shows on it. **Response** is the runbook run
+for a viewer who may read runbooks and the case's tasks for everyone. **Activity** is
+Discussion and Files in the main column with History in a side column from a 52rem pane
+(a container query, never the viewport); it has no owner control and no tasks. History is the case's own lifecycle,
+newest first, with who, when and the actions taken. A decision entry gives the reason
+the code recorded, in the Decision lane's words; a status move gives the reason its
+dialog collected (Hold, De-escalate) when it differs from the note, and the resolution
+it recorded. A note longer than three lines is clamped with "Show more", so the whole
+note is one press away, and the list shows eight entries with "Show N earlier" below
+them. The full activity feed is one disclosure away and names a load failure while
+closed. The tab row, like every underline tab list, scrolls sideways when its tabs do
+not fit: a new selection or a resize moves the list (never the page) just enough to
+bring the selected tab into view clear of the edge, and an edge with more tabs past it
+fades out. A label or count that changes width (the live AI step count) keeps the
+selected tab in view only while the person has not scrolled the list since, so a list
+they swiped stays where they left it. The title row never wraps: the
+title takes the room the actions leave and truncates, and the actions keep their place.
+Lifecycle dialogs keep their actions in a footer that never scrolls
 away, open with focus on the field the analyst must fill (the disposition), and return
 focus to the control that opened it, or, when that control left with its row, to the
 row that took its place ("Close & next" lands on the next case's row). The close
@@ -694,12 +817,105 @@ their reason, Actions taken (toggle chips from a fixed vocabulary, at most eight
 action needed" exclusive), the note (required only on an override, because it is kept as
 precedent, with the footer naming what is missing), the screenshots slot, and a
 collapsed "Rate the AI (optional)". There is no resolution select, no outcome select and
-no tag field in it; tags are edited in the facts rail. The confirmation
+no tag field in it; tags are edited in the inspector. The confirmation
 after a close offers **Reopen**, never "Undo": reopening keeps the recorded outcome until
 the case is closed again with a new one, and the toast says so. Closing a Needs-human
 case the analyst did not grade records no AI agreement either way; a grade the analyst
 does give there (or on a duplicate close, or a case with no AI verdict) carries no
 assessment, and the Agreement rate counts only grades that compare with the AI verdict.
+
+**AI investigation signals.** Anyone who may see a case can see that the AI is working
+on it before they act, and the run's result stays authoritative (Round 16, SPEC D10).
+The words are fixed: "AI working" while a run is under way, "AI queued" while it waits
+for an investigation slot, "AI stopped" for a run that failed or was cancelled, and "AI
+investigation running", "AI investigation waiting", "AI investigation stopped" or "AI
+investigation finished:" with the new status in words, in titles and announcements.
+Never "Investigating" alone: that is the acknowledged status a person sets. Every signal reads
+one store (`soc/investigations/store.ts`, a lazy chunk), fed by
+`GET /api/investigations/active`, the `case.investigation` frames of the
+`investigations` topic on the page's one event stream, and the `202` of a Reinvestigate.
+A run shows only once it is 1 s old, because most runs end at once and a mark that
+flashes helps nobody (a run the server says began earlier shows at once), and its elapsed
+time is counted in the browser's clock. Frames and
+views carry ids, enums, times and counts only; a requester's name is plain text, and only
+a viewer who may manage users sees it.
+
+- **Header chip.** On the case header's meta strip, after the AI verdict, adding no row:
+  the turning ring with "AI working · 0:42" (the clock ticks each second) or "AI queued",
+  and for 6 s after a run this console showed ends, a success tint with "AI finished", or
+  for a run that failed or was cancelled the neutral tint, an alert mark and "AI stopped"
+  (its popover title says "AI investigation stopped"). It keeps its words from a 30rem
+  strip. Below that it shows its mark with the word "AI" and no clock, and its name still
+  says the whole state; the status words truncate before it does. There is never a clock
+  without its words, nor a bare ring: the ring alone is the case chat glyph, and under
+  reduced motion a still ring says nothing. While it shows, lower-priority items give way first: the verdict's label
+  word, the owner's name below a 56rem pane (the monogram stays), and the SLA, the
+  review chip and the outcome's `Analyst` tag below 64rem (the SLA stays in the
+  inspector's Signal section). The status
+  words truncate last and never vanish. A click opens its popover, named by its title:
+  the five steps (Triage, Specialist and runbook, Looking up evidence, Verdict, Deciding)
+  with the current one marked, who or what started it ("You started it.", "Started by a
+  person.", the name for a viewer who may manage users, a background job, a freed
+  investigation slot or event detection), the time against the time cap or, while queued,
+  the slots in use ("Waiting for a free slot: 3 of 3 investigations are running."), what
+  acting now does ("If you close or change the status before it finishes, its result sets
+  the status again. Your disposition, note, actions taken, comments and screenshots are
+  kept."), and "See its steps in the audit log". While the popover is open the run is read
+  again every 3 s.
+- **Queue row mark.** The ring and "AI working" or "AI queued" in the row's status node
+  (see the queue above). The words always show. In a queue narrower than 30rem the status
+  words give way to the run's words while it runs (the outcome badge of a case that ended
+  does the same), and so does the severity word at the start of line two, so the words
+  never run under the owner monogram; the row's accessible name keeps all three, the
+  leading glyph and the rail keep the severity, and the case header still shows the
+  status. It is decorative for assistive technology: the row's accessible
+  name ends with "AI investigation running" or "AI investigation waiting". It carries no
+  elapsed time: the row is drawn again only when its run changes, so a time in the name
+  would stay at its first value, and a name that ticks would make a focused row read
+  itself again. The header chip has the clock.
+- **Band line.** Runs on new events that have no case yet are the control band's third
+  line, "AI is investigating 2 new alerts. They join the queue when the investigation
+  finishes.", and nothing at 0.
+- **Navigation count.** The Case Manager item carries how many cases the AI investigates
+  now: the number after the label in the drawer, and a badge on the rail icon's corner
+  ("9+" above nine), with the hidden text "AI investigating 2 cases" joined to the item's
+  description. Only a viewer who may read cases loads it. The number lives in the
+  entry-safe `investigations/count.ts`; the store itself loads after first paint. While
+  the count is above zero, the item's activity glyph turns, as it does for a running case
+  chat. A case chat answer that waits, failed or is unread keeps its own mark, and the
+  count still shows.
+- **Close dialog notes.** The close, bulk close and status change dialogs say before you
+  act that the run's result replaces what you do now: "An AI investigation is running on
+  this case." with "When it finishes, its result replaces a close you make now." (or "the
+  status you set now"), and for a selection "2 of the selected cases have an AI
+  investigation running." The note is a polite status, never an alert, and it never blocks
+  the submit. A run that finishes while the dialog is open turns it into an info note that
+  says the investigation finished, names its verdict in the verdict's own words when there
+  is one, never as a change ("The AI investigation finished with the verdict Needs human
+  review. Check it before you close."), and asks you to check it before you close (or
+  change the status). A run that failed or was cancelled never reads as finished: the note
+  says it stopped (or could not finish) and that the case was not changed, with the alert
+  mark. While a close or status dialog's note covers a case, the case page
+  shows no finish toast for it: the note already says so, and a toast would sit over the
+  dialog's buttons.
+- **Reinvestigate** never blocks: the dialog closes on the `202` and the header chip shows
+  at once. A second request while a run is queued or running answers with a toast, and the
+  case is read again when its run finishes. The finish toast shows for your own run or a
+  status that changed under you. When a person closed or resolved the case on screen while
+  the run was queued or running, and the run left it open, it is a warning that names the
+  replaced close, the same close the server records as replaced and the Inbox notice names
+  (a close made before the run was asked for, or by the AI or the system, is not one):
+  "The AI investigation replaced your close of CASE-0042. Status: Open · awaiting analyst.
+  Your disposition and note are kept." ("the close" and "The disposition" when the record
+  does not show it was yours).
+- **Announcements and Inbox.** Each change is announced politely through the app's one
+  live region, at most once every 10 s, and the last state is never dropped. The end of a
+  run is said once on a console: when the finish toast or a close dialog's finished note
+  says it, the header chip does not; the chip waits a moment before it says an end, and
+  longer while the page reads the case to decide on its toast. The ring
+  stands still under reduced motion. A manual run's requester gets an Inbox item when it
+  finishes ("AI investigation finished on case CASE-0042"), and a person whose close a run
+  replaced gets one that says so, written after its `case.close_replaced` audit row.
 
 Campaigns is analyst-first. The default **Campaign review** workspace owns the current
 group list, detail, and read-only refresh; manual correlation and saved cadence belong
@@ -968,8 +1184,9 @@ count); the active row carries `aria-current`, and ↑/↓/
 Home/End move between rows through a single roving tab stop that always lands on an
 existing, enabled row. The row menu offers Rename (inline, IME-safe), Pin/Unpin, Open
 report (when the thread has one; disabled with its reason while another thread's turn
-runs), Export and Delete; Delete confirms that the report stays in Reports and is
-disabled for the thread a turn is running in. History truth is fail-closed: a read failure is an explicit
+runs), Export and Delete; Delete asks before it removes the thread (its confirmation
+adds that the report stays in Reports only when the thread has one) and is disabled for
+the thread a turn is running in. History truth is fail-closed: a read failure is an explicit
 retryable error, never the calm **No previous conversations** state. The footer
 discloses retention when history was truncated or at least 45 conversations exist.
 
@@ -1289,13 +1506,14 @@ own page instead.
   `h1`; a longer form belongs in the page's help tip. Group rows are exempt (the
   Overview row reads "Overview" while its pages are titled "Cyber Defence Center" and
   "Dashboards"), as are hosts whose own id is also one of their pages (Workspace and
-  Chat, Notifications and Inbox). `nav-titles.round14.test.ts` checks it.
+  Chat, Communication and Inbox). `nav-titles.round14.test.ts` checks it.
 - **Landing and the Overview group.** The Console lands on the Cyber Defence Center
   (`#/overview`) after sign-in, at `#/`, at an unknown hash and after the first-run
   wizard; `#/dashboard` is its old alias and is replaced by `#/overview`. The Overview
-  group lists **Cyber Defence Center**, **Dashboards** (gated on `metrics:view`) and
-  **Standup**. Pressing the Overview row opens the Dashboards library (its target), or
-  the Cyber Defence Center for a viewer without `metrics:view`. The brand link opens the
+  group lists **Cyber Defence Center**, **Dashboards** and **Standup** (both gated on
+  `metrics:view`, which the standup reads require). Pressing the Overview row opens the
+  Dashboards library (its target), or the Cyber Defence Center for a viewer without
+  `metrics:view`. The brand link opens the
   Cyber Defence Center.
 - The **Intelligence** group uses four direct, non-overlapping operator destinations:
   **Knowledge corpus** is indexed RAG material; **Runbooks** are the team's step-by-step
@@ -1340,11 +1558,26 @@ own page instead.
   page's other URL asks too), a modified click opens a new tab. A
   group row opens its target and never opens or closes its group; the chevron beside it
   is a separate 28px button named "Show <group> pages" or "Hide <group> pages" that only
-  toggles the list. A group whose only page is its own (Notifications) is a plain
-  destination with no chevron. A section holding one item of its own name
-  (Intelligence, Analytics, Notifications) gets a hairline, not a heading that repeats
-  it; other section headings are 12px sentence case. The current page is a tinted pill
-  and a tinted icon, never an accent bar at the window edge.
+  toggles the list. A group whose only page is its own is a plain destination with no
+  chevron. Communication holds two pages, Inbox and What's new, so it is a disclosure
+  whose row opens Inbox; the top-bar bell keeps the name Notifications. A section holding
+  one item of its own name (Intelligence, Analytics, Communication) gets a hairline, not a
+  heading that repeats it; other section headings are 12px sentence case. The current page is a tinted pill
+  and a tinted icon, never an accent bar at the window edge. The Case Manager row also
+  carries the count of cases the AI investigates now (see AI investigation signals under
+  Queue and detail workspaces).
+- **What's new** is a quiet dialog shown once per newest release-notes update id, only
+  inside the Console (never over sign-in, setup, a forced password change or the wizard),
+  and never blocking: 40rem wide on the shared scrim (full screen below 640px), focus on
+  its title, at most five highlights (an area tile, a title and one line), the first
+  screenshot among them as the hero (when two or more have one, pressing a row shows its
+  screenshot instead), and nothing that moves on its own. Any close writes
+  the marker once (`misc.whats_new_seen`, an audited preference); closing an automatic
+  dialog returns focus to the main landmark, a re-open to the control that opened it. A
+  highlight that needs a grant the viewer lacks stays on the Communication page only.
+  The personal switch "Show What's new after updates" turns it off. The entry chunk holds
+  only the marker compare and one import thunk; the page, the dialog and the notes are
+  lazy.
 - **The 64px rail.** A grouped icon opens its page on a click, with no flyout flash. Its
   pages appear in one flyout after a 300ms pointer rest (any movement restarts the
   clock), switch to a neighbour after 120ms once one is open, close 400ms after the
@@ -1422,7 +1655,7 @@ own page instead.
   give a long name a second line, breaking only between words; a single word wider than
   its room ends in an ellipsis, with the full name in its tooltip, and never breaks
   inside). Below `sm` the bar's gaps are 6px, so "Workspace" stays whole beside
-  "v0.1.13 · Testing" on a 360px phone. The search field shrinks first, down to 11rem,
+  "v0.2.0 · Testing" on a 360px phone. The search field shrinks first, down to 11rem,
   and becomes its icon opener below 46rem of bar; below 62rem the chips
   (Demo mode, platform health, update, source notice, account name) go icon-only, each
   with a tooltip and its full accessible name; below 72rem the product name leaves the
@@ -1484,11 +1717,15 @@ background data refreshes still follow the `LoadingState` / `LoadingBar` contrac
 
 Motion explains state change: route entry, disclosure, row insertion/removal, or a
 terminal live marker. It does not decorate static content. Honor
-`prefers-reduced-motion`; no required information depends on animation. Only two things
-may animate continuously: the newest terminal timeline marker, and the single
-agent-activity glyph while a chat turn is running (a rotation or arc sweep of about a
-1.2–1.35s period — never a slow "breathing" loop — with a static mark and the word
-"Working" under reduced motion). A successfully committed data refresh
+`prefers-reduced-motion`; no required information depends on animation. Only these may
+animate continuously: the newest terminal timeline marker, the agent-activity glyph
+while a chat turn is running, and the same glyph as the AI run ring while an AI
+investigation runs or waits on a case (the header chip, the queue row mark and the Case
+Manager navigation item). The glyph is a rotation or arc sweep with a period of about
+1.2 to 1.35 s, never a slow "breathing" loop. Under reduced motion it is a static mark,
+with the word "Working" for a chat turn and "AI working" or "AI queued" for a run (on a
+case header strip narrower than 30rem, the word "AI", never the mark alone). A
+successfully committed data refresh
 may replay one short transform/opacity-only cue tied to the new payload; it must never
 run on its own timer or imply that a request is in flight when it is not. Springs,
 press feedback and overlay origins follow **Foundations → Motion**.
@@ -1548,7 +1785,9 @@ line reserves a two-line slot (`min-h-[2lh]`), so a caption that wraps keeps its
 level with its neighbours' and nothing is left to a mouse-only `title`. Never put context
 beside the numeral: at six columns flex shrinks the numeral first. Hero numerals are
 neutral ink; only a non-zero critical count is red. Hero tiles carry no icon, and their help and drill-down marks
-appear on hover or focus beside the numeral (always shown on devices without hover).
+appear on hover or focus beside the numeral (always shown on devices without hover). A
+tile's math follows "Explainable numbers": on the numeral of a tile that does not drill
+down, and inside the drill-down dialog of one that does.
 A strip on the canvas is followed by the next band after the normal band gap; its own
 bottom rule closes the strip, and the band below draws no second rule against it. The
 primary dashboard's strip sits on its own grouped panel instead (see "Dashboard bands").
@@ -1840,6 +2079,63 @@ Keep the fixed Standard/Flex/Batch/Unconfirmed buckets visible even when zero, i
 Unconfirmed in coverage denominators, and never label a Standard row as a Flex
 fallback unless a future ledger contract explicitly records that provenance.
 
+## Explainable numbers
+
+A number the Console derives (a score, a share, a median, a priority, an SLA reading, a
+cost) can show its math (Round 16, SPEC A7): hover it for one line with the real numbers,
+select it for the full arithmetic. The Explain kit renders it and computes nothing.
+
+- **One contract.** A pure builder (`lib/explain/builders.ts`, and
+  `soc/components/metrics-explain/builders.ts` for dashboard figures) turns the data the
+  page already holds into one `Explanation`: the value as shown, the hover line, the
+  formula, the inputs with where each came from, the arithmetic steps, the rounding, the
+  provenance and the caveats. `lib/explain/explain.contract.json` pins the numbers on both
+  ends, so the Console and the server cannot drift. Explanations carry our own numbers,
+  ids and enums; every value, a rule name or an entity included, renders as a text node.
+- **Hover line.** Pointer rest (300ms) or keyboard focus opens a hover card with the
+  summary ("Risk 38.31 = (0.25 x 65.24 + 0.20 x 20 + ...) / 1.00. Click for inputs.") and,
+  unless the summary already points at the panel like that one, "Select it for the full
+  calculation." under it. The summary prints a division only when its printed numbers
+  give the score; when the stored factors do not reproduce it, it says the score came
+  "from the unrounded factors" and prints what the stored factors give. It meets WCAG
+  1.4.13: Escape dismisses it, the pointer can move onto it, and it stays until the
+  pointer or focus leaves (150ms grace). A touch never opens it, so a tap goes straight to
+  the panel. The trigger is the number itself, with a dotted underline on hover,
+  `cursor-help` and ", explain" in its accessible name.
+- **Click panel.** A click, Enter, Space or a tap opens a popover, at most 28rem wide and
+  scrolling inside the space it has, named by its title: the result as shown, the
+  summary, the formula in mono, the inputs (name, value, source), the steps as a table
+  (step, calculation, result), any detail the component adds, the rounding, the
+  provenance and the caveats, then **Copy calculation** and an optional link to the
+  records behind the number. Focus moves to the panel, so reading starts at its title;
+  closing it returns focus to the trigger, and the hover line stays down until the
+  pointer or focus leaves.
+- **Copy calculation** copies the whole explanation as plain text (the summary without its
+  pointer to the panel). The button reads "Copied" for 1.5 s and a status says
+  "Calculation copied."; a failure shows "Could not copy." beside it.
+- **Provenance is never guessed.** Each explanation says where its numbers came from:
+  "Recorded when the number was computed" (success text), "Computed by the server for this
+  reading" (neutral), "Reconstructed with today's settings" or "Not recorded" (warning
+  text). A case scored before its risk inputs were recorded reads "not recorded" and lists
+  its stored factors, never a re-derivation presented as the record; a decision whose
+  thresholds were not recorded labels today's policy values as today's.
+- **One rounding rule.** A score shows as an integer rounded half up
+  (`lib/explain/rounding.ts`, the server's `round_half_up`), its band is the band of that
+  integer, and the panel's Rounding line names the rule. The rounding is presentation
+  only: `decide()` compares the unrounded score.
+- **Where a trigger may sit.** Never inside another control. A queue row uses the
+  mouse-only `row-hover` mode: no focusable content and no pointer to a panel, the row's
+  accessible name carries the number, and the case header chip is the keyboard path. A
+  KPI tile takes the explanation through its `explain` slot only when the tile is not a
+  button and its numeral is not abbreviated; a tile that drills down shows the same panel
+  inside its drill-down dialog instead, as a labelled, scrollable "How X is calculated"
+  region. Lifecycle timings (time to acknowledge, resolve, dwell) hover with the median,
+  p90 and mean; opening the panel reads the cases behind the figure once
+  (`GET /api/metrics/explain`) for the rank arithmetic and a "Show all N" side sheet.
+- **Off the entry path.** Import the kit from `@/design-system/explain`, never the
+  `@/design-system` barrel, and only from lazy route chunks; `bundle-first-paint.test.ts`
+  fails if it reaches the entry.
+
 ## Theme and appearance
 
 System, Light, and Dark are the three supported modes. Signed-in appearance entry points
@@ -1906,126 +2202,165 @@ paths, registry/deployment credentials, migration instructions, or Compose fragm
 
 ## Identity surfaces
 
-The sign-in experience is intentionally minimal. Use one vertically and horizontally
-centred, borderless 480px by 492px identity slab for the normal desktop sign-in state
-on the isolated identity canvas, with a 384px content measure: one standalone 56px
-mark, the current auth-mode heading, one short
-description, credential controls, one primary action, and quiet support or operator-
-configured footer text. The hierarchy remains left-aligned inside the centred slab. A
-configured sign-in headline replaces the default heading; it never stacks above a
-second `h1`. Do not add a synthetic audit-status claim: auditing is a platform
-invariant, not useful sign-in instructions. The form is the page. Do not add a marketing
-hero, split context pane, assurance rail, trust-path diagram, decorative illustration,
-fake telemetry, or repeated security claims. Exactly two controls carry a gradient and
-a glow — the primary CTA and the corner appearance pill, both described under
-*Identity accents* below. Nothing else on this canvas may, and nothing in the Console
-may at all.
+The sign-in page is one quiet column on the Console's own tokens. The form is the page.
+Round 16 (SPEC D9) replaced the earlier isolated identity canvas, its ambient tiles and
+its two gradient controls; nothing on this page has a palette of its own.
 
-The slab has no radius, border, or elevation. It uses 48px top/side and 96px bottom
-desktop insets. Its fixed, login-scoped palette is intentionally independent of Console
-branding tokens: Light canvas/slab/muted tile are `#fbfbf8` / `#fff` / `#f5f4ef`;
-Dark uses `#1a1a1e` / `#101013` / `#27272b`. Four explicit 0.5px viewport guides
-align to the slab edges. The ambient layer follows the live Mistral sign-in choreography:
-exactly four neutral 240px tiles reveal sparsely, dwell, move on a 1,800ms ease-in-out
-transition, then fade away before scheduling their next randomized cycle. Top and bottom
-use two horizontal endpoints; left and right use a two-column by two-row outer lattice and
-choose a next cell sharing the current row or column. Only the top and bottom tiles may
-emit an occasional warm directional trail (`gold`, amber, orange, vermilion, or red), one
-tile behind the current move. Side tiles never emit colour. The trail belongs to the same
-movement lifecycle and retracts when that movement settles; there are no detached colour
-anchors or independently timed stationary blocks. The light/dark neutral tile, canvas,
-and guide tokens remain the dominant visual treatment, so the background reads as a quiet
-grid with rare colour rather than a perpetual saturated animation. Do not replace this
-backdrop with a gradient, glow, blurred blob, perpetual CSS drift, or tile border; the
-*Identity accents* exception below covers controls, never this ambient layer. The decoration
-is pointer-inert, `aria-hidden`, reduced-motion-safe, layered below the opaque slab, and
-never crosses behind credential content. Light/Dark changes snap the neutral tile palette
-atomically while preserving the active movement; never interpolate white tiles through a
-large grey flash during a theme switch. Below the small breakpoint, all
-guides and ambient tiles disappear and the
-surface becomes a full-width, full-height flow with 32px side/top and 80px bottom insets.
-A small pre-auth appearance control may sit in the viewport corner: the Light/Dark
-pill plus a round *Use system theme* reset that is pressed while `system` is active.
-System, Light, and Dark all remain reachable — the pill reflects and sets the RESOLVED
-appearance, and choosing either explicitly releases `system`. It delegates to
-`ThemeProvider.setTheme`, while authenticated surfaces continue through the preference
-layer. Sign-in, setup, MFA, MFA enrollment, and forced password change
-share the same centred slab; taller modes grow naturally and the slab scrolls within the
-viewport so software keyboards never trap the primary action. The form owns the page's
-single `h1`.
-Credential entry is identity-first: the initial surface contains only the username field;
-once it has a non-empty value, **Continue** appears and advances to the password step.
-The password step repeats the selected identity as quiet context and provides an explicit
-way back without discarding it. Credential inputs are 48px and primary/SSO actions are
-40px or taller. Inputs use a 16px mobile font and 14px desktop font to avoid browser
-focus zoom while keeping the reference's editorial density, password-manager
-autocomplete, and paste available. Seeded demo credentials label username and password
-explicitly beneath the primary credential form; their optional `Use` action fills the
-form, advances to the password step, and never submits it. When configured, icon-led,
-accessibly named SSO actions follow the identity step in one equal-width row; no empty
-divider or provider region is reserved when SSO is absent.
-External support links say they open a new tab, and the blocking first-paint gate uses
-the shared `LoadingState`.
+- **Canvas.** The page is `bg-canvas`, the same surface as the boot spinner and the
+  Console, so moving between them never changes colour. One static brand wash sits at the
+  top: `radial-gradient(60rem 28rem at 50% -8rem, hsl(var(--primary) / 0.08), transparent
+  70%)` on `.login-canvas::before`. It follows the organization accent, costs no
+  JavaScript, and is removed under `prefers-reduced-transparency: reduce` and
+  `forced-colors: active`. No slab, card, border, shadow, hero, illustration, fake
+  telemetry or repeated security claim.
+- **Column.** One column, 400px wide from the small breakpoint up and centred across the
+  viewport. It is top aligned at every width: at `max(4rem, 18dvh)` from the small
+  breakpoint up and, on phones, full width with 24px gutters at `max(4rem, 12dvh)`, in the
+  ordinary document scroll (no nested scroller). A step change or an error therefore grows
+  the page downward and never moves the heading or the field being retyped (a vertically
+  centred column shifted by half of every change). Every mode (sign-in, setup, MFA, MFA
+  enrollment, forced password change) uses the same column; taller modes grow and scroll
+  with the page. Rows sit on one 16px rhythm in every mode (`space-y-4`, a 16px gap under
+  a top alert and above the Remember me row under Continue).
+- **Hierarchy.** The organization logo, 40px tall at its own width up to 192px
+  (`object-contain`, left aligned, so a wordmark is never shrunk into a 40px square), or
+  the built-in shield (28px, `text-primary`), 32px above the heading. The page's one `h1`
+  is "Sign in to {organization}"; "Welcome back" appears only when this device remembers a
+  username; an operator `login_headline` replaces either and never stacks above a second
+  `h1`. A description appears only when it carries information: the operator's
+  `login_body` or `login_subtitle` on the identity step, and the instructions of the setup,
+  MFA, enrollment and forced-change modes. The password step has none, because the
+  identity row above the field already names the account. The hierarchy is left aligned
+  inside the centred column.
+- **Fields and actions.** Labels above fields; inputs 44px, 16px text on phones (no
+  browser focus zoom) and 14px from the small breakpoint up, with the Console `--input`
+  edge (at least 3:1 on the canvas and on the field fill) and the Console focus ring. The
+  primary action is the ordinary primary `Button` (`--primary` and
+  `--primary-foreground`, AA guarded for any operator accent), full width and 44px.
+  Credential fields keep password-manager `autocomplete` and paste. Every phone target is
+  at least 44px tall: the text links (`min-h-11`, natural height from the small breakpoint
+  up), **Back** and the demo **Use** (44px, 32px from the small breakpoint up, with `-mr-2`
+  so their text ends on the column edge like the links below them), the appearance buttons
+  (44px, 28px from the small breakpoint up) and the password reveal toggle (44px, its ring
+  drawn inside the field, 36px from the small breakpoint up). **Continue**, **Sign in**,
+  "Verify and continue" and "Set password & continue" stay enabled while their field is
+  empty and explain an empty submit under the field ("Enter your username.", "Enter your
+  password.", "Enter the 6-digit code.", "Enter a recovery code.", "Enter a new
+  password."): a disabled button explains nothing. The first-admin form and the mandated
+  setup keep their submit disabled until the policy hint or the saved-codes box is met.
+- **Identity first.** The identity step holds the username and **Continue**, which is
+  always rendered: an empty submit shows "Enter your username." under the field and keeps
+  the step. The password step repeats the identity as a quiet row with **Back** (or "Use a
+  different account" for a remembered device), the password with its reveal toggle, a
+  "Forgot password?" disclosure that says to ask an administrator, the Remember me row,
+  and **Sign in**. A hidden `autocomplete="username"` field stays in the password form.
+- **Single sign-on.** When providers exist, an "or" divider follows the identity form,
+  then one full-width outline button per provider, at least 44px tall, with its mark and
+  visible text "Sign in with {name}"; a long name wraps onto a taller button instead of
+  being cut off. The name is the provider's display name or, when none is set, "Google" or
+  "Microsoft" by its type; the public providers route never offers the internal id in its
+  place. The visible text is the accessible name. No region is reserved
+  when single sign-on is off. When single sign-on is offered, the Remember me row also
+  sits under Continue.
+- **Remember me.** When it can be ticked, the row is the label "Remember me" alone, with
+  no duration and no accessible description (Round 16 D6). The warning dialog the first
+  tick opens ("Stay signed in on this device?") is the disclosure: anyone who uses this
+  browser can open the Console as this account until they sign out or the session ends,
+  the session still ends on the administrator's schedule, and the device should be one
+  they trust. It states no duration or limit in hours, minutes or days (D6 as amended by
+  the acceptance pass). The checkbox draws the page's full-strength focus ring with a 2px
+  canvas offset, not the shared primitive's soft one. When an administrator turned it
+  off, or the connection is not secure, the row stays visible and disabled with its
+  one-line reason.
+- **Errors.** A field error (an empty field, wrong credentials, too many attempts, no
+  connection, a forced-change rule) renders under its field: 14px `text-critical-text`
+  with a 16px alert icon, `id="login-error"`, `role="alert"`, the field `aria-invalid` and
+  described by it. The forced change shows its errors under the confirm field and keeps
+  the focus in the new password. A quieter
+  second line may count attempts. Page errors that belong to no field (a single sign-on
+  callback failure, an expired enrollment) keep the top alert. A single sign-on error is a
+  backend code mapped to a fixed sentence; the page never renders a query-string value
+  (B25). A refused sign-in, code or password change shows a fixed sentence too ("The
+  username or password is not correct.", "That code is not correct. Try again.", "Could
+  not reach the server. Try again." for a failed request or any 5xx, "Too many attempts.
+  Wait a few minutes, then try again." for a 429, "Sign in failed. Try again." for any
+  other sign-in or code refusal, and "Could not create the admin account." or "Could not
+  change the password." for any other refusal on the setup and forced-change steps); the
+  page never renders the server's raw text, except a 400 password rule on the first-admin
+  step. The forced change counts the new password without its outer spaces, as the
+  server does, and maps the server's length rule to "New password must be at least 8
+  characters." and any other 400 to "Could not change the password." The session-ended
+  notice keeps its calm info style. Fields are disabled while a request runs, which takes
+  the focus away, so a refused request puts focus back in the field to fix: the password,
+  the first code cell, the recovery code, the new password or the setup password.
+- **Appearance.** One `role="group"` named "Appearance" in the top-right corner: three
+  round icon buttons, "Use system theme", "Light theme" and "Dark theme", each with
+  `aria-pressed`. The first button is named "Use the organization default theme" while
+  Branding sets a light or dark default, and "Use system theme" otherwise; the pressed
+  button always matches the theme on screen. The pressed one is an inverted fill
+  (`bg-foreground text-background`), and under forced colours the system highlight. It
+  delegates to `ThemeProvider.setTheme`; signed-in pages use the preference layer.
+- **Two-factor.** Six code cells, 48px tall with 6px gaps (about 40px wide on a 320px
+  phone). The cells submit once when the sixth digit arrives; "Verify and continue" stays
+  for recovery codes and as a fallback. A wrong code clears the cells and focuses the
+  first one.
+- **Mandated two-factor setup.** The heading takes focus programmatically and draws no
+  focus box (`[outline:none]`: `outline-0` only zeroes the width, and Chromium still draws
+  its `auto` ring; `outline-none` is a permanent transparent outline that forced colours
+  paints). On this page the QR code sits centred above the steps, the secret wraps
+  instead of being cut off, and the code field and "Verify and sign in" use the sign-in
+  grammar (a 44px field with 16px phone text, a full-width 44px button). A refused code
+  shows under the code field as the page's field error (the field `aria-invalid` and
+  described by it, focus kept in it), never in the card's alert above the QR code, which
+  sat off screen on a phone and pushed the field down. Its sections keep the page's 16px
+  rhythm, not the Settings card's 20px. "Back to sign in" is left aligned with everything
+  else.
+- **Loading.** The page waits for the setup status, the single sign-on providers, the
+  branding and the Remember me chunk before it paints the form, so nothing flashes or pops
+  in. Meanwhile the final shell is in place: the canvas, the appearance group and the
+  column, with a small `LoadingGlyph` that reveals only after 300ms. On a cold load the page
+  waits for ThemeProvider's own branding fetch instead of sending a second one; after a
+  sign-out, or when that fetch is older than 30 seconds, it fetches again.
+- **Hand-off.** The boot and hand-off spinner (`CenterSpinner`) reveals after 300ms on the
+  same canvas, so a fast sign-in goes from the form to the Console without a spinner flash
+  or a colour jump. What's new appears only inside the Console, after the hand-off.
+- **Footer.** The support link (it says it opens a new tab), operator notes and
+  `footer_text` as one muted 12px line under the form, all plain text. Seeded demo
+  credentials label the username and password under the form; their **Use** action fills
+  the form and moves to the password step, and never submits it.
 
-Legacy `split`, `centered`, and `full` branding values remain readable and round-trip for
-configuration compatibility, but all render the same minimal shell. Bounded operator
-wordmark, logo, subtitle, optional short welcome copy, footer notes, and support URL may
-remain; they must stay plain text and must not rebuild a second content pane. The Branding
-editor preview mirrors this exact minimal geometry and tokens.
+Legacy `split`, `centered` and `full` branding values remain readable and round-trip for
+configuration compatibility, and so does `login_illustration`; all render the same column
+and no illustration is drawn. The Branding editor preview mirrors this column and its
+tokens.
 
 ### Identity accents
 
-The identity canvas — and only the identity canvas — carries two expressive controls:
-`ShineButton`, the primary CTA, and `ThemeModePill`, the corner appearance switch. Both
-live in `webui/src/soc/components/auth/`, both are styled entirely by
-`.login-auth-canvas`-scoped CSS in `theme.css`, and both animate with CSS transitions
-and one keyframe — no animation library, and neither sits on a lazy chunk. Every rule
-is scoped under the canvas class, so the restriction is structural rather than
-advisory: used off the identity canvas these degrade to a plain, legible button rather
-than an invisible one. They are a
-deliberate exception to the surface grammar above, not a licence to reintroduce
-decoration elsewhere: no Console page may adopt either, and the ambient backdrop stays
-neutral.
+There are none. Round 16 (SPEC D9) retired the sign-in page's two expressive controls,
+the gradient primary button and the gradient appearance pill, together with the
+`gate-login-accents` design gate that measured their raw gradients. That is subject
+removal, not a softened gate: the page now paints only Console tokens, which the contrast
+gate measures in both themes, with sign-in pairs added in the same change (body,
+secondary and error text on `--canvas` at 4.5:1; `--input` on `--canvas` and on
+`--background`, and the focus ring on `--canvas`, at 3:1).
 
-The exception holds only while these rules do:
+The rules that keep it that way:
 
-- **Colour is measured, never eyeballed.** These are the only surfaces that paint text
-  on a raw gradient rather than a semantic token pair, so the token contrast gate cannot
-  see them. `webui/scripts/gate-login-accents.mjs` re-derives the worst case from
-  `theme.css` on every `npm run gates` and every Vitest run, compositing each face stop
-  with the sweep at its peak keyframe opacity and the overlay tint at its declared
-  per-theme opacity, and measuring against both label stops. Every composite clears
-  4.5:1. The reference palettes these are modelled on do not; that is why the ramps here
-  are deeper.
-- **Decoration never reaches the measured surface.** The CTA's halo renders outside an
-  opaque face; the pill's flair orbs render behind an opaque track. Both controls paint
-  no background of their own so their glow layers can sit beneath the opaque child.
-- **The pill's glyphs own fixed side cells.** The label can never drift over the bright
-  end of either ramp, which is what makes the measured label zone true. Ink and track
-  swap instantly between states — the two ramps are not interpolable, so a crossfade
-  would pair each ink with the wrong ramp mid-transition.
-- **The focus ring is drawn on the opaque child, never on the button.** An element's
-  outer box-shadow paints before its descendants, so a ring on the button itself sits
-  underneath the halo and the flair — on precisely the state that shows the ring. It
-  goes on the face and the track instead, with a 2px opaque offset so its contrast is
-  measured against the slab or the canvas rather than against whatever the glow is
-  painting behind it.
-- **Disabled and busy are different states.** The CTA is disabled both while nothing is
-  typed and while the request is in flight. Flattening it the instant it is clicked
-  reads as the form going dead, so the inert treatment excludes `[data-busy]`; busy
-  keeps the identity and lets the spinner carry the state.
-- **Every fallback is explicit.** The sweep is gated behind
-  `prefers-reduced-motion: no-preference`; translucent and blurred layers — the tint
-  included — are dropped under `prefers-reduced-transparency: reduce`; and under
-  `forced-colors: active` both controls return to the system palette AND the
-  gradient-clipped label is un-clipped, without which it would stay transparent over a
-  system-painted face and vanish. Those fallbacks carry `!important` deliberately:
-  `forced-color-adjust: none` opts the elements out of the UA's own correction, so any
-  state selector that survives on specificity — the pill's `[data-appearance]` ink, the
-  disabled CTA's muted face — keeps a hard-coded colour the system theme never sees.
-- **The CTA's accessible name is its label alone.** The sweep is `aria-hidden`, the halo
-  is a pseudo-element, and any icon renders outside the clipped label span (text-fill
-  transparency is inherited, so an icon nested inside it would disappear).
+- **One accent.** The organization's `--primary` drives the button, the focus ring, the
+  mark and the wash. No other colour, gradient or glow appears on the page.
+- **Motion is CSS, short and once.** The column enters once (opacity and an 8px rise,
+  280ms), the incoming form of a step change slides 12px (forward or back, 200ms) while
+  the outgoing one leaves at once, a field error fades in (150ms), the spinners reveal
+  after 300ms, and the wash may fade in once (600ms). Every keyframe animates only
+  `opacity` and `transform`, fills `backwards` (a finished `both` fill would leave a
+  backdrop root), sets no `will-change`, never repeats and exists only under
+  `prefers-reduced-motion: no-preference`; under reduce the page simply appears. A
+  source test (`login-motion-guard.test.ts`) holds `theme.css` to this.
+- **Nothing moves after it settles.** No timers, intervals or perpetual animation run on
+  the page after the first paint, so there is nothing to pause (WCAG 2.2.2) and nothing
+  re-renders while the page sits open (`login.quiet.test.tsx`).
+- **No animation library.** The sign-in chain stays off `motion`, so the first paint
+  pulls nothing extra (`bundle-first-paint.test.ts`).
 
 ## Forms, Settings, and dangerous actions
 

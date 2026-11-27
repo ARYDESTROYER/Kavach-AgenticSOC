@@ -55,6 +55,7 @@ from ..stores.auto_close_review import (
 )
 from ..utils import new_id
 from .metrics import decision_record
+from . import stats
 from .precedent import case_rule_identity, is_policy_closed
 from .time_windows import zone_for
 
@@ -278,15 +279,10 @@ def history_review(case: Any, review_id: str) -> Mapping[str, Any] | None:
 
 
 def wilson_interval(successes: int, total: int) -> dict[str, float] | None:
-    """The Wilson score 95% interval of ``successes`` of ``total`` (None for 0)."""
-    if total <= 0:
-        return None
-    z = 1.96
-    p = successes / total
-    denom = 1.0 + z * z / total
-    centre = (p + z * z / (2.0 * total)) / denom
-    margin = z * ((p * (1.0 - p) / total + z * z / (4.0 * total * total)) ** 0.5) / denom
-    return {"low": round(max(0.0, centre - margin), 4), "high": round(min(1.0, centre + margin), 4)}
+    """The Wilson score 95% interval of ``successes`` of ``total`` (None for 0), rounded
+    to 4 decimals here from the one implementation (``engine/stats.py``, Round 16)."""
+    interval = stats.wilson_interval(successes, total)
+    return None if interval is None else {"low": round(interval[0], 4), "high": round(interval[1], 4)}
 
 
 # --------------------------------------------------------------------------- #
@@ -538,15 +534,15 @@ class ReviewSampler:
 
 def publish_review_frame(bus: Any, case_id: str, review_id: str, state: str) -> None:
     """One ``case.review`` nudge on ``cases:{id}`` and on ``cases`` (ids and the state
-    only, #7 and #9). Fire and forget."""
+    only, #7 and #9): one event with one id (``EventBus.publish_many``), so a client
+    on both topics receives it once. Fire and forget."""
     if bus is None:
         return
     payload = {"case_id": case_id, "review_id": review_id, "state": state}
-    for topic in (f"cases:{case_id}", "cases"):
-        try:
-            bus.publish(topic, REVIEW_EVENT, dict(payload))
-        except Exception:  # noqa: BLE001 (realtime is advisory)
-            pass
+    try:
+        bus.publish_many((f"cases:{case_id}", "cases"), REVIEW_EVENT, payload)
+    except Exception:  # noqa: BLE001 (realtime is advisory)
+        pass
 
 
 def eligible_closes_by_day(

@@ -1,6 +1,6 @@
 ---
 title: Audit log
-description: Open, filter and export the append-only record of every action by people, the AI agent and the system in Agentic SOC 0.1.
+description: Open, filter and export the append-only record of every action by people, the AI agent and the system in Agentic SOC 0.2.
 ---
 
 # Audit log
@@ -106,14 +106,15 @@ When a scope has no events in the time range, the page says so in that scope's w
 ("No agent activity in the last 7 days.") and offers a longer range and **Show all
 scopes**, so an empty scope is never mistaken for an empty log.
 
-On a phone the list shows Time, Outcome and Event, and the filters fold into **Filters**
-(its count leaves out the search, which stays on the page). Below 1,280 pixels the Target
+On a phone, and whenever the list is narrow, it shows Time, Outcome and Event, and the
+time wraps onto two lines; open a row to see the actor and the summary. On a phone the
+filters fold into **Filters** (its count leaves out the search, which stays on the page). Below 1,280 pixels the Target
 column folds away; every value is still in the record.
 
 In **Agent activity**, the steps of one investigation fold into one row that names the
 case it worked on, how many steps it took and how it ended (for example "10 steps · closed
-as false positive"), with **Open case trace**, which opens the case on its Investigation
-tab with the trace open (for people who can read cases). Open the row to list its steps.
+as false positive"), with **Open case trace**, which opens the case on its AI
+investigation tab with the trace open (for people who can read cases). Open the row to list its steps.
 The group's outcome follows how the investigation ended: Failed when it ended in an error
 (Denied when that error was a refusal and no decision followed it), Success when it
 reached its verdict or decision and every step succeeded, and Partial when it reached its
@@ -195,7 +196,7 @@ The record has six sections:
 6. **Related.** Links that apply a filter: the same actor within 15 minutes, all events
    for this target, all events for this case, and the actor's sign-ins in the 30 days
    before this event. For people who can read cases, **Open case trace** opens the case
-   on its Investigation tab with the trace open.
+   on its AI investigation tab with the trace open.
 
 **Copy link** copies the address of this record with the page's filters. When a change was
 recorded but its save then failed, the record says "Not applied (see the next record)":
@@ -203,7 +204,9 @@ the failure row that follows it in time has the same request id, and **see the n
 record** opens it. A link to a record that is not in the current store says "This record is
 not in the current store."; one that could not be read offers **Retry**.
 
-Every value is shown as plain text, exactly as stored. Values are cleaned when a row is
+Every value is shown as plain text, exactly as stored. Without `cost:view`, the spend
+figure in the few rows that record one reads hidden on the page too (see
+[Spend figures](#spend-figures)). Values are cleaned when a row is
 written: names, ids and labels lose control characters (an actor keeps at most 160
 characters, and a name made only of such characters is recorded as U+FFFD), and
 summaries, queries and tool input lose NUL characters, so what was attempted is still
@@ -266,7 +269,14 @@ otherwise narrow the filters. Nothing is ever cut off silently.
   full-width forms) is written with a leading apostrophe, so a spreadsheet shows it as
   text and never runs it. The CSV and copied data of chat answers and reports use the
   same rule.
-- **JSON Lines** writes each stored record unchanged, one per line.
+- **JSON Lines** writes each stored record unchanged, one per line, apart from a hidden
+  spend figure (below).
+- Without `cost:view`, the file hides the spend figure in the timeout, decision, runbook
+  AI, budget refusal and replay spend rows (`cost=hidden`, `spend_usd=hidden`,
+  `bound_usd=hidden`, `(amount hidden)`) in both formats, as the audit log page does, and
+  the Export menu and dialog say so. The rest of each record is written as stored. The
+  grant is checked when the export runs and again as it reads. The full application
+  export keeps every row as stored.
 - Audit exports are not available in Demo Mode: the Export menu says so and stays
   disabled until Demo Mode is turned off.
 - A finished audit export offers **Open audit log** in **Jobs**, in the Inbox and on its
@@ -310,6 +320,17 @@ changed.
 | Changes | Up to 50 fields with their values before and after, secrets withheld. |
 | Request id | The id of the request (also in the `X-Request-ID` response header). |
 | Run id | The investigation run, so its steps group together. |
+
+### Spend figures
+
+A few rows record an AI spend figure in their summary: an investigation that ran out of
+time, the code's decision, a runbook AI request, a budget refusal and a replay
+experiment's spend row (its `spend_usd` and `bound_usd`). Without the permission to see
+AI spend (`cost:view`), those figures read "hidden" or "(amount hidden)" in the list, in
+the record and in an audit log export. The same applies to a budget refusal shown on a
+case. The stored rows never change, and every other row is shown as recorded. A search
+still matches the stored text, so searching for a cost figure can show that a row holds
+it (see [Known limitations](../releases/known-limitations.md)).
 
 ### Personal data
 

@@ -1,14 +1,14 @@
 # Install Agentic SOC
 
-This guide installs **Agentic SOC 0.1.13** step by step: from a first look on a workstation,
+This guide installs **Agentic SOC 0.2.0** step by step: from a first look on a workstation,
 through the recommended Docker Compose stack and its setup wizard, to a hardened deployment.
-Every screenshot is a real capture of the 0.1.13 Console. Numbered amber outlines mark the
+Every screenshot is a real capture of the Console. Numbered amber outlines mark the
 fields and buttons each step talks about, and the table under each screenshot explains them.
 
 > [!NOTE]
 > This is the walkthrough. [`DEPLOY.md`](DEPLOY.md) is the full deployment reference, and the
 > installed Console carries a version-matched Help Center (select **Help Center** at the bottom
-> of the navigation rail; it is served by your own deployment at `/docs/0.1/`).
+> of the navigation rail; it is served by your own deployment at `/docs/0.2/`).
 
 > [!TIP]
 > The screenshots use the light theme. A new installation opens the setup wizard and the Console
@@ -105,7 +105,7 @@ running cost is model API usage, which the Console meters in its cost ledger.
 | A model provider | Live investigations | An OpenAI key for the default GPT-5.6 Luna roles, another supported provider, or an OpenAI-compatible endpoint. Without a key the Console still runs, but no investigation can call a model: each cluster sent to investigation becomes a **Needs human** case whose recommended action names the missing key, and nothing is closed automatically. Only retrieval embeddings fall back to local ones. The `$0` mock model is used only by Demo Mode |
 | A read-only source credential | Pull sources | Scoped to the log indices Agentic SOC should read. Push sources need no source credential |
 
-Version 0.1 runs **one backend replica**. It is a single-host reference deployment, not a
+Version 0.2 runs **one backend replica**. It is a single-host reference deployment, not a
 high-availability design. Read [Known limitations](docs/releases/known-limitations.md) before
 admitting sensitive or loss-intolerant data.
 
@@ -199,14 +199,14 @@ Then choose what to build:
 
 | You want | Run | When to use it |
 | --- | --- | --- |
-| **Stable 0.1.13** | `git checkout v0.1.13` | Only after the `v0.1.13` [GitHub Release](https://github.com/ARYDESTROYER/Kavach-AgenticSOC/releases) exists with its signed plan. Git reports a detached HEAD, which is expected for a tag |
+| **Stable 0.2.0** | `git checkout v0.2.0` | Only after the `v0.2.0` [GitHub Release](https://github.com/ARYDESTROYER/Kavach-AgenticSOC/releases) exists with its signed plan. Git reports a detached HEAD, which is expected for a tag |
 | **Testing** | `git checkout Testing` | The integration branch: the next candidate, for evaluation of unreleased work |
 | **Current Stable source** | stay on `main` (the default branch) | The last accepted Stable tree |
 
 Keep a full clone (no `--depth 1`): a later updater bootstrap checks that the release tag is an
 annotated tag contained in `origin/main`. Never create or move a release tag locally. Tags
 `v0.1.4` to `v0.1.12` are historical publication records and are not installation sources; the
-[release notes](docs/releases/0.1.13.md) and [release channels](docs/releases/channels.md) explain
+[release notes](docs/releases/0.2.0.md) and [release channels](docs/releases/channels.md) explain
 the Stable and Testing contract.
 
 ### 5.3 Configure the environment file
@@ -248,7 +248,7 @@ Then add one provider key, for example `TLSOC_OPENAI_API_KEY=<your key>`.
 | `TLSOC_ANTHROPIC_API_KEY` | Optional | Alternative provider for Claude models. Assign models to roles in **Settings → General → Models** after launch |
 | `TLSOC_EMBEDDING_API_KEY` | Optional | Embeddings for knowledge retrieval. Falls back to the OpenAI key, then to local hashing embeddings |
 | `TLSOC_AUTH_COOKIE_SECURE` | Set `true` behind TLS | Makes the session cookie HTTPS-only. Required before **Remember me** is offered over the network |
-| `TLSOC_RELEASE_CHANNEL` | Leave `testing` | Set `stable` only when you build the exact `v0.1.13` tag. A Testing build must not report itself as Stable |
+| `TLSOC_RELEASE_CHANNEL` | Leave `testing` | Set `stable` only when you build the exact `v0.2.0` tag. A Testing build must not report itself as Stable |
 | `TLSOC_ES_URL`, `TLSOC_ES_API_KEY`, `TLSOC_ES_CA_CERT`, `TLSOC_ES_VERIFY_CERTS` | Optional | Pre-seed one Elasticsearch, OpenSearch or Wazuh pull source at boot. This is the restart-safe alternative to typing the key in the wizard. `TLSOC_ES_CA_CERT` is a file path inside the backend container, not a host path: for a private CA, mount the certificate with an [override file](#use-an-override-file-for-local-changes) (under `tlsoc-backend`, `volumes:` `- /absolute/host/path/ca.crt:/certs/ca.crt:ro`, with an absolute host path to a file the container user can read) and set `TLSOC_ES_CA_CERT=/certs/ca.crt` |
 | `TLSOC_ABUSEIPDB_API_KEY`, `TLSOC_VIRUSTOTAL_API_KEY` | Optional | Keyed enrichment. Keyless providers run without keys. The base Compose file also forwards the Round 3 keys listed in `.env.example` (for example `TLSOC_GREYNOISE_API_KEY` and `TLSOC_SHODAN_API_KEY`); only the twelve Round 11 keys need `deploy/docker-compose.enrichment-keys.yml` (see below) |
 | `TLSOC_PG_USER`, `TLSOC_PG_DB` | Optional | Database user and name, both `tlsoc` by default. Like the password, they apply only when the `tlsoc-pgdata` volume is first created: set them before the first `up` and do not change them afterwards |
@@ -263,7 +263,7 @@ Then add one provider key, for example `TLSOC_OPENAI_API_KEY=<your key>`.
 | `TLSOC_ES_MGMT_API_KEY` | Used only when Elasticsearch holds Agentic SOC's own state ([path D](#10-path-d-attach-to-an-existing-elastic-stack)) |
 | `TLSOC_VERSION` | The wrapper reads the version from the `VERSION` file |
 | `TLSOC_BUILD_SHA`, `TLSOC_BUILD_DATE` | Keep them commented out. The wrapper derives both from your checkout |
-| `AGENTIC_SOC_UPDATE_REPOSITORY` | Keep `ARYDESTROYER/Agentic-Kibana`. It names the repository whose signed releases the update supervisor trusts; only a fork changes it, before bootstrapping its own supervisor |
+| `AGENTIC_SOC_UPDATE_REPOSITORY` | Set it to `ARYDESTROYER/Kavach-AgenticSOC`, in exactly that letter case. It names the repository whose signed releases the update supervisor trusts. The bootstrap refuses to run when the line is missing or still names the repository's former name. Only a fork changes it, before bootstrapping its own supervisor |
 
 > [!CAUTION]
 > `.env` holds every secret of the deployment. It is listed in `.gitignore`: never commit it,
@@ -366,7 +366,7 @@ curl --fail http://localhost:8080/api/health/ready
 curl --fail http://localhost:8080/api/health/build-info
 ```
 
-This is real output from a local run of the 0.1.13 **demo backend** (`127.0.0.1:8088`, with an
+This is real output from a local run of the 0.2.0 **demo backend** (`127.0.0.1:8088`, with an
 in-memory state store), pretty-printed with `python3 -m json.tool` so you know the shape of each
 answer:
 
@@ -375,14 +375,14 @@ $ curl -s http://127.0.0.1:8088/api/health/live | python3 -m json.tool
 {
     "status": "ok",
     "service": "tlsoc-agentic-triage",
-    "version": "0.1.13"
+    "version": "0.2.0"
 }
 
 $ curl -s http://127.0.0.1:8088/api/health/ready | python3 -m json.tool
 {
     "status": "ready",
     "ready": true,
-    "version": "0.1.13",
+    "version": "0.2.0",
     "store_type": "InMemoryESClient",
     "checks": {
         "state_store": true
@@ -392,10 +392,10 @@ $ curl -s http://127.0.0.1:8088/api/health/ready | python3 -m json.tool
 $ curl -s http://127.0.0.1:8088/api/health/build-info | python3 -m json.tool
 {
     "service": "tlsoc-agentic-triage",
-    "version": "0.1.13",
+    "version": "0.2.0",
     "release_channel": "testing",
-    "commit_sha": "4cb849a9092d115845000b64efa388e3864964d7",
-    "build_time": "2026-11-11T22:34:11+05:30",
+    "commit_sha": "f82e5906f3d969ef23d01ffec1c3c67ca008baa1",
+    "build_time": "2026-11-25T07:28:10+00:00",
     "state_backend": "elasticsearch",
     "ocsf_version": "1.4.0",
     "provenance_complete": true,
@@ -447,10 +447,11 @@ later in **Settings → Account → Security & two-factor**. For an administrato
 on.*
 
 > [!NOTE]
-> If the first screen is **Welcome back** with a hint for `Admin` / `Admin@123` instead,
-> `TLSOC_AUTH_ADMIN_PASSWORD` was empty and the backend seeded its demo super administrator. Sign
-> in with it and finish the setup wizard first ([section 5.11](#511-run-the-setup-wizard)). You can
-> choose **Skip for now** on the Data sources and AI runtime stages and add them later. Settings
+> If the first screen is the sign-in page with a **Demo credentials** hint for `Admin` /
+> `Admin@123` instead, `TLSOC_AUTH_ADMIN_PASSWORD` was empty and the backend seeded its demo super
+> administrator. Sign in with it and finish the setup wizard first
+> ([section 5.11](#511-run-the-setup-wizard)). You can choose **Skip for now** on the Data
+> sources and AI runtime stages and add them later. Settings
 > opens only after **Launch Agentic SOC**. Then create your named administrator in
 > **Settings → Security & access → Users**, sign in as that account, and turn the `Admin` account
 > off with its **Active** switch. Agentic SOC never lets you remove the last active super
@@ -461,14 +462,14 @@ on.*
 Creating the administrator signs you in, so you go straight to the setup wizard. The sign-in
 screen is what you and your team see on every later visit. It has two steps.
 
-![Sign-in screen titled Welcome back with the username soc-admin entered and a Continue button.](docs/assets/screenshots/install-02a-sign-in-username.webp)
+![Sign-in screen titled Sign in to Agentic SOC with the username soc-admin entered and the Continue button.](docs/assets/screenshots/install-02a-sign-in-username.webp)
 
 *Figure 3. Sign-in, step 1.*
 
 | # | Field or button | What to do |
 | --- | --- | --- |
 | 1 | **Username** | Type your username |
-| 2 | **Continue** | Appears once a username is typed. It moves to the password step |
+| 2 | **Continue** | Moves to the password step |
 
 ![Sign-in password step for soc-admin with a masked password field, a Remember me checkbox and the Sign in button.](docs/assets/screenshots/install-02-sign-in.webp)
 
@@ -550,7 +551,7 @@ in [section 5.3](#53-configure-the-environment-file) shows, and type its contain
 example `/certs/ca.crt`.
 
 > [!WARNING]
-> **Known issue in 0.1.13:** the field also offers to take pasted PEM text or a selected `.pem` or
+> **Known issue in 0.2.0:** the field also offers to take pasted PEM text or a selected `.pem` or
 > `.crt` file, but the backend passes the value to the Elasticsearch client as a file path. Pasted
 > or uploaded certificate text is not a path, so the source cannot use it. Use a mounted path.
 
@@ -565,7 +566,7 @@ example `/certs/ca.crt`.
 | 2 | **Log index pattern** (required) | The index pattern or data view the agent reads, for example `all-logs-*`. Comma-separated patterns are allowed. Start with the narrowest pattern that holds your alerts |
 
 > [!WARNING]
-> **Known issue in 0.1.13:** the **Log index pattern** field shows `all-logs-*` before you type
+> **Known issue in 0.2.0:** the **Log index pattern** field shows `all-logs-*` before you type
 > anything, but that displayed default does not count as a value. If you leave it untouched,
 > **Add source** fails with `Please complete required fields: Log index pattern`. Clear the field
 > and type the pattern yourself. The same applies to the index pattern fields of the OpenSearch
@@ -664,12 +665,13 @@ them.
   **No triage activity yet** with **Connect a source** and **Start live demo** (which turns on the
   reversible, isolated Demo Mode).
 - The header holds the search box (<kbd>Ctrl</kbd>+<kbd>K</kbd>), notifications, the theme
-  toggle, the release badge (`v0.1.13 · Testing` for a source build), the update control
+  toggle, the release badge (`v0.2.0 · Testing` for a source build), the update control
   (**Enable updates** here; see [section 8](#8-updates)), the health pill (**Healthy**) and your
   account menu.
 - The navigation rail groups Overview, Triage (Cases, Case Manager, Campaigns, Logs, Workspace,
-  Approvals), Intelligence, Analytics, Notifications and Platform (Sources, Audit log, Auto-tuning,
-  Settings). <kbd>Ctrl</kbd>+<kbd>B</kbd> collapses it. **Help Center** sits at the bottom.
+  Approvals), Intelligence, Analytics, Communication (Inbox and What's new) and Platform
+  (Sources, Audit log, Auto-tuning, Settings). <kbd>Ctrl</kbd>+<kbd>B</kbd> collapses it.
+  **Help Center** sits at the bottom.
 
 Check the installation:
 
@@ -678,7 +680,7 @@ Check the installation:
 - [ ] **Logs** shows normalised records with the expected fields and source attribution.
 - [ ] **Analytics → Cost** stays at zero until a model-backed action runs.
 - [ ] **Audit log** records your sign-in, the account creation and the setup changes.
-- [ ] **Help Center** opens on this deployment at `/docs/0.1/`.
+- [ ] **Help Center** opens on this deployment at `/docs/0.2/`.
 
 Then continue with [path C](#6-path-c-harden-for-production) before anyone else uses the
 deployment, and with [Your first case](docs/getting-started/first-case.md) to prove data reaches
@@ -833,7 +835,7 @@ server {
 </details>
 
 > [!WARNING]
-> **Single sign-on behind a TLS ingress, known issue in 0.1.13:** the backend builds the SSO
+> **Single sign-on behind a TLS ingress, known issue in 0.2.0:** the backend builds the SSO
 > callback address from the request it receives from `tlsoc-webui`, which reaches it over plain
 > HTTP. Behind the ingress above it therefore sends `http://soc.example.com/api/auth/sso/callback`
 > to the identity provider, although the provider editor's **Callback URL** field shows the
@@ -841,7 +843,7 @@ server {
 > redirect URI mismatch, and this ingress does not serve plain HTTP. To check, open
 > `https://soc.example.com/api/auth/sso/authorize?provider=<id>` and read the `redirect_uri`
 > parameter of the returned `auth_url`. The value is URL-encoded: if it starts with `http%3A%2F%2F`
-> (`http://`) rather than `https%3A%2F%2F`, SSO cannot complete behind this ingress in 0.1.13: use
+> (`http://`) rather than `https%3A%2F%2F`, SSO cannot complete behind this ingress in 0.2.0: use
 > password sign-in with MFA, and keep a local administrator account.
 
 ### Back up and restore
@@ -919,7 +921,7 @@ Pass the file with `-f` on every command that creates or recreates containers, i
 Start narrow, prove the mapping with synthetic data, then widen.
 
 1. **Pick an implemented connector** from the [source support matrix](docs/sources/support-matrix.md).
-   Pull connectors in 0.1 are Elasticsearch, OpenSearch and Wazuh (through its indexer). Other
+   Pull connectors in 0.2 are Elasticsearch, OpenSearch and Wazuh (through its indexer). Other
    SIEM and EDR vendors can push to the webhook, HEC, syslog, queue or object-store receivers.
 2. **Use a least-privilege credential.** A pull key needs only `read` and `view_index_metadata` on
    the exact patterns. A queue or object-store credential should reach only its subscription,
@@ -1036,8 +1038,12 @@ before each upgrade, and follow the
 
 **The one-time bootstrap.** An installation made before the supervisor existed cannot grant itself
 host authority. For the supported transition from a running v0.1.1 reference PostgreSQL deployment
-to v0.1.13, an operator runs once, on the host, from a clean checkout of the exact annotated
-`v0.1.13` tag contained in `origin/main`:
+to v0.2.0, an operator runs once, on the host, from a clean checkout of the exact annotated
+`v0.2.0` tag contained in `origin/main`. First set
+`AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env`: releases from 0.2.0 on
+are signed under that name, and the bootstrap refuses a missing line, the repository's former
+name in any letter case, or the new name in the wrong letter case. It prints the line to add and
+never edits `.env` itself.
 
 ```bash
 ./scripts/bootstrap-updater.sh
@@ -1045,7 +1051,7 @@ to v0.1.13, an operator runs once, on the host, from a clean checkout of the exa
 
 It refuses a modified or untracked checkout, a lightweight or mismatched tag, an unsupported
 topology, missing durable secrets or an active update, and it never force-replaces work in
-progress. It cannot bootstrap a deployment that already runs 0.1.13. After a bootstrap, use
+progress. It cannot bootstrap a deployment that already runs 0.2.0. After a bootstrap, use
 `./scripts/agentic-soc-compose.sh` for every lifecycle command: it layers the supervisor's
 digest pins, refuses `--build` while a signed release is active, and blocks changing commands
 while an update runs. The full contract is in [Upgrades and promotion](docs/operations/upgrades.md).
@@ -1107,7 +1113,7 @@ manually.
    ```bash
    cd /path/to/your-stack        # the directory that holds the stack's docker-compose.yml
    git clone https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git agentic-kibana
-   git -C agentic-kibana checkout v0.1.13   # only once the v0.1.13 GitHub Release exists (section 5.2); otherwise use Testing or stay on main
+   git -C agentic-kibana checkout v0.2.0   # only once the v0.2.0 GitHub Release exists (section 5.2); otherwise use Testing or stay on main
    ```
 
 2. **Mint two scoped API keys, once, with the superuser.** Never give Agentic SOC the `elastic`
@@ -1181,11 +1187,11 @@ manually.
          context: ./agentic-kibana
          dockerfile: webui/Dockerfile
          args:
-           TLSOC_VERSION: ${TLSOC_VERSION:-0.1.13}
+           TLSOC_VERSION: ${TLSOC_VERSION:-0.2.0}
            TLSOC_RELEASE_CHANNEL: ${TLSOC_RELEASE_CHANNEL:-testing}
            TLSOC_BUILD_SHA: ${TLSOC_BUILD_SHA:-unknown}
            TLSOC_BUILD_DATE: ${TLSOC_BUILD_DATE:-unknown}
-       image: tlsoc-agentic-triage-webui:${TLSOC_VERSION:-0.1.13}
+       image: tlsoc-agentic-triage-webui:${TLSOC_VERSION:-0.2.0}
        container_name: tlsoc-webui
        restart: unless-stopped
        depends_on:
@@ -1287,7 +1293,7 @@ the stack with ([section 9](#9-stop-restart-and-uninstall)).
 | Everyone is signed out after each restart | `TLSOC_AUTH_JWT_SECRET` is empty or changed | Set a stable value of at least 32 characters |
 | **Remember me** is greyed out: `Available when the console is served over HTTPS` | Secure cookies are off | Serve the Console over TLS and set `TLSOC_AUTH_COOKIE_SECURE=true` |
 | `Can't verify setup state` with **Retry** | `/api/setup/status` cannot be read through the proxy | Check `curl -fsS http://localhost:8080/api/setup/status`, fix the backend, then **Retry** |
-| **Add source** fails: `Please complete required fields: Log index pattern` | Known 0.1.13 issue: the displayed default is not counted | Clear the field and type the pattern |
+| **Add source** fails: `Please complete required fields: Log index pattern` | Known 0.2.0 issue: the displayed default is not counted | Clear the field and type the pattern |
 | **Test connection** fails | Wrong URL (for example `localhost`, which is the backend container itself), wrong or under-scoped key, or an untrusted private CA | Use a URL the backend container can reach, a read-only key scoped to the pattern and, for a private CA, the container path of a mounted CA file ([5.3](#53-configure-the-environment-file)) |
 | Connection passes but no cases appear | Field mapping does not match the data, or the correlation threshold is not met | Check mapping against a real document; see [No cases appear](docs/TROUBLESHOOTING.md#h-no-cases-appear) |
 | A source stops after a backend restart | Its key was typed into the Console and lived in memory | Enter it again after each restart. For one Elasticsearch, OpenSearch or Wazuh pull source, `TLSOC_ES_URL` and `TLSOC_ES_API_KEY` in `.env` are the restart-safe alternative ([5.3](#53-configure-the-environment-file)). The shipped Compose files have no `.env` variable for other sources' secrets |
@@ -1311,9 +1317,9 @@ the longer [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 - **In the Console:** select **Help Center** at the bottom of the navigation rail. It is the
   version-matched manual for the build you run and works without internet access.
 
-![Bundled Help Center home page with the Matched to this app note, which says documentation 0.1 describes Agentic SOC 0.1.13 and is served under /docs/0.1/, above a table of guides by goal.](docs/assets/screenshots/help-center.webp)
+![Bundled Help Center home page with the Matched to this app note, which names the documentation line and the running version, above a table of guides by goal.](docs/assets/screenshots/help-center.webp)
 
-*Figure 16. The bundled Help Center, served by the Console at `/docs/0.1/`.*
+*Figure 16. The bundled Help Center, served by the Console at `/docs/0.2/`.*
 
 - **Reference documents:** [`DEPLOY.md`](DEPLOY.md) (deployment reference),
   [`docs/USAGE.md`](docs/USAGE.md) (day-to-day use), [`SECURITY.md`](SECURITY.md) (threat model),

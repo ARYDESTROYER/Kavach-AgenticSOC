@@ -62,7 +62,7 @@ import { RefreshButton } from '@/soc/components/RefreshButton';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
-import { SourceEditor } from '@/soc/components/SourceEditor';
+import { SourceEditor, type SourceSaveNotice } from '@/soc/components/SourceEditor';
 import { SourceLogsSheet } from '@/soc/components/SourceLogsSheet';
 import { headingOf, useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { categoryMeta } from '@/soc/components/ConnectorPicker';
@@ -98,6 +98,7 @@ import {
 } from '@/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
 import { PageAccess } from './PageAccess';
+import { canBePrimary, DEMO_MANAGED_REASON, PRIMARY_PULL_ONLY, primaryConfirmed } from './sources-primary';
 
 /* --------------------------------------------------------------- helpers --- */
 
@@ -124,7 +125,6 @@ const SOURCES_DEFAULT_HIDDEN = [
 
 /** Sentinel "any" value for the single-value facets. */
 const ANY = '__any__';
-const DEMO_MANAGED_REASON = 'Managed by Demo Mode';
 /** The page's explanation, shown in the header help tip (C8: no description line). */
 const PAGE_HELP = 'Connect and manage the systems the agent reads security events from.';
 /** Said in words in the header while Demo Mode owns the source list (no disabled button). */
@@ -342,9 +342,12 @@ function SourcesPage(_props: SourcesProps) {
     void load();
   }, [load]);
 
-  const onSaved = async () => {
+  // The editor says only what the server confirmed (a dropped primary flag, or a real
+  // source saved in Demo Mode that the Demo source list does not show).
+  const onSaved = async (notice: SourceSaveNotice) => {
     setEditor(null);
-    toast.success('Source saved');
+    if (notice.tone === 'warning') toast.warning(notice.text);
+    else toast.success(notice.text);
     await load();
   };
 
@@ -356,7 +359,7 @@ function SourcesPage(_props: SourcesProps) {
     }
     setBusyId(s.id);
     try {
-      await api.upsertSource({
+      const saved = await api.upsertSource({
         id: s.id,
         source_type: s.source_type,
         display_name: s.display_name,
@@ -365,7 +368,13 @@ function SourcesPage(_props: SourcesProps) {
         ingest_mode: s.ingest_mode ?? null,
         config: (s.config as Record<string, unknown>) || {},
       });
-      toast.success(`${sourceLabel(s)} is now the primary source`);
+      // The server answers 200 even when it keeps the source non-primary (B46), so the
+      // returned list decides what the toast says.
+      if (primaryConfirmed(saved, s.id)) {
+        toast.success(`${sourceLabel(s)} is now the primary source`);
+      } else {
+        toast.warning(PRIMARY_PULL_ONLY);
+      }
       await load();
     } catch {
       // Toast-only for action failures — never raise the page-level LoadError banner
@@ -938,7 +947,9 @@ function SourcesPage(_props: SourcesProps) {
                 </DropdownMenuItem>
               ) : canManage ? (
                 <>
-                  {!s.is_primary ? (
+                  {/* Only a pull source can be primary (B46): the server keeps the flag
+                      for nothing else. */}
+                  {!s.is_primary && canBePrimary(s, connectorFor(s)) ? (
                     <DropdownMenuItem
                       onSelect={() => {
                         primaryOpener.remember();

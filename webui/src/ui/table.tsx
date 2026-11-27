@@ -22,7 +22,9 @@ import { useScrollEdgeRef } from '@/design-system/material';
  *   figures on a whole table or row (ui-standard "Typography").
  * - `Table` wraps the `<table>` in an `overflow-auto` div; pass `unwrapped` when the
  *   table already lives inside a scroll container, so there is no second, clipping
- *   scroll context. `containerClassName` styles the wrapper.
+ *   scroll context. `containerClassName` styles the wrapper. `scrollLabel` makes the
+ *   wrapper a focusable region with that name, for a table whose rows hold nothing
+ *   focusable: a keyboard can then scroll it sideways (axe scrollable-region-focusable).
  * - `TableHeader sticky` pins the header row under the app bar
  *   (`top-[var(--header-h)]`, never a bare `top-0`, WCAG 2.4.11).
  */
@@ -35,10 +37,12 @@ export interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
   containerClassName?: string;
   /** `fixed` keeps declared column widths (`table-layout: fixed`); `auto` (default) sizes to content. */
   layout?: 'auto' | 'fixed';
+  /** Name the scroll wrapper and let it take focus (ignored when `unwrapped`). */
+  scrollLabel?: string;
 }
 
 const Table = React.forwardRef<HTMLTableElement, TableProps>(
-  ({ className, unwrapped, containerClassName, layout = 'auto', ...props }, ref) => {
+  ({ className, unwrapped, containerClassName, layout = 'auto', scrollLabel, ...props }, ref) => {
     const table = (
       <table
         ref={ref}
@@ -47,6 +51,22 @@ const Table = React.forwardRef<HTMLTableElement, TableProps>(
       />
     );
     if (unwrapped) return table;
+    if (scrollLabel) {
+      return (
+        <div
+          role="region"
+          aria-label={scrollLabel}
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable region must take focus (axe scrollable-region-focusable)
+          tabIndex={0}
+          className={cn(
+            'relative w-full overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+            containerClassName,
+          )}
+        >
+          {table}
+        </div>
+      );
+    }
     return <div className={cn('relative w-full overflow-auto', containerClassName)}>{table}</div>;
   },
 );

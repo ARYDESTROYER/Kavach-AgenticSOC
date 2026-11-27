@@ -253,7 +253,7 @@ cat <<BANNER
   Login  :   username  ${ADMIN_USER}
              password  ${ADMIN_PASS}     (demo super_admin — change for real use)
 
-  Auth is ENABLED and deterministic Demo Mode is ${DEMO_MODE} (forced $0 mock LLM).
+  Auth is ENABLED and deterministic Demo Mode is ${DEMO_MODE} (forced \$0 mock LLM).
   Release:    v${TLSOC_VERSION} · ${TLSOC_RELEASE_CHANNEL} (${SOURCE_BRANCH:-detached})
   Both services are bound to loopback only; they are not exposed on your LAN.
   Press Ctrl-C to stop both services.

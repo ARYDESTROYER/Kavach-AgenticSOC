@@ -5,7 +5,7 @@
  * and renders the returned Case as a rich verdict card: badge row, recommended
  * action, evidence, MITRE techniques, the reproduce query, and the risk
  * breakdown. A 400 "no events" response is rendered as a neutral empty state
- * (not a scary error) with a hint to widen the lookback. Each completed run is
+ * (not a scary error) that names the widest window searched. Each completed run is
  * kept in a small per-session history (sessionStorage).
  *
  * SECURITY: every value derived from the backend (titles, summaries, entity
@@ -24,7 +24,6 @@ import {
   ExternalLink,
   Megaphone,
   GitBranch,
-  Clock,
   Telescope,
   Database,
   ShieldCheck,
@@ -110,6 +109,11 @@ interface RunRecord {
 function entityIcon(t: EntityType): LucideIcon {
   return ENTITY_OPTIONS.find((o) => o.id === t)?.icon ?? Telescope;
 }
+
+/** The widest window a run searches before it answers that nothing matched, in words.
+ *  The server widens the chosen lookback through 7 and 30 days to a year
+ *  (`WIDEN_LADDER` in backend/app/engine/case_cluster.py), in every source it can read. */
+export const WIDEST_SEARCH_WORDS = 'the last 365 days';
 
 function lookbackLabelFor(value: string): string {
   return LOOKBACK_OPTIONS.find((o) => o.value === value)?.label ?? value;
@@ -408,8 +412,13 @@ export default function Investigate({ onNavigate, embedded = false }: Investigat
     }
   }, [recent]);
 
-  // Seed the lookback from prefs.investigate_lookback once (best-effort).
+  // Seed the lookback from prefs.investigate_lookback once (best-effort), and only for a
+  // viewer who may read the settings: a refusal writes an Access denied audit row each
+  // time (Round 16). A render with no auth provider reads like auth off.
+  const pageAuth = useOptionalAuth();
+  const canReadSettings = pageAuth ? pageAuth.hasPermission('settings', 'read') : true;
   React.useEffect(() => {
+    if (!canReadSettings) return undefined;
     let cancelled = false;
     void api
       .getSettings()
@@ -426,7 +435,7 @@ export default function Investigate({ onNavigate, embedded = false }: Investigat
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canReadSettings]);
 
   const selected = React.useMemo(
     () => ENTITY_OPTIONS.find((o) => o.id === entityType) ?? ENTITY_OPTIONS[0],
@@ -475,13 +484,6 @@ export default function Investigate({ onNavigate, embedded = false }: Investigat
     }
   }, [entityType, entityValue, lookback, loading]);
 
-  const widenLookback = React.useCallback(() => {
-    const idx = LOOKBACK_OPTIONS.findIndex((o) => o.value === lookback);
-    const next = LOOKBACK_OPTIONS[Math.min(idx + 1, LOOKBACK_OPTIONS.length - 1)];
-    setLookback(next.value);
-    setNoEvents(null);
-  }, [lookback]);
-
   const replayRecent = React.useCallback((r: RunRecord) => {
     setEntityType(r.entity.type);
     setEntityValue(r.entity.value);
@@ -497,9 +499,6 @@ export default function Investigate({ onNavigate, embedded = false }: Investigat
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') void run();
   };
-
-  const isLastLookback =
-    lookback === LOOKBACK_OPTIONS[LOOKBACK_OPTIONS.length - 1].value;
 
   const viewCasesAction = (
     <Button variant="outline" size="sm" onClick={() => navigate('cases')}>
@@ -625,17 +624,9 @@ export default function Investigate({ onNavigate, embedded = false }: Investigat
             compact
             icon={Search}
             title={`No in-scope events for ${noEvents.entity.type}:${noEvents.entity.value}`}
-            description={`Nothing matched in ${lookbackLabelFor(
-              noEvents.lookback,
-            )}. The activity may be older, or outside the configured scope. Try widening the lookback window.`}
-            action={
-              !isLastLookback ? (
-                <Button variant="outline" onClick={widenLookback}>
-                  <Clock className="h-4 w-4" />
-                  Widen lookback
-                </Button>
-              ) : undefined
-            }
+            // A run already widens past every lookback offered here, so the answer names
+            // the widest window searched and offers no wider one (FXE).
+            description={`Nothing matched in ${WIDEST_SEARCH_WORDS}, the widest window a search tries. The activity may be older, or outside the configured scope.`}
           />
         </Panel>
       ) : null}

@@ -54,7 +54,7 @@ export function TeamRangeControl({ value, onChange, timezone }: TeamRangeControl
           <span className="min-w-0 truncate tabular-nums">{label}</span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 p-3">
+      <PopoverContent align="start" aria-label="Time range" className="w-72 p-3">
         <div className="mb-2 text-xs font-medium text-muted-foreground">Quick ranges</div>
         <div role="group" aria-label="Time ranges" className="flex flex-col gap-1">
           {TEAM_PRESETS.map((preset) => {

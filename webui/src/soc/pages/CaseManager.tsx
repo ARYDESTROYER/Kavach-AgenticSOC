@@ -30,11 +30,21 @@
  * `#/case_manager?review=disagreed|expired` deep links) and refreshed by `case.review`
  * frames. Bulk Set status and Set disposition leave out the cases the agent closed (D4.7).
  *
- * Round 14 (SPEC §4.9.4, D27, ui-audit CM1): the page has the Overview's header (the
- * title "Case Manager", a help tip, the live state and an icon Refresh) and the split
- * workspace sits on one panel. The queue takes a "Closed by" filter from
- * `#/case_manager?closedBy=` (the retired `#/scans` page lands here with `agent`), shown
- * as a removable chip and sent to `GET /api/cases` as `closed_by`.
+ * Round 14 (SPEC §4.9.4, D27, ui-audit CM1): the split workspace sits on one panel. The
+ * queue takes a "Closed by" filter from `#/case_manager?closedBy=` (the retired `#/scans`
+ * page lands here with `agent`), shown as a removable chip and sent to `GET /api/cases`
+ * as `closed_by`.
+ *
+ * Round 16 (SPEC §4.4 WP02) gives the workspace the route's top band. There is no routed
+ * page header: the title is an `sr-only` h1 (the top bar's breadcrumb already names the
+ * page), and Live, Refresh and "About Case Manager" sit in row 1 of the queue's control
+ * band. The board keeps a 16px inset on every side. A row's leading 40px slot shows the
+ * severity glyph and turns into the checkbox on hover, on focus, while anything is
+ * selected or a bulk job runs, and always on a touch screen; "Risk N" is neutral and
+ * carries the risk explainer; the AI run mark sits in the status node. `[` (or "Hide
+ * queue" in the view menu) folds the queue to a 44px strip with Previous and Next, and
+ * J and K keep moving through the cases. With no case open the pane says so and offers
+ * up to three counted queue shortcuts.
  */
 import * as React from 'react';
 import {
@@ -43,14 +53,17 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
+  ChevronUp,
   Circle,
   CircleSlash,
   Columns3,
   Eye,
+  HelpCircle,
   Inbox,
   Keyboard,
   LoaderCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
   RefreshCw,
   SlidersHorizontal,
   Tag as TagIcon,
@@ -103,9 +116,9 @@ import { LoadingBar, LoadingState, StatusDot } from '@/design-system';
 import { FilterBar, type FilterChip } from '@/soc/components/FilterBar';
 
 import { EmptyState } from '@/soc/components/EmptyState';
+import { HelpTip } from '@/soc/components/HelpTip';
 import { LoadError } from '@/soc/components/LoadError';
 import { PageContainer } from '@/soc/components/PageContainer';
-import { PageHeader } from '@/soc/components/PageHeader';
 import { RefreshButton } from '@/soc/components/RefreshButton';
 import { Can, ProtectedRoute } from '@/soc/components/Can';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
@@ -113,11 +126,18 @@ import { OwnerMonogram } from '@/soc/components/OwnerMonogram';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { OutcomeBadge } from '@/soc/components/badges';
 import { caseOutcome } from '@/soc/components/outcome';
-import { scoreBand, semanticIcon } from '@/soc/components/palette';
+import { semanticIcon } from '@/soc/components/palette';
 import { useAnnouncer } from '@/soc/components/announcer';
 import { AnimatePresence, MotionProvider, SPRING_UI, motion, useReducedMotion } from '@/soc/components/motion';
 import { useAuth } from '@/soc/auth';
+import { CASE_TABS } from '@/soc/case-tabs';
 import { useDemo } from '@/soc/demo';
+import { useMediaQuery } from '@/soc/hooks/useMediaQuery';
+import { AiQueueNotice } from '@/soc/investigations/AiQueueNotice';
+import { AiRunCloseNotice } from '@/soc/investigations/AiRunCloseNotice';
+import { AiRunMark } from '@/soc/investigations/AiRunMark';
+import { aiRunAccessibleText } from '@/soc/investigations/aiRunText';
+import { useAiRun } from '@/soc/investigations/useAiRun';
 import { useRoute } from '@/soc/router';
 import type { NavOpts } from '@/soc/nav-types';
 import {
@@ -143,6 +163,7 @@ import {
   riskValue,
   statusWords,
 } from './casedetail/caseFacts';
+import { RiskExplain } from './casedetail/explain/RiskExplain';
 import { DISPOSITION_OPTIONS } from './casedetail/shared';
 import {
   QUEUE_MAX_PAGE,
@@ -176,6 +197,23 @@ const ANY_STATUS = '__any_status__';
 const ANY_CLOSER = '__any_closer__';
 const SPLIT_STORAGE_KEY = 'soc.caseManager.queueWidth';
 const DENSITY_STORAGE_KEY = 'soc.caseManager.density';
+/** Focus mode (Round 16, WP02): the queue folded to its strip, per viewer. */
+const COLLAPSED_STORAGE_KEY = 'soc.caseManager.queueCollapsed';
+/** The folded queue's strip width. */
+const QUEUE_STRIP_PX = 44;
+/** The strip's Previous and Next at either end: dimmed, still focusable, inert on press. */
+const STRIP_STEP_INERT = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-transparent';
+/** Where the queue and the case sit side by side (Tailwind `xl`). Below it they are two screens. */
+const SPLIT_QUERY = '(min-width: 1280px)';
+/** A touch screen: no hover reveals the row checkbox, so it always shows. */
+const COARSE_POINTER_QUERY = '(pointer: coarse)';
+/**
+ * The queue width from which band row 1 holds the scope and every tool. Measured at
+ * 1440 by 900 in the seeded demo: the scope control with Mine and Review is 237px; the
+ * Live dot, Refresh, the view menu and the help tip are 106px; with the 6px gap and the
+ * 24px of padding that is 373px.
+ */
+const BAND_FULL_ROW_PX = 400;
 const SPLIT_MIN_QUEUE_PX = 320;
 const SPLIT_MAX_QUEUE_PX = 680;
 const SPLIT_MIN_DETAIL_PX = 560;
@@ -232,13 +270,21 @@ const SEVERITY_WORD: Record<string, string> = {
   info: 'text-muted-foreground',
 };
 
-/** Risk number tone: coloured by its OWN band, so a Risk 7 is never red (CM-6). */
-const RISK_WORD: Record<string, string> = {
-  critical: 'font-medium text-critical-text',
-  high: 'font-medium text-high-text',
+/**
+ * The leading slot's severity glyph (Round 16, WP02): tinted like the severity word, so
+ * only the two bands that demand attention carry colour. "Risk N" stays neutral: a high
+ * row shows one orange token, not two (risk keeps its colour in the case header).
+ */
+const SEVERITY_GLYPH: Record<string, string> = {
+  critical: 'text-critical-text',
+  high: 'text-high-text',
   medium: 'text-muted-foreground',
   low: 'text-muted-foreground',
+  info: 'text-muted-foreground',
 };
+
+/** The neutral "Risk N" on a queue row (Round 16, WP02; [cmux] §5.2). */
+const RISK_TEXT = 'text-foreground/80 tabular-nums';
 
 function clampQueueWidth(value: number, maximum = SPLIT_MAX_QUEUE_PX): number {
   const safeMaximum = Math.max(SPLIT_MIN_QUEUE_PX, Math.min(SPLIT_MAX_QUEUE_PX, maximum));
@@ -272,10 +318,30 @@ function readDensity(): Density {
   }
 }
 
-/** The responsive default queue width: 28% of the board, 360 to 520px (casemanager §4.1). */
-function responsiveQueueWidth(frameWidth: number): number {
+/**
+ * The responsive default queue width: 28% of the board, 340 to 520px (casemanager §4.1;
+ * Round 16 [cmux] R5 lowered the floor from 360px, so the case gets the width back).
+ */
+export function responsiveQueueWidth(frameWidth: number): number {
   if (!frameWidth) return SPLIT_DEFAULT_QUEUE_PX;
-  return Math.round(Math.min(520, Math.max(360, frameWidth * 0.28)));
+  return Math.round(Math.min(520, Math.max(340, frameWidth * 0.28)));
+}
+
+function readCollapsed(): boolean {
+  try {
+    return window.localStorage?.getItem(COLLAPSED_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function persistCollapsed(value: boolean): void {
+  try {
+    if (value) window.localStorage?.setItem(COLLAPSED_STORAGE_KEY, '1');
+    else window.localStorage?.removeItem(COLLAPSED_STORAGE_KEY);
+  } catch {
+    /* Storage is a convenience; focus mode works for this visit without it. */
+  }
 }
 
 const caseSeverity = queueSeverity;
@@ -314,11 +380,31 @@ function queueStatusIcon(status: string) {
 }
 
 /** A quiet separator between meta facts; decorative, so screen readers skip it. */
-const MetaDot = () => (
-  <span aria-hidden className="shrink-0 text-muted-foreground/60">
+const MetaDot = ({ className }: { className?: string }) => (
+  <span aria-hidden className={cn('shrink-0 text-muted-foreground/60', className)}>
     ·
   </span>
 );
+
+/**
+ * Where a queue row shows its status words (and the dot before them) while the AI run's
+ * mark is in the status node: only in a queue of 30rem or wider. The run's own words,
+ * "AI working" or "AI queued", always show, because the ring alone is the case chat
+ * glyph and only the words tell the two apart. So in a narrower queue the status words
+ * give way to the run's words while it runs (the outcome badge of a case that ended
+ * does the same, `RUN_MARK_OUTCOME`); the row's accessible name keeps both, and the
+ * case header still shows the status.
+ */
+export const RUN_MARK_WORDS = 'hidden @[30rem]/queue:inline';
+/**
+ * The compact outcome badge beside a run's mark, and the severity word at the start of
+ * line two: both give way below a 30rem queue while a run shows. At the 340px default
+ * queue a row with an owner leaves the status node about 63px, and the ring with "AI
+ * working" needs 77px, so the words would run under the owner monogram. The severity
+ * word frees that room; the leading glyph, the rail, the row's accessible name and the
+ * case header keep the severity.
+ */
+export const RUN_MARK_OUTCOME = 'hidden @[30rem]/queue:inline-flex';
 
 interface RowJobState {
   /** The case is in a bulk job that is still running. */
@@ -328,18 +414,29 @@ interface RowJobState {
 }
 
 /**
- * One queue row (Round 15, SPEC D8.1). Comfortable (default) is two lines:
+ * One queue row (Round 15, SPEC D8.1; Round 16, WP02). Comfortable (default) is two
+ * lines beside a 40px leading slot:
  *
- *   line 1  title (one line, truncates) ················ chat glyph · relative age
- *   line 2  severity · Risk N · case number · status OR outcome ··········· owner
+ *   slot  line 1  title (one line, truncates) ············ chat glyph · relative age
+ *         line 2  severity · Risk N · case number · status OR outcome ········ owner
  *
  * An open case shows its status (glyph and words); a case that ended shows its outcome
- * badge instead, never both. The source fact and the runbook chip left the row (they are
- * in the case, its header and its facts rail); the fact stays in the row's accessible
- * name. Compact is one line: title · risk · status or outcome · age. For a role that may
- * do bulk work the checkbox is ALWAYS visible (bulk work is discoverable) and is a
- * sibling of the open control, never nested; a role with no bulk action gets no checkbox.
- * The open control is the row's single tab stop (roving tabindex on the list).
+ * badge instead, never both. While the AI investigates the case, the AI run mark takes
+ * the status glyph's place inside that node (never the case chat glyph's slot before the
+ * age, so a row can show both) and the row's accessible name says so. The source fact
+ * and the runbook chip are not on the row; the fact stays in the row's accessible name.
+ * Compact is one line: title · risk · status or outcome · age.
+ *
+ * The leading slot (Round 16, [cmux] §5.2) shows the severity glyph. For a role that may
+ * do bulk work it turns into the checkbox on row hover and focus, and stays the checkbox
+ * whenever `revealCheckbox` is set (anything selected, a bulk job running, or a touch
+ * screen), so bulk work is one hover away without a column of empty boxes. The checkbox
+ * is a sibling of the open control, never nested; a role with no bulk action keeps the
+ * glyph and gets no checkbox. The open control is the row's single tab stop (roving
+ * tabindex on the list), and X or Space toggles a row whose checkbox is hidden.
+ *
+ * "Risk N" is neutral and wears the risk explainer's mouse-only row variant (S11): no
+ * focusable content inside the row button; the accessible name carries the number.
  */
 const QueueRow: React.FC<{
   item: Case;
@@ -349,6 +446,8 @@ const QueueRow: React.FC<{
   density: Density;
   /** False for a role with no bulk action: the row has no checkbox and no X key. */
   selectable?: boolean;
+  /** Keep the checkbox in the slot (a selection, a running bulk job, a touch screen). */
+  revealCheckbox?: boolean;
   selectionDisabled: boolean;
   job: RowJobState | null;
   registerButton: (id: string, el: HTMLButtonElement | null) => void;
@@ -363,6 +462,7 @@ const QueueRow: React.FC<{
   focusTarget,
   density,
   selectable = true,
+  revealCheckbox = false,
   selectionDisabled,
   job,
   registerButton,
@@ -376,9 +476,7 @@ const QueueRow: React.FC<{
   const title = caseTitle(item);
   const fact = primaryFact(item);
   const risk = riskValue(item.risk_score);
-  // The one score ladder (`scoreBand`), so the row's risk tone matches every other risk.
-  const riskBand = risk === null ? null : scoreBand(risk);
-  const SeverityGlyph = semanticIcon(severity);
+  const SeverityGlyph = semanticIcon(severity) ?? Circle;
   const StatusGlyph = item.status ? queueStatusIcon(item.status) : null;
   const outcome = caseOutcome(item);
   // A case that ended shows its outcome of record in place of its status (D8.1).
@@ -389,6 +487,11 @@ const QueueRow: React.FC<{
   const statusText = item.status ? statusWords(item.status) : 'Unknown status';
   // A case-scoped chat answer being written, unread, waiting or failed (SPEC D13).
   const chat = useCaseChatActivity(item.case_id);
+  // The AI investigation running or queued on this case, if any (Round 16, A1).
+  const run = useAiRun(item.case_id);
+  // The `aria-label` overrides descendant text, so the run's words join the name here
+  // (no elapsed time: the row is not drawn again while the run goes on).
+  const runText = aiRunAccessibleText(run);
   const accessibleName = [
     title,
     displayId,
@@ -400,20 +503,37 @@ const QueueRow: React.FC<{
     `updated ${age}`,
     job?.failure ? `last bulk action failed: ${job.failure}` : null,
     chat.text || null,
+    runText,
   ]
     .filter(Boolean)
     .join(', ');
 
+  // The bulk job's state first, then the AI run mark, else the status glyph.
+  const jobGlyph = job?.pending ? (
+    <LoaderCircle className="size-3 shrink-0 animate-spin text-primary" aria-hidden />
+  ) : job?.failure ? (
+    <AlertTriangle className="size-3 shrink-0 text-warning-text" aria-hidden />
+  ) : null;
+  // The run's words always show; in a narrow queue the status words after them give way.
+  const runMark = run ? (
+    <>
+      <AiRunMark caseId={item.case_id} />
+      <MetaDot className={RUN_MARK_WORDS} />
+    </>
+  ) : null;
   const statusNode = (
     <span data-testid="case-queue-status" className="inline-flex min-w-0 items-center gap-1 text-foreground/80">
-      {job?.pending ? (
-        <LoaderCircle className="size-3 shrink-0 animate-spin text-primary" aria-hidden />
-      ) : job?.failure ? (
-        <AlertTriangle className="size-3 shrink-0 text-warning-text" aria-hidden />
-      ) : StatusGlyph ? (
-        <StatusGlyph className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-      ) : null}
-      {item.status ? <span className="truncate">{statusText}</span> : <span className="text-muted-foreground">{DASH}</span>}
+      {jobGlyph}
+      {runMark ??
+        (!jobGlyph && StatusGlyph ? <StatusGlyph className="size-3 shrink-0 text-muted-foreground" aria-hidden /> : null)}
+      {/* A cut word keeps its whole value on hover, as the title and case number do. */}
+      {item.status ? (
+        <span data-testid="case-queue-status-words" className={cn('truncate', run && RUN_MARK_WORDS)} title={statusText}>
+          {statusText}
+        </span>
+      ) : (
+        <span className={cn('text-muted-foreground', run && RUN_MARK_WORDS)}>{DASH}</span>
+      )}
     </span>
   );
   const outcomeNode = (
@@ -423,9 +543,21 @@ const QueueRow: React.FC<{
       className="inline-flex min-w-0 items-center gap-1"
     >
       {job?.pending ? <LoaderCircle className="size-3 shrink-0 animate-spin text-primary" aria-hidden /> : null}
-      <OutcomeBadge outcome={outcome} compact className="max-w-[10rem]" />
+      {runMark}
+      <OutcomeBadge outcome={outcome} compact className={cn('max-w-[10rem]', run && RUN_MARK_OUTCOME)} />
     </span>
   );
+  // Neutral, and the explainer's mouse-only row hover card (S11).
+  const riskNode =
+    risk !== null ? (
+      <RiskExplain caseId={item.case_id} score={item.risk_score} breakdown={item.risk_breakdown} variant="row">
+        <span data-testid="case-queue-risk" className={cn('shrink-0', RISK_TEXT)}>
+          Risk {risk}
+        </span>
+      </RiskExplain>
+    ) : null;
+  // The slot's top edge follows line 1 in either density.
+  const slotTop = density === 'compact' ? 'top-[0.5625rem]' : 'top-[0.875rem]';
 
   return (
     <div
@@ -455,15 +587,31 @@ const QueueRow: React.FC<{
         />
       ) : null}
 
+      {/* The leading slot: the severity glyph, which gives way to the checkbox on hover
+          and focus (or for good while `revealCheckbox`). Decorative: the severity word
+          and the accessible name carry it. */}
+      <span
+        data-testid="case-queue-severity-glyph"
+        aria-hidden
+        className={cn(
+          'pointer-events-none absolute left-3 z-10 flex size-4 items-center justify-center',
+          slotTop,
+          SEVERITY_GLYPH[severity],
+          selectable && (revealCheckbox ? 'hidden' : 'group-hover/row:hidden group-focus-within/row:hidden'),
+        )}
+      >
+        <SeverityGlyph className="size-4" />
+      </span>
+
       {/* The checkbox is a sibling of the row-open button, never a nested button, so
-          toggling selection cannot open the case. Always visible to a role that may do
-          bulk work; X / Space toggles it from the keyboard (roving focus keeps the queue
-          to ONE tab stop). */}
+          toggling selection cannot open the case. X / Space toggles it from the keyboard
+          (roving focus keeps the queue to ONE tab stop) even while it is hidden. */}
       {selectable ? (
         <Checkbox
           checked={checked}
           disabled={selectionDisabled}
           tabIndex={-1}
+          data-reveal={revealCheckbox ? 'always' : 'hover'}
           onClick={(event) => {
             // Shift-click extends the selection from the last toggled row.
             if (event.shiftKey) {
@@ -477,7 +625,8 @@ const QueueRow: React.FC<{
           aria-label={`Select ${displayId}`}
           className={cn(
             'absolute left-3 z-10 bg-background',
-            density === 'compact' ? 'top-[0.5625rem]' : 'top-[0.875rem]',
+            slotTop,
+            revealCheckbox ? 'block' : 'hidden group-hover/row:block group-focus-within/row:block',
             "before:absolute before:-inset-1 before:content-['']",
           )}
         />
@@ -494,8 +643,7 @@ const QueueRow: React.FC<{
         aria-label={accessibleName}
         aria-keyshortcuts={selectable ? 'ArrowUp ArrowDown J K X Enter' : 'ArrowUp ArrowDown J K Enter'}
         className={cn(
-          'block w-full pr-3 text-left',
-          selectable ? 'pl-10' : 'pl-4',
+          'block w-full pl-10 pr-3 text-left',
           density === 'compact' ? 'py-1.5' : 'py-3',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         )}
@@ -505,9 +653,7 @@ const QueueRow: React.FC<{
             <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={title}>
               {title}
             </span>
-            {risk !== null ? (
-              <span className={cn('shrink-0 tabular-nums', riskBand ? RISK_WORD[riskBand] : '')}>Risk {risk}</span>
-            ) : null}
+            {riskNode}
             {showOutcome ? outcomeNode : statusNode}
             <ActivityGlyph status={chat.status} />
             <span className="shrink-0 tabular-nums text-muted-foreground">{age}</span>
@@ -528,21 +674,22 @@ const QueueRow: React.FC<{
               data-testid="case-queue-meta"
               className="mt-1.5 flex h-5 min-w-0 items-center gap-1 text-xs text-muted-foreground"
             >
+              {/* While a run shows, the severity word and its dot give way below a 30rem
+                  queue, so "AI working" keeps its room (RUN_MARK_OUTCOME). */}
               <span
                 data-testid="case-queue-severity"
-                className={cn('inline-flex shrink-0 items-center gap-1', SEVERITY_WORD[severity])}
+                className={cn('inline-flex shrink-0 items-center', SEVERITY_WORD[severity], run && RUN_MARK_OUTCOME)}
                 title={sourceAsserted ? 'Severity reported by the source' : 'Severity derived from the risk score'}
               >
-                {SeverityGlyph ? <SeverityGlyph className="size-3 shrink-0" aria-hidden /> : null}
                 {humanizeToken(severity)}
               </span>
-              {risk !== null ? (
+              <MetaDot className={run ? RUN_MARK_WORDS : undefined} />
+              {riskNode ? (
                 <>
+                  {riskNode}
                   <MetaDot />
-                  <span className={cn('shrink-0 tabular-nums', riskBand ? RISK_WORD[riskBand] : '')}>Risk {risk}</span>
                 </>
               ) : null}
-              <MetaDot />
               {/* The case number names the row, so it never gives way: middleEllipsis
                   bounds it at 14 characters, and the status beside it truncates first. */}
               <span data-testid="case-queue-id" className="shrink-0 whitespace-nowrap font-mono" title={displayId}>
@@ -592,10 +739,14 @@ export function canSelectCases(can: (resource: string, action: string) => boolea
  * keys follow the grants the open case checks before it acts (A, E, H and T `cases:write`,
  * C `cases:close`, R `cases:reinvestigate`, M `cases:assign`), and the selection keys
  * follow {@link canSelectCases}. A key the role cannot use does nothing, so it is not
- * promised.
+ * promised; nor is a key the layout cannot use: `[` folds the queue only where the queue
+ * and the case sit side by side (`splitShown`). `]` (the case details) and W (the live AI
+ * run) need no grant: the open case handles both for every viewer. The case tab keys
+ * count the case's own tabs, so the line stays true when the tabs change.
  */
 export function caseManagerShortcuts(
   can: (resource: string, action: string) => boolean,
+  opts: { splitShown?: boolean } = {},
 ): ReadonlyArray<{ keys: string; action: string }> {
   const write = can('cases', 'write');
   const close = can('cases', 'close');
@@ -603,6 +754,8 @@ export function caseManagerShortcuts(
   const select = canSelectCases(can);
   const rows: Array<{ keys: string; action: string } | false> = [
     { keys: '↑ ↓  or  K J', action: 'Move through the queue and open the case' },
+    Boolean(opts.splitShown) && { keys: '[', action: 'Hide or show the queue' },
+    { keys: ']', action: 'Show or hide the case details' },
     { keys: 'Home  End', action: 'First or last loaded case' },
     select && { keys: 'X  or  Space', action: 'Select or clear the focused case' },
     select && { keys: 'Shift + ↑ ↓  or  Shift + X', action: 'Extend the selection' },
@@ -616,12 +769,13 @@ export function caseManagerShortcuts(
         ? { keys: 'A  E  H', action: 'Acknowledge, escalate or hold the open case' }
         : close && { keys: 'C', action: 'Close the open case' },
     can('cases', 'reinvestigate') && { keys: 'R', action: 'Reinvestigate the open case' },
+    { keys: 'W', action: 'Watch the AI run, while one is under way' },
     assign && write
       ? { keys: 'M  T', action: 'Change the owner or edit tags' }
       : assign
         ? { keys: 'M', action: 'Change the owner' }
         : write && { keys: 'T', action: 'Edit tags' },
-    { keys: 'Alt + 1 to 5', action: 'Switch case tabs' },
+    { keys: `Alt + 1 to ${CASE_TABS.length}`, action: 'Switch case tabs' },
   ];
   return rows.filter((row): row is { keys: string; action: string } => Boolean(row));
 }
@@ -663,6 +817,40 @@ function caseCloser(c: Case): QueueCloser | null {
 export const CASE_MANAGER_HELP =
   'Work the case queue and the open case side by side: the queue reads every case on the server and updates live. Open a case to act on it here, and press ? for the keyboard shortcuts.';
 
+/* ---- The empty case pane (Round 16, WP02; [cmux] §5.9) ------------------------------- */
+
+export const NO_CASE_OPEN_TITLE = 'No case open';
+export const NO_CASE_OPEN_DESCRIPTION = 'Pick a case from the queue to work on it here.';
+
+/** The empty pane's counts before (or between) reads: unknown, so no button shows. */
+const NO_PANE_COUNTS: { critical: number | null; awaiting: number | null } = { critical: null, awaiting: null };
+
+/** A counted queue shortcut the empty pane offers: what it opens and how many it holds. */
+export type PaneShortcutKind = 'critical' | 'awaiting' | 'review';
+
+/** The shortcut's words: the count and what the queue will show ("4 critical cases"). */
+export function paneShortcutLabel(kind: PaneShortcutKind, count: number): string {
+  const n = count.toLocaleString();
+  if (kind === 'critical') return `${n} critical ${count === 1 ? 'case' : 'cases'}`;
+  if (kind === 'awaiting') return `${n} ${count === 1 ? 'case' : 'cases'} awaiting an analyst`;
+  return `${n} ${count === 1 ? 'review' : 'reviews'} waiting`;
+}
+
+/**
+ * The shortcuts worth offering, in order: only a known count above zero (an unknown or
+ * empty count would open an empty queue), three at most.
+ */
+export function paneShortcuts(
+  counts: Partial<Record<PaneShortcutKind, number | null>>,
+): ReadonlyArray<{ kind: PaneShortcutKind; count: number }> {
+  const out: Array<{ kind: PaneShortcutKind; count: number }> = [];
+  for (const kind of ['critical', 'awaiting', 'review'] as const) {
+    const count = counts[kind];
+    if (typeof count === 'number' && Number.isFinite(count) && count > 0) out.push({ kind, count });
+  }
+  return out.slice(0, 3);
+}
+
 interface TrackedJob {
   jobId: string;
   label: string;
@@ -692,7 +880,14 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const { username: currentUser, hasPermission } = useAuth();
   // Selection exists only for bulk work, so a role with no bulk action gets none (roles-07).
   const canBulk = canSelectCases(hasPermission);
-  const shortcuts = React.useMemo(() => caseManagerShortcuts(hasPermission), [hasPermission]);
+  // The queue and the case side by side (xl); below it they are separate screens.
+  const splitShown = useMediaQuery(SPLIT_QUERY);
+  // A touch screen has no hover to reveal a row checkbox, so it always shows there.
+  const coarsePointer = useMediaQuery(COARSE_POINTER_QUERY);
+  const shortcuts = React.useMemo(
+    () => caseManagerShortcuts(hasPermission, { splitShown }),
+    [hasPermission, splitShown],
+  );
   const { active: demoActive } = useDemo();
   const routeCaseId = initialCaseId ?? route.opts?.caseId;
   // D27: `#/case_manager?closedBy=agent` (and the `#/scans` redirect) opens the queue on
@@ -792,6 +987,24 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const viewMenuRef = React.useRef<HTMLButtonElement | null>(null);
   /** The selected-case workspace; its case title is the focus target when the queue is hidden. */
   const detailRef = React.useRef<HTMLElement | null>(null);
+
+  // Focus mode (Round 16, WP02; [cmux] §5.2): `[` (or "Hide queue" in the view menu)
+  // folds the queue to a 44px strip, so the case gets the width. Only where the queue and
+  // the case sit side by side: below xl they are separate screens, so the saved preference
+  // waits there and the queue shows in full. `setQueueFolded` is further down.
+  const [collapsedPref, setCollapsedPref] = React.useState<boolean>(readCollapsed);
+  const queueCollapsed = collapsedPref && splitShown;
+  const queueCollapsedRef = React.useRef(queueCollapsed);
+  queueCollapsedRef.current = queueCollapsed;
+  const splitShownRef = React.useRef(splitShown);
+  splitShownRef.current = splitShown;
+  /** The full queue (band, list and footer), hidden while the queue is folded. */
+  const queueContentRef = React.useRef<HTMLDivElement | null>(null);
+  /** The strip's Show queue: where focus lands when the folded queue's own controls cannot take it. */
+  const stripExpandRef = React.useRef<HTMLButtonElement | null>(null);
+  /** Set when "Hide queue" is chosen in the view menu, whose trigger the fold hides. */
+  const focusStripOnMenuCloseRef = React.useRef(false);
+
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const shortcutsOpenerRef = React.useRef<HTMLElement | null>(null);
   const openShortcuts = React.useCallback(() => {
@@ -1130,9 +1343,10 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     setDismissedSelection(true);
     goQueue();
     // The pane that held focus is gone: land on the case's queue row (or the roving
-    // stop, or the search when the queue is empty) instead of <body>.
+    // stop, or the search when the queue is empty) instead of <body>. While the queue is
+    // folded its rows and search are hidden, so the strip's Show queue takes focus.
     requestAnimationFrame(() => {
-      const target = queueRowButton(previous) ?? searchField();
+      const target = queueCollapsedRef.current ? stripExpandRef.current : queueRowButton(previous) ?? searchField();
       target?.focus();
     });
   }, [goQueue, queueRowButton, searchField]);
@@ -1542,6 +1756,59 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     [maxQueueWidth, updateQueueWidth],
   );
 
+  // ---- focus mode (Round 16, WP02; [cmux] §5.2) ------------------------------ //
+  // The fold's state and refs are declared with the selection state above, so the close
+  // path can land focus on the strip.
+  const setQueueFolded = React.useCallback(
+    (next: boolean) => {
+      if (!splitShownRef.current || next === queueCollapsedRef.current) return;
+      const active = document.activeElement;
+      const fromQueue = active instanceof Node && Boolean(queueContentRef.current?.contains(active));
+      const fromStrip = active instanceof Node && Boolean(stripExpandRef.current?.closest('[data-queue-strip]')?.contains(active));
+      setCollapsedPref(next);
+      persistCollapsed(next);
+      announce(next ? 'Queue hidden. Press [ to show it.' : 'Queue shown.');
+      // The control that held focus is about to be hidden: land on its counterpart, never
+      // on <body>. Focus anywhere else (the open case) stays where it is.
+      requestAnimationFrame(() => {
+        if (next && fromQueue) stripExpandRef.current?.focus();
+        else if (!next && fromStrip) (queueRowButton(selectedIdRef.current) ?? searchField())?.focus();
+      });
+    },
+    [announce, queueRowButton, searchField],
+  );
+  const toggleQueueFolded = React.useCallback(() => setQueueFolded(!queueCollapsedRef.current), [setQueueFolded]);
+
+  // The queue pane's width (the split column, or the whole frame where the queue is its
+  // own screen). Below 400px the scope control fills band row 1, so Refresh and "About
+  // Case Manager" move into the view menu. Unmeasured (0) keeps the full row.
+  const queuePaneWidth = splitShown ? queueWidth : frameWidth;
+  const bandCompact = queuePaneWidth > 0 && queuePaneWidth < BAND_FULL_ROW_PX;
+  /** "About Case Manager" from the view menu of a compact band. */
+  const [aboutOpen, setAboutOpen] = React.useState(false);
+
+  /**
+   * Previous or next case while the queue is folded (the strip's arrows, J and K). When
+   * the open case has left the view, the row that took its place opens first, so a
+   * close followed by J never skips a case (the list's own rule, see `onListKeyDown`).
+   */
+  const stepCase = React.useCallback(
+    (delta: 1 | -1) => {
+      const list = visibleRef.current;
+      if (!list.length) return;
+      const at = list.findIndex((row) => row.case_id === selectedIdRef.current);
+      if (at < 0) {
+        const stop = list.find((row) => row.case_id === effectiveFocusIdRef.current);
+        const target = stop ?? (delta > 0 ? list[0] : list[list.length - 1]);
+        selectCase(target.case_id);
+        return;
+      }
+      const target = list[at + delta];
+      if (target) selectCase(target.case_id);
+    },
+    [selectCase],
+  );
+
   // ---- selection & bulk ------------------------------------------------------ //
   const [pendingBulkAction, setPendingBulkAction] = React.useState<ConfirmableBulkAction | null>(null);
   const [bulkFormAction, setBulkFormAction] = React.useState<BulkFormAction | null>(null);
@@ -1551,6 +1818,13 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const bulkTerminalIds = React.useMemo(
     () => (bulkTerminal ? Array.from(selectedIds).sort() : undefined),
     [bulkTerminal, selectedIds],
+  );
+  // The selection a status-moving bulk dialog covers (Acknowledge, Set status): its AI-run
+  // note counts the selected cases with a run, as the close dialogs do.
+  const bulkStatusIds = React.useMemo(
+    () =>
+      pendingBulkAction === 'acknowledge' || bulkFormAction === 'status' ? Array.from(selectedIds).sort() : undefined,
+    [bulkFormAction, pendingBulkAction, selectedIds],
   );
   const [bulkBusy, setBulkBusy] = React.useState(false);
   const [selectingAll, setSelectingAll] = React.useState(false);
@@ -1913,22 +2187,43 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     [canBulk, clearBulkSelection, effectiveFocusId, moveFocus, selectCase, selectedCaseId, selectedIds, toggleCaseSelection],
   );
 
-  // Page-level "/" (search) and "?" (shortcut sheet), outside text entry.
+  // Page-level "/" (search), "?" (shortcut sheet) and "[" (fold the queue), outside text
+  // entry. While the queue is folded its list cannot take focus, so J and K step through
+  // the cases from anywhere on the page instead (Round 16, WP02).
   React.useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey || event.altKey || shortcutBlocked(event)) return;
       if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      // A key a control already handled (the strip's own arrows) is not a page shortcut.
+      const handled = event.defaultPrevented;
       if (event.key === '/') {
         event.preventDefault();
-        searchField()?.focus();
+        if (queueCollapsedRef.current) {
+          // The search is in the folded queue: show it first.
+          setQueueFolded(false);
+          requestAnimationFrame(() => searchField()?.focus());
+        } else {
+          searchField()?.focus();
+        }
       } else if (event.key === '?') {
         event.preventDefault();
         openShortcuts();
+      } else if (handled) {
+        return;
+      } else if (event.key === '[' && splitShownRef.current) {
+        event.preventDefault();
+        toggleQueueFolded();
+      } else if (queueCollapsedRef.current && !event.shiftKey && (event.key === 'j' || event.key === 'J')) {
+        event.preventDefault();
+        stepCase(1);
+      } else if (queueCollapsedRef.current && !event.shiftKey && (event.key === 'k' || event.key === 'K')) {
+        event.preventDefault();
+        stepCase(-1);
       }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [openShortcuts, searchField]);
+  }, [openShortcuts, searchField, setQueueFolded, stepCase, toggleQueueFolded]);
 
   const registerButton = React.useCallback((id: string, el: HTMLButtonElement | null) => {
     if (el) buttonsRef.current.set(id, el);
@@ -2019,6 +2314,57 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     }
   }, []);
 
+  // ---- the empty case pane (Round 16, WP02; [cmux] §5.9) ----------------------- //
+  // With no case open (and the pane on screen, so only in the split), up to three counted
+  // shortcuts into the queue. Each count is the server's exact total for the filter the
+  // button applies; an unknown or zero count leaves its button out. Read and offered only
+  // once the pane will stay empty: a dismissed case or an empty queue, not the moment
+  // before the first case opens on arrival, and not while the queue cannot be read.
+  const emptyPaneShown =
+    splitShown &&
+    !selectedCaseId &&
+    !error &&
+    (dismissedSelection || (!loading && visibleCases.length === 0));
+  const [paneCounts, setPaneCounts] = React.useState<{ critical: number | null; awaiting: number | null }>(
+    NO_PANE_COUNTS,
+  );
+  React.useEffect(() => {
+    if (!emptyPaneShown) {
+      // A count is read afresh each time the pane shows, never carried over stale.
+      setPaneCounts(NO_PANE_COUNTS);
+      return undefined;
+    }
+    let cancelled = false;
+    const count = (filter: Record<string, string>) =>
+      api
+        .listCases({ ...filter, limit: 1, offset: 0 })
+        .then((response) => (typeof response.total === 'number' ? response.total : null))
+        .catch(() => null);
+    void Promise.all([
+      count({ status_group: 'active', severity: 'critical' }),
+      count({ status: 'needs_human' }),
+    ]).then(([critical, awaiting]) => {
+      if (!cancelled) setPaneCounts({ critical, awaiting });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [emptyPaneShown]);
+
+  /** Apply a shortcut's filter to the queue (and show the queue if it was folded). */
+  const applyPaneShortcut = React.useCallback(
+    ({ kind, count }: { kind: PaneShortcutKind; count: number }) => {
+      setSearchInput('');
+      setSearch('');
+      setSeverity(kind === 'critical' ? 'critical' : ANY_SEVERITY);
+      setStatus(kind === 'awaiting' ? 'needs_human' : ANY_STATUS);
+      changeScope(kind === 'review' ? 'review' : 'active');
+      if (queueCollapsedRef.current) setQueueFolded(false);
+      announce(`The queue shows ${paneShortcutLabel(kind, count)}.`);
+    },
+    [announce, changeScope, setQueueFolded],
+  );
+
   const hasFilters = Boolean(
     searchInput.trim() || severity !== ANY_SEVERITY || status !== ANY_STATUS || closedBy,
   );
@@ -2053,6 +2399,15 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const pendingReviews = reviewSummary?.pending ?? 0;
   const offerReview =
     scope === 'review' || Boolean(reviewSummary && (reviewSummary.enabled || reviewSummary.pending > 0));
+  // The empty pane's counted shortcuts (the review count is the review summary's), only
+  // while the pane will stay empty (see `emptyPaneShown`).
+  const emptyPaneShortcuts = emptyPaneShown
+    ? paneShortcuts({
+        critical: paneCounts.critical,
+        awaiting: paneCounts.awaiting,
+        review: offerReview && reviewSummary ? reviewSummary.pending : null,
+      })
+    : [];
   const selectedRow = selectedCaseId ? rowsById.get(selectedCaseId) ?? null : null;
   const prefetched = selectedCaseId ? prefetchedRef.current.get(selectedCaseId) ?? null : null;
   const selectedCase =
@@ -2060,6 +2415,10 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       ? prefetched
       : selectedRow;
   const canLoadMore = rows.length < total;
+  // Round 16 (WP02): every row's leading slot is its checkbox while anything is selected
+  // or a bulk job runs, and always on a touch screen (no hover there); otherwise it is the
+  // severity glyph until the row is hovered or focused.
+  const revealCheckboxes = canBulk && (coarsePointer || selectedCount > 0 || bulkBusy || Boolean(trackedJob));
   const rowJob = (id: string): RowJobState | null => {
     const pending = Boolean(trackedJob && trackedJob.ids.has(id));
     const failure = jobFailures.get(id);
@@ -2126,55 +2485,39 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   return (
     <ProtectedRoute resource="cases" action="read">
       {/* The bleed is a MATCHED PAIR with `AppShell.CONTENT_INSET`: it widens the board back
-          out of the shell gutter to a constant 16px inset at every width. Keep `w-auto`:
-          it is what makes a negative margin WIDEN the box rather than shift it. See
-          `route-visual-standard.test.ts`, which asserts them together. */}
+          out of the shell gutter to a constant 16px inset on every side (Round 16, WP02:
+          `-my-2` takes 8px of the 24px top and bottom inset back too, and the height is the
+          viewport minus the 56px top bar and the two 16px insets, so the page never
+          scrolls). Keep `w-auto`: it is what makes a negative margin WIDEN the box rather
+          than shift it. See `route-visual-standard.test.ts`, which asserts them together. */}
       <PageContainer
         variant="fluid"
-        className="h-[calc(100dvh-7rem)] min-h-0 w-auto sm:-mx-2 xl:min-h-[600px]"
+        className="h-[calc(100dvh-5.5rem)] min-h-0 w-auto -my-2 sm:-mx-2 xl:min-h-[600px]"
         data-testid="case-manager"
       >
         <TooltipProvider delayDuration={300}>
-          {/* The page header over the split (Round 14): title, help, the live state and an
-              icon Refresh. `sm:px-2` puts the title back on the shell gutter that the
-              board's bleed widens out of, and `sm:mx-2` on the split frame does the same,
-              so the title and the frame share one column with every other page's modules.
-              The header to first module gap is the page rhythm (24px, PageContainer). The
-              split fills the rest of the height. */}
-          <div className="flex h-full min-h-0 flex-col gap-6" data-testid="case-manager-layout">
-            <PageHeader
-              title="Case Manager"
-              help={CASE_MANAGER_HELP}
-              className="sm:px-2"
-              controls={
-                <>
-                  {live ? (
-                    <StatusDot tone="success" data-testid="case-manager-live">
-                      Live
-                    </StatusDot>
-                  ) : null}
-                  <RefreshButton
-                    display="icon"
-                    label="Refresh case queue"
-                    onClick={refreshQueue}
-                    refreshing={loading}
-                  />
-                </>
-              }
-            />
+          {/* No routed page header (Round 16, WP02; [cmux] §5.1): the top bar's breadcrumb
+              already names the page, so the title is for assistive technology only, as on
+              Chat, and Live, Refresh and "About Case Manager" sit in the queue's band. The
+              split frame is the board. */}
+          <div className="flex h-full min-h-0 flex-col" data-testid="case-manager-layout">
+            <h1 className="sr-only">Case Manager</h1>
             {/* One panel holds the split (ui-audit CM1): the queue on the panel tint, the open
                 case on its own surface, divided by the resize handle. */}
             <div
               ref={splitFrameRef}
               data-testid="case-manager-split-frame"
+              data-queue-collapsed={queueCollapsed ? '' : undefined}
               className={cn(
-                'surface-panel grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-clip sm:mx-2',
+                'surface-panel grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-clip',
                 'xl:grid-cols-[var(--case-manager-columns)]',
                 resizingSplit && 'select-none xl:cursor-col-resize',
               )}
               style={
                 {
-                  '--case-manager-columns': `${queueWidth}px ${SPLIT_HANDLE_PX}px minmax(0, 1fr)`,
+                  '--case-manager-columns': queueCollapsed
+                    ? `${QUEUE_STRIP_PX}px minmax(0, 1fr)`
+                    : `${queueWidth}px ${SPLIT_HANDLE_PX}px minmax(0, 1fr)`,
                 } as React.CSSProperties
               }
               data-frame-width={frameWidth || undefined}
@@ -2185,537 +2528,715 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                 className={cn(
                   '@container/queue min-h-0 flex-col border-border xl:flex',
                   selectedCaseId ? 'hidden xl:flex' : 'flex',
+                  queueCollapsed && 'border-r',
                 )}
               >
-                {/* The control band (D8.1): the scope and the view menu, then "Select
-                    visible", the search and the Filters control with its chips. */}
-                <div className="shrink-0 space-y-2.5 border-b border-border px-3 pb-3 pt-3" data-testid="case-queue-controls">
-                  {/* The scope names the list for assistive technology; the segmented
-                      control shows it. */}
-                  <h2 className="sr-only">{scopeHeading(scope, scope === 'review' ? review : null)}</h2>
-                  <div className="flex items-center gap-2">
-                    <SegmentedControl<QueueScope>
-                      aria-label="Case queue scope"
-                      size="sm"
-                      value={scope}
-                      onValueChange={changeScope}
-                      options={[
-                        { value: 'active', label: 'Active' },
-                        ...(currentUser ? [{ value: 'mine' as const, label: 'Mine' }] : []),
-                        ...(offerReview
-                          ? [
-                              {
-                                value: 'review' as const,
-                                label: (
-                                  // Inline, so the name reads "Review, 2 waiting".
-                                  <span data-testid="case-queue-review-scope">
-                                    Review
-                                    {pendingReviews ? (
-                                      <span className="ml-1.5 rounded-sm bg-muted px-1.5 py-px text-2xs font-medium tabular-nums text-muted-foreground">
-                                        <span className="sr-only">, </span>
-                                        {pendingReviews.toLocaleString()}
-                                        <span className="sr-only"> waiting</span>
-                                      </span>
-                                    ) : null}
-                                  </span>
-                                ),
-                              },
-                            ]
-                          : []),
-                        { value: 'all', label: 'All' },
-                      ]}
-                    />
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
+                {queueCollapsed ? (
+                  // Focus mode: the folded queue's strip. Show the queue, then Previous and
+                  // Next (K and J work from anywhere on the page while it is folded) and
+                  // where the open case sits in the loaded list.
+                  // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Up and Down on the strip's own buttons step through the cases
+                  <div
+                    data-queue-strip=""
+                    data-testid="case-queue-strip"
+                    className="flex min-h-0 flex-1 flex-col items-center gap-1 py-2"
+                    onKeyDown={(event) => {
+                      if (event.altKey || event.ctrlKey || event.metaKey) return;
+                      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                        event.preventDefault();
+                        stepCase(event.key === 'ArrowDown' ? 1 : -1);
+                      }
+                    }}
+                  >
+                    <Tooltip>
+                      <TooltipTrigger asChild>
                         <Button
-                          ref={viewMenuRef}
+                          ref={stripExpandRef}
                           variant="ghost"
-                          size="sm"
-                          className="ml-auto h-8 gap-1.5 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
-                          aria-label={`${QUEUE_SORT_LABEL[sort]}, sort and view options`}
+                          size="icon"
+                          className="h-8 w-8"
+                          aria-label="Show queue"
+                          aria-keyshortcuts="["
+                          aria-expanded={false}
+                          onClick={() => setQueueFolded(false)}
                         >
-                          <ArrowDownUp className="size-3.5" aria-hidden />
-                          {QUEUE_SORT_LABEL[sort]}
-                          <ChevronDown className="size-3.5" aria-hidden />
+                          <PanelLeftOpen className="size-4" aria-hidden />
                         </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" sideOffset={6} className="w-56">
-                        <DropdownMenuLabel>Sort by</DropdownMenuLabel>
-                        <DropdownMenuRadioGroup value={sort} onValueChange={(value) => setSort(value as QueueSort)}>
-                          {(Object.keys(QUEUE_SORT_LABEL) as QueueSort[]).map((value) => (
-                            <DropdownMenuRadioItem key={value} value={value}>
-                              {QUEUE_SORT_LABEL[value]}
-                            </DropdownMenuRadioItem>
-                          ))}
-                        </DropdownMenuRadioGroup>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuCheckboxItem
-                          checked={density === 'compact'}
-                          onCheckedChange={(next) => changeDensity(next === true ? 'compact' : 'comfortable')}
+                      </TooltipTrigger>
+                      <TooltipContent side="right">Show queue ([)</TooltipContent>
+                    </Tooltip>
+                    <span aria-hidden className="my-1 h-px w-6 bg-border" />
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className={cn('h-8 w-8', STRIP_STEP_INERT)}
+                          aria-label="Previous case"
+                          aria-keyshortcuts="K ArrowUp"
+                          // `aria-disabled`, not `disabled`: a button disabled while it holds
+                          // focus drops focus to <body>. At the first case it does nothing.
+                          aria-disabled={visibleCases.length === 0 || position === 1}
+                          onClick={() => stepCase(-1)}
                         >
-                          Compact rows
-                        </DropdownMenuCheckboxItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          aria-keyshortcuts="?"
-                          onSelect={() => {
-                            // The dialog returns focus to the menu's trigger, not the item.
-                            shortcutsOpenerRef.current = viewMenuRef.current;
-                            setShortcutsOpen(true);
-                          }}
+                          <ChevronUp className="size-4" aria-hidden />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">Previous case (K)</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className={cn('h-8 w-8', STRIP_STEP_INERT)}
+                          aria-label="Next case"
+                          aria-keyshortcuts="J ArrowDown"
+                          aria-disabled={visibleCases.length === 0 || position === visibleCases.length}
+                          onClick={() => stepCase(1)}
                         >
-                          <Keyboard className="h-4 w-4" aria-hidden />
-                          <span className="flex-1">Keyboard shortcuts</span>
-                          <kbd aria-hidden className="ml-auto font-sans text-xs text-muted-foreground">
-                            ?
-                          </kbd>
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-
-                  <div className="flex items-start gap-2.5">
-                    {canBulk ? (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className="flex h-8 shrink-0 items-center pl-0.5">
-                            <Checkbox
-                              id="case-manager-select-visible"
-                              checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
-                              disabled={bulkBusy || visibleCases.length === 0}
-                              onCheckedChange={(next) => toggleVisibleSelection(next === true)}
-                              aria-label="Select all visible cases"
-                              className="bg-background"
-                            />
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent side="bottom">Select visible</TooltipContent>
-                      </Tooltip>
+                          <ChevronDown className="size-4" aria-hidden />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">Next case (J)</TooltipContent>
+                    </Tooltip>
+                    {position ? (
+                      <p
+                        data-testid="case-queue-strip-position"
+                        className="mt-1 flex flex-col items-center text-2xs tabular-nums text-muted-foreground"
+                        title={`${position.toLocaleString()} of ${visibleCases.length.toLocaleString()} loaded`}
+                      >
+                        <span className="sr-only">{`Case ${position.toLocaleString()} of ${visibleCases.length.toLocaleString()} loaded`}</span>
+                        <span aria-hidden className="font-medium text-foreground">
+                          {position.toLocaleString()}
+                        </span>
+                        <span aria-hidden>of</span>
+                        <span aria-hidden>{visibleCases.length.toLocaleString()}</span>
+                      </p>
                     ) : null}
-                    {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keys from the search field inside: Escape clears it, Down moves into the list */}
-                    <div
-                      className="min-w-0 flex-1"
-                      onKeyDown={(event) => {
-                        const target = event.target as HTMLElement;
-                        if (!target.closest('[data-filter-search]')) return;
-                        if (event.key === 'Escape' && searchInput) {
-                          event.preventDefault();
-                          setSearchInput('');
-                        } else if (event.key === 'ArrowDown') {
-                          event.preventDefault();
-                          const first = visibleRef.current[0];
-                          if (first) buttonsRef.current.get(effectiveFocusId ?? first.case_id)?.focus();
-                        }
-                      }}
-                    >
-                      <FilterBar
-                        ref={filterBarRef}
-                        aria-label="Case queue filters"
-                        primaryCount={0}
-                        // The 360px queue pane: with the 12rem minimum, "Filters 1" (wider
-                        // than "Filters") would wrap onto a row of its own once a filter is on.
-                        searchClassName="min-w-[10rem]"
-                        search={{
-                          value: searchInput,
-                          onChange: setSearchInput,
-                          label: 'Search case queue',
-                          placeholder: 'Search cases',
-                          compactPlaceholder: 'Search cases',
-                          // `/` focuses this field from anywhere in the queue.
-                          keyShortcuts: '/',
-                        }}
-                        filters={[
-                          {
-                            id: 'severity',
-                            label: 'Severity',
-                            active: severity !== ANY_SEVERITY,
-                            control: (
-                              <Select value={severity} onValueChange={setSeverity}>
-                                <SelectTrigger className="h-8 w-full text-sm" aria-label="Severity filter">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value={ANY_SEVERITY}>Any severity</SelectItem>
-                                  {QUEUE_SEVERITIES.map((band) => (
-                                    <SelectItem key={band} value={band}>
-                                      {humanizeToken(band)}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            ),
-                          },
-                          {
-                            id: 'status',
-                            label: 'Status',
-                            active: status !== ANY_STATUS,
-                            control: (
-                              <Select value={status} onValueChange={setStatus}>
-                                <SelectTrigger className="h-8 w-full text-sm" aria-label="Status filter">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value={ANY_STATUS}>Any status</SelectItem>
-                                  {statusOptions.map((item) => (
-                                    <SelectItem key={item.value} value={item.value}>
-                                      {item.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            ),
-                          },
-                          {
-                            id: 'closedBy',
-                            label: 'Closed by',
-                            active: Boolean(closedBy),
-                            control: (
-                              <Select
-                                value={closedBy ?? ANY_CLOSER}
-                                onValueChange={(value) => applyClosedBy(value === ANY_CLOSER ? null : asCloser(value))}
-                              >
-                                <SelectTrigger className="h-8 w-full text-sm" aria-label="Closed by filter">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value={ANY_CLOSER}>Anyone</SelectItem>
-                                  {(Object.keys(CLOSED_BY_LABEL) as QueueCloser[]).map((closer) => (
-                                    <SelectItem key={closer} value={closer}>
-                                      {CLOSED_BY_LABEL[closer]}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            ),
-                          },
+                  </div>
+                ) : null}
+                <div
+                  ref={queueContentRef}
+                  data-testid="case-queue-content"
+                  className={cn('min-h-0 flex-1 flex-col', queueCollapsed ? 'hidden' : 'flex')}
+                >
+                  {/* The control band (D8.1; Round 16, WP02): row 1 the scope, then Live,
+                      Refresh, the view menu and "About Case Manager"; row 2 "Select
+                      visible", the search and the Filters control with its chips. Two 32px
+                      rows in 10px padding with an 8px gap: 92px. */}
+                  <div className="shrink-0 border-b border-border px-3 py-2.5" data-testid="case-queue-controls">
+                    {/* The scope names the list for assistive technology; the segmented
+                        control shows it. */}
+                    <h2 className="sr-only">{scopeHeading(scope, scope === 'review' ? review : null)}</h2>
+                    <div className="flex h-8 min-w-0 items-center gap-1.5" data-testid="case-queue-band-row">
+                      <SegmentedControl<QueueScope>
+                        aria-label="Case queue scope"
+                        size="sm"
+                        value={scope}
+                        onValueChange={changeScope}
+                        options={[
+                          { value: 'active', label: 'Active' },
+                          ...(currentUser ? [{ value: 'mine' as const, label: 'Mine' }] : []),
+                          ...(offerReview
+                            ? [
+                                {
+                                  value: 'review' as const,
+                                  label: (
+                                    // Inline, so the name reads "Review, 2 waiting".
+                                    <span data-testid="case-queue-review-scope">
+                                      Review
+                                      {pendingReviews ? (
+                                        <span className="ml-1.5 rounded-sm bg-muted px-1.5 py-px text-2xs font-medium tabular-nums text-muted-foreground">
+                                          <span className="sr-only">, </span>
+                                          {pendingReviews.toLocaleString()}
+                                          <span className="sr-only"> waiting</span>
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  ),
+                                },
+                              ]
+                            : []),
+                          { value: 'all', label: 'All' },
                         ]}
-                        chips={filterChips}
-                        onClearAll={clearFilters}
                       />
+                      <div className="ml-auto flex shrink-0 items-center gap-1" data-band-compact={bandCompact ? '' : undefined}>
+                        {/* The live state: the dot always, its word once the queue is 28rem
+                            wide (the word stays for assistive technology below that). */}
+                        {live ? (
+                          <StatusDot
+                            tone="success"
+                            data-testid="case-manager-live"
+                            // Dot only (no gap, no margin) until the word shows.
+                            className="gap-0 text-xs @[28rem]/queue:mr-1 @[28rem]/queue:gap-1.5"
+                            title="Live updates are on"
+                          >
+                            <span className="sr-only @[28rem]/queue:not-sr-only">Live</span>
+                          </StatusDot>
+                        ) : null}
+                        {/* Below a 400px queue the scope fills the row, so Refresh and
+                            "About Case Manager" move into the view menu (still row 1). */}
+                        {bandCompact ? null : (
+                          <RefreshButton
+                            display="icon"
+                            label="Refresh case queue"
+                            onClick={refreshQueue}
+                            refreshing={loading}
+                            className="h-8 w-8"
+                          />
+                        )}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              ref={viewMenuRef}
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 min-w-8 gap-1.5 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+                              aria-label={`${QUEUE_SORT_LABEL[sort]}, sort and view options`}
+                            >
+                              <ArrowDownUp className="size-3.5" aria-hidden />
+                              {/* The sort's name once the queue has room for it (31rem). */}
+                              <span className="hidden @[31rem]/queue:inline">{QUEUE_SORT_LABEL[sort]}</span>
+                              <ChevronDown className="hidden size-3.5 @[31rem]/queue:block" aria-hidden />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            align="end"
+                            sideOffset={6}
+                            className="w-56"
+                            onCloseAutoFocus={(event) => {
+                              // "Hide queue" hid this menu's trigger: land on the strip instead.
+                              if (!focusStripOnMenuCloseRef.current) return;
+                              focusStripOnMenuCloseRef.current = false;
+                              event.preventDefault();
+                              requestAnimationFrame(() => stripExpandRef.current?.focus());
+                            }}
+                          >
+                            {bandCompact ? (
+                              <>
+                                <DropdownMenuItem onSelect={refreshQueue}>
+                                  <RefreshCw aria-hidden />
+                                  Refresh case queue
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                              </>
+                            ) : null}
+                            <DropdownMenuLabel>Sort by</DropdownMenuLabel>
+                            <DropdownMenuRadioGroup value={sort} onValueChange={(value) => setSort(value as QueueSort)}>
+                              {(Object.keys(QUEUE_SORT_LABEL) as QueueSort[]).map((value) => (
+                                <DropdownMenuRadioItem key={value} value={value}>
+                                  {QUEUE_SORT_LABEL[value]}
+                                </DropdownMenuRadioItem>
+                              ))}
+                            </DropdownMenuRadioGroup>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuCheckboxItem
+                              checked={density === 'compact'}
+                              onCheckedChange={(next) => changeDensity(next === true ? 'compact' : 'comfortable')}
+                            >
+                              Compact rows
+                            </DropdownMenuCheckboxItem>
+                            {splitShown ? (
+                              <DropdownMenuItem
+                                aria-keyshortcuts="["
+                                onSelect={() => {
+                                  focusStripOnMenuCloseRef.current = true;
+                                  setQueueFolded(true);
+                                }}
+                              >
+                                <PanelLeftClose className="h-4 w-4" aria-hidden />
+                                <span className="flex-1">Hide queue</span>
+                                <kbd aria-hidden className="ml-auto font-sans text-xs text-muted-foreground">
+                                  [
+                                </kbd>
+                              </DropdownMenuItem>
+                            ) : null}
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              aria-keyshortcuts="?"
+                              onSelect={() => {
+                                // The dialog returns focus to the menu's trigger, not the item.
+                                shortcutsOpenerRef.current = viewMenuRef.current;
+                                setShortcutsOpen(true);
+                              }}
+                            >
+                              <Keyboard className="h-4 w-4" aria-hidden />
+                              <span className="flex-1">Keyboard shortcuts</span>
+                              <kbd aria-hidden className="ml-auto font-sans text-xs text-muted-foreground">
+                                ?
+                              </kbd>
+                            </DropdownMenuItem>
+                            {bandCompact ? (
+                              <DropdownMenuItem onSelect={() => setAboutOpen(true)}>
+                                <HelpCircle aria-hidden />
+                                About Case Manager
+                              </DropdownMenuItem>
+                            ) : null}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                        {bandCompact ? null : <HelpTip text={CASE_MANAGER_HELP} label="About Case Manager" />}
+                      </div>
+                    </div>
+
+                    <div className="mt-2 flex items-start gap-2.5">
+                      {canBulk ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="flex h-8 shrink-0 items-center pl-0.5">
+                              <Checkbox
+                                id="case-manager-select-visible"
+                                checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
+                                disabled={bulkBusy || visibleCases.length === 0}
+                                onCheckedChange={(next) => toggleVisibleSelection(next === true)}
+                                aria-label="Select all visible cases"
+                                className="bg-background"
+                              />
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom">Select visible</TooltipContent>
+                        </Tooltip>
+                      ) : null}
+                      {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keys from the search field inside: Escape clears it, Down moves into the list */}
+                      <div
+                        className="min-w-0 flex-1"
+                        onKeyDown={(event) => {
+                          const target = event.target as HTMLElement;
+                          if (!target.closest('[data-filter-search]')) return;
+                          if (event.key === 'Escape' && searchInput) {
+                            event.preventDefault();
+                            setSearchInput('');
+                          } else if (event.key === 'ArrowDown') {
+                            event.preventDefault();
+                            const first = visibleRef.current[0];
+                            if (first) buttonsRef.current.get(effectiveFocusId ?? first.case_id)?.focus();
+                          }
+                        }}
+                      >
+                        <FilterBar
+                          ref={filterBarRef}
+                          aria-label="Case queue filters"
+                          primaryCount={0}
+                          // The 360px queue pane: with the 12rem minimum, "Filters 1" (wider
+                          // than "Filters") would wrap onto a row of its own once a filter is on.
+                          searchClassName="min-w-[10rem]"
+                          search={{
+                            value: searchInput,
+                            onChange: setSearchInput,
+                            label: 'Search case queue',
+                            placeholder: 'Search cases',
+                            compactPlaceholder: 'Search cases',
+                            // `/` focuses this field from anywhere in the queue.
+                            keyShortcuts: '/',
+                          }}
+                          filters={[
+                            {
+                              id: 'severity',
+                              label: 'Severity',
+                              active: severity !== ANY_SEVERITY,
+                              control: (
+                                <Select value={severity} onValueChange={setSeverity}>
+                                  <SelectTrigger className="h-8 w-full text-sm" aria-label="Severity filter">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value={ANY_SEVERITY}>Any severity</SelectItem>
+                                    {QUEUE_SEVERITIES.map((band) => (
+                                      <SelectItem key={band} value={band}>
+                                        {humanizeToken(band)}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              ),
+                            },
+                            {
+                              id: 'status',
+                              label: 'Status',
+                              active: status !== ANY_STATUS,
+                              control: (
+                                <Select value={status} onValueChange={setStatus}>
+                                  <SelectTrigger className="h-8 w-full text-sm" aria-label="Status filter">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value={ANY_STATUS}>Any status</SelectItem>
+                                    {statusOptions.map((item) => (
+                                      <SelectItem key={item.value} value={item.value}>
+                                        {item.label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              ),
+                            },
+                            {
+                              id: 'closedBy',
+                              label: 'Closed by',
+                              active: Boolean(closedBy),
+                              control: (
+                                <Select
+                                  value={closedBy ?? ANY_CLOSER}
+                                  onValueChange={(value) => applyClosedBy(value === ANY_CLOSER ? null : asCloser(value))}
+                                >
+                                  <SelectTrigger className="h-8 w-full text-sm" aria-label="Closed by filter">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value={ANY_CLOSER}>Anyone</SelectItem>
+                                    {(Object.keys(CLOSED_BY_LABEL) as QueueCloser[]).map((closer) => (
+                                      <SelectItem key={closer} value={closer}>
+                                        {CLOSED_BY_LABEL[closer]}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              ),
+                            },
+                          ]}
+                          chips={filterChips}
+                          onClearAll={clearFilters}
+                        />
+                      </div>
+                    </div>
+                    {/* "N new alerts under investigation" (WP09 fills it; nothing at 0). It is
+                        one 16px line at most, so the band grows by 20px at most. The wrapper
+                        takes no room while it renders nothing, and the 4px gap belongs to a
+                        child with content, so a live region kept in place while empty adds
+                        no height either. */}
+                    <div className="empty:hidden [&>*:not(:empty)]:mt-1" data-testid="case-queue-ai-notice">
+                      <AiQueueNotice />
                     </div>
                   </div>
-                </div>
 
-                {/* The selection count for assistive technology, in a live region that is
-                    always mounted: the bulk bar below mounts WITH the first selection, too
-                    late for a region inside it to announce that one. */}
-                {canBulk ? (
-                  <p className="sr-only" aria-live="polite" data-testid="case-selection-status">
-                    {selectedCount
-                      ? `${selectedCount.toLocaleString()} case${selectedCount === 1 ? '' : 's'} selected.`
-                      : ''}
-                  </p>
-                ) : null}
+                  {/* The selection count for assistive technology, in a live region that is
+                      always mounted: the bulk bar below mounts WITH the first selection, too
+                      late for a region inside it to announce that one. */}
+                  {canBulk ? (
+                    <p className="sr-only" aria-live="polite" data-testid="case-selection-status">
+                      {selectedCount
+                        ? `${selectedCount.toLocaleString()} case${selectedCount === 1 ? '' : 's'} selected.`
+                        : ''}
+                    </p>
+                  ) : null}
 
-                {/* The bulk bar (D8.1): only with a selection, a running bulk job or its
-                    result. A role with no bulk action never has one. */}
-                {canBulk && (selectedCount > 0 || trackedJob || bulkOutcome) ? (
-                  <div
-                    role="region"
-                    aria-label="Case selection and bulk actions"
-                    aria-busy={bulkBusy || Boolean(trackedJob)}
-                    className="shrink-0 space-y-1.5 border-b border-border bg-primary/[0.04] px-3 py-2 dark:bg-primary/[0.07]"
-                    data-testid="case-manager-selection-row"
-                  >
-                    {selectedCount > 0 ? (
-                      <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="text-xs font-medium tabular-nums text-foreground">
-                          {selectedCount.toLocaleString()} selected
-                        </span>
-                        {total > selectedCount && total > visibleCases.length ? (
-                          <Button
-                            variant="link"
-                            size="sm"
-                            className="h-7 px-1 text-xs"
-                            disabled={selectingAll || bulkBusy}
-                            onClick={() => void selectAllMatching()}
-                            title="Selects a snapshot of every case that matches the current filters."
-                          >
-                            {selectingAll
-                              ? 'Selecting…'
-                              : `Select all ${Math.min(total, QUEUE_SELECT_ALL_LIMIT).toLocaleString()} matching`}
-                          </Button>
-                        ) : null}
-                        <div className="ml-auto flex flex-wrap items-center gap-1.5">
-                          {canAssign ? (
+                  {/* The bulk bar (D8.1): only with a selection, a running bulk job or its
+                      result. A role with no bulk action never has one. */}
+                  {canBulk && (selectedCount > 0 || trackedJob || bulkOutcome) ? (
+                    <div
+                      role="region"
+                      aria-label="Case selection and bulk actions"
+                      aria-busy={bulkBusy || Boolean(trackedJob)}
+                      className="shrink-0 space-y-1.5 border-b border-border bg-primary/[0.04] px-3 py-2 dark:bg-primary/[0.07]"
+                      data-testid="case-manager-selection-row"
+                    >
+                      {selectedCount > 0 ? (
+                        <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="text-xs font-medium tabular-nums text-foreground">
+                            {selectedCount.toLocaleString()} selected
+                          </span>
+                          {total > selectedCount && total > visibleCases.length ? (
                             <Button
-                              variant="outline"
+                              variant="link"
                               size="sm"
-                              className="h-7 px-2 text-xs"
-                              disabled={bulkBusy || bulkUnavailable}
-                              onClick={() => openBulkForm('assign')}
+                              className="h-7 px-1 text-xs"
+                              disabled={selectingAll || bulkBusy}
+                              onClick={() => void selectAllMatching()}
+                              title="Selects a snapshot of every case that matches the current filters."
                             >
-                              <UserCheck className="h-3.5 w-3.5" aria-hidden />
-                              Assign
+                              {selectingAll
+                                ? 'Selecting…'
+                                : `Select all ${Math.min(total, QUEUE_SELECT_ALL_LIMIT).toLocaleString()} matching`}
                             </Button>
                           ) : null}
-                          {canClose ? (
-                            <Button
-                              size="sm"
-                              className="h-7 px-2 text-xs"
-                              disabled={bulkBusy || bulkUnavailable}
-                              onClick={() => setBulkTerminal('close')}
-                            >
-                              <Check className="h-3.5 w-3.5" aria-hidden />
-                              Close…
-                            </Button>
-                          ) : null}
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
+                          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+                            {canAssign ? (
                               <Button
-                                ref={bulkMenuRef}
                                 variant="outline"
                                 size="sm"
                                 className="h-7 px-2 text-xs"
                                 disabled={bulkBusy || bulkUnavailable}
-                                aria-label={`More bulk actions for ${selectedCount} selected case${selectedCount === 1 ? '' : 's'}`}
+                                onClick={() => openBulkForm('assign')}
                               >
-                                {bulkBusy ? (
-                                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden />
-                                ) : (
-                                  <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
-                                )}
-                                More
-                                <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+                                <UserCheck className="h-3.5 w-3.5" aria-hidden />
+                                Assign
                               </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="w-64">
-                              <DropdownMenuLabel className="space-y-0.5">
-                                <span className="block text-foreground">{selectedCount} selected</span>
-                                <span className="block text-xs font-normal leading-4">
-                                  Submitted work continues in the background and stays visible in Inbox.
-                                </span>
-                              </DropdownMenuLabel>
-                              <DropdownMenuSeparator />
-                              <Can resource="cases" action="write">
-                                <DropdownMenuItem onSelect={() => setPendingBulkAction('acknowledge')}>
-                                  <Eye aria-hidden />
-                                  Acknowledge
-                                </DropdownMenuItem>
-                              </Can>
-                              <Can resource="cases" action="assign">
-                                <DropdownMenuItem onSelect={() => openBulkForm('assign')}>
-                                  <UserCheck aria-hidden />
-                                  Assign
-                                </DropdownMenuItem>
-                              </Can>
-                              <Can resource="cases" action="write">
-                                <DropdownMenuItem onSelect={() => openBulkForm('tag')}>
-                                  <TagIcon aria-hidden />
-                                  Add tag
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onSelect={() => openBulkForm('status')}>
-                                  <SlidersHorizontal aria-hidden />
-                                  Set status
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onSelect={() => openBulkForm('disposition')}>
-                                  <CircleSlash aria-hidden />
-                                  Set disposition
-                                </DropdownMenuItem>
-                              </Can>
-                              <DropdownMenuSeparator />
-                              <Can resource="cases" action="reinvestigate">
-                                <DropdownMenuItem onSelect={() => setPendingBulkAction('reinvestigate')}>
-                                  <RefreshCw aria-hidden />
-                                  Reinvestigate
-                                </DropdownMenuItem>
-                              </Can>
-                              <Can resource="cases" action="close">
-                                <DropdownMenuItem onSelect={() => setBulkTerminal('resolve')}>
-                                  <CheckCircle2 aria-hidden />
-                                  Resolve…
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onSelect={() => setBulkTerminal('close')}>
-                                  <Check aria-hidden />
-                                  Close…
-                                </DropdownMenuItem>
-                              </Can>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
-                            onClick={clearBulkSelection}
-                            disabled={bulkBusy}
-                            aria-label="Clear case selection"
-                          >
-                            <X className="h-3.5 w-3.5" aria-hidden />
-                          </Button>
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {selectedCount > 0 && bulkUnavailable ? (
-                      <p role="note" data-testid="case-bulk-demo-note" className="text-xs leading-5 text-muted-foreground">
-                        Bulk changes run as background jobs, which are off in Demo Mode. Open a case to change it on its
-                        own.
-                      </p>
-                    ) : null}
-                    {trackedJob ? (
-                      <div className="space-y-1" role="status">
-                        <p className="text-xs text-foreground">
-                          {trackedJob.label}: {trackedJob.done} of {trackedJob.total} done
-                        </p>
-                        <LoadingBar active size="sm" label={`${trackedJob.label} in progress`} />
-                      </div>
-                    ) : bulkOutcome ? (
-                      <div className="flex items-start gap-2">
-                        <p
-                          role={bulkOutcome.kind === 'warning' ? 'alert' : 'status'}
-                          className={cn(
-                            'min-w-0 flex-1 border-l-2 pl-2 text-xs leading-5',
-                            bulkOutcome.kind === 'warning'
-                              ? 'border-warning text-warning-text'
-                              : 'border-success text-success-text',
-                          )}
-                        >
-                          {bulkOutcome.message}
-                        </p>
-                        {selectedCount === 0 ? (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6 shrink-0"
-                            onClick={() => setBulkOutcome(null)}
-                            aria-label="Dismiss the bulk result"
-                          >
-                            <X className="h-3.5 w-3.5" aria-hidden />
-                          </Button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {newCount > 0 ? (
-                  <div className="shrink-0 border-b border-border px-3 py-1.5">
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="h-7 w-full text-xs"
-                      onClick={showNewCases}
-                      data-testid="case-queue-show-new"
-                    >
-                      {newCount} new case{newCount === 1 ? '' : 's'} · Show
-                    </Button>
-                  </div>
-                ) : null}
-
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                  {loading && rows.length === 0 ? (
-                    <QueueSkeleton />
-                  ) : error ? (
-                    <div className="p-3">
-                      <LoadError error={error} title="Could not load cases" onRetry={refreshLoaded} />
-                    </div>
-                  ) : visibleCases.length === 0 ? (
-                    <EmptyState
-                      compact
-                      icon={Inbox}
-                      state={hasFilters ? 'no-results' : 'no-data'}
-                      title={
-                        hasFilters
-                          ? 'No matching cases'
-                          : scope === 'review'
-                            ? REVIEW_EMPTY_TITLE[review]
-                            : 'No cases in this queue'
-                      }
-                      description={
-                        hasFilters
-                          ? 'Adjust or clear the queue filters.'
-                          : scope === 'review'
-                            ? reviewSummary && !reviewSummary.enabled
-                              ? REVIEW_OFF_DESCRIPTION
-                              : REVIEW_EMPTY_DESCRIPTION
-                            : scope === 'mine'
-                            ? 'No active case is assigned to you.'
-                            : scope === 'active'
-                              ? 'There are no active cases awaiting work.'
-                              : 'Cases will appear here as alerts are correlated.'
-                      }
-                      action={
-                        hasFilters ? (
-                          <Button variant="outline" size="sm" onClick={clearFilters}>
-                            Clear filters
-                          </Button>
-                        ) : undefined
-                      }
-                    />
-                  ) : (
-                    <>
-                      <LoadingBar active={loading} size="sm" label="Refreshing the queue" className="rounded-none" />
-                      {/* One tab stop: the focused row's open control (roving tabindex). */}
-                      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- arrow-key handling for the roving list; each row's open control is a real button */}
-                      <div className="divide-y divide-border/70" role="list" aria-label="Cases" onKeyDown={onListKeyDown}>
-                        <AnimatePresence initial={false}>
-                          {visibleCases.map((item) => (
-                            <motion.div
-                              role="listitem"
-                              key={item.case_id}
-                              exit={reduceMotion ? { opacity: 0, transition: { duration: 0 } } : { height: 0, opacity: 0 }}
-                              transition={SPRING_UI}
-                              style={{ overflow: 'hidden' }}
+                            ) : null}
+                            {canClose ? (
+                              <Button
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                disabled={bulkBusy || bulkUnavailable}
+                                onClick={() => setBulkTerminal('close')}
+                              >
+                                <Check className="h-3.5 w-3.5" aria-hidden />
+                                Close…
+                              </Button>
+                            ) : null}
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  ref={bulkMenuRef}
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 px-2 text-xs"
+                                  disabled={bulkBusy || bulkUnavailable}
+                                  aria-label={`More bulk actions for ${selectedCount} selected case${selectedCount === 1 ? '' : 's'}`}
+                                >
+                                  {bulkBusy ? (
+                                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                                  ) : (
+                                    <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
+                                  )}
+                                  More
+                                  <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-64">
+                                <DropdownMenuLabel className="space-y-0.5">
+                                  <span className="block text-foreground">{selectedCount} selected</span>
+                                  <span className="block text-xs font-normal leading-4">
+                                    Submitted work continues in the background and stays visible in Inbox.
+                                  </span>
+                                </DropdownMenuLabel>
+                                <DropdownMenuSeparator />
+                                <Can resource="cases" action="write">
+                                  <DropdownMenuItem onSelect={() => setPendingBulkAction('acknowledge')}>
+                                    <Eye aria-hidden />
+                                    Acknowledge
+                                  </DropdownMenuItem>
+                                </Can>
+                                <Can resource="cases" action="assign">
+                                  <DropdownMenuItem onSelect={() => openBulkForm('assign')}>
+                                    <UserCheck aria-hidden />
+                                    Assign
+                                  </DropdownMenuItem>
+                                </Can>
+                                <Can resource="cases" action="write">
+                                  <DropdownMenuItem onSelect={() => openBulkForm('tag')}>
+                                    <TagIcon aria-hidden />
+                                    Add tag
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onSelect={() => openBulkForm('status')}>
+                                    <SlidersHorizontal aria-hidden />
+                                    Set status
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onSelect={() => openBulkForm('disposition')}>
+                                    <CircleSlash aria-hidden />
+                                    Set disposition
+                                  </DropdownMenuItem>
+                                </Can>
+                                <DropdownMenuSeparator />
+                                <Can resource="cases" action="reinvestigate">
+                                  <DropdownMenuItem onSelect={() => setPendingBulkAction('reinvestigate')}>
+                                    <RefreshCw aria-hidden />
+                                    Reinvestigate
+                                  </DropdownMenuItem>
+                                </Can>
+                                <Can resource="cases" action="close">
+                                  <DropdownMenuItem onSelect={() => setBulkTerminal('resolve')}>
+                                    <CheckCircle2 aria-hidden />
+                                    Resolve…
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onSelect={() => setBulkTerminal('close')}>
+                                    <Check aria-hidden />
+                                    Close…
+                                  </DropdownMenuItem>
+                                </Can>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={clearBulkSelection}
+                              disabled={bulkBusy}
+                              aria-label="Clear case selection"
                             >
-                              <QueueRow
-                                item={item}
-                                active={selectedCaseId === item.case_id}
-                                checked={selectedIds.has(item.case_id)}
-                                focusTarget={effectiveFocusId === item.case_id}
-                                density={density}
-                                selectable={canBulk}
-                                selectionDisabled={bulkBusy}
-                                job={rowJob(item.case_id)}
-                                registerButton={registerButton}
-                                onOpen={() => selectCase(item.case_id)}
-                                onFocusRow={() => setFocusId(item.case_id)}
-                                onPrefetch={() => prefetchCase(item.case_id)}
-                                onCheckedChange={(checked, shift) => toggleCaseSelection(item.case_id, checked, shift)}
-                              />
-                            </motion.div>
-                          ))}
-                        </AnimatePresence>
-                      </div>
-                    </>
-                  )}
-                </div>
+                              <X className="h-3.5 w-3.5" aria-hidden />
+                            </Button>
+                          </div>
+                        </div>
+                      ) : null}
 
-                {/* The list footer (D8.1): the scope line, loaded against total, beside Load
-                    more. Not a live region: the app's one announcer already speaks the
-                    position when a case opens (focus reads the row itself). */}
-                {!error && !(loading && rows.length === 0) ? (
-                  <div className="flex min-h-11 shrink-0 items-center gap-2 border-t border-border px-3 py-1.5">
-                    <p
-                      className="min-w-0 flex-1 truncate text-xs tabular-nums text-muted-foreground"
-                      data-testid="case-queue-scope"
-                    >
-                      {summary}
-                    </p>
-                    {scope === 'review' ? (
+                      {selectedCount > 0 && bulkUnavailable ? (
+                        <p role="note" data-testid="case-bulk-demo-note" className="text-xs leading-5 text-muted-foreground">
+                          Bulk changes run as background jobs, which are off in Demo Mode. Open a case to change it on its
+                          own.
+                        </p>
+                      ) : null}
+                      {trackedJob ? (
+                        <div className="space-y-1" role="status">
+                          <p className="text-xs text-foreground">
+                            {trackedJob.label}: {trackedJob.done} of {trackedJob.total} done
+                          </p>
+                          <LoadingBar active size="sm" label={`${trackedJob.label} in progress`} />
+                        </div>
+                      ) : bulkOutcome ? (
+                        <div className="flex items-start gap-2">
+                          <p
+                            role={bulkOutcome.kind === 'warning' ? 'alert' : 'status'}
+                            className={cn(
+                              'min-w-0 flex-1 border-l-2 pl-2 text-xs leading-5',
+                              bulkOutcome.kind === 'warning'
+                                ? 'border-warning text-warning-text'
+                                : 'border-success text-success-text',
+                            )}
+                          >
+                            {bulkOutcome.message}
+                          </p>
+                          {selectedCount === 0 ? (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 shrink-0"
+                              onClick={() => setBulkOutcome(null)}
+                              aria-label="Dismiss the bulk result"
+                            >
+                              <X className="h-3.5 w-3.5" aria-hidden />
+                            </Button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {newCount > 0 ? (
+                    <div className="shrink-0 border-b border-border px-3 py-1.5">
                       <Button
-                        variant="link"
+                        variant="secondary"
                         size="sm"
-                        className="h-7 shrink-0 px-1 text-xs"
-                        data-testid="case-queue-review-switch"
-                        onClick={() => showReview(review === 'pending' ? 'completed' : 'pending')}
+                        className="h-7 w-full text-xs"
+                        onClick={showNewCases}
+                        data-testid="case-queue-show-new"
                       >
-                        {review === 'pending' ? 'Show completed reviews' : 'Show waiting reviews'}
+                        {newCount} new case{newCount === 1 ? '' : 's'} · Show
                       </Button>
-                    ) : null}
-                    {canLoadMore ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 shrink-0 px-2 text-xs"
-                        disabled={loadingMore}
-                        onClick={() => void fetchPage(rows.length, 'append')}
-                      >
-                        {loadingMore ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
-                        Load more
-                      </Button>
-                    ) : null}
+                    </div>
+                  ) : null}
+
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    {loading && rows.length === 0 ? (
+                      <QueueSkeleton />
+                    ) : error ? (
+                      <div className="p-3">
+                        <LoadError error={error} title="Could not load cases" onRetry={refreshLoaded} />
+                      </div>
+                    ) : visibleCases.length === 0 ? (
+                      <EmptyState
+                        compact
+                        icon={Inbox}
+                        state={hasFilters ? 'no-results' : 'no-data'}
+                        title={
+                          hasFilters
+                            ? 'No matching cases'
+                            : scope === 'review'
+                              ? REVIEW_EMPTY_TITLE[review]
+                              : 'No cases in this queue'
+                        }
+                        description={
+                          hasFilters
+                            ? 'Adjust or clear the queue filters.'
+                            : scope === 'review'
+                              ? reviewSummary && !reviewSummary.enabled
+                                ? REVIEW_OFF_DESCRIPTION
+                                : REVIEW_EMPTY_DESCRIPTION
+                              : scope === 'mine'
+                              ? 'No active case is assigned to you.'
+                              : scope === 'active'
+                                ? 'There are no active cases awaiting work.'
+                                : 'Cases will appear here as alerts are correlated.'
+                        }
+                        action={
+                          hasFilters ? (
+                            <Button variant="outline" size="sm" onClick={clearFilters}>
+                              Clear filters
+                            </Button>
+                          ) : undefined
+                        }
+                      />
+                    ) : (
+                      <>
+                        <LoadingBar active={loading} size="sm" label="Refreshing the queue" className="rounded-none" />
+                        {/* One tab stop: the focused row's open control (roving tabindex). */}
+                        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- arrow-key handling for the roving list; each row's open control is a real button */}
+                        <div
+                          className="divide-y divide-border/70"
+                          role="list"
+                          aria-label="Cases"
+                          onKeyDown={onListKeyDown}
+                          data-selection-active={revealCheckboxes ? '' : undefined}
+                        >
+                          <AnimatePresence initial={false}>
+                            {visibleCases.map((item) => (
+                              <motion.div
+                                role="listitem"
+                                key={item.case_id}
+                                exit={reduceMotion ? { opacity: 0, transition: { duration: 0 } } : { height: 0, opacity: 0 }}
+                                transition={SPRING_UI}
+                                style={{ overflow: 'hidden' }}
+                              >
+                                <QueueRow
+                                  item={item}
+                                  active={selectedCaseId === item.case_id}
+                                  checked={selectedIds.has(item.case_id)}
+                                  focusTarget={effectiveFocusId === item.case_id}
+                                  density={density}
+                                  selectable={canBulk}
+                                  revealCheckbox={revealCheckboxes}
+                                  selectionDisabled={bulkBusy}
+                                  job={rowJob(item.case_id)}
+                                  registerButton={registerButton}
+                                  onOpen={() => selectCase(item.case_id)}
+                                  onFocusRow={() => setFocusId(item.case_id)}
+                                  onPrefetch={() => prefetchCase(item.case_id)}
+                                  onCheckedChange={(checked, shift) => toggleCaseSelection(item.case_id, checked, shift)}
+                                />
+                              </motion.div>
+                            ))}
+                          </AnimatePresence>
+                        </div>
+                      </>
+                    )}
                   </div>
-                ) : null}
+
+                  {/* The list footer (D8.1): the scope line, loaded against total, beside Load
+                      more. Not a live region: the app's one announcer already speaks the
+                      position when a case opens (focus reads the row itself). */}
+                  {!error && !(loading && rows.length === 0) ? (
+                    <div className="flex min-h-11 shrink-0 items-center gap-2 border-t border-border px-3 py-1.5">
+                      <p
+                        className="min-w-0 flex-1 truncate text-xs tabular-nums text-muted-foreground"
+                        data-testid="case-queue-scope"
+                      >
+                        {summary}
+                      </p>
+                      {scope === 'review' ? (
+                        <Button
+                          variant="link"
+                          size="sm"
+                          className="h-7 shrink-0 px-1 text-xs"
+                          data-testid="case-queue-review-switch"
+                          onClick={() => showReview(review === 'pending' ? 'completed' : 'pending')}
+                        >
+                          {review === 'pending' ? 'Show completed reviews' : 'Show waiting reviews'}
+                        </Button>
+                      ) : null}
+                      {canLoadMore ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 shrink-0 px-2 text-xs"
+                          disabled={loadingMore}
+                          onClick={() => void fetchPage(rows.length, 'append')}
+                        >
+                          {loadingMore ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
+                          Load more
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
               </aside>
 
               {/* ARIA's focusable separator pattern is a value widget (aria-valuenow +
@@ -2747,6 +3268,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                 className={cn(
                   'group relative hidden h-full cursor-col-resize items-stretch justify-center touch-none outline-none xl:flex',
                   'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
+                  // A folded queue has nothing to resize: the strip's own edge divides it.
+                  queueCollapsed && 'xl:hidden',
                 )}
               >
                 <span
@@ -2762,32 +3285,17 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
               <section
                 ref={detailRef}
                 aria-label="Selected case workspace"
-                className={cn('min-h-0 min-w-0 flex-col bg-background', selectedCaseId ? 'flex' : 'hidden xl:flex')}
+                className={cn(
+                  'min-h-0 min-w-0 flex-col bg-background',
+                  selectedCaseId ? 'flex' : 'hidden xl:flex',
+                )}
               >
                 {selectedCaseId ? (
                   <>
-                    <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-card/35 px-3 xl:hidden">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2"
-                        onClick={closeDetail}
-                        aria-label="Back to case queue"
-                      >
-                        <ChevronLeft className="h-4 w-4" />
-                        Cases
-                      </Button>
-                      {/* The display id and title, never the raw id (CM-9 below xl). */}
-                      <span className="min-w-0 truncate text-xs text-muted-foreground">
-                        {selectedCase ? (
-                          <>
-                            <span className="font-mono">{caseDisplayId(selectedCase)}</span>
-                            {' · '}
-                            {caseTitle(selectedCase)}
-                          </>
-                        ) : null}
-                      </span>
-                    </div>
+                    {/* No back bar of its own (Round 16, WP16): below xl the case header's
+                        Back (marked `data-case-header-back`, WP03) is the one back path, in
+                        every browser, so a phone keeps one Back and the case starts 40px
+                        higher. */}
                     <div className="min-h-0 flex-1">
                       <CaseDetail
                         caseId={selectedCaseId}
@@ -2806,11 +3314,28 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                     </div>
                   </>
                 ) : (
-                  <div className="flex h-full items-center justify-center">
+                  <div className="flex h-full items-center justify-center" data-testid="case-manager-empty-pane">
                     <EmptyState
                       icon={Columns3}
-                      title="Select a case"
-                      description="Choose a case from the queue to open the complete investigation workspace."
+                      title={NO_CASE_OPEN_TITLE}
+                      description={NO_CASE_OPEN_DESCRIPTION}
+                      action={
+                        emptyPaneShortcuts.length ? (
+                          <div className="flex flex-wrap justify-center gap-2" data-testid="case-manager-pane-shortcuts">
+                            {emptyPaneShortcuts.map((shortcut) => (
+                              <Button
+                                key={shortcut.kind}
+                                variant="outline"
+                                size="sm"
+                                data-shortcut={shortcut.kind}
+                                onClick={() => applyPaneShortcut(shortcut)}
+                              >
+                                {paneShortcutLabel(shortcut.kind, shortcut.count)}
+                              </Button>
+                            ))}
+                          </div>
+                        ) : undefined
+                      }
                     />
                   </div>
                 )}
@@ -2842,6 +3367,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
               <DialogDescription>{bulkFormConfig?.description}</DialogDescription>
             </DialogHeader>
             <div className="space-y-2 py-1">
+              <AiRunCloseNotice caseIds={bulkStatusIds} open={bulkFormAction === 'status'} action="status" />
               <label htmlFor="case-manager-bulk-value" className="text-xs font-medium text-foreground">
                 {bulkFormConfig?.label}
               </label>
@@ -2939,7 +3465,10 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
           description={bulkConfirmConfig?.description}
           confirmLabel={bulkConfirmConfig?.label}
           onConfirm={runConfirmedBulkAction}
-        />
+        >
+          {/* Acknowledge moves the status: a run's result replaces it (D10). */}
+          <AiRunCloseNotice caseIds={bulkStatusIds} open={pendingBulkAction === 'acknowledge'} action="status" />
+        </ConfirmDialog>
 
         <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
           <DialogContent
@@ -2971,6 +3500,25 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                 </React.Fragment>
               ))}
             </dl>
+          </DialogContent>
+        </Dialog>
+
+        {/* "About Case Manager" where the band is too narrow for its help tip (Round 16,
+            WP02): the same text, from the view menu. Focus returns to the menu's trigger. */}
+        <Dialog open={aboutOpen} onOpenChange={setAboutOpen}>
+          <DialogContent
+            className="max-w-md"
+            onCloseAutoFocus={(event) => {
+              if (viewMenuRef.current && isFocusable(viewMenuRef.current)) {
+                event.preventDefault();
+                viewMenuRef.current.focus();
+              }
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>About Case Manager</DialogTitle>
+              <DialogDescription>{CASE_MANAGER_HELP}</DialogDescription>
+            </DialogHeader>
           </DialogContent>
         </Dialog>
       </PageContainer>

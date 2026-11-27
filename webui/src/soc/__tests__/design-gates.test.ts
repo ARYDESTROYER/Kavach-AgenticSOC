@@ -20,11 +20,14 @@ import { describe, it, expect } from 'vitest';
 import { checkTokenExistence } from '../../../scripts/gate-tokens.mjs';
 import {
   checkContrast,
+  SELECTED_FILLS,
+  SELECTED_TEXT_AXES,
   SEMANTIC_FILL_AXES,
+  SIGN_IN_NON_TEXT_AXES,
+  SIGN_IN_TEXT_AXES,
   TEXT_WASH_AXES,
 } from '../../../scripts/gate-contrast.mjs';
 import { checkCvd, CHART_TOKENS, SEMANTIC_AXES } from '../../../scripts/gate-cvd.mjs';
-import { checkLoginAccents, TEXT_BAR } from '../../../scripts/gate-login-accents.mjs';
 import { checkGrepGuards, loadBaseline, PATTERNS } from '../../../scripts/lib/grep-guard.mjs';
 
 describe('design gate: token existence (theme.css ⇄ ALLOWED_TOKENS ⇄ palette)', () => {
@@ -158,103 +161,42 @@ describe('design gate: grep baseline only ratchets DOWN (M1 anti-grandfather)', 
   });
 });
 
-describe('design gate: login identity accents (raw-gradient surfaces)', () => {
-  // The shine CTA and the appearance pill are the only console surfaces that paint
-  // text on a raw gradient rather than a semantic token pair, so the token-driven
-  // contrast gate above is structurally blind to them. This is their enforcement
-  // point: the palettes were derived by measurement, and this keeps that claim true.
-  it('every shine-CTA and pill composite clears 4.5:1 in both themes', () => {
-    const { ok, results } = checkLoginAccents();
-    const failures = results.filter((r) => !r.pass);
+describe('design gate: text on a selected fill', () => {
+  // A selected runbook phase tab and a pressed KPI tile raise their muted text to the
+  // foreground ink, because muted text on the panel's selected wash is 4.2:1 in light.
+  it('measures the foreground on the canvas and the panel selected fills, in both themes', () => {
+    const { results } = checkContrast();
+    const selected = results.filter((r) => r.kind === 'selected-text');
+    expect(selected.length).toBe(SELECTED_TEXT_AXES.length * SELECTED_FILLS.length * 2);
+    const failures = selected.filter((r) => !r.pass);
     expect(failures, JSON.stringify(failures, null, 2)).toEqual([]);
-    expect(ok).toBe(true);
+    for (const name of ['foreground on accent (selected fill)', 'foreground on panel-accent (selected fill)']) {
+      for (const theme of ['light', 'dark']) {
+        const hit = selected.find((r) => r.name === name && r.theme === theme);
+        expect(hit, `${theme} ${name}`).toBeDefined();
+        expect(hit!.bar).toBe(4.5);
+      }
+    }
   });
+});
 
-  it('measures the sweep and tint layers, not just the bare gradient', () => {
-    // The face alone clears the bar comfortably; the tight cases are the composites
-    // with the sweep blob and the overlay tint on top.
-    //
-    // Comparing `sweep+tint` against `bare` alone would NOT prove both layers are
-    // applied — dropping either one still leaves the combined figure lower than
-    // bare. So compare it against each single-layer minimum separately: it must be
-    // tighter than sweep-only (proving the tint contributes) AND tighter than
-    // bare+tint (proving the sweep does).
-    const { results } = checkLoginAccents();
-    const minOf = (re: RegExp) => {
-      const hits = results.filter((r) => re.test(r.name));
-      expect(hits.length, `no composites matched ${re}`).toBeGreaterThan(0);
-      return Math.min(...hits.map((r) => r.ratio ?? Infinity));
-    };
-    const bare = minOf(/\/bare\]/);
-    const bareTint = minOf(/\/bare\+tint\]/);
-    const sweep = minOf(/\/sweep\]/);
-    const sweepTint = minOf(/\/sweep\+tint\]/);
-
-    expect(sweepTint).toBeLessThan(bare);
-    expect(sweepTint).toBeLessThan(sweep); // the tint is contributing
-    expect(sweepTint).toBeLessThan(bareTint); // the sweep is contributing
-    expect(sweepTint).toBeGreaterThanOrEqual(TEXT_BAR);
-  });
-
-  it('populates every layer of the compositing model with a non-zero value', () => {
-    // The ratios cannot reveal a zeroed layer on their own — a dropped layer just
-    // makes the numbers look better. These are the two extraction points that can
-    // silently fail (the keyframe lookup and the declared tint opacity), so assert
-    // the extracted values directly.
-    const { layers } = checkLoginAccents();
-    expect(layers).toBeDefined();
-    expect(layers!.sweepPeak).toBeGreaterThan(0);
-    expect(layers!.sweepCoreAlpha).toBeGreaterThan(0);
-    expect(layers!.tintLight).toBeGreaterThan(0);
-    expect(layers!.tintDark).toBeGreaterThan(0);
-    // The dark tint is the heavier of the two; if that inverts, the per-theme
-    // lookup has gone stale.
-    expect(layers!.tintDark).toBeGreaterThan(layers!.tintLight);
-  });
-
-  it('verifies the layering premise its own exclusions rest on', () => {
-    // The gate excludes the halo and the flair because each paints behind an
-    // opaque child. That is an assumption about z-index, and an explicit z-index
-    // beats DOM order in both directions — so a structural DOM-order test cannot
-    // cover it. The gate reads the declarations and fails if the order inverts.
-    const { results } = checkLoginAccents();
-    const layering = results.filter((r) => /paints below the opaque/.test(r.name));
-    expect(layering.length).toBe(2);
-    for (const r of layering) expect(r.pass, r.name).toBe(true);
-  });
-
-  it('fails loudly rather than silently measuring fewer layers', () => {
-    // The gate lost the dark-theme tint once, when the CSS selectors were scoped
-    // and its lookups went stale — and it kept passing, with HIGHER ratios,
-    // because a missing opacity defaulted to 0. It now refuses to report at all
-    // if a layer the label sits on cannot be read, so assert that self-check is
-    // wired: a healthy run has real composites and no unreadable-layer result.
-    const { results } = checkLoginAccents();
-    expect(results.some((r) => /unreadable/.test(r.name))).toBe(false);
-    // Dark composites must exist AND be tighter than their light counterparts —
-    // the dark tint is heavier, so if it ever stops being applied this flips.
-    const dark = results.filter((r) => /shine face .*\[dark\/sweep\+tint\]/.test(r.name));
-    const light = results.filter((r) => /shine face .*\[light\/sweep\+tint\]/.test(r.name));
-    expect(dark.length).toBeGreaterThan(0);
-    expect(light.length).toBe(dark.length);
-    expect(Math.min(...dark.map((r) => r.ratio ?? Infinity))).toBeLessThan(
-      Math.min(...light.map((r) => r.ratio ?? Infinity)),
-    );
-  });
-
-  it('derives the pill label zone from the CSS, not from a hardcoded copy', () => {
-    // A mirrored geometry constant is how a gate goes quietly wrong: widen the
-    // pill and the measured zone silently stays put. The zone must be reported.
-    const { results } = checkLoginAccents();
-    const zones = results.filter((r) => /pill .* label zone \(\d+%-\d+%\)/.test(r.name));
-    expect(zones.length).toBe(2);
-    expect(results.some((r) => /geometry unreadable/.test(r.name))).toBe(false);
-  });
-
-  it('covers both pill states across the label cell only', () => {
-    const { results } = checkLoginAccents();
-    const zones = results.filter((r) => /pill (light|dark) label zone/.test(r.name));
-    expect(zones.length).toBe(2);
-    for (const zone of zones) expect(zone.ratio).toBeGreaterThanOrEqual(TEXT_BAR);
+describe('design gate: the sign-in page measures on the canvas (Round 16 D9)', () => {
+  // The sign-in page paints Console tokens straight on `--canvas`. These pairs replace the
+  // retired login-accents gate, whose subject (the gradient button and pill) was deleted.
+  it('measures body, secondary and error text, the field edge and the ring, in both themes', () => {
+    const { results } = checkContrast();
+    const signIn = results.filter((r) => r.kind === 'sign-in-text' || r.kind === 'sign-in-nontext');
+    expect(signIn.length).toBe((SIGN_IN_TEXT_AXES.length + SIGN_IN_NON_TEXT_AXES.length) * 2);
+    const failures = signIn.filter((r) => !r.pass);
+    expect(failures, JSON.stringify(failures, null, 2)).toEqual([]);
+    for (const name of ['input on canvas (sign-in)', 'input on background (sign-in field fill)', 'muted-foreground on canvas (sign-in)']) {
+      for (const theme of ['light', 'dark']) {
+        const hit = signIn.find((r) => r.name === name && r.theme === theme);
+        expect(hit, `${theme} ${name}`).toBeDefined();
+        expect(hit!.ratio).toBeGreaterThanOrEqual(hit!.bar);
+      }
+    }
+    // Text is held to 4.5:1 and the edges to 3:1, never the other way round.
+    for (const r of signIn) expect(r.bar).toBe(r.kind === 'sign-in-text' ? 4.5 : 3);
   });
 });

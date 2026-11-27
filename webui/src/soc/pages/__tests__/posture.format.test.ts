@@ -93,8 +93,11 @@ describe('LIFECYCLE_METRICS (honest MTTA / MTTR / Dwell copy)', () => {
     for (const key of KEYS) {
       expect(LIFECYCLE_METRICS[key].label).not.toBe('MTTD');
     }
-    expect(LIFECYCLE_METRICS.dwell.help.toLowerCase()).toContain('time-to-first-response');
-    expect(LIFECYCLE_METRICS.dwell.help.toLowerCase()).toContain('not time-to-detect');
+    // Round 16 rewrote the help in plain words (a person's first response; automatic
+    // closes not counted), so the phrases are unhyphenated; the claim is the same.
+    expect(LIFECYCLE_METRICS.dwell.help.toLowerCase()).toContain('time to first response');
+    expect(LIFECYCLE_METRICS.dwell.help.toLowerCase()).toContain('not time to detect');
+    expect(LIFECYCLE_METRICS.dwell.help.toLowerCase()).toContain('by a person');
   });
 
   it('help copy is grounded in the real lifecycle intervals', () => {

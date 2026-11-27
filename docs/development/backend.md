@@ -1,6 +1,6 @@
 ---
 title: Backend development
-description: Agentic SOC API architecture, conventions, configuration, routes, persistence, and local workflow for version 0.1.
+description: Agentic SOC API architecture, conventions, configuration, routes, persistence, and local workflow for version 0.2.
 ---
 
 # Backend development
@@ -86,7 +86,7 @@ operations where appropriate. Bootstrap, login, and self-authenticating receiver
 need explicit, narrowly tested exceptions. Add a public route only by deliberately
 extending the small allowlist in `api/deps.py` and adding security tests.
 
-Prefer typed request bodies and explicit response models. Existing 0.1 endpoints with
+Prefer typed request bodies and explicit response models. Existing 0.2 endpoints with
 plain dictionary responses remain valid, but new response models improve the OpenAPI
 contract and generated client types.
 
