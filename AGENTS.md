@@ -952,9 +952,9 @@ See `docs/ENVIRONMENT.md` for the full detail. Summary:
 ## 7. Build / run / test cheatsheet
 
 ```bash
-# Backend tests (offline; MUST stay green). Latest recorded full run: 14,038 tests (see Journal for the exact current count)
+# Backend tests (offline; MUST stay green). Latest recorded full run: 14,072 tests (see Journal for the exact current count)
 cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt
-python -m pytest -q                         # -> latest recorded full run: 14,009 passed, 29 skipped, 0 failed with proxy/AWS vars unset (see Journal)
+python -m pytest -q                         # -> latest recorded full run: 14,043 passed, 29 skipped, 0 failed with proxy/AWS vars unset (see Journal)
 
 # Backend run locally (in-memory store, mock LLM if no keys)
 uvicorn app.main:app --port 8088
@@ -1026,7 +1026,7 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
   `/api` proxy forwards arbitrary JSON). Keep `webui/src/lib/types.ts` in sync with
   `models.py`.
 - **Secrets:** env only; UI shows booleans (`configured ✓`) never values.
-- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 14,009 passed, 29 skipped; 0 failed with the sandbox's proxy and AWS variables unset) +
+- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 14,043 passed, 29 skipped; 0 failed with the sandbox's proxy and AWS variables unset) +
   `npm run build` clean + `npm run test:strict` (latest recorded full run: 9,955 passed, 19 skipped / 786 files) +
   `npm run lint` (0 errors, jsx-a11y at error) before
   every commit. (Counts rise each round — see `Journal.md` for the exact current totals.)
@@ -1255,7 +1255,7 @@ raw hex, chart ramps colour-vision separable, 364 login accent composites); `che
 drift (293 paths); `docs:check`, `check_version`, `check_ci_contract` (3 workflows, 3 shipping
 Dockerfiles), `check_docs` (84 pages) and `build_app_knowledge --check` (877 chunks) pass.
 
-**Current baseline (2026-11-26, Round 16 closing gates, Round 16 SPEC §8.4):** backend **14,009 pytest**
+**Current baseline (2026-11-26, Round 16 closing gates, Round 16 SPEC §8.4):** backend **14,043 pytest**
 passed, 29 skipped and 0 failed (27 PostgreSQL-only tests skip offline and run in the PostgreSQL
 lane, and 2 audit tests need Elasticsearch point-in-time snapshots), with the sandbox's proxy and
 AWS variables unset as CI runs (with them set, the 5 sandbox-only environment tests fail);

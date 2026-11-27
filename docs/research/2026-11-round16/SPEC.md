@@ -3415,6 +3415,14 @@ in §8.2.
   - `decide()` in `backend/app/engine/case_manager.py` is byte-identical to `3cfd5c0`, the Round
     15 merge, and matches the digest that `test_round16_spine_guards.py` pins; `engine/risk.py`
     and `engine/signatures.py` are byte-identical to `3cfd5c0`.
+- CI on the pull request head `f2d5524`: the fail-closed CI passed aggregate and every lane
+  succeeded, among them the PostgreSQL and Redis acceptance, the rollback acceptance and the three
+  release image builds that cannot run in the sandbox.
+- The two review fixes CDX1 and CDX2 (§8.2) change backend code, so the backend gates ran again on
+  `fc37505` (both merged, their records written): `pytest -q` with the proxy and AWS variables
+  unset, 14,072 tests, 14,043 passed, 29 skipped and 0 failed; fatal ruff 0.12.5 clean;
+  `check:types` no drift; `check_version` and `build_app_knowledge --check` (1,107 chunks) pass.
+  No Console file changed, so the Console gates above stand.
 
 ### 8.5 Cross-cutting review
 

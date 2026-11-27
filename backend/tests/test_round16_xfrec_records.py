@@ -369,9 +369,11 @@ def test_the_closing_baselines_agree_with_the_verification_record():
     assert "const PRE_REVAMP_ENTRY_BYTES = 317_962;" in bundle
     agents = _flat(_read(AGENTS))
     assert "Current baseline (2026-11-26, Round 16 closing gates, Round 16 SPEC §8.4)" in agents
-    for fact in ("14,009 pytest", "9,955 Vitest", "786 files", "317,962 B"):
+    for fact in ("14,043 pytest", "9,955 Vitest", "786 files", "317,962 B"):
         assert fact in agents, fact
     testing = _flat(_read(DOCS / "development" / "testing.md"))
-    assert "14,009 backend tests" in testing and "9,955 Console tests" in testing
+    assert "14,043 backend tests" in testing and "9,955 Console tests" in testing
+    # The review fixes ran the backend gates again; the record says so.
+    assert "14,072 tests, 14,043 passed, 29 skipped and 0 failed" in record
     assert "recorded after its closing gates" not in testing
     assert "recorded after its closing gates" not in agents
