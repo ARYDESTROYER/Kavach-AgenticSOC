@@ -158,8 +158,9 @@ reset is the documented exception.
 
 ### Not covered
 
-- The published v0.1.1 images through the updater on a Docker host (the image-level
-  rollback), and the canonical bootstrap. Both stay maintainer action M5, with their steps
+- A v0.1.1 Compose deployment (built from its tag; v0.1.1 published no images) rolled
+  back through the updater on a Docker host (the image-level rollback), and the canonical
+  bootstrap. Both stay maintainer action M5, with their steps
   in the release page's Rollback and Operator bootstrap sections.
 - Elasticsearch and SQLite state backends; this receipt is PostgreSQL only.
 - A rollback under load, or with Redis and a live log source attached.

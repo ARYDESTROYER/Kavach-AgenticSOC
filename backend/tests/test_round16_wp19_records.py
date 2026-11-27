@@ -269,14 +269,21 @@ def test_the_operator_bootstrap_runs_where_the_deployment_env_is() -> None:
     """The bootstrap reads ``.env`` from its own checkout, so a fresh clone has none."""
     section = _page_section(_read(RELEASE_PAGE), "## Operator bootstrap")
     flat = _flat(section)
-    assert "git clone" not in section
-    assert "git switch --detach v0.2.0" in section
+    block = section[section.index("```bash"):section.index("./scripts/bootstrap-updater.sh")]
+    assert "git clone" not in block
+    assert "git switch --detach v0.2.0" in block
     assert "./scripts/bootstrap-updater.sh" in section
     assert "Never create a new `.env` from `.env.example` for an upgrade" in flat
     assert "AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC" in flat
     # The script it describes really reads the .env of its own checkout.
     script = _read(REPO_ROOT / "scripts" / "bootstrap-updater.sh")
     assert 'env_file="${repo_root}/.env"' in script
+    # v0.1.1's install made a one-tag shallow clone with no origin/main, which the script
+    # requires; the block must give the checkout every branch before the switch.
+    assert "origin/main" in script
+    assert block.index("git remote set-branches origin '*'") < block.index("git switch --detach v0.2.0")
+    assert "--unshallow" in block
+    assert "keep backups outside the checkout" in flat
 
 
 def test_the_image_level_rollback_is_not_the_source_lane() -> None:
@@ -288,6 +295,10 @@ def test_the_image_level_rollback_is_not_the_source_lane() -> None:
     assert "```bash\nbackend/.venv/bin/python scripts/rollback_lane.py" not in rollback
     receipt = _flat(_read(ACCEPTANCE / "release-postgres-receipt.md"))
     assert "with the command in the release page" not in receipt
+    # v0.1.1 had no release workflow, so there are no published v0.1.1 images to start from.
+    for text in (flat, receipt, _flat(_read(LIMITATIONS))):
+        assert "published v0.1.1 images" not in text
+    assert "from the `v0.1.1` tag" in flat
 
 
 def test_the_settings_reset_names_the_nested_keys_too() -> None:
@@ -319,3 +330,6 @@ def test_the_tag_slip_rule_names_every_date_and_both_generators() -> None:
                  "python3 scripts/build_release_notes.py", "python3 scripts/build_app_knowledge.py",
                  "no gate compares them with the day the tag is cut"):
         assert fact in top, fact
+    # The intended date is written once, so a re-date cannot leave a stale copy behind.
+    checklist = page[page.index("Immutable annotated-tag checklist"):page.index("First publication under the new name")]
+    assert _heading_date() not in checklist

@@ -3332,9 +3332,18 @@ reverting.
   tag-slip rule now names every date and both generators. The PostgreSQL receipt's
   byte-identity line now excepts the regenerated corpus. `AGENTS.md` and `CONTRIBUTING.md` no
   longer say `main` is the default branch. Also: the release page's large-table pre-step says
-  to start the backend again. Regression: `test_round16_wp19_records.py` gained tests for the
-  bootstrap's `.env`, the M5 steps, the two settings keys and the maintainer-action order, and
-  its default-branch scan now covers `AGENTS.md` and `CONTRIBUTING.md`.
+  to start the backend again. A second review of the fix (two lenses, two refuters each; 9 of
+  17 findings held) found that the in-place bootstrap still failed for the checkout v0.1.1's
+  install guide made (`git clone --branch v0.1.1 --depth 1`, which has no `origin/main`), so
+  the block now runs `git remote set-branches origin '*'` and an unshallow fetch, simulated
+  on a shallow and a full checkout; that v0.1.1 published no images, so M5 builds it from its
+  tag; that untracked backups make the bootstrap refuse, so backups go outside the checkout;
+  that the dress rehearsal names its own repository; and that checklist step 4 repeated the
+  intended date. Regression: `test_round16_wp19_records.py` gained five tests (the
+  bootstrap's `.env` and `origin/main`, the M5 steps, the two settings keys, the
+  maintainer-action order, and the tag-slip rule's dates and generators), and its
+  default-branch scan now covers `AGENTS.md` and `CONTRIBUTING.md`; the receipt's identity
+  line and the large-table pre-step have no test.
 
 ### 8.3 Known limitations
 

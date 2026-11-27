@@ -377,7 +377,7 @@ the builds before Round 14 does not apply to it. It loses:
   an account it saves.
 
 Ledger rates, the What's new marker, the auto-close review grade and case screenshots
-survive. The rehearsal ran the release's source, not the published v0.1.1 images through
+survive. The rehearsal ran the release's source, not a v0.1.1 Compose deployment through
 the updater; that rehearsal on a Docker host is still to run (maintainer action M5, with
 its steps in the [0.2.0 release record](0.2.0.md#rollback)).
 
