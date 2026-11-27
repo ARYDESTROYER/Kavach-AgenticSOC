@@ -19,8 +19,7 @@ documentation line is `0.2`.
 
 !!! note "Canonical topology and administrative controls"
 
-    The remote now uses `Testing` for integration and default `main` for accepted
-    Stable source. Version 0.2.0 is Stable only when the exact verified `main`
+    The remote uses `Testing` for integration and `main` for accepted Stable source. Version 0.2.0 is Stable only when the exact verified `main`
     commit has the immutable `v0.2.0` tag, matching signed/public artifacts, and
     completed canonical runtime acceptance.
     Pull-request protections,
@@ -571,8 +570,9 @@ larger rows change it. Read the size of yours with
 about the size of the table. Ten million rows stay well inside the signed plan's
 300-second backend rollout timeout, so 0.2.0 keeps that timeout.
 
-On a very large audit table, run the widening yourself in a maintenance window before
-the upgrade:
+On a very large audit table, stop the backend and run the widening yourself in a
+maintenance window before the upgrade, then start the backend again. A backend that
+stays up while the column changes fails each pooled connection's next query once.
 
 ```sql
 ALTER TABLE audit ALTER COLUMN id TYPE bigint;

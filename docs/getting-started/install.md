@@ -80,8 +80,10 @@ Keep a full clone (no `--depth 1`). The one-time updater bootstrap
 (`scripts/bootstrap-updater.sh`) checks that the release tag's commit is contained in
 `origin/main`, which a shallow single-branch clone does not have.
 
-The remote uses default `main` for accepted Stable source. Pulling `main` gives you the
-current accepted Stable source, not the next Testing candidate. Repository protections
+Accepted Stable source is on `main`. Pulling `main` gives you the current accepted
+Stable source, not the next Testing candidate. A plain clone lands on the repository's
+default branch, so check out `main` or the release tag explicitly (see
+[Release channels](../releases/channels.md)). Repository protections
 and required checks must still be verified independently. Do not create or move a
 release tag locally.
 

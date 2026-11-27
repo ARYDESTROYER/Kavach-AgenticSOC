@@ -17,7 +17,7 @@ blocks under `npm run test:strict`. Counts rise as coverage is added; the comman
 and zero-failure result are the contract, not a frozen target. These are the Round 16
 closing figures.
 
-The remote uses `Testing` for integration and default `main` for accepted Stable
+The remote uses `Testing` for integration and `main` for accepted Stable
 source. Version 0.2.0 is a candidate on `Testing` and is Stable only when the
 resulting verified `main` commit has the immutable `v0.2.0` tag and matching
 artifacts. Branch protection, required checks,

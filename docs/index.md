@@ -150,7 +150,7 @@ Stable**. The current source version uses SemVer `0.2.0`; compatible documentati
 uses the major.minor line `0.2`. The repository is `ARYDESTROYER/Kavach-AgenticSOC`,
 and the project is licensed under Apache-2.0.
 
-The repository uses default `main` for accepted source and retains `Testing` for
+The repository uses `main` for accepted source and retains `Testing` for
 integration. Version 0.2.0 is Stable only when the exact accepted `main` commit has
 the immutable `v0.2.0` tag and matching signed/public artifacts and every canonical
 runtime acceptance gate passes. Repository

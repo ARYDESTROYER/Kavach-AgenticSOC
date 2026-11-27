@@ -172,6 +172,50 @@ def test_the_v0_1_1_rollback_rehearsal_is_recorded_and_the_image_rehearsal_stays
     assert "#rolling-back-to-v011-resets-the-settings-it-does-not-model" in upgrades
 
 
+def test_the_summary_rollback_boundary_names_the_v0_1_1_settings_reset() -> None:
+    """The rehearsal's one real loss on the canonical rollback target is in the summary."""
+    flat = _flat(_release_section().split("\n\n", 2)[1])
+    boundary = flat[flat.index("Rollback boundary"):]
+    assert "v0.1.1" in boundary
+    assert "every setting it does not model" in boundary
+
+
+def test_the_release_page_explains_the_skipped_tests_as_they_are() -> None:
+    """The 2 audit skips are the SQL run of Elasticsearch-only tests; no CI lane runs them."""
+    flat = _flat(_read(RELEASE_PAGE))
+    assert "Elasticsearch-only tests, which run in their CI lanes" not in flat
+    assert "27 PostgreSQL-only tests, which run in the PostgreSQL lane" in flat
+    assert "point-in-time snapshots" in flat
+
+
+#: Help Center pages, the research records excluded.
+HELP_CENTER_PAGES = sorted(
+    p for p in (REPO_ROOT / "docs").rglob("*.md") if "research" not in p.relative_to(REPO_ROOT / "docs").parts
+)
+DEFAULT_MAIN_CLAIM = re.compile(r"default `main`|`main` as (?:the|its) default|\(the default branch\)")
+
+
+def test_no_help_center_page_says_main_is_already_the_default_branch() -> None:
+    """The default branch is a repository setting (M1); one note records its real state."""
+    claims = [
+        str(page.relative_to(REPO_ROOT))
+        for page in HELP_CENTER_PAGES
+        if DEFAULT_MAIN_CLAIM.search(_flat(_read(page)))
+    ]
+    assert claims == []
+    channels = _flat(_read(REPO_ROOT / "docs" / "releases" / "channels.md"))
+    assert "On 2026-11-27 the default was still `Testing`" in channels
+
+
+def test_the_large_table_pre_step_stops_the_backend_first() -> None:
+    """A manual ALTER against a running backend breaks its cached statements (CHANGELOG)."""
+    upgrades = _read(UPGRADES)
+    section = upgrades[upgrades.index("### The audit id column"):upgrades.index("### Rolling back from 0.2.0")]
+    pre_step = _flat(section[section.index("On a very large audit table"):section.index("```sql")])
+    assert "stop the backend" in pre_step
+    assert "with the backend stopped" in _flat(_read(RELEASE_PAGE))
+
+
 ACCEPTANCE = REPO_ROOT / "docs" / "research" / "2026-11-round16" / "acceptance"
 SPEC = REPO_ROOT / "docs" / "research" / "2026-11-round16" / "SPEC.md"
 

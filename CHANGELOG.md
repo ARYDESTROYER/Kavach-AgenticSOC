@@ -39,8 +39,9 @@ template step is needed only when it logs that it could not. Rollback boundary: 
 rollback keeps the data, but the earlier build drops the fields it does not know when it
 rewrites a document (recorded risk inputs and second-factor lock counters), the read grants
 and the server-side forced password change revert while it runs, and the widened column
-stays. Updater protocol 1, signed-plan schema 1, state schema 1 and the frozen Compose base are
-unchanged.
+stays. A rollback to v0.1.1 also resets every setting it does not model at its graceful stop,
+so note the settings you changed first. Updater protocol 1, signed-plan schema 1, state schema
+1 and the frozen Compose base are unchanged.
 
 ### Round 16
 
