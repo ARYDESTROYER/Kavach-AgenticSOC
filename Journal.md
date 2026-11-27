@@ -13801,3 +13801,53 @@
 - Tests: backend suite on fc37505 with the proxy and AWS variables unset: 14,043 passed, 29 skipped, 0 failed; fatal ruff clean; check:types no drift; check_version and build_app_knowledge --check (1,107 chunks) pass; the docs, records, knowledge and version selection 1,115 passed, 1 skipped; app knowledge and golden set 812 passed.
 - Status: done; pushed to claude/round16 for CI.
 - Next: CI on the new head, both review threads answered and resolved; then the frozen release preparation for 0.2.0 (WP19), asking the user before the v0.2.0 tag.
+
+
+### 2026-11-27 02:08Z - WP19 builder - Frozen release preparation for 0.2.0
+- Context: Round 16 WP19 (SPEC WP19, release.md sections 5 and 6, B4, B5) on r16-wp19 from 4e32d29, after PR #144 went green.
+- Did: Commit 963cec4 (records and generated artifacts only):
+  - CHANGELOG [Unreleased] moved under "## [0.2.0] - 2026-11-27" with a summary paragraph. The 0.1.13 snapshot body folded into "Legacy bootstrap correction", whose release boundary is rewritten for the 0.2.0 identity move and the audit.id widening. The snapshot heading keeps its pointer line. A fresh [Unreleased] reads "No changes yet.".
+  - docs/releases/notes/0.2.0.json released and dated 2026-11-27 (update ids unchanged). whats-new.md and release-notes.gen.json regenerated.
+  - docs/releases/0.2.0.md rewritten as the release body (about 26,400 characters, the seven markers, no images).
+  - upgrades.md, known-limitations.md, channels.md, documentation-versions.md and INSTALL.md updated: measured widening table, the v0.1.1 rollback result, and the default branch still being Testing on 2026-11-27.
+  - Knowledge corpus regenerated (1,132 chunks). New test_round16_wp19_records.py.
+  - Tag-slip rule: 2026-11-27 is the intended tag date. If the tag slips, a follow-up change re-dates the CHANGELOG heading, the notes and their newest update before tagging, because check_version requires the dates to match.
+  Commit 5e00df0:
+  - acceptance/release-postgres-receipt.md: B4 measured on PostgreSQL 16.15, widening 4.9 and 4.1 s at 1M rows, 25.0 s at 5M, 44.3 s at 10M (6.12 GB). The plan keeps its 300 s backend timeout. B5: the v0.1.1 rollback was rehearsed from source in field order, twice (37 of 38 and 32 of 33 checks). v0.1.1 runs healthy on 0.2.0 data and 0.2.0 returns healthy. v0.1.1 resets the settings it does not model at its graceful stop or settings save; this is documented.
+  - acceptance/release-browser-receipt.md: Stable-stamped build on vite preview against the seeded Demo. Identity is consistent. 568 loads and 19 interaction checks found nothing unexplained.
+  - SPEC 8.2 WP19 line and 8.4 gates line. test_round16_xfrec_records.py now expects the WP19 line.
+- Tests: check_version (branch, tag-stable, main, PR into main) pass. check_ci_contract pass plus 75 unit tests. check_docs 90 pages. build_app_knowledge --check 1,132. build_release_notes --check current. 26 records, docs, knowledge and version modules: 865 passed. Fatal ruff clean. typecheck, lint 0 warnings, gates, check:types no drift. Stamped build 3,622 modules, entry 318,012 B. docs:check pass. bundle-first-paint 30 passed. test:strict 786 files, 9,972 passed, 1 skipped. Updater 104 OK. bash -n OK. Rollback lane 31 OK. Compose hash matches. Full backend suite not rerun (no backend code changed).
+- Status: done. Committed on r16-wp19 only; not pushed, tagged or merged.
+- Next: review WP19, then open it as its own PR into Testing after #144 merges. Maintainer actions M1 to M7 remain, notably M5 (image-level v0.1.1 rollback and canonical bootstrap on a Docker host), M1 (default branch back to main) and M7 (dress rehearsal). If the tag is not cut on 2026-11-27, re-date the CHANGELOG heading and notes first.
+
+### 2026-11-27 03:20Z - WP19 reviewer - Frozen release preparation review
+- Context: independent review of WP19 (963cec4, 5e00df0 on 4e32d29) against SPEC WP19, sections 3.7, 3.8 and 4.11, the brief and release.md sections 5 and 6.
+- Did:
+  - Checked B4 and B5 against their raw scratch results: the benchmark JSON, the v0.1.1 table DDL and the 38 and 33 rehearsal checks.
+  - Confirmed PR #144 run 45917468134 (20 lanes plus CI passed) on 4e32d29, and confirmed through the GitHub API that the default branch is still Testing.
+  - Ran check_version in branch, tag-stable, main and PR-into-main contexts; checked the release page size and markers; confirmed decide() and risk.py are untouched.
+  - Fixed four records in f6a1fe5, each with a regression test that failed first:
+    1. The CHANGELOG summary now names the v0.1.1 settings reset.
+    2. The release page explains the 29 skips correctly (2 are the SQL-store run of Elasticsearch-only tests, which no lane runs).
+    3. The pre-step for large tables in upgrades.md stops the backend first.
+    4. Seven Help Center pages no longer say `main` is already the default branch.
+  - Regenerated the corpus (1,132 chunks).
+  - In ff6be6b, rebuilt the Console stamped Stable with f6a1fe5 and added a 19-check review pass to the browser receipt: identity, What's new welcome and page in both themes at 1440 and 390, the corrected Help Center pages, and first-run setup on an empty backend. Also added the SPEC 8.2 and 8.4 lines.
+- Tests:
+  - Backend full suite: 14,054 passed, 29 skipped, 0 failed (1 records test deselected, then run with the records modules: 760 passed).
+  - test:strict: 786 files, 9,972 passed, 1 skipped.
+  - typecheck, lint, gates, check:types clean. Stamped build entry 318,012 B; docs:check passes.
+  - check_ci_contract (plus 75 unit tests), check_docs 90 pages, knowledge --check, release notes --check, updater 104, rollback lane 31, bash -n, Compose hash all pass.
+- Status: done. Committed on r16-wp19 only; not pushed, tagged or merged; worktree detached at ff6be6b.
+- Next:
+  - Open WP19 as its own PR into Testing after #144 merges.
+  - Maintainer actions M1 to M7 remain, notably M1 (default branch back to main), M5 (image-level v0.1.1 rollback and canonical bootstrap) and M7 (dress rehearsal).
+  - Re-date the CHANGELOG heading and notes if the tag is not cut on 2026-11-27.
+  - AGENTS.md line 1034 still says "default `main`" (WP18 owns that file).
+
+### 2026-11-27 04:20Z - orchestrator - WP19 frozen release preparation built and reviewed
+- Context: PR #144 (Round 16 into Testing) is green on 4e32d29 with its review threads resolved. WP19, the frozen release preparation for 0.2.0, was built and independently reviewed on its own branch from that head, to go into Testing as its own pull request after #144 merges.
+- Did: reviewed the WP19 build (963cec4, 5e00df0) and review (f6a1fe5, ff6be6b) reports; dropped 'default' from the AGENTS.md section 8 branch sentence, which the review flagged, since the GitHub default branch is still Testing until maintainer action M1.
+- Tests: the WP19 review ran the whole backend suite (14,054 passed, 29 skipped, 0 failed), npm run test:strict with the stamped dist (9,972 passed, 1 skipped), check_version in four contexts including the v0.2.0 stable tag, the stamped Stable build (entry 318,012 B) and a 19-check browser pass.
+- Status: WP19 ready on its branch, not pushed. Waiting on the user: the merge of PR #144 into Testing, then the WP19 pull request, then the maintainer actions M1 to M7 before the v0.2.0 tag.
+- Next: after #144 merges, bring Testing into claude/round16 with the WP19 commits and open the frozen preparation pull request; if the tag is not created on 2026-11-27, re-date the CHANGELOG heading and the notes before tagging.

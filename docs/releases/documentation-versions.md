@@ -147,8 +147,9 @@ Before a Stable documentation publish, repository administrators must:
 5. allow the `Documentation` workflow to complete its `validate`, `publish`, and
    `deploy` jobs for that tag.
 
-The repository already uses `main` as its default branch and retains `Testing` as
-the integration branch. GitHub Actions Pages source selection is a one-time
+`main` must be the repository's default branch, with `Testing` as the integration
+branch. On 2026-11-27 the default was still `Testing`; the maintainer sets it back to
+`main` before the 0.2.0 tag. GitHub Actions Pages source selection is a one-time
 administrator setting; the workflow deliberately does not carry a personal access
 token that could change repository settings.
 

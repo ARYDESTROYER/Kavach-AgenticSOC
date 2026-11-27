@@ -61,7 +61,7 @@ host, so deploy only the reviewed supervisor image, restrict access to the host 
 Compose project, protect `.env` and updater volumes, and never expose the control
 socket over TCP.
 
-The remote uses `Testing` for integration and default `main` for accepted Stable
+The remote uses `Testing` for integration and `main` for accepted Stable
 source. Version 0.2.0 is Stable only when the exact verified `main` commit has the
 immutable `v0.2.0` tag, matching signed/public artifacts, and completed canonical
 runtime acceptance. A pull of `main` receives the current accepted Stable tree while
