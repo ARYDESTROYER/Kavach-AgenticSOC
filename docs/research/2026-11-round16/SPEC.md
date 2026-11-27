@@ -3271,7 +3271,7 @@ reverting.
   that a member key naming an index outside the data view reads nothing. Left: reinvestigation
   still reads member events by bare id (§8.3).
 - **WP19, the frozen release preparation** (`963cec4` on `4e32d29`, with its receipts and these
-  lines in the commit after it; its review follows). CHANGELOG: the `[Unreleased]` notes move
+  lines in the commit after it; reviewed in `f6a1fe5`, whose receipt and record follow it). CHANGELOG: the `[Unreleased]` notes move
   under `## [0.2.0] - 2026-11-27` with a summary paragraph (compatibility, upgrade steps, the
   rollback boundary, protocol, plan and state schema 1 with the frozen Compose base unchanged);
   the 0.1.13 snapshot body becomes "Legacy bootstrap correction", its boundary rewritten for
@@ -3303,7 +3303,18 @@ reverting.
   than only recorded as M5; `--depth 1` left the bootstrap clone (INSTALL.md's full-clone rule);
   the default-branch sentences of four pages; the release page worded so the Help Center's
   golden questions keep their pages. Receipts: `acceptance/release-postgres-receipt.md` and
-  `acceptance/release-browser-receipt.md`.
+  `acceptance/release-browser-receipt.md`. The review checked the timings and the rehearsal
+  against their raw results, PR #144's CI run and lanes, the default branch through the
+  GitHub API, and `check_version.py` as the branch, `main`, the tag and a pull request into
+  `main`, then corrected four records, each with a regression test in
+  `test_round16_wp19_records.py` that failed before it: the CHANGELOG summary's rollback
+  boundary now names the v0.1.1 settings reset; the release page says the 2 audit skips are
+  the SQL-store run of Elasticsearch-only tests, which no CI lane runs; the large-table
+  pre-step in `upgrades.md` stops the backend first; and seven Help Center pages no longer say
+  `main` is already the default branch. It rebuilt the Console stamped Stable with
+  `f6a1fe5` and recorded a 19-check review pass in the browser receipt (identity, the What's
+  new welcome by keyboard, the What's new page in both themes at both widths, the corrected
+  Help Center pages, and the first-run setup on an empty backend).
 
 ### 8.3 Known limitations
 
@@ -3471,6 +3482,19 @@ in §8.2.
   `bash -n` on `bootstrap-updater.sh`, `run-demo.sh` and `agentic-soc-compose.sh`; the rollback
   lane tests (31); and the frozen Compose base hash. The full backend suite was not run again:
   no backend code changed, only the knowledge corpus, which its modules cover.
+- The WP19 review (`f6a1fe5` and the receipt commit after it) ran the package gates on its
+  tree: the whole backend suite with the proxy and AWS variables unset, 14,054 passed, 29
+  skipped, 0 failed, with the one test that reads this line deselected and then run with the
+  records modules once the line existed; 22 records, docs, knowledge and version modules, 760
+  passed on the final tree; fatal ruff 0.16.9 clean; `check_version.py` as the branch, the tag
+  (`TLSOC_SOURCE_REF=refs/tags/v0.2.0 TLSOC_RELEASE_CHANNEL=stable`), `main` and a pull request
+  into `main`; `check_ci_contract.py` and its 75 unit tests; `check_docs.py` (90 public pages);
+  `build_app_knowledge.py --check` (1,132 chunks); `build_release_notes.py --check`;
+  `typecheck`, `lint`, `gates` and `check:types` (no drift); `npm run build` stamped Stable
+  with `f6a1fe5`, 3,622 modules, entry 318,012 B; `docs:check` with the same stamps; `npm run
+  test:strict` with that `dist/` in place, 786 files, 9,972 passed, 1 skipped; the updater
+  unit tests (104); `bash -n` on the three shell entry points; the rollback lane tests (31);
+  and the frozen Compose base hash.
 
 ### 8.5 Cross-cutting review
 

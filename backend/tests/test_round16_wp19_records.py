@@ -238,3 +238,21 @@ def test_the_receipts_and_the_spec_line_record_the_release_preparation() -> None
         assert fact in line, fact
     record = spec[spec.index("### 8.4 Verification record"):spec.index("### 8.5 Cross-cutting review")]
     assert "The release preparation WP19 (`963cec4`" in record
+
+
+def test_the_review_pass_names_the_build_it_ran_on() -> None:
+    """The review changed the Help Center, so its pass ran on its own stamped build."""
+    browser = _read(ACCEPTANCE / "release-browser-receipt.md")
+    review = _flat(browser[browser.index("## Review pass"):])
+    for fact in ("SHA f6a1fe52cdf797d7325ffbdf4f6a3309a3f7c51f", "19 checks, 19 pass",
+                 "Create your admin account", "the sweep above was not repeated"):
+        assert fact in review, fact
+    # The first-run setup is no longer listed as never opened.
+    not_covered = _flat(browser[browser.index("## Not covered here"):browser.index("## Result")])
+    assert "**First-run setup on an empty backend**" not in not_covered
+    spec = _read(SPEC)
+    per_package = spec[spec.index("### 8.2 Per package"):spec.index("### 8.3 Known limitations")]
+    line = _flat(per_package[per_package.index("- **WP19, the frozen release preparation**"):])
+    assert "reviewed in `f6a1fe5`" in line and "its review follows" not in line
+    record = spec[spec.index("### 8.4 Verification record"):spec.index("### 8.5 Cross-cutting review")]
+    assert "The WP19 review (`f6a1fe5`" in record

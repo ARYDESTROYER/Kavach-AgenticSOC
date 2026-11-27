@@ -143,8 +143,9 @@ dark. A luminance check of each image's top band against the theme its name stat
 - **The Release update supervisor**: signed preflight, supervisor states and the automatic
   rollback; only the badge and "Updates unavailable" are visible without it. These and the
   canonical bootstrap stay maintainer action M5.
-- **First-run setup on an empty backend**, SSO (no identity provider), Firefox and Safari
-  (only Chromium is installed).
+- **SSO** (no identity provider), Firefox and Safari (only Chromium is installed). The
+  first-run setup on an empty backend was opened in the review pass below; creating the first
+  account through it was not.
 - **Interaction paths of release.md §6.3 step 5 not repeated here**: the Overview drill-downs,
   an Edit-mode board, the queue divider resize and its reset, the bulk menu, case screenshots
   (add, paste, view, delete), the auto-close review, a runbook run with its Next step card,
@@ -157,3 +158,41 @@ dark. A luminance check of each image's top band against the theme its name stat
 The stamped Stable build identifies itself consistently in the Console and the backend, and
 the 568 loads and 19 interaction checks found no unexplained error, failed request, overflow,
 blank page or serious accessibility finding.
+
+## Review pass
+
+The review commit `f6a1fe52cdf797d7325ffbdf4f6a3309a3f7c51f` changes Help Center pages, the
+release page and the knowledge corpus, so the built product is no longer the one swept above.
+No Console source and no Console data changed. The review rebuilt the Console stamped the same
+way and ran a focused pass on it; the sweep above was not repeated.
+
+```text
+Date (UTC):            2026-11-27 02:31
+Candidate:             v0.2.0, channel stable, SHA f6a1fe52cdf797d7325ffbdf4f6a3309a3f7c51f,
+                       build date 2026-11-27T02:23:29+00:00
+Build:                 npm run build, 3,622 modules, entry chunk 318,012 B; docs:check with
+                       the same stamps passes
+Served by:             vite preview on port 6095 over webui/dist, against run-demo.sh on port
+                       9095 (seeded Demo, auth on); a second vite preview on port 6096 against
+                       an empty backend on port 9096 (auth on, no seeded account)
+Browser:               Chromium (Playwright 1.63.0), headless, scale factor 2
+Checks:                19 checks, 19 pass
+```
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `/release.json` and `/api/health/build-info` both report 0.2.0, stable, the review SHA and the same build time | PASS |
+| 2 | The What's new welcome opens on the first sign-in after the update (sign-in by Enter on each step) | PASS |
+| 3 | Focus starts inside the welcome and twelve presses of Tab stay inside it | PASS |
+| 4 | axe finds nothing serious or critical with the welcome open | PASS |
+| 5 | Escape closes the welcome and focus returns to the page | PASS |
+| 6 | After a reload the welcome stays closed | PASS |
+| 7 to 10 | The What's new page in light and dark at 1440 by 900 and 390 by 844: 0.2.0 reads "Released 27 Nov 2026" and "Installed here", no overflow, nothing serious or critical in axe | PASS |
+| 11 | At 390 in dark, "Show the welcome screen" opens the welcome by keyboard, and Escape returns focus to that button | PASS |
+| 12 to 16 | The installed Help Center serves the corrected pages: the release page (its test counts and its Rollback section), the install page, the audit id column pre-step in Upgrade operations, and the topology note in Release channels | PASS |
+| 17 | The empty backend opens "Create your admin account", not the sign-in, with nothing serious or critical in axe | PASS |
+| 18 | No page error on the empty backend | PASS |
+| 19 | No page error, console error or failed request on the seeded Demo pass | PASS |
+
+Screenshots are in the build scratchpad folder `round16/shots/WP19-review/`, not in the
+repository. Every server the pass started was stopped afterwards.
